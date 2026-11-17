@@ -55,7 +55,7 @@ pub(crate) struct Inputs<'a> {
 /// serialising and hashing up to 8 MiB of logs happen later, off it.
 #[derive(Clone)]
 pub(crate) struct Capture {
-    pub data: Option<Data>,
+    pub data: Option<std::sync::Arc<Data>>,
     pub selected: Option<Key>,
     pub related_uids: Vec<String>,
     pub lens: &'static str,
@@ -72,7 +72,7 @@ pub(crate) struct Capture {
 impl Capture {
     pub(crate) fn build(&self) -> Bundle {
         build(Inputs {
-            data: self.data.as_ref(),
+            data: self.data.as_deref(),
             selected: self.selected.as_ref(),
             related_uids: self.related_uids.clone(),
             lens: self.lens,
@@ -461,20 +461,56 @@ pub(crate) fn write(parent: &Path, bundle: &Bundle) -> std::io::Result<PathBuf> 
     Ok(target)
 }
 
-/// Moves `staging` to `target` only if nothing is at `target`.
 #[cfg(unix)]
+fn c_path(path: &Path) -> std::io::Result<std::ffi::CString> {
+    use std::os::unix::ffi::OsStrExt;
+    std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "path contains NUL"))
+}
+
+/// One atomic rename that fails when anything exists at `target`
+/// (`renameat2(RENAME_NOREPLACE)`): the bundle appears whole or not at all,
+/// and no empty folder at its name can look like a finished bundle. A
+/// filesystem without it refuses the export instead of risking a replace.
+#[cfg(target_os = "linux")]
 fn commit(staging: &Path, target: &Path) -> std::io::Result<()> {
-    // A plain rename may replace an empty directory created after any
-    // existence check. Claim the name exclusively first: whoever creates
-    // it owns it, and renaming onto one's own empty claim is safe.
-    std::fs::create_dir(target)?;
-    if let Err(error) = std::fs::rename(staging, target) {
-        // Removes the claim only while it is still empty, so files someone
-        // else put there are never deleted.
-        let _ = std::fs::remove_dir(target);
-        return Err(error);
+    let (from, to) = (c_path(staging)?, c_path(target)?);
+    // SAFETY: both are NUL-terminated paths alive for the call.
+    let rc = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
     }
-    Ok(())
+}
+
+/// The same with `renamex_np(RENAME_EXCL)` on macOS.
+#[cfg(target_os = "macos")]
+fn commit(staging: &Path, target: &Path) -> std::io::Result<()> {
+    let (from, to) = (c_path(staging)?, c_path(target)?);
+    // SAFETY: both are NUL-terminated paths alive for the call.
+    if unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// No atomic no-replace rename is wired for other Unix systems.
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn commit(_staging: &Path, _target: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "evidence export needs an atomic no-replace rename on this system",
+    ))
 }
 
 /// `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` fails when anything

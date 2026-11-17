@@ -114,6 +114,9 @@ pub(crate) struct Dock {
     pub message: Option<String>,
     /// The target whose rows the view currently shows.
     pub displayed: Option<Shown>,
+    /// Who sent the rows the view shows now: `displayed` as of the frame
+    /// that handed its snapshot to the view.
+    pub in_view: Option<Shown>,
     pub follow_stream: bool,
     pub tail: u32,
     pub generation: u64,
@@ -133,6 +136,7 @@ impl Default for Dock {
             pending_retarget: None,
             message: None,
             displayed: None,
+            in_view: None,
             follow_stream: true,
             tail: DEFAULT_TAIL,
             generation: 0,
@@ -148,10 +152,6 @@ impl Default for Dock {
 }
 
 impl Dock {
-    /// Rows received but not yet handed to the view, if any.
-    pub(crate) fn pending_snapshot(&self) -> Option<Arc<Snapshot>> {
-        self.pending.clone()
-    }
     pub(crate) fn worker_running(&self) -> bool {
         self.worker.is_some()
     }
@@ -542,6 +542,7 @@ impl Workspace {
         let Some(snapshot) = self.dock.pending.take() else {
             return;
         };
+        self.dock.in_view = self.dock.displayed.clone();
         if let Some(view) = &self.dock.view {
             view.update(cx, |view, cx| view.replace_stream(snapshot, cx));
             return;

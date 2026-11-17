@@ -209,9 +209,11 @@ After a retarget, a failed check or a restart, the view still shows the
 earlier session's rows; the bundle names the log file and its provenance
 after that session, never after the newly pinned one. The bundle directory
 is staged in a uniquely created directory and committed without replacing
-anything at its name (an exclusive claim on Unix, `MoveFileExW` without
-replace on Windows), so concurrent exports never mix or delete each other's
-files.
+anything at its name, in one atomic rename (`renameat2(RENAME_NOREPLACE)` on
+Linux, `renamex_np(RENAME_EXCL)` on macOS, `MoveFileExW` without replace on
+Windows), so no empty folder can look like a finished bundle and concurrent
+exports never mix or delete each other's files. A filesystem without such a
+rename refuses the export.
 
 The LogView's own row export (raw/JSONL/CSV of the shown, selected or marked
 rows) is unchanged and stays the way to export filtered rows.

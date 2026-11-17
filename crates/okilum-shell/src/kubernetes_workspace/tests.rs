@@ -467,7 +467,7 @@ fn replacement_after_start_is_disclosed_from_the_next_pods_read(cx: &mut TestApp
         assert_eq!(tone, Tone::Neutral);
     });
     h.update(|ws, _, cx| {
-        let data = ws.data.as_mut().unwrap();
+        let data = Arc::make_mut(ws.data.as_mut().unwrap());
         fixtures::put(
             &mut data.pods,
             vec![fixtures::recovered_pod("checkout-a", "pod-a9", "rs-1")],
@@ -725,7 +725,7 @@ fn triage_keeps_recovered_rows_stable_and_never_resolves_them_silently(cx: &mut 
     // Refresh: reordered, plus a new failing Pod listed first. The selected
     // observation and the session stay; only the order of others changes.
     h.update(|ws, _, cx| {
-        let data = ws.data.as_mut().unwrap();
+        let data = Arc::make_mut(ws.data.as_mut().unwrap());
         fixtures::put(
             &mut data.pods,
             vec![
@@ -747,7 +747,7 @@ fn triage_keeps_recovered_rows_stable_and_never_resolves_them_silently(cx: &mut 
     // The selected container stops matching any rule (lastState no longer
     // reported). It stays selected, is not called resolved, and says so.
     h.update(|ws, _, cx| {
-        let data = ws.data.as_mut().unwrap();
+        let data = Arc::make_mut(ws.data.as_mut().unwrap());
         fixtures::put(
             &mut data.pods,
             vec![lenses::tests::healthy_pod("checkout-b", "pod-b", "rs-1")],
@@ -880,7 +880,7 @@ fn service_path_unknown_zero_and_missing_targets_read_differently(cx: &mut TestA
     });
     // A readable but empty slice list is zero endpoints, said as such.
     h.update(|ws, _, cx| {
-        fixtures::put(&mut ws.data.as_mut().unwrap().slices, vec![]);
+        fixtures::put(&mut Arc::make_mut(ws.data.as_mut().unwrap()).slices, vec![]);
         ws.refresh_rows(cx);
     });
     h.settle();
@@ -1363,5 +1363,80 @@ fn export_after_a_scope_change_leaves_the_other_scopes_logs_out(cx: &mut TestApp
     assert!(manifest["log_session"]["excluded"].as_str().is_some());
     h.workspace.read_with(h.visual, |ws, _| {
         assert!(ws.dock.worker_running(), "the shop session keeps running");
+    });
+}
+
+/// Review (Terra P2, b27e538a): the export capture shares the cluster data
+/// instead of copying it on the UI thread, and bytes, filter, counts and
+/// provenance all describe what the view shows, even when newer rows are
+/// waiting for the next frame.
+#[gpui::test]
+fn export_capture_shares_data_and_matches_the_view(cx: &mut TestAppContext) {
+    let mut h = open(cx, routes(standard_pods(), "pod-a"));
+    h.load("");
+    h.click("k8s-section-Containers");
+    h.click("k8s-row-1");
+    h.click("k8s-open-logs-api");
+    h.wait("start", |ws| ws.dock.worker_running());
+    h.send(0, b"first session line\n", worker::Status::Reading);
+    h.click("k8s-open-previous-api");
+    h.click("k8s-dock-retarget-confirm");
+    h.wait("retarget start", |ws| {
+        ws.dock
+            .session
+            .as_ref()
+            .is_some_and(|s| s.target.previous && s.phase == dock::Phase::Receiving)
+    });
+    h.update(|ws, _, cx| {
+        // The new session's first rows arrive; no frame has shown them yet.
+        let mut assembler = Assembler::new("pod.log".into(), "late".into()).unwrap();
+        let snapshot = assembler.append(b"new 1\nnew 2\nnew 3\n").unwrap();
+        let generation = ws.dock.generation;
+        ws.log_update(
+            generation,
+            worker::Update {
+                snapshot,
+                status: worker::Status::Reading,
+                diagnostic: String::new(),
+                pending: 0,
+            },
+            cx,
+        );
+        let capture = ws.evidence_capture(cx);
+        assert!(
+            Arc::ptr_eq(capture.data.as_ref().unwrap(), ws.data.as_ref().unwrap()),
+            "the capture shares the data; nothing is copied on the UI thread"
+        );
+        let shown = capture.displayed.as_ref().unwrap();
+        assert!(
+            !shown.target.previous,
+            "provenance of the rows the view shows"
+        );
+        let view = capture.view.as_ref().unwrap();
+        assert_eq!(
+            view.snapshot.as_ref().unwrap().bytes(),
+            b"first session line\n"
+        );
+        assert_eq!(view.filter["rows_loaded"], 1, "counts of the same snapshot");
+        // A read landing now copies the data once; the capture keeps its own.
+        let data = Arc::make_mut(ws.data.as_mut().unwrap());
+        fixtures::put(&mut data.pods, vec![]);
+        assert!(!Arc::ptr_eq(
+            capture.data.as_ref().unwrap(),
+            ws.data.as_ref().unwrap()
+        ));
+        assert_eq!(capture.data.as_ref().unwrap().pods().len(), 2);
+    });
+    // After the next frame the view shows the new rows; so does the capture.
+    h.settle();
+    h.workspace.read_with(h.visual, |ws, cx| {
+        let capture = ws.evidence_capture(cx);
+        assert!(capture.displayed.as_ref().unwrap().target.previous);
+        let view = capture.view.as_ref().unwrap();
+        assert_eq!(
+            view.snapshot.as_ref().unwrap().bytes(),
+            b"new 1\nnew 2\nnew 3\n"
+        );
+        assert_eq!(view.filter["rows_loaded"], 3);
     });
 }

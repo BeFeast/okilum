@@ -103,7 +103,9 @@ pub(crate) struct Workspace {
     chosen_context: Option<String>,
     namespace: Entity<InputState>,
     filter: Entity<InputState>,
-    data: Option<Data>,
+    /// Shared and copy-on-write: an export captures it in O(1), and a read
+    /// that lands during an export copies only then.
+    data: Option<Arc<Data>>,
     /// The typed namespace and how it was confirmed, for the scope strip.
     namespace_note: Option<String>,
     /// A failure that blocks reading at all (auth, kubeconfig, MFA).
@@ -273,7 +275,7 @@ impl Workspace {
         self.namespace_note = Some(namespace_note(&choice.origin));
         self.notice = None;
         if self.data.as_ref().map(|d| &d.scope) != Some(&scope) {
-            self.data = Some(Data::new(scope.clone()));
+            self.data = Some(Arc::new(Data::new(scope.clone())));
             self.selected = None;
         }
         if let Some(cancel) = self.loading.take() {
@@ -320,7 +322,7 @@ impl Workspace {
         if generation != self.load_generation {
             return;
         }
-        let Some(data) = self.data.as_mut() else {
+        let Some(data) = self.data.as_mut().map(Arc::make_mut) else {
             return;
         };
         match loaded {
@@ -359,16 +361,15 @@ impl Workspace {
             (Some(data), Some(key)) => self.event_uids(&model::resolve(data, key)),
             _ => Vec::new(),
         };
-        // Bytes and provenance travel together: `displayed` is set when a
-        // snapshot arrives, before the next frame hands it to the view.
-        let view = self.dock.view.as_ref().map(|view| view.read(cx));
-        let snapshot = self
-            .dock
-            .pending_snapshot()
-            .or_else(|| view.and_then(|view| view.stream_snapshot()));
-        let view = (snapshot.is_some() || view.is_some()).then(|| evidence::LogViewState {
-            snapshot,
-            filter: view.map_or(serde_json::Value::Null, |view| view.filter_evidence()),
+        // Bytes, filter, counts and provenance all describe what the view
+        // shows: its own snapshot and the session that sent it. Rows that
+        // arrived after the last frame are not yet shown and not exported.
+        let view = self.dock.view.as_ref().map(|view| {
+            let view = view.read(cx);
+            evidence::LogViewState {
+                snapshot: view.stream_snapshot(),
+                filter: view.filter_evidence(),
+            }
         });
         evidence::Capture {
             data: self.data.clone(),
@@ -376,7 +377,7 @@ impl Workspace {
             related_uids,
             lens: self.lens.label(),
             session: self.dock.session.clone(),
-            displayed: self.dock.displayed.clone(),
+            displayed: self.dock.in_view.clone(),
             current_generation: self.dock.generation,
             tail_lines: self.dock.tail,
             view,

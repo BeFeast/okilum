@@ -2798,6 +2798,8 @@ impl LogView {
             "rows_shown": self.visible_len(),
             "rows_loaded": self.total(),
             "rows_marked": self.marks.len(),
+            // Counts are of a filter run still in progress when true.
+            "filtering_in_progress": self.filtering,
         })
     }
 
