@@ -158,9 +158,11 @@ Kubernetes manifests, Cargo and pyproject manifests, Atom, SVG, POM, XSD) must
 show neither.
 
 Files up to 64 MiB load on a worker with a bounded read even when the file grows.
-Parsing, JSON formatting and full-file search run on workers. All CodePreview formats
-above the 4 MiB UI editing cap stay read-only, including JSON and TXT. This is UI admission:
-canonical FileEditor checks and the independent 64 MiB source-tool budget remain unchanged. Large multi-line files start without soft
+Parsing, JSON formatting and full-file search run on workers. CodePreview formats
+above the 4 MiB UI editing cap stay read-only, including TXT, YAML and XML. JSON is the
+exception: its Edit admission is the 64 MiB source-tool budget, so Validate, Format and
+Repair reach the multi-MB files the viewer opens (#2804). CSV/TSV have no cap. This is UI
+admission: canonical FileEditor checks remain unchanged. Large multi-line files start without soft
 wrap; the existing wrap preference continues for smaller files.
 
 A line longer than 64 KiB uses 32 KiB UTF-8-safe pages, with a bottom percentage, Previous/Next part, a toolkit scrubber and whole-file Find with total count and navigation.

@@ -98,48 +98,55 @@ fn large2804_plain_json_format_growth_retires_small_read_preview(cx: &mut TestAp
 }
 
 #[gpui::test]
-fn large2804_grown_plain_json_formats_undoes_and_saves_readonly(cx: &mut TestAppContext) {
+fn large2804_multi_mb_json_file_edits_formats_and_reopens(cx: &mut TestAppContext) {
+    // The tester's files are 3.5-5 MB (#2804). Edit admission for JSON is the
+    // 64 MiB source-tool budget, not the 4 MiB cap other code formats keep.
     let source = format!(
         "{{\"values\":[\n{}\"tail\"]}}",
         format!("\"{}\",\n", "x".repeat(2048)).repeat(3000)
     );
     assert!(source.len() > 5 * 1024 * 1024);
-    // Admission now has a 4 MiB UI cap (#2809). An existing editing session
-    // can still grow beyond it without losing the full source-tool budget.
-    let seed = "{\"seed\":0}";
-    let (f, visual) = open_file(cx, seed, "large.JSON");
-    f.input.update_in(visual, |input, window, cx| {
-        input.replace_source_range(0..seed.len(), &source, window, cx);
+    // open_file enters Edit through the real Reader toggle and unwraps the
+    // editing session: before the fix a 5 MiB JSON file stayed read-only.
+    let (f, visual) = open_file(cx, &source, "large.JSON");
+    f.reader.read_with(visual, |reader, cx| {
+        assert!(reader.code_file_editable(cx));
+        assert_eq!(value(&f, cx), source);
     });
-    settle(visual);
-    assert_eq!(
-        f.input.read_with(visual, |input, _| input.value().len()),
-        source.len()
-    );
     file_validate(visual);
     f.reader.read_with(visual, |reader, _| {
-        assert_eq!(
-            reader
-                .editing
-                .as_ref()
-                .unwrap()
-                .operations
-                .status
-                .as_ref()
-                .unwrap()
-                .3,
-            "Valid strict JSON"
-        );
+        let state = &reader.editing.as_ref().unwrap().operations;
+        assert_eq!(state.status.as_ref().unwrap().3, "Valid strict JSON");
+        assert!(state.notice.is_none(), "one message, no size refusal");
     });
-    click(visual, "file-format");
+    // The button handler only pins a snapshot; formatting runs on the worker.
+    let mut handler_elapsed = None;
+    f.reader.update_in(visual, |reader, window, cx| {
+        let started = Instant::now();
+        reader.code_operation(Action::Format, window, cx);
+        handler_elapsed = Some(started.elapsed());
+        let state = &reader.editing.as_ref().unwrap().operations;
+        assert!(state.busy, "Format of a multi-MB file is in flight");
+        assert!(state.notice.is_none());
+        assert_eq!(value(&f, cx), source, "nothing applied on the UI turn");
+    });
+    let handler_elapsed = handler_elapsed.expect("operation handler was dispatched");
+    assert!(
+        handler_elapsed < Duration::from_millis(100),
+        "the Format handler must not format a multi-MB file: {handler_elapsed:?}"
+    );
+    settle(visual);
     let formatted = f
         .input
         .read_with(visual, |input, _| input.value().to_string());
     assert_ne!(formatted, source);
+    assert!(formatted.len() > source.len());
     f.reader.read_with(visual, |reader, cx| {
+        let state = &reader.editing.as_ref().unwrap().operations;
+        assert!(!state.busy);
         assert!(
             reader.code_view_input(cx).is_none(),
-            "formatting the grown large Source retires the hidden small preview"
+            "formatting large Source retires the hidden read preview"
         );
     });
     visual.dispatch_action(Undo);
@@ -156,8 +163,8 @@ fn large2804_grown_plain_json_formats_undoes_and_saves_readonly(cx: &mut TestApp
     f.reader.read_with(visual, |reader, cx| {
         assert!(reader.editing.is_none());
         assert!(
-            !reader.code_file_editable(cx),
-            "the saved file above 4 MiB is view-only under the new UI cap"
+            reader.code_file_editable(cx),
+            "the saved, larger Format result stays editable"
         );
         assert!(
             !reader.code_view_input(cx).unwrap().read(cx).is_editable(),
@@ -172,17 +179,15 @@ fn large2804_grown_plain_json_formats_undoes_and_saves_readonly(cx: &mut TestApp
         reader.toggle_source(window, cx)
     });
     visual.run_until_parked();
-    f.reader.read_with(visual, |reader, _| {
-        assert!(
-            reader.editing.is_none(),
-            "the keyboard cannot bypass the cap"
-        );
+    f.reader.read_with(visual, |reader, cx| {
+        assert!(reader.editing.is_some(), "Edit reopens the saved result");
+        assert_eq!(value(&f, cx), formatted);
     });
-    assert_eq!(
-        std::fs::read_to_string(f.directory.path().join("vault/large.JSON")).unwrap(),
-        formatted,
-        "refused re-entry preserves the saved source"
-    );
+    visual.dispatch_action(Undo);
+    settle(visual);
+    f.reader.read_with(visual, |_, cx| {
+        assert_eq!(value(&f, cx), source, "one Undo survives the round trip")
+    });
 }
 
 #[gpui::test]

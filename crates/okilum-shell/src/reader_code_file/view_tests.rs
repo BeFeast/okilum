@@ -205,9 +205,9 @@ fn code2809_large_line_and_size_status_precedence_and_edit_cap(cx: &mut TestAppC
     let (preview, visual, _temp) = fixture(cx, "data.json", &text);
     preview.update_in(visual, |p, window, cx| {
         assert_eq!(p.view, View::Tree);
-        assert!(!p.editable());
-        let chrome = p.chrome(preview.clone(), cx);
-        assert_eq!(chrome.state.as_ref().unwrap().tooltip.as_ref(), "Read-only: 5.2 MB is over the 4 MB editing limit");
+        // JSON Edit admits the 64 MiB source-tool budget (#2804).
+        assert!(p.editable());
+        assert!(p.chrome(preview.clone(), cx).state.is_none(), "no lock");
         assert_eq!(p.status(preview.clone(), cx).text.as_ref(), "5.2 MB on a single line. Tree shows all of it.");
         p.set_view(View::Raw, window, cx);
         assert_eq!(p.status(preview.clone(), cx).text.as_ref(), "5.2 MB on a single line, so Raw shows it in parts. Tree, Find and Copy cover the whole file.");
@@ -224,12 +224,23 @@ fn code2809_large_line_and_size_status_precedence_and_edit_cap(cx: &mut TestAppC
             .status(preview.clone(), cx)
             .text
             .contains("Formatted shows it in parts"));
-        assert_eq!(
-            p.chrome(preview.clone(), cx).state.unwrap().id,
-            "code-readonly"
-        );
+        assert!(p.chrome(preview.clone(), cx).state.is_none());
     });
     assert!(visual.debug_bounds("code-part-scrubber").is_some());
+    // Control: other code formats keep the 4 MiB UI editing cap and its lock.
+    let text = format!("a: \"{}\"\n", "x".repeat(5_200_000));
+    let (preview, visual, _temp) = fixture(cx, "data.yaml", &text);
+    preview.update_in(visual, |p, _, cx| {
+        assert!(!p.editable());
+        assert_eq!(
+            p.chrome(preview.clone(), cx)
+                .state
+                .unwrap()
+                .tooltip
+                .as_ref(),
+            "Read-only: 5.2 MB is over the 4 MB editing limit"
+        );
+    });
 }
 
 #[gpui::test]
@@ -482,13 +493,12 @@ fn code2809_real_format_refusals_explain_depth_and_output_budget(cx: &mut TestAp
 fn code2809_readonly_status_is_last_and_invalid_wins_over_formatting(cx: &mut TestAppContext) {
     let (preview, visual, _temp) = fixture(cx, "data.json", "{\"a\":1}");
     preview.update_in(visual, |p, _, cx| {
-        p.source_bytes = Some(5_200_000);
+        // JSON has no size lock below the 64 MiB preview limit (#2804); the
+        // folder reason is the read-only state a JSON file can reach.
+        p.mark_folder_unwritable_for_test(cx);
         let status = p.status(preview.clone(), cx);
         assert_eq!(status.label.as_ref(), "Read-only.");
-        assert_eq!(
-            status.text.as_ref(),
-            "5.2 MB is over the 4 MB editing limit"
-        );
+        assert_eq!(status.text.as_ref(), "this folder cannot be written");
         assert_eq!(status.actions[0].label.as_ref(), "Open with default app");
         p.json.as_mut().unwrap().formatting = true;
         assert!(p
