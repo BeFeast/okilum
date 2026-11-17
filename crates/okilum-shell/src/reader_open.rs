@@ -3849,13 +3849,56 @@ mod entry_tests {
                 .unwrap();
         });
         cx.run_until_parked();
+        // #3123: with no vault window open, a file inside the vault opened on
+        // its own (Finder, drop) opens in the quick viewer on the vault folder.
+        // That must not demote the folder from the known vaults.
+        cx.update(|cx| {
+            open_window(
+                Opts {
+                    open_path: Some(root.join("notes.md")),
+                    session_directory: Some(state.clone()),
+                    cache_base_override: Some(fixture.path().join("cache")),
+                    ..Default::default()
+                },
+                cx,
+            )
+            .unwrap();
+        });
+        cx.run_until_parked();
+        let open_readers = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                readers(cx)
+                    .into_iter()
+                    .filter(|r| cx.windows().contains(&r.read(cx).reader_window))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let file = open_readers(cx);
+        cx.update(|cx| {
+            assert_eq!(file.len(), 1);
+            let r = file[0].read(cx);
+            assert!(r.single_file, "the file opens in the quick viewer");
+            assert_eq!(r.vault_root, root);
+            assert_eq!(r.selected_file(), "notes.md");
+        });
+        assert!(
+            ReadingHistory::known_vault_roots(&state)
+                .unwrap()
+                .contains(&root),
+            "a file opened inside a vault keeps the vault known"
+        );
+        cx.update(|cx| {
+            file[0]
+                .read(cx)
+                .reader_window
+                .update(cx, |_, window, _| window.remove_window())
+                .unwrap();
+        });
+        cx.run_until_parked();
         cx.update(plain);
         cx.run_until_parked();
+        let open = open_readers(cx);
         cx.update(|cx| {
-            let open: Vec<_> = readers(cx)
-                .into_iter()
-                .filter(|r| cx.windows().contains(&r.read(cx).reader_window))
-                .collect();
             assert_eq!(open.len(), 1);
             assert!(!open[0].read(cx).single_file, "history makes it a vault");
         });
