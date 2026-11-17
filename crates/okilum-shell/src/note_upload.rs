@@ -10,7 +10,6 @@
 //! Okilum shows such images itself with the saved token ([`image_source`]);
 //! other apps get pomoi's sign-in answer (401). The token lives in the OS
 //! credential store, never in the vault or the settings file.
-use crate::note_paste::anchor::Anchor;
 use gpui::{
     App, Asset, Global, Image, ImageCacheError, ImageFormat, ImageSource, RenderImage, Window,
 };
@@ -257,26 +256,33 @@ pub(crate) fn link_ranges(source: &str, links: &[String]) -> Vec<Range<usize>> {
     ranges
 }
 
-/// One link a paste wrote to a file it saved, remembered by its own place
-/// in the note ([`Anchor`]) and exact text. Only this link is ever rewritten,
-/// and only while it is still there unchanged: never a copy elsewhere in the
-/// note, in a code block or in another note.
+/// One link a paste wrote to a file it saved: its exact text and its byte
+/// range in the editor's source at revision `revision`. The range follows the
+/// editor's own edit receipts ([`TrackedLink::follow`]); any edit that
+/// touches the link, or a revision the editor can no longer relate to this
+/// one, loses its identity for good. Only a link still tracked, at its range,
+/// with its exact text, is ever rewritten: never a copy elsewhere in the note,
+/// in a code block or in another note.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct InsertedLink {
+pub(crate) struct TrackedLink {
     pub path: PathBuf,
-    pub anchor: Anchor,
     pub link: String,
+    /// `None` once identity is lost.
+    pub range: Option<Range<usize>>,
+    pub revision: u64,
 }
 
 /// The links to `paths` inside `span`, the text a paste has just inserted
-/// into `text` (the whole note). A saved file the inserted text does not link
-/// (a "keep original" copy) has none and is not uploaded.
+/// into `text` (the whole note at editor revision `revision`). A saved file
+/// the inserted text does not link (a "keep original" copy) has none and is
+/// not uploaded.
 pub(crate) fn inserted_links(
     text: &str,
+    revision: u64,
     span: Range<usize>,
     vault_root: &Path,
     paths: &[PathBuf],
-) -> Vec<InsertedLink> {
+) -> Vec<TrackedLink> {
     let Some(inserted) = text.get(span.clone()) else {
         return Vec::new();
     };
@@ -285,45 +291,50 @@ pub(crate) fn inserted_links(
         let links = local_links(vault_root, path);
         for range in link_ranges(inserted, &links).into_iter().rev() {
             let start = span.start + range.start;
-            found.push(InsertedLink {
+            found.push(TrackedLink {
                 path: path.clone(),
-                anchor: Anchor::at(text, start),
-                link: inserted[range].to_owned(),
+                link: inserted[range.clone()].to_owned(),
+                range: Some(start..start + range.len()),
+                revision,
             });
         }
     }
-    found.sort_by_key(|link| link.anchor.offset);
+    found.sort_by_key(|link| link.range.as_ref().map_or(0, |range| range.start));
     found
 }
 
-impl InsertedLink {
-    /// Where this link stands now, if it is still intact.
-    pub(crate) fn locate(&self, current: &str) -> Option<Range<usize>> {
-        let at = self.anchor.locate_text(current, &self.link)?;
-        Some(at..at + self.link.len())
-    }
-}
-
-/// Keep the other links' anchors exact after one range of `before` was
-/// replaced, giving `after`; a link that can no longer be found is left as
-/// it is (it will not be rewritten).
-pub(crate) fn reanchor(
-    links: &mut [InsertedLink],
-    before: &str,
-    replaced: Range<usize>,
-    replacement_len: usize,
-    after: &str,
-) {
-    for link in links {
-        let Some(at) = link.anchor.locate_text(before, &link.link) else {
-            continue;
+impl TrackedLink {
+    /// Move to revision `now`, given the editor's receipt for everything that
+    /// changed since [`Self::revision`]: the replaced bytes `old` and the
+    /// length inserted there. `None` (no receipt) loses the link, and so does
+    /// an edit that touches it, including typing inside it.
+    pub(crate) fn follow(&mut self, edit: Option<(Range<usize>, usize)>, now: u64) {
+        if now == self.revision {
+            return;
+        }
+        self.revision = now;
+        let Some(range) = self.range.clone() else {
+            return;
         };
-        let moved = if at >= replaced.end {
-            at + replacement_len - replaced.len()
+        let Some((old, inserted)) = edit else {
+            self.range = None;
+            return;
+        };
+        self.range = if old.end <= range.start {
+            let start = range.start - old.len() + inserted;
+            Some(start..start + range.len())
+        } else if old.start >= range.end {
+            Some(range)
         } else {
-            at
+            None
         };
-        link.anchor = Anchor::at(after, moved);
+    }
+
+    /// The link's range in `current` (at [`Self::revision`]), if it is still
+    /// tracked and holds exactly the text the paste wrote.
+    pub(crate) fn current(&self, current: &str) -> Option<Range<usize>> {
+        let range = self.range.clone()?;
+        (current.get(range.clone()) == Some(self.link.as_str())).then_some(range)
     }
 }
 
@@ -370,6 +381,7 @@ pub(crate) fn ensure_token(cx: &mut App) {
         return;
     }
     cx.default_global::<Auth>().state = TokenState::Reading;
+    let started = generation(cx);
     let read = cx.read_credentials(provider().credential_key());
     cx.spawn(async move |cx| {
         let token = match read.await {
@@ -379,7 +391,12 @@ pub(crate) fn ensure_token(cx: &mut App) {
                 None
             }
         };
-        cx.update(|cx| set_token(token, cx));
+        // A token saved or removed while this read ran is newer: keep it.
+        cx.update(|cx| {
+            if generation(cx) == started {
+                set_token(token, cx);
+            }
+        });
     })
     .detach();
 }
@@ -567,54 +584,60 @@ mod tests {
         assert!(link_ranges("nothing here", &links).is_empty());
     }
 
-    /// Review of #3114: only the link the paste inserted is rewritten, never
-    /// the same link elsewhere in the note (a code block, an older copy).
+    /// Review of #3114: only the link the paste inserted is tracked, never
+    /// the same link elsewhere (a code block, an older copy).
     #[test]
-    fn only_the_inserted_link_is_found_and_only_while_unchanged() {
+    fn only_the_inserted_link_is_tracked() {
         let root = Path::new("/vault");
         let file = PathBuf::from("/vault/attachments/shot.png");
         let pasted = "![[shot.png]]";
         let note = format!("```\n{pasted}\n```\nintro {pasted} outro\n{pasted}\n");
         let start = note.find("intro ").unwrap() + "intro ".len();
-        let links = inserted_links(
-            &note,
-            start..start + pasted.len(),
-            root,
-            std::slice::from_ref(&file),
-        );
+        let span = start..start + pasted.len();
+        let links = inserted_links(&note, 7, span.clone(), root, std::slice::from_ref(&file));
         assert_eq!(links.len(), 1);
-        assert_eq!(links[0].locate(&note), Some(start..start + pasted.len()));
-        // Typed elsewhere: the same link is found where it moved to.
-        let moved = format!("new line\n{note}");
-        let shift = "new line\n".len();
-        assert_eq!(
-            links[0].locate(&moved),
-            Some(start + shift..start + shift + pasted.len())
-        );
-        // The inserted link edited: nothing to rewrite, though copies remain.
-        let edited = note.replacen("intro ![[shot.png]]", "intro ![[shot.png|300]]", 1);
-        assert_eq!(links[0].locate(&edited), None);
-        // A saved file the inserted text does not link is not uploaded.
+        assert_eq!(links[0].current(&note), Some(span.clone()));
         let other = PathBuf::from("/vault/attachments/shot.original.png");
-        assert!(inserted_links(&note, start..start + pasted.len(), root, &[other]).is_empty());
+        assert!(inserted_links(&note, 7, span, root, &[other]).is_empty());
     }
 
+    /// Review of #3114 (b): an edit before the link moves it; an edit that
+    /// touches it, or no receipt, loses it for good, even if an identical
+    /// copy stands where it used to be.
     #[test]
-    fn rewriting_one_link_keeps_the_next_ones_exact() {
-        let root = Path::new("/vault");
-        let a = PathBuf::from("/vault/a.pdf");
-        let b = PathBuf::from("/vault/b.zip");
-        let inserted = "![[a.pdf]]\n[[b.zip]]";
-        let note = format!("x\n{inserted}\ny");
-        let mut links = inserted_links(&note, 2..2 + inserted.len(), root, &[a, b]);
-        assert_eq!(links.len(), 2);
-        let range = links[0].locate(&note).unwrap();
-        let remote = "[a.pdf](https://pomoi.co/f/1/a.pdf)";
-        let mut after = note.clone();
-        after.replace_range(range.clone(), remote);
-        reanchor(&mut links[1..], &note, range, remote.len(), &after);
-        let next = links[1].locate(&after).unwrap();
-        assert_eq!(&after[next], "[[b.zip]]");
+    fn a_tracked_link_follows_edits_and_is_lost_when_touched() {
+        let link = "![[shot.png]]";
+        let tracked = |start: usize| TrackedLink {
+            path: PathBuf::from("/vault/shot.png"),
+            link: link.into(),
+            range: Some(start..start + link.len()),
+            revision: 1,
+        };
+        // Typed before it: moved by the inserted length.
+        let mut moved = tracked(10);
+        moved.follow(Some((0..0, 4)), 2);
+        assert_eq!(moved.range, Some(14..14 + link.len()));
+        // Typed after it: unchanged.
+        let mut after = tracked(10);
+        after.follow(Some((30..31, 0)), 2);
+        assert_eq!(after.range, Some(10..10 + link.len()));
+        // Deleted, then an identical copy typed in its place: still lost.
+        let mut deleted = tracked(10);
+        deleted.follow(Some((10..10 + link.len(), 0)), 2);
+        assert_eq!(deleted.range, None);
+        deleted.follow(Some((10..10, link.len())), 3);
+        assert_eq!(deleted.range, None);
+        let copy = format!("0123456789{link}");
+        assert_eq!(deleted.current(&copy), None);
+        // Typing inside it, or no receipt: lost.
+        let mut inside = tracked(10);
+        inside.follow(Some((12..12, 1)), 2);
+        assert_eq!(inside.range, None);
+        let mut unknown = tracked(10);
+        unknown.follow(None, 2);
+        assert_eq!(unknown.range, None);
+        // A tracked range whose text differs is refused.
+        assert_eq!(tracked(0).current("![[other.png]]"), None);
     }
 
     #[test]

@@ -11,8 +11,11 @@ default.
   into its note's editor: a paste, a drop, a background file copy or image
   save, a large rich-text paste (its `data:`/`file://` images) and images
   downloaded from pasted rich text. Each link that inserted text holds to a
-  file the paste saved is remembered by its own place in the note (an
-  `Anchor`) and exact text. A saved file the text does not link (a "keep
+  file the paste saved is tracked by its byte range through the editor's
+  own edit receipts (`SourceText::edit_since`), with its exact text. An edit
+  that touches a link, or a revision the editor cannot relate (a reopened
+  editor, a lost receipt), loses it for good: a copy typed in its place is
+  never taken for it. A saved file the text does not link (a "keep
   original" copy) is not uploaded; a pasted note (`.md`) never is.
 - When the provider confirms the upload, only those links are rewritten to
   the uploaded copy, only while each is still there unchanged, and only in
@@ -23,9 +26,15 @@ default.
 - The local file always stays (decision Q2, 17.11). A failed upload, a
   closed note or a link the user changed meanwhile leaves the local link,
   and a toast says which.
-- The setting is checked again before every file is sent. Turning it off
-  stops the job: nothing more is sent, and an upload already under way no
-  longer changes the note.
+- The setting is checked again before every file is sent, together with a
+  session generation bumped on every change. Turning it off cancels the job
+  for good, even if it is turned on again before the job notices: nothing
+  more is sent, and an upload already under way no longer changes the note.
+- Remote image downloads of pasted rich text rewrite text inside the paste,
+  so that paste's uploads (its saved `data:`/`file://` images and the
+  downloaded files) start only after every download is done.
+- A token read from the credential store is applied only if no token was
+  saved or removed while the read ran.
 - Images and other files both upload (Q3).
 
 ## Privacy and rendering (Q1)

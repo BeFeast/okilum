@@ -1433,23 +1433,38 @@ impl Reader {
                 if let Some(notice) = &pending.notice {
                     paste_jobs::show_notice(notice, window, cx);
                 }
+                // #1073: remote image downloads rewrite text inside this
+                // paste, so its uploads wait for them instead of racing.
+                let applied = matches!(event, ClipboardPasteEvent::Applied { .. });
+                let downloads = matches!(
+                    pending.follow_up,
+                    Some(crate::note_paste::router::FollowUp::RemoteImages { .. })
+                );
                 if let Some(follow_up) = pending.follow_up {
-                    this.run_paste_follow_up(input.clone(), follow_up, window, cx);
+                    let upload_after = if applied && downloads {
+                        pending.saved_files.clone()
+                    } else {
+                        Vec::new()
+                    };
+                    this.run_paste_follow_up_uploading(
+                        input.clone(),
+                        follow_up,
+                        upload_after,
+                        window,
+                        cx,
+                    );
                 }
                 match event {
                     ClipboardPasteEvent::Applied { bytes, .. } => {
                         // #1073: the pasted text ends at the caret; its links
                         // to the files this paste saved may be uploaded.
-                        if !pending.saved_files.is_empty() {
-                            let (note, caret) = {
-                                let state = input.read(cx);
-                                (state.value().to_string(), state.cursor())
-                            };
+                        if !pending.saved_files.is_empty() && !downloads {
+                            let caret = input.read(cx).cursor();
                             let span = caret.saturating_sub(*bytes)..caret;
                             let target = this.paste_target(input.clone(), cx);
                             paste_upload::start(
                                 target,
-                                &note,
+                                input,
                                 span,
                                 &pending.saved_files,
                                 window,

@@ -2,27 +2,33 @@
 //!
 //! Started only after a paste, a drop or a background paste result went
 //! into its note's editor, with the exact text it inserted. Each link that
-//! text holds to a file the paste saved is remembered by its own place
-//! ([`InsertedLink`]); a saved file the text does not link (a "keep
-//! original" copy) is not uploaded. Once the provider confirms an upload,
-//! only those links are rewritten to the uploaded copy, only while each is
-//! still there unchanged, and only in the editor of the note the paste went
-//! into ([`Target`]). The local file is never removed.
+//! text holds to a file the paste saved is tracked by its byte range through
+//! that editor's own edit receipts ([`TrackedLink`]); an edit that touches a
+//! link, or a revision the editor cannot relate, loses it for good. A saved
+//! file the text does not link (a "keep original" copy) is not uploaded.
+//! Once the provider confirms an upload, only links still tracked, with their
+//! exact text, are rewritten to the uploaded copy, and only in the editor the
+//! paste went into ([`Target`]). The local file is never removed.
 //!
-//! Turning the setting off stops the job: nothing more is sent, and an
-//! upload already under way no longer changes the note.
+//! Turning the setting off cancels the job for good, even if it is turned on
+//! again meanwhile: nothing more is sent, and an upload already under way no
+//! longer changes the note.
 use super::paste_jobs::Target;
 use super::*;
-use crate::note_upload::{self, InsertedLink, UploadError};
+use crate::note_upload::{self, TrackedLink, UploadError};
+use std::cell::RefCell;
 use std::ops::Range;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-/// Start uploading the files `paths` that the text at `span` of `note` (the
+type Links = Rc<RefCell<Vec<TrackedLink>>>;
+
+/// Start uploading the files `paths` that the text at `span` of `input` (the
 /// note right after the insert) links, when the setting is on.
 pub(super) fn start(
     target: Target,
-    note: &str,
+    input: &Entity<EditorState>,
     span: Range<usize>,
     paths: &[PathBuf],
     window: &mut Window,
@@ -31,17 +37,58 @@ pub(super) fn start(
     if paths.is_empty() || !reader_ui_state::upload_pasted_files(cx) {
         return;
     }
-    let links = note_upload::inserted_links(note, span, target.root(), paths);
-    if links.is_empty() {
+    let generation = reader_ui_state::upload_pasted_generation(cx);
+    let snapshot = input.read(cx).source_snapshot();
+    let found = note_upload::inserted_links(
+        &snapshot.text,
+        snapshot.text.id(),
+        span,
+        target.root(),
+        paths,
+    );
+    if found.is_empty() {
         return;
     }
-    let handle = window.window_handle();
-    cx.spawn(async move |cx| run(target, links, handle, cx).await)
-        .detach();
+    let links: Links = Rc::new(RefCell::new(found));
+    // Follow every edit of this editor while the job runs.
+    let followed = links.clone();
+    let watch = cx.observe(input, move |input, cx| follow(&followed, &input, cx));
+    let job = Job {
+        target,
+        input: input.clone(),
+        links,
+        generation,
+        handle: window.window_handle(),
+    };
+    cx.spawn(async move |cx| {
+        run(job, cx).await;
+        drop(watch);
+    })
+    .detach();
 }
 
-/// The files in upload order, each once, with every link to it.
-fn by_file(links: &[InsertedLink]) -> Vec<PathBuf> {
+struct Job {
+    target: Target,
+    input: Entity<EditorState>,
+    links: Links,
+    generation: u64,
+    handle: gpui::AnyWindowHandle,
+}
+
+/// Bring every tracked link to the editor's current revision.
+fn follow(links: &Links, input: &Entity<EditorState>, cx: &App) {
+    let text = input.read(cx).source_snapshot().text;
+    let now = text.id();
+    for link in links.borrow_mut().iter_mut() {
+        let edit = text
+            .edit_since(link.revision)
+            .map(|edit| (edit.old, edit.inserted));
+        link.follow(edit, now);
+    }
+}
+
+/// The files in upload order, each once.
+fn by_file(links: &[TrackedLink]) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = Vec::new();
     for link in links {
         if !files.contains(&link.path) {
@@ -51,22 +98,22 @@ fn by_file(links: &[InsertedLink]) -> Vec<PathBuf> {
     files
 }
 
-fn enabled(cx: &gpui::AsyncApp) -> bool {
-    cx.update(|cx| reader_ui_state::upload_pasted_files(cx))
+/// Still on, and never turned off since the job started.
+fn enabled(generation: u64, cx: &gpui::AsyncApp) -> bool {
+    cx.update(|cx| {
+        reader_ui_state::upload_pasted_files(cx)
+            && reader_ui_state::upload_pasted_generation(cx) == generation
+    })
 }
 
-async fn run(
-    target: Target,
-    mut links: Vec<InsertedLink>,
-    handle: gpui::AnyWindowHandle,
-    cx: &mut gpui::AsyncApp,
-) {
+async fn run(job: Job, cx: &mut gpui::AsyncApp) {
     let started = std::time::Instant::now();
     let provider = note_upload::provider();
-    let files = by_file(&links);
+    let files = by_file(&job.links.borrow());
+    let handle = job.handle;
     let token = note_upload::token(cx).await;
-    if !enabled(cx) {
-        diagnostic_error!("Upload: cancelled before it started (setting off)");
+    if !enabled(job.generation, cx) {
+        diagnostic_error!("Upload: cancelled before it started (setting turned off)");
         return;
     }
     let Some(token) = token else {
@@ -91,8 +138,8 @@ async fn run(
     let mut failure = None;
     let mut cancelled = false;
     for path in files {
-        // Rechecked before every send: off means nothing more leaves.
-        if !enabled(cx) {
+        // Checked before every send: off means nothing more leaves.
+        if !enabled(job.generation, cx) {
             cancelled = true;
             break;
         }
@@ -119,7 +166,7 @@ async fn run(
             }
         };
         uploaded += 1;
-        if !enabled(cx) {
+        if !enabled(job.generation, cx) {
             // Turned off while this one was under way: the note stays local.
             cancelled = true;
             break;
@@ -127,7 +174,7 @@ async fn run(
         let remote = note_upload::remote_link(&name, &uploaded_copy.url);
         let hits = cx
             .update_window(handle, |_, window, cx| {
-                relink(&target, &mut links, &path, &remote, window, cx)
+                relink(&job, &path, &remote, window, cx)
             })
             .unwrap_or(0);
         if hits == 0 {
@@ -174,34 +221,40 @@ async fn run(
     });
 }
 
-/// Rewrite the links to `path` that are still intact, in the paste's own
-/// note; keep the remaining links' anchors exact. The number rewritten.
+/// Rewrite the links to `path` that are still tracked and intact, in the
+/// editor the paste went into. The number rewritten.
 fn relink(
-    target: &Target,
-    links: &mut Vec<InsertedLink>,
+    job: &Job,
     path: &std::path::Path,
     remote: &str,
     window: &mut Window,
     cx: &mut App,
 ) -> usize {
-    let Some(input) = target.live(cx) else {
+    // The same editing session only: a reopened editor has its own history,
+    // so the inserted links cannot be told apart from copies there.
+    if job.target.live(cx).as_ref() != Some(&job.input) {
         return 0;
-    };
+    }
     let mut hits = 0;
-    while let Some(index) = links.iter().position(|link| link.path == path) {
-        let link = links.remove(index);
-        let rewritten = input.update(cx, |state, cx| {
-            let before = state.value().to_string();
-            let Some(range) = link.locate(&before) else {
+    loop {
+        follow(&job.links, &job.input, cx);
+        let next = {
+            let mut links = job.links.borrow_mut();
+            links
+                .iter()
+                .position(|link| link.path == path)
+                .map(|index| links.remove(index))
+        };
+        let Some(link) = next else {
+            break;
+        };
+        let rewritten = job.input.update(cx, |state, cx| {
+            let text = state.source_snapshot().text;
+            let Some(range) = link.current(&text) else {
                 return false;
             };
-            if !state.replace_source_range(range.clone(), remote, window, cx) {
-                // Read-only now: nothing changed.
-                return false;
-            }
-            let after = state.value().to_string();
-            note_upload::reanchor(links, &before, range, remote.len(), &after);
-            true
+            // Read-only: nothing changed.
+            state.replace_source_range(range, remote, window, cx)
         });
         hits += usize::from(rewritten);
     }
@@ -222,11 +275,11 @@ mod tests {
 
     #[test]
     fn each_file_uploads_once_in_link_order() {
-        let anchor = crate::note_paste::anchor::Anchor::at("", 0);
-        let link = |path: &str| InsertedLink {
+        let link = |path: &str| TrackedLink {
             path: PathBuf::from(path),
-            anchor: anchor.clone(),
             link: String::new(),
+            range: None,
+            revision: 0,
         };
         let links = vec![link("/v/b.png"), link("/v/a.png"), link("/v/b.png")];
         assert_eq!(

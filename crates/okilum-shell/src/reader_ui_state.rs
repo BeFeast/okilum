@@ -1811,10 +1811,23 @@ pub(crate) fn upload_pasted_files(cx: &App) -> bool {
         .is_some_and(|state| state.saved.upload_pasted_files)
 }
 
+/// Bumped on every change of [`upload_pasted_files`] this session. An upload
+/// job runs only while the generation it started with is current, so turning
+/// the setting off cancels it even if it is turned on again meanwhile.
+#[derive(Default)]
+struct UploadPastedGeneration(u64);
+impl Global for UploadPastedGeneration {}
+
+pub(crate) fn upload_pasted_generation(cx: &App) -> u64 {
+    cx.try_global::<UploadPastedGeneration>()
+        .map_or(0, |generation| generation.0)
+}
+
 pub(crate) fn set_upload_pasted_files(value: bool, cx: &mut App) {
     if !installed(cx) || upload_pasted_files(cx) == value {
         return;
     }
+    cx.default_global::<UploadPastedGeneration>().0 += 1;
     let state = cx.global_mut::<Store>();
     state.saved.upload_pasted_files = value;
     state.upload_pasted_changed = true;
