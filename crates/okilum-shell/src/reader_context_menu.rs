@@ -136,11 +136,12 @@ impl Reader {
         }
     }
 
-    /// The full address a link points at, for «Copy link address»: a web
-    /// address as written, a note, heading, block or file in this vault as an
-    /// `okilum:` link (a relative link or `#anchor` is resolved, never copied
-    /// as written). `None` when the link does not resolve to one place.
-    pub(crate) fn link_address(&self, url: &str) -> Option<String> {
+    /// What a link points at, for «Copy link address»: a web address as
+    /// written, or a note, heading, block or file of this window (a relative
+    /// link or `#anchor` is resolved, never copied as written). `None` when
+    /// the link does not resolve to one place. Building the menu only decides
+    /// this; the `okilum:` link itself is made by the Copy (#1414).
+    pub(crate) fn link_address(&self, url: &str) -> Option<LinkTarget> {
         use okilum_core::document_links::prepared::LinkStatus;
         let state = self.prepared_links.get(url);
         if state.is_some_and(|state| {
@@ -151,12 +152,42 @@ impl Reader {
         let action = state
             .and_then(|state| state.action_url.as_deref())
             .unwrap_or(url);
-        link_address(&self.vault_root, &self.current_rel, action)
+        link_address(&self.current_rel, action)
+    }
+}
+
+/// Where «Copy link address» points.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum LinkTarget {
+    /// A web address, copied as written.
+    Web(String),
+    /// A document of this window; [`reader_files::copy_link`] writes it.
+    Document { rel: String, position: Position },
+}
+
+impl LinkTarget {
+    /// Copy it: called from the menu item's click, never while building.
+    pub(crate) fn copy(
+        &self,
+        root: &Path,
+        scope: reader_files::LinkScope,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        match self {
+            Self::Web(address) => {
+                cx.write_to_clipboard(ClipboardItem::new_string(address.clone()));
+                reader_toast::transient("Link copied", window, cx);
+            }
+            Self::Document { rel, position } => {
+                reader_files::copy_link_to_clipboard(root, rel, scope, position, window, cx)
+            }
+        }
     }
 }
 
 /// [`Reader::link_address`] for a link's action URL.
-pub(crate) fn link_address(root: &Path, current: &str, action: &str) -> Option<String> {
+pub(crate) fn link_address(current: &str, action: &str) -> Option<LinkTarget> {
     if let Some(rest) = action.strip_prefix(WIKI_SCHEME) {
         let (rel, fragment) = split_open_url(rest);
         let rel = if rel.is_empty() {
@@ -180,16 +211,19 @@ pub(crate) fn link_address(root: &Path, current: &str, action: &str) -> Option<S
             },
             None => Position::default(),
         };
-        return Some(reader_files::okilum_link(root, &rel, &position));
+        return Some(LinkTarget::Document { rel, position });
     }
     if let Some(rest) = action.strip_prefix("okilum://attachment/") {
         let rel = okilum_core::document_links::decode(rest);
-        return Some(reader_files::okilum_link(root, &rel, &Position::default()));
+        return Some(LinkTarget::Document {
+            rel,
+            position: Position::default(),
+        });
     }
     if action.starts_with("okilum://") {
         return None;
     }
-    prepared_links::external_tooltip(action).map(|_| action.to_owned())
+    prepared_links::external_tooltip(action).map(|_| LinkTarget::Web(action.to_owned()))
 }
 
 #[cfg(test)]
@@ -199,14 +233,16 @@ mod tests {
 
     #[test]
     fn link_addresses_are_full_not_as_written() {
-        let root = Path::new("/vaults/My Brain");
-        let note = |rel: &str, position: Position| reader_files::okilum_link(root, rel, &position);
+        let note = |rel: &str, position: Position| LinkTarget::Document {
+            rel: rel.into(),
+            position,
+        };
         assert_eq!(
-            link_address(root, "a/b.md", "https://example.com/x?y=1#z").as_deref(),
-            Some("https://example.com/x?y=1#z")
+            link_address("a/b.md", "https://example.com/x?y=1#z"),
+            Some(LinkTarget::Web("https://example.com/x?y=1#z".into()))
         );
         assert_eq!(
-            link_address(root, "a/b.md", "okilum://open/notes/other.md").unwrap(),
+            link_address("a/b.md", "okilum://open/notes/other.md").unwrap(),
             note("notes/other.md", Position::default())
         );
         // `[[#Plan]]` and `[text](#plan)`: this note at the heading.
@@ -218,12 +254,11 @@ mod tests {
             },
         );
         assert_eq!(
-            link_address(root, "a/b.md", "okilum://open/#Plan").unwrap(),
+            link_address("a/b.md", "okilum://open/#Plan").unwrap(),
             heading
         );
-        assert!(heading.starts_with("okilum://"), "{heading}");
         assert_eq!(
-            link_address(root, "a/b.md", "okilum://open/x.md#%5Eabc").unwrap(),
+            link_address("a/b.md", "okilum://open/x.md#%5Eabc").unwrap(),
             note(
                 "x.md",
                 Position {
@@ -233,7 +268,7 @@ mod tests {
             )
         );
         assert_eq!(
-            link_address(root, "a/b.md", "okilum://attachment/files/r%201.pdf").unwrap(),
+            link_address("a/b.md", "okilum://attachment/files/r%201.pdf").unwrap(),
             note("files/r 1.pdf", Position::default())
         );
         // Positive control above; links that do not name one place copy nothing.
@@ -242,11 +277,7 @@ mod tests {
             "okilum://ambiguous/twice",
             "okilum://missing-file/gone.png",
         ] {
-            assert_eq!(
-                link_address(root, "a/b.md", unresolved),
-                None,
-                "{unresolved}"
-            );
+            assert_eq!(link_address("a/b.md", unresolved), None, "{unresolved}");
         }
     }
 
@@ -454,22 +485,51 @@ mod tests {
     #[gpui::test]
     fn read_menu_copies_a_links_full_address_and_text(cx: &mut TestAppContext) {
         let mut f = open(cx);
+        let metadata = f.root.join(".okilum");
+        // #1414: the Read menu over a heading offers its link, writes nothing.
+        let heading = f.block(0).center();
+        f.right_click(heading);
+        assert!(
+            f.offered("Select all").is_some(),
+            "positive control: the Read menu is open"
+        );
+        assert!(!metadata.exists(), "opening the menu writes nothing");
+        f.close();
         let web = f.find_link("example.com");
         assert_eq!(f.link_menu(web, "down enter"), "https://example.com/page");
         assert_eq!(f.link_menu(web, "down down enter"), "Example");
 
+        assert!(!metadata.exists(), "a web address needs no vault identity");
+
         let anchor = f.find_link("plan");
-        let address = f.link_menu(anchor, "down enter");
-        let expected = reader_files::okilum_link(
-            &f.root,
-            "note.md",
-            &Position {
-                heading: Some("Plan".into()),
-                ..Default::default()
-            },
+        // #1414: opening the menu computes nothing on disk; only Copy does.
+        f.right_click(anchor);
+        assert!(
+            f.reader.read_with(f.visual, |r, _| r.file_menu.is_some()),
+            "the link's own menu is open"
         );
-        assert_eq!(address.to_lowercase(), expected.to_lowercase(), "{address}");
+        assert!(!metadata.exists(), "opening the menu writes nothing");
+        f.close();
         assert_eq!(f.link_menu(anchor, "down down enter"), "jump");
+        assert!(!metadata.exists(), "copying the text writes nothing");
+        let address = f.link_menu(anchor, "down enter");
+        let id = okilum_core::vault_link_identity::read(&f.root)
+            .unwrap()
+            .expect("the Copy created the vault's identity");
+        let parsed = okilum_core::deep_link::parse(&address).unwrap();
+        assert_eq!(
+            parsed.address,
+            okilum_core::deep_link::Address::VaultId {
+                id,
+                vault: "vault".into(),
+                path: "note.md".into(),
+            },
+            "{address}"
+        );
+        assert!(parsed
+            .position
+            .heading
+            .is_some_and(|h| h.eq_ignore_ascii_case("plan")));
 
         // With text selected the link keeps its own menu and its text.
         f.reader.update(f.visual, |r, cx| {

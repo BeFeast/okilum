@@ -15,8 +15,6 @@ pub(crate) enum FileAction {
     Absolute,
     Relative,
     Wiki,
-    /// `okilum://v/…` for this file (#1049).
-    OkilumLink,
     Open,
     QuickLook,
     /// The system terminal in the item's folder, or its file's folder (#2837).
@@ -77,19 +75,13 @@ pub(crate) fn run(action: FileAction, root: &Path, rel: &str, window: &mut Windo
                     None
                 }
             }
-            FileAction::Absolute
-            | FileAction::Relative
-            | FileAction::Wiki
-            | FileAction::OkilumLink => copied_text(action, root, rel, &path),
+            FileAction::Absolute | FileAction::Relative | FileAction::Wiki => {
+                copied_text(action, rel, &path)
+            }
         };
         if let Some(text) = copied {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
-            let done = if matches!(action, FileAction::OkilumLink) {
-                "Link copied"
-            } else {
-                "Copied"
-            };
-            reader_toast::transient(done, window, cx);
+            reader_toast::transient("Copied", window, cx);
         }
         Ok(())
     })();
@@ -100,30 +92,90 @@ pub(crate) fn run(action: FileAction, root: &Path, rel: &str, window: &mut Windo
 
 /// What a «Copy …» action puts on the clipboard; `path` is the checked, canonical
 /// file. The absolute path is the plain one the user knows, not `\\?\C:\…` (#1391).
-fn copied_text(action: FileAction, root: &Path, rel: &str, path: &Path) -> Option<String> {
+fn copied_text(action: FileAction, rel: &str, path: &Path) -> Option<String> {
     match action {
         FileAction::Absolute => Some(okilum_core::vault::display_path(path)),
         FileAction::Relative => Some(rel.to_owned()),
         FileAction::Wiki => Some(format!("[[{rel}|{}]]", Vault::title_of(rel))),
-        FileAction::OkilumLink => Some(okilum_link(root, rel, &Default::default())),
         FileAction::Reveal | FileAction::Open | FileAction::QuickLook | FileAction::Terminal => {
             None
         }
     }
 }
 
-/// The external link to `rel` in the vault at `root`: the vault is named by
-/// its folder, as links resolve it (docs/deep-links.md).
-pub(crate) fn okilum_link(
+/// How a copied `okilum:` link names its document (#1414, #1439). Every
+/// «Copy … link» passes the scope of the window it was pressed in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LinkScope {
+    /// A vault window: `okilum://v/<folder>/<path>?vault_id=…`.
+    Vault,
+    /// A single-file view: `okilum://file/<absolute path>`. Its folder is
+    /// not a vault, so the link never names it as one.
+    SingleFile,
+}
+
+impl LinkScope {
+    pub(crate) fn of(single_file: bool) -> Self {
+        if single_file {
+            Self::SingleFile
+        } else {
+            Self::Vault
+        }
+    }
+}
+
+/// The copied link to `rel` (in the window's `root`) at `position`: the one
+/// builder behind every «Copy … link» (docs/deep-links.md). Call it from the
+/// Copy action itself, never while building a menu: in a vault, the first
+/// Copy creates the vault's link identity (`.okilum/link-identity.json`).
+/// A path that cannot be written losslessly is refused before anything is
+/// written; on any error the clipboard and the vault stay as they were.
+pub(crate) fn copy_link(
     root: &Path,
     rel: &str,
+    scope: LinkScope,
     position: &okilum_core::deep_link::Position,
-) -> String {
-    let vault = root
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    okilum_core::deep_link::build(&vault, rel, position)
+) -> anyhow::Result<String> {
+    use okilum_core::deep_link::{build_file_copy, build_vault_copy, NotEncodable};
+    match scope {
+        LinkScope::SingleFile => Ok(build_file_copy(&checked_path(root, rel)?, position)?),
+        LinkScope::Vault => {
+            let vault = root
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or(NotEncodable::Path)?;
+            // Refuse an unencodable link before the identity is written.
+            build_vault_copy(vault, &uuid::Uuid::nil().to_string(), rel, position)?;
+            let id = okilum_core::vault_link_identity::for_copy(root)?;
+            Ok(build_vault_copy(vault, &id, rel, position)?)
+        }
+    }
+}
+
+/// [`copy_link`] onto the clipboard, with its toast.
+pub(crate) fn copy_link_to_clipboard(
+    root: &Path,
+    rel: &str,
+    scope: LinkScope,
+    position: &okilum_core::deep_link::Position,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    match copy_link(root, rel, scope, position) {
+        Ok(link) => {
+            cx.write_to_clipboard(ClipboardItem::new_string(link));
+            reader_toast::transient("Link copied", window, cx);
+        }
+        Err(error) => reader_toast::error(format!("Link not copied: {error:#}"), window, cx),
+    }
+}
+
+/// «Copy Okilum link» for the file or note `rel`.
+fn okilum_link_item(root: &Path, rel: &str, scope: LinkScope) -> PopupMenuItem {
+    let (root, rel) = (root.to_path_buf(), rel.to_owned());
+    PopupMenuItem::new("Copy Okilum link").on_click(move |_, window, cx| {
+        copy_link_to_clipboard(&root, &rel, scope, &Default::default(), window, cx)
+    })
 }
 
 /// Shows the item in the platform file manager; a failure of every route is
@@ -146,12 +198,13 @@ pub(crate) fn menu(
     mut menu: PopupMenu,
     root: PathBuf,
     rel: String,
+    scope: LinkScope,
     window: &mut Window,
     cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
     // Installed editors first, next to «Open with default app» (#873).
     menu = super::open_in::submenu(menu, root.clone(), rel.clone(), window, cx);
-    for item in row_items(&root, &rel) {
+    for item in row_items(&root, &rel, scope) {
         menu = menu.item(item);
     }
     #[cfg(target_os = "macos")]
@@ -167,17 +220,15 @@ pub(crate) fn menu(
 
 /// The file actions of the menu for `rel`; every click acts on `rel`, the item
 /// the menu was opened on, not on the open note.
-fn row_items(root: &Path, rel: &str) -> Vec<PopupMenuItem> {
+fn row_items(root: &Path, rel: &str, scope: LinkScope) -> Vec<PopupMenuItem> {
     let actions = [
         (Os::CURRENT.reveal(), FileAction::Reveal),
         (TERMINAL_LABEL, FileAction::Terminal),
         ("Copy absolute path", FileAction::Absolute),
         ("Copy vault path", FileAction::Relative),
         ("Copy wikilink", FileAction::Wiki),
-        ("Copy Okilum link", FileAction::OkilumLink),
-        ("Open with default app", FileAction::Open),
     ];
-    actions
+    let mut items: Vec<PopupMenuItem> = actions
         .into_iter()
         .map(|(label, action)| {
             let (root, rel) = (root.to_path_buf(), rel.to_owned());
@@ -192,7 +243,13 @@ fn row_items(root: &Path, rel: &str) -> Vec<PopupMenuItem> {
             };
             item.on_click(move |_, window, cx| run(action, &root, &rel, window, cx))
         })
-        .collect()
+        .collect();
+    items.push(okilum_link_item(root, rel, scope));
+    items.push(PopupMenuItem::new("Open with default app").on_click({
+        let (root, rel) = (root.to_path_buf(), rel.to_owned());
+        move |_, window, cx| run(FileAction::Open, &root, &rel, window, cx)
+    }));
+    items
 }
 
 pub(crate) struct FilePreview {
@@ -363,17 +420,18 @@ impl Reader {
             return;
         }
         let root = self.vault_root.clone();
+        let scope = self.link_scope();
         let reader = cx.entity().downgrade();
         let selection = reader_read_menu::snapshot(self, cx);
         let popup = PopupMenu::build(window, cx, move |mut m, window, cx| {
             let address = address.clone();
+            let address_root = root.clone();
             m = m.item(
                 PopupMenuItem::new("Copy link address")
                     .disabled(address.is_none())
                     .on_click(move |_, window, cx| {
-                        if let Some(address) = address.clone() {
-                            cx.write_to_clipboard(ClipboardItem::new_string(address));
-                            reader_toast::transient("Link copied", window, cx);
+                        if let Some(address) = &address {
+                            address.copy(&address_root, scope, window, cx);
                         }
                     }),
             );
@@ -386,7 +444,7 @@ impl Reader {
             }
             m = reader_read_menu::selection(m.separator(), &reader, selection.clone());
             match rel.clone() {
-                Some(rel) => menu(m.separator(), root.clone(), rel, window, cx),
+                Some(rel) => menu(m.separator(), root.clone(), rel, scope, window, cx),
                 None => m,
             }
         });
@@ -411,6 +469,23 @@ impl Reader {
             self.selected_file()
         };
         run(action, &self.vault_root, rel, window, cx);
+    }
+
+    /// How links copied in this window name their document (#1439).
+    pub(crate) fn link_scope(&self) -> LinkScope {
+        LinkScope::of(self.single_file)
+    }
+
+    /// The note ⋯ menu's «Copy Okilum link»: the open note or file.
+    pub(crate) fn copy_document_link(&self, window: &mut Window, cx: &mut Context<Self>) {
+        copy_link_to_clipboard(
+            &self.vault_root,
+            self.selected_file(),
+            self.link_scope(),
+            &Default::default(),
+            window,
+            cx,
+        );
     }
 
     pub(crate) fn selected_file(&self) -> &str {
@@ -976,7 +1051,7 @@ mod tests {
         std::fs::create_dir_all(root.join("sub")).unwrap();
         std::fs::write(root.join("sub").join("a.md"), "# A\n").unwrap();
         let path = checked_path(&root, "sub/a.md").unwrap();
-        let copied = copied_text(FileAction::Absolute, &root, "sub/a.md", &path).unwrap();
+        let copied = copied_text(FileAction::Absolute, "sub/a.md", &path).unwrap();
         assert!(!copied.starts_with(r"\\?\"), "{copied}");
         let pasted = Path::new(&copied);
         assert!(pasted.is_absolute() && pasted.is_file(), "{copied}");
@@ -1381,7 +1456,7 @@ mod tests {
                 "Copy vault path keeps its global shortcut"
             );
         });
-        let items = row_items(&root, row);
+        let items = row_items(&root, row, LinkScope::Vault);
         let bound = |label: &str| {
             items.iter().find_map(|item| match item {
                 PopupMenuItem::Item {
@@ -1435,6 +1510,40 @@ mod tests {
         visual.run_until_parked();
         assert_eq!(clipboard_text(visual).as_deref(), Some(row));
         reader.read_with(visual, |r, _| assert_eq!(r.selected_file(), open));
+
+        // #1414: «Copy Okilum link» in the same production row menu. Building
+        // and showing the menu writes nothing; the Copy creates the identity.
+        let metadata = root.join(".okilum");
+        let popup = visual.update(|window, cx| {
+            let reader = reader.clone();
+            PopupMenu::build(window, cx, move |menu, window, cx| {
+                super::super::reader_item_menu(menu, &reader, row.into(), window, cx)
+            })
+        });
+        reader.update_in(visual, |r, window, cx| {
+            popup.focus_handle(cx).focus(window, cx);
+            r.file_menu = Some((popup.clone(), point(px(40.), px(40.))));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(!metadata.exists(), "an open menu writes nothing");
+        // Then Copy wikilink and Copy Okilum link.
+        let downs = vec!["down"; before + 6].join(" ");
+        visual.simulate_keystrokes(&format!("{downs} enter"));
+        visual.run_until_parked();
+        let link = clipboard_text(visual).unwrap();
+        let id = okilum_core::vault_link_identity::read(&root)
+            .unwrap()
+            .expect("the Copy created the identity");
+        assert_eq!(
+            okilum_core::deep_link::parse(&link).unwrap().address,
+            okilum_core::deep_link::Address::VaultId {
+                id,
+                vault: "vault".into(),
+                path: row.into(),
+            },
+            "{link}"
+        );
 
         // The global shortcut still copies the open note.
         reader.update_in(visual, |r, window, cx| {
@@ -1549,10 +1658,14 @@ mod tests {
                 cx.read_from_clipboard().unwrap().text().unwrap(),
                 "[[diagram.svg|diagram]]"
             );
-            // #1049: the external link names the vault by its folder.
-            reader.file_action(FileAction::OkilumLink, window, cx);
+            // #1049, #1414: the external link names the vault by its folder
+            // and by the identity the Copy created.
+            reader.copy_document_link(window, cx);
             let link = cx.read_from_clipboard().unwrap().text().unwrap();
-            assert_eq!(link, "okilum://v/vault/diagram.svg");
+            assert!(
+                link.starts_with("okilum://v/vault/diagram.svg?vault_id="),
+                "{link}"
+            );
             let parsed = okilum_core::deep_link::parse(&link).unwrap();
             assert_eq!(
                 okilum_core::deep_link::resolve(
