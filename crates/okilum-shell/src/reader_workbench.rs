@@ -1187,16 +1187,12 @@ mod tests {
                 r.tree_scroll.0.borrow().base_handle.offset(),
             )
         });
-        let key = if cfg!(target_os = "macos") {
-            "cmd-|"
-        } else {
-            "ctrl-shift-\\"
-        };
-        visual.simulate_keystrokes(key);
+        // Now / Tree has no default chord since #773 gave it to Notes.
+        visual.dispatch_action(ToggleLeftMode);
         visual.run_until_parked();
         assert!(visual.debug_bounds("sidebar-tree-body").is_none());
         assert!(visual.debug_bounds("sidebar-collapse-all").is_none());
-        visual.simulate_keystrokes(key);
+        visual.dispatch_action(ToggleLeftMode);
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert_eq!(
