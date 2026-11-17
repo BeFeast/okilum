@@ -26,6 +26,11 @@ TESTS = {
     CRASH_TEST,
     'issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_handoff',
 }
+# #3080: these fill a private tmpfs; scripts/ci/sync-disk-full.sh mounts and runs them.
+DISK_FULL = {
+    'issue3080_first_merge_disk_full_keeps_every_version_and_recovers',
+    'issue3080_transfer_disk_full_needs_attention_keeps_files_and_resumes',
+}
 CHECKPOINTS = (
     'destination-prepared', 'source-staged', 'source-partial-blob', 'source-prepared',
     'source-frozen', 'source-captured', 'source-note-captured', 'source-published',
@@ -41,7 +46,7 @@ def main():
     # Discover the exact compiled parent inventory before selecting any shard.
     listing = subprocess.run([executable, '--list'], check=True, text=True, stdout=subprocess.PIPE).stdout
     discovered = {line.removesuffix(': test') for line in listing.splitlines() if line.endswith(': test')}
-    assert discovered == TESTS | {'issue2582_child'}, discovered
+    assert discovered == TESTS | DISK_FULL | {'issue2582_child'}, discovered
     groups = [
         ('crash-even', CHECKPOINTS[::2]),
         ('crash-odd', CHECKPOINTS[1::2]),
@@ -68,7 +73,7 @@ def main():
             command += [CRASH_TEST, '--exact']
             env['OKILUM_FIRST_SYNC_CRASH_CASE'] = ','.join(checkpoints)
         else:
-            command += ['--skip', 'issue2582_child', '--skip', CRASH_TEST]
+            command += ['--skip', 'issue2582_child', '--skip', CRASH_TEST, '--skip', 'issue3080_']
         log = root / 'acceptance.log'
         with log.open('w') as output:
             process = subprocess.Popen(command, env=env, stdout=output, stderr=subprocess.STDOUT,
