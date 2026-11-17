@@ -447,7 +447,8 @@ jobs:
           CI_LANE: native-shell
         run: python3 scripts/ci/github-pr.py
 
-  # #1662: same-runner shipped input A/B; supplementary until calibration acceptance.
+  # #1662: same-runner shipped input A/B, strict but never required (Oleg 17.11):
+  # neither `macos` nor `check` depends on it.
   perf-linux:
     needs: native-scope
     if: >-

@@ -1,6 +1,6 @@
 # Same-runner input A/B (#1662)
 
-The report-only, scope-aware `perf-linux` job pins main once and builds main and
+The strict, non-required, scope-aware `perf-linux` job pins main once and builds main and
 PR release binaries with the same toolchain/flags on the same runner. Both
 binaries are **shipped-unpatched** builds: the ordinary release Cargo command,
 with no gpui measurement patch. Build receipts, source commits and SHA256 sums
@@ -80,21 +80,31 @@ with a **measurement build, not shipped**, using the existing trace patch. Its
 result and provenance remain visible and report-only. Neither an absent scroll
 trace nor a scroll failure is represented as input regression.
 
-Ordinary CI invokes `ab.py --report-only`: performance FAIL stays FAIL in JSON
-and the job summary (including both attempts), while the process exits zero.
-Missing controls, collector/harness failures, main over the ceiling and
-binary/provenance integrity errors remain `NO_EVIDENCE` with nonzero exit; they
-are never hidden as PASS. `ci / check` does not depend on perf; existing
-shared/macOS requirements remain.
+Ordinary CI invokes `ab.py` with strict exits (Oleg, 17 November 2026: «strict,
+but does not block the PR»): a confirmed regression is `FAIL` and exit 1, so the
+job is red. Missing controls, collector/harness failures, main over the ceiling
+and binary/provenance integrity errors remain `NO_EVIDENCE` with exit 2; they
+are never hidden as PASS. The job is not required anywhere: `ci / check` does
+not depend on perf, existing shared/macOS requirements remain, and
+`gh-check.sh --fast` judges only its own `agent-checks` run.
+
+It runs on every pre-merge push (`agent-checks-fast/<branch>`) whose diff
+against its merge-base with main is native-scoped (`scripts/ci/macos-scope.py`,
+the selection the Forgejo `native-scope` job uses), as a separate
+`forgejo-perf-linux` run on the PR head; a newer push of the same branch
+cancels the older run. The Forgejo bridge (`forgejo-perf-linux-pr/**`, nightly
+`ci` and `commit-ci`) runs it as before. Measurement-only scroll runs only
+there, not on pre-merge pushes. `ab.py --report-only` remains available for
+manual diagnostics.
 
 Multi-pass calibration (`calibration_runs` 2–5) compares the head with its
 merge-base on main (so main moving while the job is queued cannot refuse it),
 and keeps strict exits and the identical-product-input hash guard (all tracked inputs except explicitly listed
 documentation, CI and measurement tooling; vendor setup, assets and unknown
-build inputs included), stopping on the first failed invocation. The `strict`
-dispatch input runs one invocation with strict exits and no source guard, for a
-forced-red control on a throwaway commit. No automatic calibration loop or
-runner selection is performed.
+build inputs included), stopping on the first failed invocation. A single
+dispatched run (`calibration_runs` 1) is one strict invocation with no source
+guard, which also serves as a forced-red control on a throwaway commit. No
+automatic calibration loop or runner selection is performed.
 
 Under schema 1, EPYC calibration run `40223917116` produced five valid green
 invocations and forced-red run `40220173487` detected a diagnostic 120 ms
