@@ -44,8 +44,9 @@ Save-Url "$archive/Setup.exe" $setup
 if ((Get-Sha256 $setup) -ne "$($release.setup_sha256)".ToLowerInvariant()) { throw 'Setup.exe hash differs from release.json' }
 $targets.Add([pscustomobject]@{Label = 'Setup.exe'; Path = $setup})
 
-$full = @($release.feed.Assets | Where-Object { $_.Type -eq 'Full' })
-if ($full.Count -ne 1) { throw "Expected one full package in the feed, found $($full.Count)" }
+# A beta feed also lists earlier full packages; this build's is the one with its version.
+$full = @($release.feed.Assets | Where-Object { $_.Type -eq 'Full' -and "$($_.Version)" -eq "$($release.version)" })
+if ($full.Count -ne 1) { throw "Expected one full package of version $($release.version) in the feed, found $($full.Count)" }
 $name = "$($full[0].FileName)"
 if ($name -notmatch '^BeFeast\.Okilum-[0-9][A-Za-z0-9.+-]*-(full)\.nupkg$') { throw "Unexpected package name $name" }
 $nupkg = Join-Path $Work $name
