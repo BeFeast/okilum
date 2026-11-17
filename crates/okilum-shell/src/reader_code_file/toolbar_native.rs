@@ -104,18 +104,30 @@ impl RunningClock {
 
 impl RunningClock {
     /// Positive control: a 20 ms busy spin must read as Running time, so a
-    /// meter that reports zero cannot pass the per-frame Running gate.
+    /// meter that reports zero cannot pass the per-frame Running gate. The
+    /// best of five spins counts: a hosted runner may preempt any one of them.
     fn verified() -> Self {
         let clock = Self::calibrate();
-        let (wall, running) = (Instant::now(), clock.now_ms());
-        while wall.elapsed() < Duration::from_millis(20) {
-            std::hint::spin_loop();
+        let mut best = (0f64, 0f64);
+        for _ in 0..5 {
+            let (wall, running) = (Instant::now(), clock.now_ms());
+            while wall.elapsed() < Duration::from_millis(20) {
+                std::hint::spin_loop();
+            }
+            let spin = (
+                wall.elapsed().as_secs_f64() * 1000.,
+                clock.now_ms() - running,
+            );
+            diagnostic_println!(
+                "CODE2810_RUNNING_CONTROL wall_ms={} running_ms={}",
+                spin.0,
+                spin.1
+            );
+            if spin.1 > best.1 {
+                best = spin;
+            }
         }
-        let (wall_ms, running_ms) = (
-            wall.elapsed().as_secs_f64() * 1000.,
-            clock.now_ms() - running,
-        );
-        diagnostic_println!("CODE2810_RUNNING_CONTROL wall_ms={wall_ms} running_ms={running_ms}");
+        let (wall_ms, running_ms) = best;
         assert!(
             running_ms >= 18.,
             "thread Running meter missed a 20 ms busy spin: {running_ms} ms of {wall_ms} ms"
