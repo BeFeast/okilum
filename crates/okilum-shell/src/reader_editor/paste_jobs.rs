@@ -443,6 +443,8 @@ impl Reader {
                         vault_root,
                         stamp,
                         image_options,
+                        saved,
+                        admission,
                         ..
                     }) = routed.follow_up.take()
                     else {
@@ -465,7 +467,17 @@ impl Reader {
                             stamp,
                             image_options,
                         },
-                        Box::new(|| {}),
+                        Box::new(move || {
+                            // Not inserted: its saved images would be linked
+                            // from nowhere.
+                            if let Some(lease) = &admission {
+                                if let Ok(_admission) = lease.enter() {
+                                    for file in &saved {
+                                        let _ = std::fs::remove_file(file);
+                                    }
+                                }
+                            }
+                        }),
                         window,
                         cx,
                     );
@@ -606,6 +618,7 @@ impl Reader {
                 vault_root,
                 stamp,
                 image_options,
+                ..
             } => download_images(
                 input,
                 images,
@@ -1452,7 +1465,13 @@ fn insert_prepared(
     };
     input.update(cx, |state, cx| {
         let current = state.value().to_string();
-        let Some(at) = anchor.locate(&current) else {
+        // A block drop only while its block is still there.
+        let located = if target.slot {
+            anchor.locate_block(&current)
+        } else {
+            anchor.locate(&current)
+        };
+        let Some(at) = located else {
             diagnostic_error!("Drop: not inserted (the drop point is gone)");
             return Err(Missed::Moved);
         };
@@ -2410,6 +2429,76 @@ mod reader_drop_tests {
         visual.run_until_parked();
         let (source, _) = source_and_line(&reader, visual, "Look");
         assert_eq!(source, NOTE, "one Undo: byte-identical");
+    }
+
+    /// Review of #3078: HTML with a `data:` image (saved at once) and a
+    /// remote one, dropped in Edit; the note leaves Edit before the remote
+    /// download is done. Nothing is inserted, and the already saved image
+    /// is removed again, not left unlinked in the vault.
+    #[gpui::test]
+    fn a_closed_note_removes_the_images_its_drop_saved(cx: &mut TestAppContext) {
+        use base64::Engine as _;
+        let (reader, visual, temp) = reader_on_note(cx);
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let data = base64::engine::general_purpose::STANDARD.encode(png.into_inner());
+        // Port 1 refuses at once: the remote download fails fast.
+        let html = format!(
+            "<p>Two <img alt=\"local\" src=\"data:image/png;base64,{data}\"> \
+             <img alt=\"remote\" src=\"http://127.0.0.1:1/remote.png\"></p>"
+        );
+        fn images(dir: &std::path::Path) -> usize {
+            std::fs::read_dir(dir)
+                .unwrap()
+                .flatten()
+                .map(|entry| {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        images(&path)
+                    } else {
+                        usize::from(path.extension().is_some_and(|e| e == "png" || e == "webp"))
+                    }
+                })
+                .sum()
+        }
+        reader.update_in(visual, |r, window, cx| {
+            let dropped = gpui::ExternalData::with_contents(
+                [
+                    SharedString::from("public.html"),
+                    SharedString::from("public.utf8-plain-text"),
+                ],
+                [
+                    (SharedString::from("public.html"), html.as_bytes().into()),
+                    (
+                        SharedString::from("public.utf8-plain-text"),
+                        b"Two"[..].into(),
+                    ),
+                ],
+            );
+            r.drop_on_editor((&dropped).into(), window, cx);
+            assert_eq!(
+                images(&temp.path().join("vault")),
+                1,
+                "positive control: the data: image was saved at once"
+            );
+            // Leave Edit before the remote download is done.
+            r.toggle_source(window, cx);
+            assert!(r.editing.is_none());
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            images(&temp.path().join("vault")),
+            0,
+            "the drop never went in: its saved image is removed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("vault/note.md")).unwrap(),
+            NOTE
+        );
     }
 
     #[test]

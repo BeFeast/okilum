@@ -137,6 +137,11 @@ pub enum FollowUp {
         vault_root: PathBuf,
         stamp: String,
         image_options: super::image_import::Options,
+        /// `data:` and `file://` images of the same text, already saved:
+        /// removed again (under `admission`) by a drop whose text never
+        /// goes in (#1615).
+        saved: Vec<PathBuf>,
+        admission: Option<okilum_write_authority::WriterLease>,
     },
     /// Convert HTML too large for the UI thread, then insert it at `anchor`
     /// and download its remote images.
@@ -1105,6 +1110,8 @@ fn rich_routed(
             vault_root: cx.vault_root.to_path_buf(),
             stamp: cx.stamp.to_string(),
             image_options: cx.image_options,
+            saved: rich.files,
+            admission: rich.admission,
         });
     }
     routed
