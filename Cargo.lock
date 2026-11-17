@@ -6139,6 +6139,7 @@ dependencies = [
  "async-channel",
  "base64 0.22.1",
  "bzip2",
+ "chrono",
  "comrak",
  "crc32fast",
  "csv",

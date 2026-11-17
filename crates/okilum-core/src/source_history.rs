@@ -1078,7 +1078,8 @@ pub fn save_copy_bytes(root: &Path, relative: &Path, drafts: &Path, bytes: &[u8]
     crate::note_files::create_with_source(root, relative, bytes)
 }
 
-/// Label of every version read from Syncthing's local archive (#2045).
+/// Leading label of every version read from Syncthing's local archive (#2045).
+/// The archive stamp and its timezone reading follow it (#2567).
 pub const SYNC_ARCHIVE_LABEL: &str = "From another device · Sync";
 
 /// What **Restore to original path** will create, stated before anything is
@@ -1109,7 +1110,7 @@ pub fn restore_notice(root: &Path, version: &Version) -> Result<RestoreNotice> {
         .to_str()
         .context("Unsupported note path")?
         .replace('\\', "/");
-    let origin = if version.label == SYNC_ARCHIVE_LABEL {
+    let origin = if version.label.starts_with(SYNC_ARCHIVE_LABEL) {
         "Sync kept this version when the note left this path on another computer. \
          It was deleted there, or renamed or moved; Okilum cannot tell which."
     } else {

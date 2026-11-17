@@ -795,6 +795,9 @@ fn fixture_lifecycle_control() -> Result<()> {
     Ok(())
 }
 
+/// `$TMPDIR` file naming the zone the retention control ran in (#2567).
+const ZONE_EVIDENCE: &str = "issue2567-retention-zone";
+
 #[test]
 #[ignore = "requires checksum-pinned Syncthing 2.1.6; run scripts/ci/sync-source-sharing.sh"]
 fn managed_history_2045_restore_retention_and_migration() -> Result<()> {
@@ -967,18 +970,80 @@ fn managed_history_2045_restore_retention_and_migration() -> Result<()> {
         .set_history_retention(&pair.target.vault, RetentionDays::try_from(90)?)?;
     let archive = pair.target.vault.join(".stversions");
     fs::create_dir_all(&archive)?;
-    let stamp = |days: u64| -> Result<String> {
-        let output = std::process::Command::new("date")
-            .env("TZ", "UTC")
-            .args(["-u", "-d", &format!("{days} days ago"), "+%Y%m%d-%H%M%S"])
-            .output()?;
+    // #2567: Syncthing stamps are local wall times without an offset. Both
+    // daemons and this process share TZ (sync-source-sharing-runs.py runs this
+    // test in UTC and in Asia/Jerusalem). GNU date is the independent clock: it
+    // spells each stamp in the process TZ and gives the instant it denotes.
+    let date = |args: &[&str]| -> Result<String> {
+        let output = std::process::Command::new("date").args(args).output()?;
         ensure!(output.status.success(), "fixture date failed");
         Ok(String::from_utf8(output.stdout)?.trim().into())
     };
-    let expired = archive.join(format!("trim~{}.md", stamp(31)?));
-    let retained = archive.join(format!("trim~{}.md", stamp(29)?));
+    let stamp = |days: u64| -> Result<(String, u64)> {
+        let out = date(&["-d", &format!("{days} days ago"), "+%Y%m%d-%H%M%S %s"])?;
+        let (stamp, epoch) = out.split_once(' ').context("fixture date output")?;
+        Ok((stamp.into(), epoch.parse()?))
+    };
+    let zone = date(&["+%Z %z"])?;
+    // Evidence for the driver, outside libtest's interleaved `... ok` lines.
+    fs::write(std::env::temp_dir().join(ZONE_EVIDENCE), &zone)?;
+    let ((old_stamp, old_epoch), (new_stamp, new_epoch)) = (stamp(31)?, stamp(29)?);
+    let expired = archive.join(format!("trim~{old_stamp}.md"));
+    let retained = archive.join(format!("trim~{new_stamp}.md"));
     fs::write(&expired, b"31-day version")?;
     fs::write(&retained, b"29-day version")?;
+    // Okilum's listing must agree with the independent clock to the second.
+    let trim = source_history::sync::list(&pair.target.vault, Some(Path::new("trim.md")))?;
+    // A stamp `date -d` spelled inside a repeated DST hour is listed at the
+    // earlier instant and says so; only that case may differ, by the offset step.
+    let found: Vec<_> = trim
+        .versions
+        .iter()
+        .zip([new_epoch, old_epoch])
+        .map(|(v, epoch)| {
+            let created = v.created / 1_000_000;
+            let earlier =
+                v.label.contains(" is ambiguous") && epoch.checked_sub(created) == Some(3_600);
+            (v.bytes().to_vec(), if earlier { epoch } else { created })
+        })
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (b"29-day version".to_vec(), new_epoch),
+            (b"31-day version".to_vec(), old_epoch)
+        ],
+        "Sync archive order/age must match the stamp's local time in {zone}"
+    );
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?;
+    for (version, days) in trim.versions.iter().zip([29u64, 31]) {
+        let age = now.as_secs().abs_diff(version.created / 1_000_000);
+        // `date -d 'N days ago'` keeps the wall clock across a DST change.
+        assert!(
+            age.abs_diff(days * 86_400) <= 3_600 + 600,
+            "{days}-day archive listed as {age}s old in {zone}"
+        );
+    }
+    // DST ambiguity control: 01:30 on 2025-10-26 occurred twice in Jerusalem.
+    // The probe asks the independent clock whether this zone repeated it.
+    let ambiguous_zone =
+        date(&["-d", "2025-10-26 00:30", "+%z"])? != date(&["-d", "2025-10-26 02:30", "+%z"])?;
+    fs::write(archive.join("dst~20251026-013000.md"), b"repeated hour")?;
+    let dst = source_history::sync::list(&pair.target.vault, Some(Path::new("dst.md")))?;
+    ensure!(dst.versions.len() == 1, "DST control version missing");
+    let first = date(&["-d", "2025-10-26 01:30:00 +0300", "+%s"])?.parse::<u64>()?;
+    if ambiguous_zone {
+        assert_eq!(dst.versions[0].created / 1_000_000, first);
+        assert!(dst.versions[0]
+            .label
+            .contains("20251026-013000 is ambiguous"));
+        assert!(dst.warnings.iter().any(|w| w.contains("clock went back")));
+    } else {
+        let utc = date(&["-d", "2025-10-26 01:30:00", "+%s"])?.parse::<u64>()?;
+        assert_eq!(dst.versions[0].created / 1_000_000, utc);
+        assert!(dst.warnings.is_empty(), "{:?}", dst.warnings);
+    }
+    fs::remove_file(archive.join("dst~20251026-013000.md"))?;
     fs::write(pair.source.vault.join("trim.md"), b"initial trim source")?;
     wait("trim positive initial hash", || {
         pair.tick(&id)?;
