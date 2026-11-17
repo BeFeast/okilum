@@ -1048,6 +1048,7 @@ pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
 ///   so a folder added or first filled after launch needs no restart;
 /// - unparks a parked folder only when its root is back with the saved
 ///   identity and its authority admits a writer (held for the PATCH).
+///
 /// Configuration admission refuses a busy gate instead of waiting, so a round
 /// takes the gate only when it found a transition, and re-reads under it.
 #[cfg(target_os = "linux")]
