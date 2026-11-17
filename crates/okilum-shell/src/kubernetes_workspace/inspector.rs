@@ -858,7 +858,7 @@ impl Workspace {
 
     /// UIDs whose events belong to the selection: a workload includes its
     /// ReplicaSets and Pods, each group naming its involved object.
-    fn event_uids(&self, resolved: &Resolved) -> Vec<String> {
+    pub(super) fn event_uids(&self, resolved: &Resolved) -> Vec<String> {
         let Some(data) = &self.data else {
             return Vec::new();
         };
