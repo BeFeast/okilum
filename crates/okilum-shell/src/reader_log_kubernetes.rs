@@ -2,7 +2,7 @@
 use crate::*;
 use okilum_core::log::kubernetes::Request;
 
-mod worker;
+pub(crate) mod worker;
 
 #[derive(Default)]
 struct Windows(std::collections::BTreeMap<String, WindowHandle<Root>>);
@@ -195,6 +195,10 @@ impl Panel {
             worker::Status::Failed(ref error) => {
                 self.error = Some(error.clone());
                 format!("Stopped; loaded rows retained{suffix}")
+            }
+            worker::Status::Truncated(ref error) => {
+                self.error = Some(error.clone());
+                format!("Stopped at a loading limit; loaded rows retained{suffix}")
             }
         };
         if update.status != worker::Status::Reading {

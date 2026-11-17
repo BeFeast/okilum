@@ -69,6 +69,13 @@ fn catalog() -> Vec<Entry> {
         entry::<reader_log::SelectNextRecord>("Next log record", Navigation),
         entry::<reader_log::ExtendPreviousRecord>("Extend log selection up", Navigation),
         entry::<reader_log::ExtendNextRecord>("Extend log selection down", Navigation),
+        entry::<kubernetes_workspace::SelectNextResource>("Next Kubernetes resource", Navigation),
+        entry::<kubernetes_workspace::SelectPreviousResource>(
+            "Previous Kubernetes resource",
+            Navigation,
+        ),
+        entry::<kubernetes_workspace::OpenSelectedLogs>("Open Kubernetes logs", Navigation),
+        entry::<kubernetes_workspace::FocusResourceFilter>("Filter Kubernetes resources", Search),
         entry::<ListNext>("Next note in list", Navigation),
         entry::<ListPrev>("Previous note in list", Navigation),
         entry::<ReaderScrollDown>("Scroll down", Navigation),

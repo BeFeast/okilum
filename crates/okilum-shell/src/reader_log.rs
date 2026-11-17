@@ -590,6 +590,11 @@ pub(crate) struct LogView {
     /// A wheel event happened: the next frame decides whether the list is at
     /// its bottom, pinning or pausing follow.
     check_pin: bool,
+    /// A session stream's owner follows its bottom (#3010): `Some(true)`
+    /// keeps the newest row in view, `Some(false)` after scrolling up keeps
+    /// the viewport where it is while new rows still arrive. Independent of
+    /// whether data is being received; `None` keeps the earlier behavior.
+    stream_bottom: Option<bool>,
     /// Follow could not open the file.
     follow_failed: Option<String>,
     _follow_open: Option<Task<()>>,
@@ -816,6 +821,7 @@ impl LogView {
             follow: None,
             filtered_upto: 0,
             check_pin: false,
+            stream_bottom: None,
             follow_failed: None,
             _follow_open: None,
             extra: Vec::new(),
@@ -2756,9 +2762,21 @@ impl LogView {
         false
     }
 
+    /// Session streams (#3010): follow the bottom or stay where the reader
+    /// scrolled. Turning it on jumps to the newest row now.
+    pub(crate) fn set_stream_bottom(&mut self, follow: bool, cx: &mut Context<Self>) {
+        self.stream_bottom = Some(follow);
+        self.keep_pinned();
+        cx.notify();
+    }
+    pub(crate) fn stream_bottom(&self) -> Option<bool> {
+        self.stream_bottom
+    }
+
     /// Following and pinned: the newest row stays in view.
     fn keep_pinned(&mut self) {
-        let pinned = self.following() && self.follow.as_ref().is_some_and(|follow| follow.pinned);
+        let pinned = (self.following() && self.follow.as_ref().is_some_and(|follow| follow.pinned))
+            || self.stream_bottom == Some(true);
         let rows = self.visible_len();
         if pinned && rows > 0 {
             self.scroll.scroll_to_item(rows - 1, ScrollStrategy::Bottom);
@@ -2778,6 +2796,15 @@ impl LogView {
     /// After a wheel event: pinned at the bottom, paused anywhere above it.
     fn update_pin(&mut self) {
         if !std::mem::take(&mut self.check_pin) {
+            return;
+        }
+        if self.follow.is_none() && self.stream_bottom.is_some() {
+            let handle = self.scroll.0.borrow();
+            let offset = handle.base_handle.offset();
+            let max = handle.base_handle.max_offset();
+            let at_bottom = -offset.y >= max.y - px(2.);
+            drop(handle);
+            self.stream_bottom = Some(at_bottom);
             return;
         }
         let Some(follow) = self.follow.as_mut() else {
@@ -2810,7 +2837,9 @@ impl LogView {
             None => {
                 self.selected = None;
                 self.anchor = None;
-                if self.visible_len() > 0 {
+                // A stream reader who scrolled away keeps the viewport while
+                // rows arrive (#3010); pinned streams go to the bottom below.
+                if self.visible_len() > 0 && self.stream_bottom.is_none() {
                     self.scroll.scroll_to_item(0, ScrollStrategy::Top);
                 }
             }
@@ -4433,7 +4462,7 @@ impl Render for LogView {
             )
             .vertical_scrollbar(&self.scroll)
             .on_scroll_wheel(cx.listener(|this, _: &ScrollWheelEvent, _, cx| {
-                if this.follow.is_some() {
+                if this.follow.is_some() || this.stream_bottom.is_some() {
                     this.check_pin = true;
                     cx.notify();
                 }
