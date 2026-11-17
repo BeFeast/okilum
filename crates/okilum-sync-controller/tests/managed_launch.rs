@@ -439,9 +439,26 @@ impl Services {
         Ok(())
     }
     fn remember_pid(&self, home: &Path) -> Result<Uuid> {
-        wait("authenticated helper generation ready", || {
+        if let Err(error) = wait("authenticated helper generation ready", || {
             Ok(live_generation(home).is_ok())
-        })?;
+        }) {
+            // Surface the launch command's own refusal; its log dies with the
+            // fixture directory.
+            let log = self
+                .0
+                .lock()
+                .unwrap()
+                .command
+                .as_ref()
+                .and_then(|command| {
+                    Path::new(&command[0])
+                        .parent()
+                        .map(|p| p.join("launch.log"))
+                })
+                .and_then(|path| fs::read_to_string(path).ok())
+                .unwrap_or_default();
+            return Err(error.context(format!("launch.log:\n{log}")));
+        }
         let generation = live_generation(home)?;
         self.0.lock().unwrap().runtime_pid = Some(generation.pid);
         Ok(generation.id)
