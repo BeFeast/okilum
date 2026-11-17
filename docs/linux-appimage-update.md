@@ -283,6 +283,12 @@ This PR delivers the payload/helper only: neither startup nor uninstall is wired
 here, so first-launch integration is not claimed complete. That boundary leaves
 a meaningful coordinated GUI-bearing N+1 and avoids duplicate shell ownership.
 
+**Since wired (#1716):** ordinary AppImage startup now installs the launcher and
+icon off the UI thread, and `--uninstall-data` removes them after its existing
+checks. The current behaviour is described in
+[AppImage desktop payload (#1716)](uninstall.md#appimage-desktop-payload-1716);
+the paragraph above records the scope of the original PR only.
+
 Local verification at resume: changed Rust formatting, Python/YAML/bash syntax and
 whitespace checks only; no local tests/builds/containers/artifact execution.
 Workspace `cargo fmt --check` is blocked by the existing vendored

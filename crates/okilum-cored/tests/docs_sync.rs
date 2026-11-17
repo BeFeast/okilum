@@ -171,3 +171,71 @@ fn prd_describes_in_app_rename_as_updating_links() {
     let open = section(&prd, "10. Still open");
     assert!(open.contains("outside Okilum"), "{open}");
 }
+
+/// Field names in the `backlinks` row of the ops table, `?` marking optional.
+fn documented_backlink_fields(protocol: &str) -> (BTreeSet<String>, BTreeSet<String>) {
+    let row = section(protocol, "Ops")
+        .lines()
+        .find(|line| line.contains(r#""op":"backlinks""#))
+        .expect("backlinks row");
+    let fields = row
+        .split("backlinks: [{")
+        .nth(1)
+        .and_then(|rest| rest.split("}]").next())
+        .expect("backlinks fields");
+    let mut required = BTreeSet::new();
+    let mut optional = BTreeSet::new();
+    for field in fields.split(',').map(str::trim) {
+        match field.strip_suffix('?') {
+            Some(name) => optional.insert(name.to_owned()),
+            None => required.insert(field.to_owned()),
+        };
+    }
+    (required, optional)
+}
+
+#[test]
+fn protocol_backlinks_row_lists_exactly_the_served_keys() {
+    let (required, optional) = documented_backlink_fields(&doc("PROTOCOL.md"));
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("vault");
+    fs::create_dir_all(root.join("notes")).unwrap();
+    fs::create_dir_all(root.join("dup")).unwrap();
+    fs::write(root.join("notes/alpha.md"), "# Alpha\n").unwrap();
+    fs::write(root.join("dup/alpha.md"), "# Other alpha\n").unwrap();
+    fs::write(root.join("ordinary.md"), "# Ordinary\n\n[[notes/alpha]]\n").unwrap();
+    fs::write(root.join("ambiguous.md"), "# Ambiguous\n\n[[alpha]]\n").unwrap();
+    fs::write(
+        root.join("property.md"),
+        "---\nrelated: \"[[notes/alpha]]\"\n---\n# Property\n",
+    )
+    .unwrap();
+    let replies = exchange(
+        None,
+        &root,
+        &[r#"{"id":4,"op":"backlinks","path":"notes/alpha.md"}"#.to_owned()],
+    );
+    assert_eq!(replies[0]["ready"], true);
+    let rows = replies[1]["backlinks"].as_array().expect("backlinks array");
+    let keys = |source: &str| -> BTreeSet<String> {
+        rows.iter()
+            .find(|row| row["path"] == source)
+            .unwrap_or_else(|| panic!("no backlink from {source}: {rows:?}"))
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect()
+    };
+    // Positive controls: each kind of link is present and classified.
+    let row = |source: &str| rows.iter().find(|row| row["path"] == source).unwrap();
+    assert_eq!(row("ordinary.md")["ambiguous"], false);
+    assert_eq!(row("ambiguous.md")["ambiguous"], true);
+    assert_eq!(row("property.md")["property"], "related");
+    // Ordinary links serialize exactly the required fields; a frontmatter link
+    // adds exactly the optional ones.
+    assert_eq!(keys("ordinary.md"), required);
+    assert_eq!(keys("ambiguous.md"), required);
+    let all: BTreeSet<String> = required.union(&optional).cloned().collect();
+    assert_eq!(keys("property.md"), all);
+}
