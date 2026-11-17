@@ -8,7 +8,12 @@ installed desktop, provider credentials or a live user environment.
 Current scope:
 
 1. Select the newest published official `pingdotgg/t3code` nightly from one
-   releases inventory. Download its Linux x64 server, verify the release asset's
+   releases inventory. That single REST read uses the job's read-only Actions
+   token, because anonymous reads share the hosted runner IP's 60/hour budget
+   (2026-11-15 run: 403 before any check). The token goes only to
+   `api.github.com`, never to downloads or T3, and is removed from the
+   environment before any child process starts; an exhausted budget reports a
+   readable `rate limit exhausted` error instead of a bare 403. Download its Linux x64 server, verify the release asset's
    SHA256 digest, start headless on loopback with a disposable home/base directory,
    issue a throwaway pairing credential, exchange it and verify an authenticated
    session. Require the descriptor's version to match the selected release.

@@ -1,4 +1,5 @@
 """Pure harness controls: no server, network, provider or shared builder."""
+from email.message import Message
 import io
 import json
 import os
@@ -203,6 +204,53 @@ class ContractHarness(unittest.TestCase):
             self.assertEqual(json.loads((output / 'result.json').read_text()), result)
             bootstrap.assert_not_called()
 
+
+    def test_release_inventory_uses_token_which_no_child_process_inherits(self):
+        release = {'draft': False, 'tag_name': 'v0.1.4-nightly.20261027.3783',
+                   'published_at': '2026-10-27', 'html_url': 'https://example.invalid/release'}
+        inherited = []
+        def command(args, **kwargs):
+            inherited.append('GITHUB_TOKEN' in os.environ)
+            return ''
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, GITHUB_ACTIONS='true', RUNNER_ENVIRONMENT='github-hosted',
+                           GITHUB_TOKEN='actions-token'), \
+                patch.object(nightly, 'command', side_effect=command), \
+                patch.object(nightly, 'request', return_value=json.dumps([release]).encode()) as request, \
+                patch.object(nightly, 'observe_schema'), \
+                patch.object(nightly, 'build_client', side_effect=nightly.subprocess.CalledProcessError(1, 'cargo')):
+            result = nightly.run(Path(directory))
+            self.assertEqual(result['version'], release['tag_name'])
+            self.assertEqual(request.call_args.args[0],
+                             'https://api.github.com/repos/pingdotgg/t3code/releases?per_page=30')
+            self.assertEqual(request.call_args.kwargs['token'], 'actions-token')
+            self.assertEqual(inherited, [False])
+            self.assertNotIn('actions-token', (Path(directory) / 'result.json').read_text())
+
+    def test_token_is_never_sent_outside_github_rest_api(self):
+        with patch.object(nightly.urllib.request, 'urlopen') as urlopen:
+            for url in ['https://codeload.github.com/pingdotgg/t3code/tar.gz/refs/tags/v1',
+                        'https://github.com/pingdotgg/t3code/releases/download/v1/t3.tar.gz',
+                        'http://127.0.0.1:1234/.well-known/t3/environment',
+                        'https://api.github.com.example.invalid/repos']:
+                with self.subTest(url=url), self.assertRaisesRegex(ValueError, 'REST API'):
+                    nightly.request(url, token='actions-token')
+            urlopen.assert_not_called()
+
+    def test_rate_limited_release_inventory_is_readable_error_not_traceback(self):
+        def limited(remaining):
+            headers = Message()
+            headers['x-ratelimit-remaining'] = remaining
+            return nightly.urllib.error.HTTPError('https://api.github.com/', 403,
+                                                  'rate limit exceeded', headers, None)
+        for token, label in [(None, 'anonymous: no GITHUB_TOKEN'), ('t', 'authenticated')]:
+            with self.subTest(token=token), patch.object(nightly, 'request', side_effect=limited('0')):
+                with self.assertRaisesRegex(RuntimeError, 'rate limit exhausted \\(' + label):
+                    nightly.upstream_releases(token)
+        # A 403 that is not a rate limit (e.g. permission) keeps its original error.
+        with patch.object(nightly, 'request', side_effect=limited('42')):
+            with self.assertRaises(nightly.urllib.error.HTTPError):
+                nightly.upstream_releases('t')
 
     def test_additive_schema_delta_passes_but_all_five_runtime_proofs_are_required(self):
         receipt = {'schema_drift': True, 'schema_compatibility': {'status': 'PASS'},

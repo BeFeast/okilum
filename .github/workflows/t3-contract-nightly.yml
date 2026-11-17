@@ -27,6 +27,9 @@ jobs:
         id: probe
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/t3-contract-target
+          # Read-only upstream release inventory; nightly.py removes it from the
+          # environment before any child process starts.
+          GITHUB_TOKEN: ${{ github.token }}
         continue-on-error: true
         run: python3 scripts/t3-contract/nightly.py run --output "$RUNNER_TEMP/t3-contract-report"
       - name: Open or update the single drift incident
