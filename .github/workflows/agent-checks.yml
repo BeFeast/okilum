@@ -215,6 +215,7 @@ jobs:
         run: |
           python3 docs/help/sync/check.py
           python3 docs/help/board/check.py
+          python3 docs/help/projects/check.py
           python3 scripts/rebrand/check_brand.py
       - name: Lint every workspace target offline
         env:
@@ -341,6 +342,7 @@ jobs:
         run: |
           python3 docs/help/sync/check.py
           python3 docs/help/board/check.py
+          python3 docs/help/projects/check.py
           python3 scripts/rebrand/check_brand.py
       - name: Lint every workspace target offline
         env:

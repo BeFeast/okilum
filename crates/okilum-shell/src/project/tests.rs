@@ -542,6 +542,111 @@ fn a_manager_from_another_project_is_not_enabled_for_sending(cx: &mut TestAppCon
     }
 }
 
+/// Every regular file under `root` with its bytes, for "Help writes nothing" checks.
+fn vault_files(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    let mut files = Vec::new();
+    let mut pending = vec![root.to_owned()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                let bytes = std::fs::read(&path).unwrap();
+                files.push((path, bytes));
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+#[gpui::test]
+fn projects_help_opens_offline_from_the_projects_section_with_and_without_projects(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        cx.set_reduce_motion(true);
+        crate::test_init(cx);
+        bind_keys(cx);
+    });
+    for with_project in [false, true] {
+        let fixture = fixture::canonical_tempdir();
+        let vault = fixture.path().join("vault");
+        std::fs::create_dir_all(vault.join("Kitchen remodel/ops")).unwrap();
+        std::fs::write(vault.join("note.md"), "# Retained note\n").unwrap();
+        if with_project {
+            std::fs::write(
+                vault.join("Kitchen remodel/ops/project.yaml"),
+                "kind: knowledge\n",
+            )
+            .unwrap();
+        }
+        let before = vault_files(&vault);
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(vault.clone()),
+                        note: Some("note.md".into()),
+                        index_dir: Some(fixture.path().join("index")),
+                        session_directory: Some(fixture.path().join("state")),
+                        ..Opts::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.simulate_resize(size(px(1400.), px(900.)));
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            reader.update(cx, |view, cx| {
+                view.show_app_section(reader_project_navigation::Section::Projects, window, cx)
+            })
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        reader.read_with(visual, |view, _| {
+            assert_eq!(
+                view.project_navigation.discovery.projects.len(),
+                usize::from(with_project),
+                "positive control: the fixture is what the section shows"
+            );
+        });
+        assert!(visual.debug_bounds("projects-help-content").is_none());
+        let section = visual
+            .debug_bounds("app-section")
+            .expect("section rendered");
+        let picker = visual
+            .debug_bounds("projects-picker")
+            .expect("picker rendered");
+        let entry = visual
+            .debug_bounds("projects-help")
+            .expect("contextual Projects Help entry");
+        assert!(
+            section.contains(&entry.center()) && entry.bottom() <= picker.top(),
+            "Help sits in the section header above the picker: {entry:?} {picker:?}"
+        );
+        visual.simulate_click(entry.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("projects-help-content").is_some(),
+            "a real click opens the written guide"
+        );
+        assert_eq!(visual.opened_url(), None, "reading Help opens no URL");
+        assert_eq!(
+            vault_files(&vault),
+            before,
+            "reading Help writes no vault file"
+        );
+    }
+}
+
 #[gpui::test]
 fn projects_section_is_the_shared_picker_with_quiet_skips_and_row_warnings(
     cx: &mut TestAppContext,

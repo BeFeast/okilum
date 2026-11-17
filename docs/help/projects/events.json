@@ -1,0 +1,126 @@
+[
+  {
+    "start": 0.0,
+    "text": "Start in an ordinary vault. A project adds a Board and records beside your notes."
+  },
+  {
+    "start": 4.43,
+    "text": "Open Settings."
+  },
+  {
+    "start": 7.92,
+    "text": "Choose Features."
+  },
+  {
+    "start": 11.53,
+    "text": "Enable Agents to reveal Projects. No T3 connection is needed."
+  },
+  {
+    "start": 15.11,
+    "text": "Close Settings."
+  },
+  {
+    "start": 18.83,
+    "text": "Open the app menu."
+  },
+  {
+    "start": 22.59,
+    "text": "Choose Projects."
+  },
+  {
+    "start": 26.2,
+    "text": "Projects lists the project folders in this vault. None yet."
+  },
+  {
+    "start": 29.74,
+    "text": "Choose New project."
+  },
+  {
+    "start": 33.48,
+    "text": "Folder: use an existing folder, Kitchen remodel."
+  },
+  {
+    "start": 37.95,
+    "text": "Name the project."
+  },
+  {
+    "start": 42.61,
+    "text": "Keep Knowledge. Leave Create the project in T3 unchecked."
+  },
+  {
+    "start": 47.56,
+    "text": "Choose Create project."
+  },
+  {
+    "start": 52.25,
+    "text": "The folder is now a project. Open it."
+  },
+  {
+    "start": 56.86,
+    "text": "Board, Decisions, Reports and Handovers are the project tabs. Manager is optional."
+  },
+  {
+    "start": 62.29,
+    "text": "Choose Create board."
+  },
+  {
+    "start": 65.86,
+    "text": "Keep the title, then Create board. Repository is optional."
+  },
+  {
+    "start": 70.52,
+    "text": "Open Local cards."
+  },
+  {
+    "start": 74.08,
+    "text": "Choose Add card."
+  },
+  {
+    "start": 77.66,
+    "text": "Enter a task. Todo is the default state."
+  },
+  {
+    "start": 81.89,
+    "text": "Choose Save card."
+  },
+  {
+    "start": 85.44,
+    "text": "Return to Manage board."
+  },
+  {
+    "start": 89.0,
+    "text": "Close Manage board."
+  },
+  {
+    "start": 93.56,
+    "text": "Expand the queue: the saved card is on the Board."
+  },
+  {
+    "start": 99.16,
+    "text": "Open Decisions: read-only notes from the decisions folder."
+  },
+  {
+    "start": 103.62,
+    "text": "Select a decision to read it."
+  },
+  {
+    "start": 109.23,
+    "text": "Reports reads the reports folder the same way."
+  },
+  {
+    "start": 114.83,
+    "text": "Return to Board."
+  },
+  {
+    "start": 118.33,
+    "text": "Choose Files to return to your notes."
+  },
+  {
+    "start": 122.95,
+    "text": "Projects in the top bar reopens a project."
+  },
+  {
+    "start": 126.55,
+    "text": "Select Kitchen remodel. Its Board kept the card."
+  }
+]
