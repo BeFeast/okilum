@@ -22,13 +22,15 @@ run_suite cargo test --locked -p okilum-shell --bin okilum reader_editor::live_p
 run_suite cargo test --locked -p okilum-shell --bin okilum input_anchor_tests::
 run_suite cargo test --locked -p okilum-shell --bin okilum reader_editor::tables::grid::
 # Vendor workspace lock resolution follows vendor-tests.sh: patches add deps.
+# Built against the workspace's patched gpui-pre, as vendor-tests.sh does.
+source scripts/ci/vendor-gpui.sh
 # Root Cargo.lock and gpui core remain unchanged.
-if cargo test --manifest-path vendor/gpui-component/Cargo.toml -p gpui-base --lib input::display_map::projected_cache:: -- --list > "$RUNNER_TEMP/projected-cache-tests.txt"; then
+if cargo test --manifest-path vendor/gpui-component/Cargo.toml --config "$VENDOR_GPUI" -p gpui-base --lib input::display_map::projected_cache:: -- --list > "$RUNNER_TEMP/projected-cache-tests.txt"; then
     grep -q '::dirty_install_uses_real_wrapping_and_matches_cold_after_edit_resize_and_undo: test$' "$RUNNER_TEMP/projected-cache-tests.txt"
-    run_suite cargo test --manifest-path vendor/gpui-component/Cargo.toml -p gpui-base --lib input::display_map::projected_cache::
-    run_suite cargo test --manifest-path vendor/gpui-component/Cargo.toml -p gpui-base --lib input::projection_layout::
+    run_suite cargo test --manifest-path vendor/gpui-component/Cargo.toml --config "$VENDOR_GPUI" -p gpui-base --lib input::display_map::projected_cache::
+    run_suite cargo test --manifest-path vendor/gpui-component/Cargo.toml --config "$VENDOR_GPUI" -p gpui-base --lib input::projection_layout::
     # #653: a long note parsed in chunks gives the tree of a single parse.
-    run_suite cargo test --manifest-path vendor/gpui-component/Cargo.toml -p gpui-base --lib text::format::markdown::tests::chunked_parse
+    run_suite cargo test --manifest-path vendor/gpui-component/Cargo.toml --config "$VENDOR_GPUI" -p gpui-base --lib text::format::markdown::tests::chunked_parse
 else
     failures=$((failures + 1))
 fi
