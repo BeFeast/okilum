@@ -203,7 +203,7 @@ fn catalog() -> Vec<Entry> {
         entry::<ToggleSource>("Edit / Read", View),
         entry::<OpenLivePreview>("Live Preview", View),
         entry::<ToggleNotes>("Notes panel", View),
-        entry::<ToggleLeftMode>("Now / Tree", View),
+        menu_entry::<ToggleLeftMode>("Now / Tree", View),
         entry::<FocusCurrentFolder>("Reveal in Tree", Navigation),
         entry::<ToggleProject>("Projects", Navigation),
         entry::<project_terminal::OpenTerminal>("Open terminal", Navigation),

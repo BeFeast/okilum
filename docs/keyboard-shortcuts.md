@@ -187,6 +187,14 @@ The Mac Copy node binding intentionally follows parent manager default 17
 (Ctrl+Shift+C), overriding #2810 Original item 14's Shift+Cmd+C wording. The
 platform acceptance uses this recorded default and the live keymap.
 
+## Sidebar and split view (#773)
+
+Oleg, 2026-11-17: the Notes sidebar toggles with ⇧⌘\\ (Ctrl+Shift+\\ on
+Linux and Windows; Ctrl+| where the layout reports the bar itself). ⌘\\ /
+Ctrl+\\ is reserved for split view. Now / Tree,
+which used ⇧⌘\\ before, keeps its View menu item and toolbar button and has no
+default shortcut; Settings → Keyboard Shortcuts can assign one.
+
 ## File code operations
 
 File Edit adds these defaults to the live shortcut catalog and Format split
