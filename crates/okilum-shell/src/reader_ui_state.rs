@@ -179,6 +179,9 @@ struct Saved {
     /// Pasting or dropping a file larger than this many MB asks before
     /// copying it into the vault (#1611); 0 never asks.
     paste_ask_above_mb: u32,
+    /// Upload pasted and dropped files to the upload provider after they
+    /// are saved, and link the uploaded copy (#1073). Off by default.
+    upload_pasted_files: bool,
     image_import: crate::note_paste::image_import::Options,
     /// Explicit read-mode choices, independently remembered for each file type.
     code_views: BTreeMap<String, reader_code_file::View>,
@@ -248,6 +251,7 @@ impl Default for Saved {
             close_code_fences: true,
             emoji_completion: true,
             paste_ask_above_mb: crate::note_paste::files::DEFAULT_ASK_ABOVE_MB,
+            upload_pasted_files: false,
             image_import: Default::default(),
             code_views: BTreeMap::new(),
             json_raw: None,
@@ -296,6 +300,7 @@ struct Store {
     close_code_fences_changed: bool,
     emoji_completion_changed: bool,
     paste_ask_changed: bool,
+    upload_pasted_changed: bool,
     image_import_changed: bool,
     code_views_changed: BTreeSet<String>,
     log_editor_changed: bool,
@@ -412,6 +417,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         close_code_fences_changed: false,
         emoji_completion_changed: false,
         paste_ask_changed: false,
+        upload_pasted_changed: false,
         image_import_changed: false,
         code_views_changed: BTreeSet::new(),
         log_editor_changed: false,
@@ -650,6 +656,7 @@ struct WriteJob {
     close_code_fences_changed: bool,
     emoji_completion_changed: bool,
     paste_ask_changed: bool,
+    upload_pasted_changed: bool,
     image_import_changed: bool,
     code_views_changed: BTreeSet<String>,
     log_editor_changed: bool,
@@ -776,6 +783,9 @@ impl WriteJob {
         }
         if self.paste_ask_changed {
             latest.paste_ask_above_mb = self.saved.paste_ask_above_mb;
+        }
+        if self.upload_pasted_changed {
+            latest.upload_pasted_files = self.saved.upload_pasted_files;
         }
         for key in &self.code_views_changed {
             if let Some(view) = self.saved.code_views.get(key) {
@@ -917,6 +927,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.close_code_fences_changed
             && !state.emoji_completion_changed
             && !state.paste_ask_changed
+            && !state.upload_pasted_changed
             && state.code_views_changed.is_empty()
             && !state.log_editor_changed
             && state.source_maps_changed.is_empty()
@@ -960,6 +971,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         close_code_fences_changed: state.close_code_fences_changed,
         emoji_completion_changed: state.emoji_completion_changed,
         paste_ask_changed: state.paste_ask_changed,
+        upload_pasted_changed: state.upload_pasted_changed,
         image_import_changed: state.image_import_changed,
         code_views_changed: state.code_views_changed.clone(),
         log_editor_changed: state.log_editor_changed,
@@ -1792,6 +1804,24 @@ pub(crate) fn set_paste_ask_above_mb(value: u32, cx: &mut App) {
     cx.refresh_windows();
 }
 
+/// Settings → Editor (#1073): upload pasted and dropped files and link the
+/// uploaded copy. Off by default and when the state is not installed.
+pub(crate) fn upload_pasted_files(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.upload_pasted_files)
+}
+
+pub(crate) fn set_upload_pasted_files(value: bool, cx: &mut App) {
+    if !installed(cx) || upload_pasted_files(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.upload_pasted_files = value;
+    state.upload_pasted_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
 /// Application-wide, independent of the current vault. Snapshot at paste start.
 pub(crate) fn image_import_options(cx: &App) -> crate::note_paste::image_import::Options {
     cx.try_global::<Store>()
@@ -2297,6 +2327,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.close_code_fences_changed = false;
         state.emoji_completion_changed = false;
         state.paste_ask_changed = false;
+        state.upload_pasted_changed = false;
         state.image_import_changed = false;
         state.code_views_changed.clear();
         state.log_editor_changed = false;
@@ -2402,6 +2433,21 @@ mod tests {
         assert_eq!(restored.panels, legacy.panels);
         assert_eq!(restored.widths, legacy.widths);
         assert_eq!(restored.project_layout, saved.project_layout);
+    }
+
+    /// #1073: upload of pasted files is off unless the user turns it on,
+    /// including for state saved by builds that had no such setting.
+    #[test]
+    fn upload_of_pasted_files_is_off_by_default_and_round_trips() {
+        assert!(!Saved::default().upload_pasted_files);
+        let older: Saved = serde_json::from_str("{}").unwrap();
+        assert!(!older.upload_pasted_files);
+        let on = Saved {
+            upload_pasted_files: true,
+            ..Default::default()
+        };
+        let restored: Saved = serde_json::from_slice(&serde_json::to_vec(&on).unwrap()).unwrap();
+        assert!(restored.upload_pasted_files);
     }
 
     #[test]
@@ -3256,6 +3302,7 @@ mod tests {
                 close_code_fences_changed: false,
                 emoji_completion_changed: false,
                 paste_ask_changed: false,
+                upload_pasted_changed: false,
                 image_import_changed: false,
                 code_views_changed: BTreeSet::new(),
                 log_editor_changed: false,

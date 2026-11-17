@@ -20,6 +20,7 @@ pub(crate) mod math_preview;
 mod note_open_mode_tests;
 mod open_note_sync;
 mod paste_jobs;
+mod paste_upload;
 mod recovery;
 mod status;
 mod tables;

@@ -77,6 +77,8 @@ impl Reader {
     ) {
         self.pasted_attachments_saved(paths, cx);
         reader_toast::saved_attachments(&self.vault_root, paths, window, cx);
+        // #1073: optional upload, then the note links the uploaded copy.
+        super::paste_upload::start(self, paths, window, cx);
     }
 
     /// Paste as Plain Text and Paste as Titled Link, from keys and menus.
@@ -803,7 +805,7 @@ fn download_images(
 /// A toast with progress for background work that takes longer than
 /// [`PROGRESS_AFTER`]; removed when `finished` is set. `total == 0`: no
 /// percentage.
-fn progress_toast(
+pub(super) fn progress_toast(
     label: String,
     done: Arc<AtomicU64>,
     total: u64,

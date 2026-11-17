@@ -44,6 +44,7 @@ mod markdown_handler;
 #[cfg(test)]
 mod network_write_qa;
 mod note_paste;
+mod note_upload;
 mod open_in;
 mod pdf_engine;
 mod platform;
@@ -1490,7 +1491,7 @@ fn reader_plugins_at(
                 || url.starts_with("http://")
                 || url.starts_with("data:")
             {
-                Some(MarkdownImage::Source(ImageSource::from(url)))
+                Some(MarkdownImage::Source(note_upload::image_source(url)))
             } else {
                 None
             }
