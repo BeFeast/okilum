@@ -226,6 +226,14 @@ Its owned serde error survives above the automatic threshold; Go to error maps
 its byte offset to the correct Raw part. Read-only editor diagnostics use the
 same whole-file error, translated into the visible page.
 
+The read-only lock by the name gives its reason: a view-only format, a non-UTF-8
+XML declaration, a folder that failed an Edit attempt, or size. The size lock is
+«Read-only: N MB is over the 4 MB editing limit» for every code format except
+JSON (decision 17.11, #2804 supersedes the original #2809 acceptance line «a
+5.2 MB JSON shows the lock»). A JSON file opens in Edit up to the 64 MiB preview
+and Validate/Format/Repair budget, so a 5.2 MB JSON has no lock and the pencil
+stays. CSV and TSV have no size cap.
+
 The shared 48 px header has a reusable 28 px segmented switch. At narrow width
 it keeps icons and the active label before Fold/Unfold yield into Document
 actions. A single-view source file has no switch. All tooltips use live bindings.
