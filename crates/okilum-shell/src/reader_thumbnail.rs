@@ -37,7 +37,12 @@ pub(super) fn eligible(rel: &str) -> bool {
         .unwrap_or_default()
         .to_ascii_lowercase();
     // Keep vector fidelity and animation in the existing image renderer.
-    !matches!(ext.as_str(), "svg" | "gif" | "webp" | "apng")
+    // HEIC/HEIF use the image viewer's bounded decoder on every platform, so
+    // its live refresh and decoder messages reach the preview (#3064).
+    !matches!(
+        ext.as_str(),
+        "svg" | "gif" | "webp" | "apng" | "heic" | "heif"
+    )
         && !okilum_core::excalidraw::is_drawing(rel)
 }
 
@@ -310,6 +315,8 @@ mod tests {
         assert!(eligible("deck.pptx"));
         assert!(!eligible("animated.GIF"));
         assert!(!eligible("diagram.svg"));
+        assert!(!eligible("photo.HEIC"));
+        assert!(!eligible("photo.heif"));
     }
 }
 
