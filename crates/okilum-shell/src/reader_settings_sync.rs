@@ -1132,7 +1132,8 @@ fn with_helper_failure(error: anyhow::Error) -> anyhow::Error {
 
 /// One Sync action at a time per process: Settings, `okilum sync serve` and the
 /// commands other processes forward to this one share a controller (#2589).
-fn serial_actions() -> std::sync::MutexGuard<'static, ()> {
+/// Uninstall holds it across the helper's stop and the purge (#588).
+pub(crate) fn serial_actions() -> std::sync::MutexGuard<'static, ()> {
     static ACTIONS: std::sync::Mutex<()> = std::sync::Mutex::new(());
     ACTIONS
         .lock()
