@@ -201,15 +201,23 @@ impl offer::Pasteboard for DroppedFiles {
 
 /// Text, rich text, a URL or image data dropped onto a note (#1615), routed
 /// like a paste of the same representations. GPUI read the contents when it
-/// was dropped; only the platform's rich-text reader is asked for more.
+/// was dropped, bounded and only the useful flavors; only the platform's
+/// rich-text reader is asked for more.
 pub struct DroppedData(pub gpui::ExternalData);
 
 impl offer::Pasteboard for DroppedData {
     fn change_count(&self) -> i64 {
         0
     }
+    /// Only the types GPUI read: a skipped representation (over its size
+    /// limit, a second image, a private type) is not offered to the router.
     fn types(&self) -> Vec<String> {
-        self.0.types().iter().map(ToString::to_string).collect()
+        self.0
+            .types()
+            .iter()
+            .filter(|kind| self.0.contents(kind).is_some())
+            .map(ToString::to_string)
+            .collect()
     }
     fn data(&self, kind: &str) -> Option<Vec<u8>> {
         self.0.contents(kind).map(<[u8]>::to_vec)
