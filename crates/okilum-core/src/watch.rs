@@ -24,6 +24,11 @@
 //!   the tree lists attachments too (#8). Directory events report scope hints: a populated tree can arrive before
 //!   recursive watches observe its individual files. Only lost events force rescan. The legacy in-vault
 //!   index directory is excluded to avoid reacting to its own writes.
+//! - **Network roots are polled, explicitly.** Native APIs do not report
+//!   another SMB/NFS client's writes, so [`VaultWatcher::polling`] walks the
+//!   vault's metadata on its own thread at an adaptive interval and feeds the
+//!   differences through the same coalescing (#516). The reader says so in
+//!   its header; it is never a silent substitute for native events.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -81,6 +86,9 @@ pub const MAX_BATCH_AGE: Duration = Duration::from_secs(2);
 
 #[cfg(target_os = "linux")]
 mod mounts;
+mod polling;
+
+pub use polling::{PollStatus, MAX_POLL_INTERVAL, MIN_POLL_INTERVAL};
 
 /// Keep native watches on remote FUSE, but do not promise other clients' writes.
 /// This preparation-worker probe never starts a scan or a periodic timer.
@@ -142,11 +150,17 @@ pub fn is_network_root(root: &Path) -> bool {
     }
 }
 
+/// Where events come from. Dropping either stops it.
+enum Backend {
+    Native(RecommendedWatcher),
+    /// Network roots (#516): periodic metadata walks, see [`polling`].
+    Polling(polling::Poller),
+}
+
 pub struct VaultWatcher {
     root: PathBuf,
     rx: mpsc::Receiver<notify::Result<Event>>,
-    // Dropping the watcher stops it; it is held only for that.
-    _watcher: RecommendedWatcher,
+    backend: Backend,
     folders: Option<BTreeSet<String>>,
     pending: Changes,
     last_event: Option<Instant>,
@@ -165,7 +179,7 @@ impl VaultWatcher {
         Ok(VaultWatcher {
             root: root.to_path_buf(),
             rx,
-            _watcher: watcher,
+            backend: Backend::Native(watcher),
             folders: None,
             pending: Changes::default(),
             last_event: None,
@@ -184,12 +198,45 @@ impl VaultWatcher {
         Ok(Self {
             root: root.to_path_buf(),
             rx,
-            _watcher: watcher,
+            backend: Backend::Native(watcher),
             folders: Some(BTreeSet::new()),
             pending: Changes::default(),
             last_event: None,
             first_event: None,
         })
+    }
+
+    /// Watch a network root by periodic metadata walks instead of native
+    /// events, which do not report other clients' writes (#516). The
+    /// baseline walk runs on the calling (preparation) thread before this
+    /// returns, so register before enumerating the inventory; later walks run
+    /// on their own thread and arrive through [`poll`](Self::poll) like native
+    /// events. Never fails on an unreachable share: walks skip until it
+    /// answers, and a baseline missed at registration requests one rescan.
+    pub fn polling(root: &Path) -> std::io::Result<VaultWatcher> {
+        Self::polling_with(root, polling::Config::default())
+    }
+
+    pub(crate) fn polling_with(root: &Path, config: polling::Config) -> std::io::Result<Self> {
+        let (tx, rx) = mpsc::channel();
+        let poller = polling::Poller::start(root, tx, config)?;
+        Ok(VaultWatcher {
+            root: root.to_path_buf(),
+            rx,
+            backend: Backend::Polling(poller),
+            folders: None,
+            pending: Changes::default(),
+            last_event: None,
+            first_event: None,
+        })
+    }
+
+    /// `Some` for the network polling fallback: interval and availability.
+    pub fn polling_status(&self) -> Option<PollStatus> {
+        match &self.backend {
+            Backend::Polling(poller) => Some(poller.status()),
+            Backend::Native(_) => None,
+        }
     }
 
     /// Register before enumeration; a new subscription also refreshes that
@@ -198,9 +245,12 @@ impl VaultWatcher {
         let Some(watched) = self.folders.as_mut() else {
             return Ok(());
         };
+        let Backend::Native(native) = &mut self.backend else {
+            return Ok(());
+        };
         // Release obsolete subscriptions even if another folder cannot be added.
         for folder in watched.difference(folders).cloned().collect::<Vec<_>>() {
-            let _ = self._watcher.unwatch(&self.root.join(&folder));
+            let _ = native.unwatch(&self.root.join(&folder));
             watched.remove(&folder);
         }
         let mut first_error = None;
@@ -213,7 +263,7 @@ impl VaultWatcher {
                         "Folder watch escaped the viewer root",
                     ));
                 }
-                self._watcher.watch(&resolved, RecursiveMode::NonRecursive)
+                native.watch(&resolved, RecursiveMode::NonRecursive)
             })();
             match registration {
                 Ok(()) => {
