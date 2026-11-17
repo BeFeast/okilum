@@ -950,3 +950,31 @@ mod tests {
         );
     }
 }
+
+/// The installed app may have replaced its helper while the old staged copy
+/// kept running. Keep signature/native work off the UI and cold launch paths.
+#[cfg(not(test))]
+pub(super) fn refresh_sync_helper(access: okilum_t3::NetworkAccess) {
+    if crate::reader_history::isolated_state_directory().is_some() {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("sync-helper-refresh".into())
+        .spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            if !access.allowed() {
+                return;
+            }
+            let _scope = access.enter();
+            match okilum_sync_controller::sidecar::windows::restage::refresh_current_app() {
+                Ok(true) => log::info!("Sync helper refreshed from the installed app"),
+                Ok(false) => (),
+                Err(error) => {
+                    log::warn!("Sync helper refresh pending; retry next launch: {error:#}")
+                }
+            }
+        });
+    if let Err(error) = spawned {
+        log::warn!("Sync helper refresh could not start: {error}");
+    }
+}

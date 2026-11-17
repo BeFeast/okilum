@@ -428,3 +428,6 @@ mod connection;
 
 #[cfg(windows)]
 mod guard;
+
+#[cfg(target_os = "windows")]
+pub mod restage;
