@@ -25,6 +25,7 @@ TESTS = {
     'issue2582_readded_folder_id_never_inherits_index_evidence',
     'issue2582_missing_root_admission_is_held_through_startup',
     'issue2582_redirected_missing_root_is_refused',
+    'issue2582_root_swapped_before_start_never_syncs',
     'issue2582_linux_bootstrap_and_replaced_bindings_fail_closed',
     'issue2043_scoped_hold_blocks_real_transfer_and_recovers_across_restart',
     'issue2504_reader_writers_and_pinned_transport_share_one_restart_safe_hold',

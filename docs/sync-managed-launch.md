@@ -195,19 +195,22 @@ for it, and lets the runtime start only when all of these hold:
   then match the saved root identity, or the folder is paused before the
   leases are released.
 
-Such a folder starts unpaused, because only a startup pause recreates a root. As
-its first action after readiness, the launcher parks it with a runtime pause
-(`model.restartFolder` never recreates a root) and records it in
-`parked-folders.json`. So a foreign directory with a Syncthing marker at that
-path cannot receive data. Every 2 seconds the launcher's supervision loop
-unparks it only when its own root is back with the saved identity and its
-authority admits a writer; the next launch does the same check offline. An
-explicit user pause (`FolderController::pause`) takes the folder off the parked
-list, so a user's Disable stays sticky. A folder the hold fence closes is never
-unparked automatically. Supervision takes the launch gate only for an actual
-transition, because configuration admission refuses a busy gate. Remaining
-window: from child start until that first post-readiness pause, the folder is
-unpaused with its root absent.
+Such a folder starts unpaused, because only a startup pause recreates a root.
+Before the child starts, the launch command fences it in the offline
+configuration. It replaces the folder's `markerName` with a unique
+`.okilum-missing-root-<uuid>` and records the original in
+`fenced-folders.json`. Pinned v2.1.6 `CheckPath` requires
+`<root>/<markerName>`, and `CreateMarker` never creates a non-default marker.
+So no directory that appears at the path, before or after child start and
+including a foreign one with `.stfolder`, can be scanned or synced, and a
+folder with history is never recreated. The original marker is restored, never
+through a pause, only when the saved root identity is back and the authority
+admits a writer. That happens at readiness under the startup leases, in the
+launcher's 2-second supervision loop, or offline at the next launch. The
+folder's pause state is never touched, so a user's Disable stays as it is. A
+held folder whose root returns gets its real marker back and stays closed by
+the hold fence until explicit recovery. Supervision takes the launch gate only
+for an actual transition, because configuration admission refuses a busy gate.
 
 Every other missing root (paused, without index history, with an unfinished or
 unreadable hold, or unbound) keeps the launch fail-closed, as before. The runtime
@@ -227,10 +230,14 @@ Pinned-runtime controls:
 
 - `issue2582_missing_root_never_stops_the_runtime_across_launches`: admitted
   no-op reconciliation keeps the evidence. Across two launches with one root
-  missing, the folder is parked, the other folder transfers, the root is never
-  recreated and no deletion propagates. While the runtime runs, a foreign
-  directory with a `.stfolder` marker at the path stays parked and receives
-  nothing; the saved root returning is unparked and syncs.
+  missing, the folder is fenced and never paused, the other folder transfers,
+  the root is never recreated and no deletion propagates. While the runtime
+  runs, a foreign directory with a `.stfolder` marker at the path stays fenced
+  and receives nothing. When the saved root returns, it is unfenced and syncs.
+- `issue2582_root_swapped_before_start_never_syncs`: a foreign Syncthing
+  directory takes the missing path between the launch decision and child start
+  (fixture-only launch pause). No byte moves in either direction while the
+  other vault transfers. When the saved root returns, it is unfenced and syncs.
 - `issue2582_unsafe_missing_roots_fail_closed_without_recreating_them` covers a
   user-paused folder, a sequence-zero folder, and a dead holder's unfinished
   hold. For each, the launch is refused twice without creating the root. For
@@ -248,7 +255,7 @@ Pinned-runtime controls:
   launch is still refused and nothing is published into it.
 - `issue2582_folder_added_after_launch_gains_evidence_without_restart`: a
   folder enrolled after launch gets evidence from the live runtime. After an
-  unmount, the next launch starts and parks it while the other vault transfers.
+  unmount, the next launch starts and fences it while the other vault transfers.
 - `issue2582_readded_folder_id_never_inherits_index_evidence`: a removal whose
   REST call fails keeps the evidence. Re-adding the same ID from an empty share
   revokes it, and the history-free instance earns none; with its root removed,

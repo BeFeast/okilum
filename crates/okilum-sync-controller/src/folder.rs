@@ -268,9 +268,6 @@ impl FolderController {
         j.desired_paused = paused;
         j.changed_pause = true;
         self.save(&j)?;
-        // The user's explicit decision now owns this folder's pause state.
-        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-        crate::managed_launch::folder_pause_decided(&j.daemon, &j.descriptor.folder_id)?;
         api.patch_folder(&j.descriptor.folder_id, &json!({"paused":paused}))?;
         self.status_locked(&mut j, &api)
     }

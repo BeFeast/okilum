@@ -181,27 +181,51 @@ fn same_missing_root(configured: &Path, saved: &Path) -> bool {
 /// authenticated generation. Pinned v2.1.6 recreates the root of a folder with
 /// sequence zero (`model.newFolder`), so only these may start while missing.
 const INDEXED: &str = "indexed-folders.json";
-/// Folders this launcher paused at runtime because their root was missing.
-/// A runtime pause never recreates a root (`model.restartFolder`), unlike a
-/// startup pause. Only a verified unpark (saved root identity, admitted
-/// authority) or an explicit user pause decision removes an ID.
-const PARKED: &str = "parked-folders.json";
+/// Folders whose root was missing at launch, fenced by a unique Syncthing
+/// marker name, mapped to their original marker. `CheckPath` requires
+/// `<root>/<markerName>` and a non-default marker is never created, so no
+/// directory that appears at the path (a foreign `.stfolder` included) can be
+/// scanned or synced, and a folder with history is never recreated. Only the
+/// saved root identity with an admitted authority restores the original.
+const FENCED: &str = "fenced-folders.json";
+const DEFAULT_MARKER: &str = ".stfolder";
+fn read_fenced(r: &Reference) -> Result<BTreeMap<String, String>> {
+    let path = r.directory.join(FENCED);
+    if !path.try_exists()? {
+        return Ok(BTreeMap::new());
+    }
+    Ok(serde_json::from_slice(&private::read(&path)?)?)
+}
+fn write_fenced(r: &Reference, fenced: &BTreeMap<String, String>) -> Result<()> {
+    let path = r.directory.join(FENCED);
+    if fenced.is_empty() {
+        if path.try_exists()? {
+            std::fs::remove_file(path)?;
+        }
+        return Ok(());
+    }
+    private::write(&path, &serde_json::to_vec(fenced)?)
+}
+fn marker_of(folder: &Element) -> Option<String> {
+    folder
+        .get_child("markerName")
+        .and_then(Element::get_text)
+        .map(|text| text.into_owned())
+}
+fn set_marker(folder: &mut Element, marker: &str) {
+    folder
+        .children
+        .retain(|node| !matches!(node, XMLNode::Element(e) if e.name == "markerName"));
+    let mut element = Element::new("markerName");
+    element.children.push(XMLNode::Text(marker.into()));
+    folder.children.push(XMLNode::Element(element));
+}
 fn read_ids(r: &Reference, name: &str) -> Result<Vec<String>> {
     let path = r.directory.join(name);
     if !path.try_exists()? {
         return Ok(Vec::new());
     }
     Ok(serde_json::from_slice(&private::read(&path)?)?)
-}
-fn write_ids(r: &Reference, name: &str, ids: &[String]) -> Result<()> {
-    let path = r.directory.join(name);
-    if ids.is_empty() {
-        if path.try_exists()? {
-            std::fs::remove_file(path)?;
-        }
-        return Ok(());
-    }
-    private::write(&path, &serde_json::to_vec(ids)?)
 }
 /// The evidence belongs to one folder instance. Creating an instance
 /// (`add_paused_folder`) revokes it first, under the configuration admission
@@ -215,32 +239,6 @@ pub(crate) fn folder_instance_changing(daemon: &DaemonIdentity, folder: &str) ->
         return Ok(());
     }
     revoke_index_evidence(&existing(home)?, folder)
-}
-/// An explicit user pause decision owns the folder's pause state from now on:
-/// the launcher must never unpark (resume) it. Called under the admission that
-/// holds the launch gate.
-pub(crate) fn folder_pause_decided(daemon: &DaemonIdentity, folder: &str) -> Result<()> {
-    let home = daemon.config_file.parent().context("daemon home missing")?;
-    if !directory(home)?.join(PARKED).try_exists()? {
-        return Ok(());
-    }
-    let r = existing(home)?;
-    let mut parked = read_ids(&r, PARKED)?;
-    let before = parked.len();
-    parked.retain(|id| id != folder);
-    if parked.len() != before {
-        write_ids(&r, PARKED, &parked)?;
-    }
-    Ok(())
-}
-fn set_unpaused(folder: &mut Element) {
-    folder.attributes.remove("paused");
-    folder
-        .children
-        .retain(|node| !matches!(node, XMLNode::Element(e) if e.name == "paused"));
-    let mut paused = Element::new("paused");
-    paused.children.push(XMLNode::Text("false".into()));
-    folder.children.push(XMLNode::Element(paused));
 }
 fn revoke_index_evidence(r: &Reference, folder: &str) -> Result<()> {
     let path = r.directory.join(INDEXED);
@@ -725,8 +723,9 @@ struct FencedFolders {
     leases: Vec<WriterLease>,
     closed: Vec<String>,
     paused_at_start: Vec<String>,
-    /// Admitted while their root was absent; checked again after readiness.
-    returning: Vec<(String, Folder)>,
+    /// Admitted while their root was absent (with their original marker);
+    /// checked again after readiness.
+    returning: Vec<(String, Folder, String)>,
 }
 fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
     let mut xml = Element::parse(read_configuration(&b.home.join("config.xml"))?.as_slice())?;
@@ -736,10 +735,10 @@ fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
         } else {
             Vec::new()
         };
-    let parked: Vec<String> = if cfg!(target_os = "linux") {
-        read_ids(r, PARKED)?
+    let fenced: BTreeMap<String, String> = if cfg!(target_os = "linux") {
+        read_fenced(r)?
     } else {
-        Vec::new()
+        BTreeMap::new()
     };
     let mut leases: Vec<WriterLease> = Vec::new();
     let mut closed = Vec::new();
@@ -763,11 +762,8 @@ fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
             // under a writer lease admitted without the root and retained
             // through startup, like a present root's lease. Every other
             // missing root keeps the whole launch fail-closed.
-            let parked_here = parked.iter().any(|known| known == &id);
-            // A folder this launcher parked is paused only at runtime; it starts
-            // unpaused again so Syncthing does not recreate its root.
-            let paused = !parked_here
-                && e.get_child("paused").and_then(Element::get_text).as_deref() == Some("true");
+            let paused =
+                e.get_child("paused").and_then(Element::get_text).as_deref() == Some("true");
             let saved = b
                 .folders
                 .get(&id)
@@ -785,10 +781,15 @@ fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
                 )
             })?;
             leases.push(lease);
-            if parked_here {
-                set_unpaused(e);
-            }
-            returning.push((id, saved.unwrap().clone()));
+            // Fence before the child starts: no directory that appears at this
+            // path can be scanned or synced until the saved root is verified.
+            let original = fenced
+                .get(&id)
+                .cloned()
+                .or_else(|| marker_of(e))
+                .unwrap_or_else(|| DEFAULT_MARKER.into());
+            set_marker(e, &format!(".okilum-missing-root-{}", Uuid::new_v4()));
+            returning.push((id, saved.unwrap().clone(), original));
             continue;
         }
         let saved = b
@@ -803,18 +804,17 @@ fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
             root.canonicalize()? == saved.root && identity(root)? == saved.identity,
             "managed folder replaced"
         );
+        // The saved root is back (identity verified above): restore a fence
+        // marker left by an earlier missing-root launch. A hold still closes
+        // the folder below; its later explicit resume needs the real marker.
+        if let Some(original) = fenced.get(&id) {
+            set_marker(e, original);
+        }
         let a = saved.authority.open()?;
         // An admission refusal can be a hold OR uncertainty. Never infer Open
         // from a failed read. The actual admission closes check/effect races.
         match a.admit() {
-            Ok(lease) => {
-                // Its root is back with the saved identity and the authority
-                // admits a writer: lift this launcher's own runtime park.
-                if parked.iter().any(|known| known == &id) {
-                    set_unpaused(e);
-                }
-                leases.push(lease);
-            }
+            Ok(lease) => leases.push(lease),
             Err(_) => {
                 // Validate durable state; corruption fails the entire launch.
                 ensure!(
@@ -959,24 +959,28 @@ pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
                     // A root admitted while absent may have returned during
                     // startup. Only exactly the saved root may run; anything
                     // else is paused now, before the leases are released.
-                    // Still missing: park it with a runtime pause, which never
-                    // recreates a root, so only a verified unpark lets it
-                    // publish again.
-                    let mut parked = Vec::new();
-                    for (id, saved) in &returning {
+                    // A root that returned during startup with the saved
+                    // identity is unfenced now, under the startup leases;
+                    // anything else stays fenced by its unique marker.
+                    let mut still_fenced = BTreeMap::new();
+                    for (id, saved, original) in &returning {
                         let root = Path::new(saved.root.as_path());
-                        if !root.try_exists()? {
-                            api.patch_folder(id, &serde_json::json!({"paused":true}))?;
-                            parked.push(id.clone());
-                            closed.push(id.clone());
-                        } else if root.canonicalize()? != saved.root
-                            || identity(root)? != saved.identity
+                        if root.try_exists()?
+                            && root.canonicalize()? == saved.root
+                            && identity(root)? == saved.identity
                         {
-                            api.patch_folder(id, &serde_json::json!({"paused":true}))?;
-                            closed.push(id.clone());
+                            api.patch_folder(id, &serde_json::json!({"markerName": original}))?;
+                        } else {
+                            ensure!(
+                                api.folder(id)?["markerName"]
+                                    .as_str()
+                                    .is_some_and(|m| m.starts_with(".okilum-missing-root-")),
+                                "missing-root fence readback failed"
+                            );
+                            still_fenced.insert(id.clone(), original.clone());
                         }
                     }
-                    write_ids(r, PARKED, &parked)?;
+                    write_fenced(r, &still_fenced)?;
                     for id in &closed {
                         ensure!(
                             api.folder(id)?["paused"] == true,
@@ -984,8 +988,8 @@ pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
                         );
                     }
                     // Evidence for a later launch whose root has gone missing.
-                    // Monotonic per instance: a paused (for example just parked)
-                    // folder reports no sequence, so readiness only adds IDs;
+                    // Monotonic per instance: a paused or fenced folder may
+                    // report no sequence, so readiness only adds IDs;
                     // creating an instance is what revokes them.
                     let configured: Vec<String> = api.config()?["folders"]
                         .as_array()
@@ -1046,8 +1050,9 @@ pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
 /// One supervision round of the live, owned runtime (#2582 review):
 /// - records index evidence as soon as a folder instance has index history,
 ///   so a folder added or first filled after launch needs no restart;
-/// - unparks a parked folder only when its root is back with the saved
-///   identity and its authority admits a writer (held for the PATCH).
+/// - unfences a missing-root folder only when its root is back with the saved
+///   identity and its authority admits a writer (held for the PATCH). Its
+///   pause state is never touched, so a user's Disable stays as it is.
 ///
 /// Configuration admission refuses a busy gate instead of waiting, so a round
 /// takes the gate only when it found a transition, and re-reads under it.
@@ -1068,17 +1073,17 @@ fn supervise(r: &Reference, daemon: &DaemonIdentity) -> Result<()> {
     };
     // Unlocked pre-check: most rounds find nothing and never touch the gate.
     let indexed = read_ids(r, INDEXED)?;
-    let parked = read_ids(r, PARKED)?;
+    let fenced = read_fenced(r)?;
     let fresh: Vec<String> = configured(&api)?
         .into_iter()
         .filter(|id| !indexed.contains(id) && history(&api, id))
         .collect();
-    let returned = parked.iter().any(|id| {
-        r.load()
-            .ok()
-            .and_then(|b| b.folders.get(id).map(|f| f.root.exists()))
-            == Some(true)
-    });
+    let returned = !fenced.is_empty()
+        && r.load().is_ok_and(|b| {
+            fenced
+                .keys()
+                .any(|id| b.folders.get(id).is_some_and(|f| f.root.exists()))
+        });
     if fresh.is_empty() && !returned {
         return Ok(());
     }
@@ -1098,18 +1103,16 @@ fn supervise(r: &Reference, daemon: &DaemonIdentity) -> Result<()> {
     if indexed.len() != before {
         private::write(&r.directory.join(INDEXED), &serde_json::to_vec(&indexed)?)?;
     }
-    let parked = read_ids(r, PARKED)?;
-    let mut remaining = Vec::new();
-    for id in &parked {
+    let fenced = read_fenced(r)?;
+    let mut remaining = BTreeMap::new();
+    for (id, original) in &fenced {
         let Some(saved) = b.folders.get(id).filter(|_| configured.contains(id)) else {
-            continue; // removed meanwhile: nothing to unpark
+            continue; // removed meanwhile: nothing to unfence
         };
         let root = saved.root.as_path();
-        if !root.try_exists()? {
-            remaining.push(id.clone());
-            continue;
-        }
-        let same = root.canonicalize()? == saved.root && identity(root)? == saved.identity;
+        let same = root.try_exists()?
+            && root.canonicalize()? == saved.root
+            && identity(root)? == saved.identity;
         let lease = if same {
             saved.authority.open().and_then(|a| a.admit()).ok()
         } else {
@@ -1117,13 +1120,15 @@ fn supervise(r: &Reference, daemon: &DaemonIdentity) -> Result<()> {
         };
         match lease {
             Some(_lease) => {
-                api.patch_folder(id, &serde_json::json!({"paused":false}))?;
+                api.patch_folder(id, &serde_json::json!({"markerName": original}))?;
             }
-            None => remaining.push(id.clone()),
+            None => {
+                remaining.insert(id.clone(), original.clone());
+            }
         }
     }
-    if remaining != parked {
-        write_ids(r, PARKED, &remaining)?;
+    if remaining != fenced {
+        write_fenced(r, &remaining)?;
     }
     Ok(())
 }
