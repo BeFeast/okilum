@@ -21,6 +21,7 @@ TESTS = {
     'issue2582_autonomous_restart_fences_dead_holder_and_other_folder_transfers',
     'issue2582_missing_root_never_stops_the_runtime_across_launches',
     'issue2582_unsafe_missing_roots_fail_closed_without_recreating_them',
+    'issue2582_folder_added_after_launch_gains_evidence_without_restart',
     'issue2582_readded_folder_id_never_inherits_index_evidence',
     'issue2582_missing_root_admission_is_held_through_startup',
     'issue2582_redirected_missing_root_is_refused',

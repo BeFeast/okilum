@@ -1981,21 +1981,7 @@ impl MissingRootFixture {
             _root: root,
         };
         for id in ids {
-            fs::create_dir(fixture.vault(id))?;
-            fs::create_dir(fixture.origin(id))?;
-            FolderController::new(fixture.state(id)).enroll(
-                &fixture.identity,
-                std::slice::from_ref(&fixture.identity.config_file),
-                &approval(&fixture.identity, &fixture.source, id),
-                &fixture.vault(id),
-            )?;
-            add_source(&fixture.source, &fixture.identity, id, &fixture.origin(id))?;
-            if !empty.contains(id) {
-                fs::write(
-                    fixture.origin(id).join("control.md"),
-                    format!("{id} before"),
-                )?;
-            }
+            fixture.enroll(id, !empty.contains(id))?;
         }
         for id in ids.iter().filter(|id| !empty.contains(id)) {
             fixture.transfers(id, "control.md")?;
@@ -2003,6 +1989,29 @@ impl MissingRootFixture {
         // A live generation records which folders have index history.
         fixture.relaunch()?;
         Ok(fixture)
+    }
+    /// Enroll `id` from a fresh source share; `file` seeds `control.md`.
+    fn enroll(&self, id: &str, file: bool) -> Result<()> {
+        fs::create_dir_all(self.vault(id))?;
+        fs::create_dir_all(self.origin(id))?;
+        FolderController::new(self.state(id)).enroll(
+            &self.identity,
+            std::slice::from_ref(&self.identity.config_file),
+            &approval(&self.identity, &self.source, id),
+            &self.vault(id),
+        )?;
+        add_source(&self.source, &self.identity, id, &self.origin(id))?;
+        if file {
+            fs::write(self.origin(id).join("control.md"), format!("{id} before"))?;
+        }
+        Ok(())
+    }
+    fn ids(&self, name: &str) -> Result<Vec<String>> {
+        let path = self.launch_dir().join(name);
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        Ok(serde_json::from_slice(&fs::read(path)?)?)
     }
     fn vault(&self, id: &str) -> PathBuf {
         self.base.join(id)
@@ -2064,24 +2073,21 @@ impl MissingRootFixture {
 
 /// #2582: an indexed, unpaused folder whose root disappeared (moved, deleted,
 /// unmounted) and that has no unfinished hold never stops the runtime for the
-/// other vaults. Pinned v2.1.6 only reports `ErrPathMissing` for it.
+/// other vaults. It starts unpaused (no root recreation) and is parked by a
+/// runtime pause; only its own root returning with the saved identity unparks it.
 #[test]
 #[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
 fn issue2582_missing_root_never_stops_the_runtime_across_launches() -> Result<()> {
     use okilum_sync_controller::network_policy::{self, Policy};
     let f = MissingRootFixture::new(&["kept", "gone"], &[])?;
-    let indexed: Vec<String> =
-        serde_json::from_slice(&fs::read(f.launch_dir().join("indexed-folders.json"))?)?;
-    assert!(indexed.contains(&"kept".into()) && indexed.contains(&"gone".into()));
+    assert!(f.ids("indexed-folders.json")?.contains(&"gone".into()));
     // No-op reconciliation (the Sync refresh) is admitted configuration that
     // changes no folder instance: it keeps the evidence.
     for _ in 0..3 {
         FolderController::new(f.state("gone")).pause(false)?;
     }
-    let indexed: Vec<String> =
-        serde_json::from_slice(&fs::read(f.launch_dir().join("indexed-folders.json"))?)?;
     assert!(
-        indexed.contains(&"gone".into()),
+        f.ids("indexed-folders.json")?.contains(&"gone".into()),
         "no-op reconciliation keeps index evidence"
     );
     f.services.crash_runtime()?;
@@ -2091,11 +2097,8 @@ fn issue2582_missing_root_never_stops_the_runtime_across_launches() -> Result<()
         f.services.remember_pid(f.home())?;
         assert!(live_generation(f.home())?.paused_at_start.is_empty());
         let api = f.identity.connect()?;
-        assert_eq!(
-            api.folder("gone")?["paused"],
-            false,
-            "a missing root is never paused"
-        );
+        assert_eq!(api.folder("gone")?["paused"], true, "parked at runtime");
+        assert!(f.ids("parked-folders.json")?.contains(&"gone".into()));
         let marker = format!("while-gone-{launch}.md");
         fs::write(f.origin("kept").join(&marker), b"other vault keeps syncing")?;
         f.transfers("kept", &marker)?;
@@ -2109,7 +2112,7 @@ fn issue2582_missing_root_never_stops_the_runtime_across_launches() -> Result<()
             "a missing root never propagates deletions"
         );
         if launch == 1 {
-            // Runtime-wide effects need no lease on an absent root.
+            // Runtime-wide effects hold a root-independent lease for it.
             network_policy::reconcile(
                 f.home().parent().unwrap(),
                 &f.identity,
@@ -2119,39 +2122,80 @@ fn issue2582_missing_root_never_stops_the_runtime_across_launches() -> Result<()
                 FolderController::new(f.state("gone")).pause(true).is_err(),
                 "a configuration effect on the missing folder itself is refused"
             );
+            f.services.crash_runtime()?;
         }
-        f.services.crash_runtime()?;
     }
-    // The second missing-root launch kept its index evidence.
-    let indexed: Vec<String> =
-        serde_json::from_slice(&fs::read(f.launch_dir().join("indexed-folders.json"))?)?;
-    assert!(indexed.contains(&"gone".into()));
+    // While the runtime runs, a foreign folder with a Syncthing marker appears
+    // at the path: it is not the saved root, so it stays parked and unpublished.
+    fs::create_dir_all(f.vault("gone").join(".stfolder"))?;
+    fs::write(
+        f.origin("gone").join("foreign-check.md"),
+        b"must not arrive early",
+    )?;
+    for _ in 0..4 {
+        f.source.api.scan("gone")?;
+        thread::sleep(Duration::from_secs(2));
+    }
+    let api = f.identity.connect()?;
+    assert_eq!(api.folder("gone")?["paused"], true);
+    assert!(!f.vault("gone").join("foreign-check.md").exists());
+    fs::remove_dir_all(f.vault("gone"))?;
+    // The saved root returns while the runtime runs: supervision unparks it.
     fs::rename(f.away("gone"), f.vault("gone"))?;
-    f.services.launch()?;
-    f.services.remember_pid(f.home())?;
-    fs::write(f.origin("gone").join("after-return.md"), b"syncs again")?;
-    f.transfers("gone", "after-return.md")?;
+    wait("returned root unparked", || {
+        Ok(api.folder("gone")?["paused"] == false)
+    })?;
+    assert!(f.ids("parked-folders.json")?.is_empty());
+    f.transfers("gone", "foreign-check.md")?;
     f.runtime.disable()?;
     Ok(())
 }
 
-/// #2582 review: index evidence belongs to one folder instance. Removing a
-/// folder and re-adding the same ID revokes it, so a missing root of the new
-/// instance (possibly sequence zero) keeps the launch fail-closed.
+/// #2582 review: a folder added (or first filled) after launch gets index
+/// evidence from the live runtime, so an unmount before any restart does not
+/// stop the runtime for the other vaults.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_folder_added_after_launch_gains_evidence_without_restart() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept"], &[])?;
+    f.enroll("late", true)?;
+    f.transfers("late", "control.md")?;
+    wait("live evidence for the late folder", || {
+        Ok(f.ids("indexed-folders.json")?.contains(&"late".into()))
+    })?;
+    f.services.crash_runtime()?;
+    fs::rename(f.vault("late"), f.away("late"))?;
+    f.services.launch()?;
+    f.services.remember_pid(f.home())?;
+    assert_eq!(f.identity.connect()?.folder("late")?["paused"], true);
+    assert!(!f.vault("late").exists());
+    fs::write(f.origin("kept").join("progress.md"), b"other vault runs")?;
+    f.transfers("kept", "progress.md")?;
+    f.runtime.disable()?;
+    Ok(())
+}
+
+/// #2582 review: index evidence belongs to one folder instance. A failed
+/// removal keeps it; re-adding the same ID revokes it, and the new instance
+/// earns it only from its own index history.
 #[test]
 #[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
 fn issue2582_readded_folder_id_never_inherits_index_evidence() -> Result<()> {
     let f = MissingRootFixture::new(&["kept", "gone"], &[])?;
-    let evidence = f.launch_dir().join("indexed-folders.json");
-    let indexed = |id: &str| -> Result<bool> {
-        let ids: Vec<String> = serde_json::from_slice(&fs::read(&evidence)?)?;
-        Ok(ids.iter().any(|known| known == id))
-    };
-    assert!(indexed("gone")? && indexed("kept")?);
+    assert!(f.ids("indexed-folders.json")?.contains(&"gone".into()));
+    // The removal's REST call fails (runtime down): the instance survives and
+    // keeps its evidence.
+    f.services.crash_runtime()?;
+    assert!(FolderController::new(f.state("gone")).remove().is_err());
+    assert!(
+        f.ids("indexed-folders.json")?.contains(&"gone".into()),
+        "a failed removal keeps the surviving instance's evidence"
+    );
+    f.services.launch()?;
+    f.services.remember_pid(f.home())?;
     FolderController::new(f.state("gone")).remove()?;
-    assert!(!indexed("gone")?, "removal revokes the evidence");
-    assert!(indexed("kept")?, "other folders keep theirs");
-    // Re-add the same ID at the same (emptied) root before any restart.
+    // Re-add the same ID at the same (emptied) root from an empty share, so the
+    // new instance has no index history of its own.
     for entry in fs::read_dir(f.vault("gone"))? {
         let entry = entry?.path();
         if entry.is_dir() {
@@ -2160,13 +2204,24 @@ fn issue2582_readded_folder_id_never_inherits_index_evidence() -> Result<()> {
             fs::remove_file(entry)?;
         }
     }
+    f.source.api.remove_folder("gone")?;
+    fs::remove_dir_all(f.origin("gone"))?;
+    fs::create_dir(f.origin("gone"))?;
     FolderController::new(f.base.join("gone-again-state")).enroll(
         &f.identity,
         std::slice::from_ref(&f.identity.config_file),
         &approval(&f.identity, &f.source, "gone"),
         &f.vault("gone"),
     )?;
-    assert!(!indexed("gone")?, "a re-added ID starts without evidence");
+    add_source(&f.source, &f.identity, "gone", &f.origin("gone"))?;
+    for _ in 0..3 {
+        thread::sleep(Duration::from_secs(2));
+        assert!(
+            !f.ids("indexed-folders.json")?.contains(&"gone".into()),
+            "a re-added ID never inherits the old instance's evidence"
+        );
+    }
+    assert!(f.ids("indexed-folders.json")?.contains(&"kept".into()));
     f.services.crash_runtime()?;
     fs::rename(f.vault("gone"), f.away("gone"))?;
     for _ in 0..2 {

@@ -268,6 +268,9 @@ impl FolderController {
         j.desired_paused = paused;
         j.changed_pause = true;
         self.save(&j)?;
+        // The user's explicit decision now owns this folder's pause state.
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+        crate::managed_launch::folder_pause_decided(&j.daemon, &j.descriptor.folder_id)?;
         api.patch_folder(&j.descriptor.folder_id, &json!({"paused":paused}))?;
         self.status_locked(&mut j, &api)
     }
@@ -419,11 +422,8 @@ impl FolderController {
             if j.owns_folder {
                 validate_owned(&j, folder)?;
                 api.patch_folder(&j.descriptor.folder_id, &json!({"paused":true}))?;
-                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-                crate::managed_launch::folder_instance_changing(
-                    &j.daemon,
-                    &j.descriptor.folder_id,
-                )?;
+                // Evidence is revoked only when an instance is created; a
+                // failed removal must keep the surviving instance's evidence.
                 api.remove_folder(&j.descriptor.folder_id)?;
             } else if j.changed_pause {
                 ensure!(

@@ -177,11 +177,13 @@ for it, and lets the runtime start only when all of these hold:
   nothing and propagates no deletion;
 - its local sequence was non-zero in the last live authenticated generation.
   Each launch records this in the private `indexed-folders.json`, and a folder
-  whose status cannot be read keeps its last evidence. Creating or removing the
-  folder instance (`add_paused_folder`, `remove_folder`, under configuration
-  admission and the launch gate) revokes it, so a removed and re-added ID
-  never inherits the old instance's history. No-op reconciliation such as the
-  2-second Sync refresh keeps it;
+  whose status cannot be read keeps its last evidence. While the runtime runs,
+  the launcher's supervision loop adds a folder as soon as it has index history,
+  so a folder added or first filled after launch needs no restart. Creating a
+  folder instance (`add_paused_folder`, under configuration admission and the
+  launch gate) revokes it, so a re-added ID never inherits the old instance's
+  history. No-op reconciliation (the 2-second Sync refresh) and a failed
+  removal keep it;
 - the configured path names exactly the saved (canonical) root. Any drift is
   refused, because an absent path cannot be canonicalized;
 - a writer lease is admitted for its bound authority without the root, through
@@ -191,6 +193,20 @@ for it, and lets the runtime start only when all of these hold:
   drain can complete in that window. A root that returned during startup must
   then match the saved root identity, or the folder is paused before the
   leases are released.
+
+Such a folder starts unpaused, because only a startup pause recreates a root. As
+its first action after readiness, the launcher parks it with a runtime pause
+(`model.restartFolder` never recreates a root) and records it in
+`parked-folders.json`. So a foreign directory with a Syncthing marker at that
+path cannot receive data. Every 2 seconds the launcher's supervision loop
+unparks it only when its own root is back with the saved identity and its
+authority admits a writer; the next launch does the same check offline. An
+explicit user pause (`FolderController::pause`) takes the folder off the parked
+list, so a user's Disable stays sticky. A folder the hold fence closes is never
+unparked automatically. Supervision takes the launch gate only for an actual
+transition, because configuration admission refuses a busy gate. Remaining
+window: from child start until that first post-readiness pause, the folder is
+unpaused with its root absent.
 
 Every other missing root (paused, without index history, with an unfinished or
 unreadable hold, or unbound) keeps the launch fail-closed, as before. The runtime
@@ -210,8 +226,10 @@ Pinned-runtime controls:
 
 - `issue2582_missing_root_never_stops_the_runtime_across_launches`: admitted
   no-op reconciliation keeps the evidence. Across two launches with one root
-  missing, the other folder transfers, the root is never recreated and no
-  deletion propagates. Then the root returns and syncs.
+  missing, the folder is parked, the other folder transfers, the root is never
+  recreated and no deletion propagates. While the runtime runs, a foreign
+  directory with a `.stfolder` marker at the path stays parked and receives
+  nothing; the saved root returning is unparked and syncs.
 - `issue2582_unsafe_missing_roots_fail_closed_without_recreating_them` covers a
   user-paused folder, a sequence-zero folder, and a dead holder's unfinished
   hold. For each, the launch is refused twice without creating the root. For
@@ -227,6 +245,10 @@ Pinned-runtime controls:
   configured path is redirected to another absent path is refused twice
   without creating it. Once that destination appears with its own hold, the
   launch is still refused and nothing is published into it.
-- `issue2582_readded_folder_id_never_inherits_index_evidence`: remove a
-  folder, re-add the same ID before any restart, and remove its root. The
-  launch is refused twice and the root is not recreated.
+- `issue2582_folder_added_after_launch_gains_evidence_without_restart`: a
+  folder enrolled after launch gets evidence from the live runtime. After an
+  unmount, the next launch starts and parks it while the other vault transfers.
+- `issue2582_readded_folder_id_never_inherits_index_evidence`: a removal whose
+  REST call fails keeps the evidence. Re-adding the same ID from an empty share
+  revokes it, and the history-free instance earns none; with its root removed,
+  the launch is refused twice and the root is not recreated.
