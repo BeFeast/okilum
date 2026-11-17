@@ -151,6 +151,7 @@ mod reader_viewer_tests;
 // it macro-expanded on macOS only, so `use super::*` plus an explicit
 // `use ::core::prelude::v1::test` was E0659-ambiguous there (#2589).
 mod reader_keymap;
+mod reader_now_waiting;
 mod reader_segmented;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod reader_settings_sync;
@@ -168,7 +169,6 @@ mod reader_t3_settings;
 mod reader_table_copy;
 mod reader_title_nav;
 mod reader_vaults;
-mod reader_now_waiting;
 mod reader_workbench;
 #[cfg(windows)]
 mod url_protocol;
