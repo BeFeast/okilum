@@ -1,0 +1,20 @@
+[package]
+name = "okilum-gpui"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "GPUI as okilum-shell names it: gpui-pre re-exported unchanged, except that #[gpui::test] also ends the test app it builds (#1669)."
+
+[lib]
+doctest = false
+
+# Features okilum-shell turns on through its `gpui` dependency.
+[features]
+test-support = ["gpui/test-support"]
+bench-support = ["gpui/bench-support"]
+profiler = ["gpui/profiler"]
+
+[dependencies]
+gpui.workspace = true
+okilum-gpui-test-macro = { path = "../okilum-gpui-test-macro" }

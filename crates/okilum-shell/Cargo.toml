@@ -38,7 +38,9 @@ okilum-t3 = { path = "../okilum-t3" }
 okilum-http = { path = "../okilum-http" }
 # Smart paste converters (#1611): HTML/RTF to Markdown, TSV, code fences, titles.
 okilum-paste = { path = "../okilum-paste" }
-gpui.workspace = true
+# gpui-pre re-exported unchanged, except that #[gpui::test] also ends the
+# test app it builds (#1669); see crates/okilum-gpui.
+gpui = { package = "okilum-gpui", path = "../okilum-gpui" }
 gpui_platform.workspace = true
 gpui-base = { path = "../../vendor/gpui-component/crates/base" }
 gpui-component = { workspace = true, features = ["tree-sitter-languages"] }
@@ -110,7 +112,7 @@ zip = { version = "9.5", default-features = false, features = ["deflate-flate2-z
 # Reads the log CSV export back with a parser that did not write it (#1387).
 csv = "1"
 velopack = { version = "=1.2.161", features = ["public-utils"] }
-gpui = { workspace = true, features = ["test-support"] }
+gpui = { package = "okilum-gpui", path = "../okilum-gpui", features = ["test-support"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 gpui_wgpu = { package = "gpui-pre-wgpu", version = "0.3.3" }
