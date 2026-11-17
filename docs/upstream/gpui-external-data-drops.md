@@ -35,11 +35,12 @@ the same paths-only event.
   file names is announced as `DataEntered` with the pasteboard's types. At
   `performDragOperation:` only the accepted flavors are read and sent as
   `DataSubmit`: every accepted text type, small metadata (`public.url-name`,
-  `org.chromium.source-url`, `vscode-editor-data`) and the first offered image
-  type (PNG before JPEG, GIF, WebP, HEIC, TIFF; a browser often adds a far
-  larger TIFF of the same image). Private and dynamic types, file promises
-  and further image representations are never read; a promise is received
-  on request, never by reading the pasteboard.
+  `org.chromium.source-url`, `vscode-editor-data`) and one image: the first
+  offered image type, in preference order (PNG before JPEG, GIF, WebP, HEIC,
+  TIFF), that can be read within its limit. A browser often adds a far
+  larger TIFF of the same image; it is read only when the PNG cannot be.
+  Private and dynamic types and file promises are never read; a promise is
+  received on request, never by reading the pasteboard.
 - Byte limits: text 32 MiB, image 64 MiB, metadata 64 KiB per representation,
   128 MiB for all reads of one drop. A representation over its limit is
   skipped (not truncated) and released at once by its own autorelease pool.
@@ -47,7 +48,8 @@ the same paths-only event.
   have contents, and Okilum's `DroppedData` offers only those to the router.
 - Unit tests for the type selection and for bounded reads of a real (uniquely
   named) pasteboard: an oversized representation, a second image and a
-  private flavor are not copied, and the aggregate limit holds.
+  private flavor are not copied, the aggregate limit holds, and a PNG over
+  its limit falls back to the offered JPEG.
   `scripts/ci/gpui-macos-vendor-tests.sh` requires both to run.
 
 Backends that never emit the new variants (Linux, Windows) behave as before.

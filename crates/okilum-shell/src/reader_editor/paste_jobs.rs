@@ -104,6 +104,9 @@ struct Target {
     root: PathBuf,
     /// The note's file, to find its editor again after it was reopened.
     path: Option<PathBuf>,
+    /// #1615: a drop. Its remote images are downloaded before its text
+    /// goes in, so the whole drop is one edit (one Undo).
+    one_edit: bool,
     /// #1615: a drop onto a rendered block, whose result has not gone in
     /// yet. It goes in as its own paragraph before the block at the anchor,
     /// in one edit with its blank lines; until then the note is untouched.
@@ -397,6 +400,47 @@ impl Reader {
                     started.elapsed().as_secs_f64() * 1000.0,
                     routed.detail
                 );
+                // Rich text with remote images: they are downloaded first and
+                // the text goes in once, with them, so one Undo restores the
+                // note (a paste replaces them after inserting it).
+                if routed.insert.is_some()
+                    && matches!(routed.follow_up, Some(FollowUp::RemoteImages { .. }))
+                {
+                    let text = routed.insert.take().unwrap_or_default();
+                    let Some(FollowUp::RemoteImages {
+                        images,
+                        folder,
+                        vault_root,
+                        stamp,
+                        image_options,
+                        ..
+                    }) = routed.follow_up.take()
+                    else {
+                        return;
+                    };
+                    self.publish_saved_attachments(&routed.saved_files, window, cx);
+                    if let Some(notice) = routed.notice {
+                        show_notice(&notice, window, cx);
+                    }
+                    let (at, is_slot) = slot.map_or((offset, false), |slot| (slot.at, true));
+                    let target = self.follow_up_target(input, is_slot, true, cx);
+                    download_then_insert(
+                        target,
+                        Anchor::at(&original, at),
+                        Pending::Prepared(text),
+                        images,
+                        Downloads {
+                            folder,
+                            vault_root,
+                            stamp,
+                            image_options,
+                        },
+                        Box::new(|| {}),
+                        window,
+                        cx,
+                    );
+                    return;
+                }
                 let (offset, pending_slot) = match slot {
                     // One edit: the slot's empty line with the routed text in
                     // it, which is the routing source the anchors were taken on.
@@ -446,7 +490,8 @@ impl Reader {
             show_notice(&notice, window, cx);
         }
         if let Some(follow_up) = routed.follow_up {
-            self.run_follow_up(input, follow_up, slot, window, cx);
+            // Only drops come here.
+            self.run_follow_up(input, follow_up, slot, true, window, cx);
         }
     }
 
@@ -458,7 +503,30 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.run_follow_up(input, follow_up, false, window, cx);
+        self.run_follow_up(input, follow_up, false, false, window, cx);
+    }
+
+    /// The editor a background result goes into.
+    fn follow_up_target(
+        &self,
+        input: Entity<EditorState>,
+        slot: bool,
+        one_edit: bool,
+        cx: &mut Context<Self>,
+    ) -> Target {
+        let path = self
+            .editing
+            .as_ref()
+            .filter(|editing| editing.input == input)
+            .map(|editing| editing.store.path().to_path_buf());
+        Target {
+            reader: cx.entity().downgrade(),
+            input,
+            root: self.vault_root.clone(),
+            path,
+            one_edit,
+            slot,
+        }
     }
 
     fn run_follow_up(
@@ -466,21 +534,11 @@ impl Reader {
         input: Entity<EditorState>,
         follow_up: FollowUp,
         slot: bool,
+        one_edit: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let path = self
-            .editing
-            .as_ref()
-            .filter(|editing| editing.input == input)
-            .map(|editing| editing.store.path().to_path_buf());
-        let input = Target {
-            reader: cx.entity().downgrade(),
-            input,
-            root: self.vault_root.clone(),
-            path,
-            slot,
-        };
+        let input = self.follow_up_target(input, slot, one_edit, cx);
         match follow_up {
             FollowUp::Files { plan, anchor } => {
                 if plan.ask {
@@ -905,6 +963,44 @@ fn convert_in_background(
             if done.text.is_empty() {
                 return;
             }
+            if input.one_edit && !done.remote.is_empty() {
+                // A drop: its remote images first, then the text once.
+                if done.deferred > 0 {
+                    reader_toast::transient(router::DEFERRED_IMAGES_TEXT, window, cx);
+                } else if done.failed > 0 {
+                    reader_toast::transient(router::failed_images_text(done.failed), window, cx);
+                }
+                let (files, admission) = (done.files, done.admission);
+                download_then_insert(
+                    input,
+                    anchor,
+                    Pending::Fit {
+                        text: done.text,
+                        block: done.block,
+                        markdown: done.markdown,
+                    },
+                    done.remote,
+                    Downloads {
+                        folder,
+                        vault_root,
+                        stamp,
+                        image_options,
+                    },
+                    Box::new(move || {
+                        // Not inserted: its saved images would be linked from nowhere.
+                        if let Some(lease) = &admission {
+                            if let Ok(_admission) = lease.enter() {
+                                for file in &files {
+                                    let _ = std::fs::remove_file(file);
+                                }
+                            }
+                        }
+                    }),
+                    window,
+                    cx,
+                );
+                return;
+            }
             let region = insert_at_anchor(
                 &input,
                 &anchor,
@@ -989,62 +1085,16 @@ fn download_images(
         cx,
     );
     let images = Arc::new(images);
-    let next = Arc::new(AtomicUsize::new(0));
-    // The vault's names before any download (every worker waits for this
-    // scan before its first download): a name also found elsewhere is
-    // linked by its path.
-    let existing = Arc::new(std::sync::OnceLock::new());
-    let folder_rel = folder
-        .strip_prefix(&vault_root)
-        .map(|rel| {
-            rel.components()
-                .map(|c| c.as_os_str().to_string_lossy())
-                .collect::<Vec<_>>()
-                .join("/")
-        })
-        .unwrap_or_default();
-    let (sender, receiver) = async_channel::unbounded::<(
-        usize,
-        Result<(String, crate::note_paste::image_import::Imported), DownloadError>,
-    )>();
-    for _ in 0..total.min(download::PARALLEL) {
-        let images = images.clone();
-        let next = next.clone();
-        let sender = sender.clone();
-        let folder = folder.clone();
-        let stamp = stamp.clone();
-        let existing = existing.clone();
-        let vault_root = vault_root.clone();
-        let folder_rel = folder_rel.clone();
-        cx.background_executor()
-            .spawn(async move {
-                let existing: &std::collections::HashSet<String> =
-                    existing.get_or_init(|| files::vault_names(&vault_root));
-                loop {
-                    let index = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(image) = images.get(index) else {
-                        break;
-                    };
-                    let result = download::save_remote_image_with(
-                        &image.url,
-                        &folder,
-                        &stamp,
-                        image_options,
-                    )
-                    .map(|saved| {
-                        (
-                            files::link_target(&saved.name, &folder_rel, existing),
-                            saved,
-                        )
-                    });
-                    if sender.send((index, result)).await.is_err() {
-                        break;
-                    }
-                }
-            })
-            .detach();
-    }
-    drop(sender);
+    let receiver = spawn_downloads(
+        images.clone(),
+        Downloads {
+            folder,
+            vault_root,
+            stamp,
+            image_options,
+        },
+        cx,
+    );
     let handle = window.window_handle();
     let started = std::time::Instant::now();
     cx.spawn(async move |cx| {
@@ -1162,6 +1212,226 @@ fn progress_toast(
         });
     })
     .detach();
+}
+
+/// Where and how remote images are saved.
+struct Downloads {
+    folder: PathBuf,
+    vault_root: PathBuf,
+    stamp: String,
+    image_options: crate::note_paste::image_import::Options,
+}
+
+type DownloadResult = Result<(String, crate::note_paste::image_import::Imported), DownloadError>;
+
+/// Download `images` in the background, [`download::PARALLEL`] at a time;
+/// each result (its index, its link target and saved file) as it is done.
+fn spawn_downloads(
+    images: Arc<Vec<RemoteImage>>,
+    downloads: Downloads,
+    cx: &App,
+) -> async_channel::Receiver<(usize, DownloadResult)> {
+    let Downloads {
+        folder,
+        vault_root,
+        stamp,
+        image_options,
+    } = downloads;
+    let total = images.len();
+    let next = Arc::new(AtomicUsize::new(0));
+    // The vault's names before any download (every worker waits for this
+    // scan before its first download): a name also found elsewhere is
+    // linked by its path.
+    let existing = Arc::new(std::sync::OnceLock::new());
+    let folder_rel = folder
+        .strip_prefix(&vault_root)
+        .map(|rel| {
+            rel.components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .unwrap_or_default();
+    let (sender, receiver) = async_channel::unbounded::<(usize, DownloadResult)>();
+    for _ in 0..total.min(download::PARALLEL) {
+        let images = images.clone();
+        let next = next.clone();
+        let sender = sender.clone();
+        let folder = folder.clone();
+        let stamp = stamp.clone();
+        let existing = existing.clone();
+        let vault_root = vault_root.clone();
+        let folder_rel = folder_rel.clone();
+        cx.background_executor()
+            .spawn(async move {
+                let existing: &std::collections::HashSet<String> =
+                    existing.get_or_init(|| files::vault_names(&vault_root));
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(image) = images.get(index) else {
+                        break;
+                    };
+                    let result = download::save_remote_image_with(
+                        &image.url,
+                        &folder,
+                        &stamp,
+                        image_options,
+                    )
+                    .map(|saved| {
+                        (
+                            files::link_target(&saved.name, &folder_rel, existing),
+                            saved,
+                        )
+                    });
+                    if sender.send((index, result)).await.is_err() {
+                        break;
+                    }
+                }
+            })
+            .detach();
+    }
+    drop(sender);
+    receiver
+}
+
+/// A drop's text waiting for its remote images (#1615).
+enum Pending {
+    /// Already fitted where it goes (routed at the drop point).
+    Prepared(String),
+    /// Converted in the background; fitted when it goes in.
+    Fit {
+        text: String,
+        block: bool,
+        markdown: bool,
+    },
+}
+
+/// A drop's remote images are downloaded first; then its text goes in once,
+/// each downloaded image's `![alt](url)` already replaced by its embed, so
+/// the drop is one edit (one Undo). A failed download keeps its remote link.
+/// Not inserted (note closed, drop point gone): the downloaded files and
+/// `on_missed`'s are removed, and the toast says so.
+#[allow(clippy::too_many_arguments)]
+fn download_then_insert(
+    input: Target,
+    anchor: Anchor,
+    pending: Pending,
+    images: Vec<RemoteImage>,
+    downloads: Downloads,
+    on_missed: Box<dyn FnOnce()>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let total = images.len();
+    let done = Arc::new(AtomicU64::new(0));
+    let finished = Arc::new(AtomicBool::new(false));
+    let label = if total == 1 {
+        "Downloading the dropped image".to_string()
+    } else {
+        format!("Downloading {total} dropped images")
+    };
+    progress_toast(
+        label,
+        done.clone(),
+        total as u64,
+        finished.clone(),
+        window,
+        cx,
+    );
+    let images = Arc::new(images);
+    let receiver = spawn_downloads(images.clone(), downloads, cx);
+    let handle = window.window_handle();
+    cx.spawn(async move |cx| {
+        let mut replacements = Vec::new();
+        let mut saved = Vec::new();
+        let mut failed = 0usize;
+        while let Ok((index, result)) = receiver.recv().await {
+            done.fetch_add(1, Ordering::Relaxed);
+            match result {
+                Ok((target, name)) => {
+                    replacements
+                        .push((images[index].placeholder.clone(), files::wikilink(&target)));
+                    saved.push(name);
+                }
+                Err(error) => {
+                    failed += 1;
+                    diagnostic_error!("Drop: image download failed ({error})");
+                }
+            }
+        }
+        finished.store(true, Ordering::Relaxed);
+        diagnostic_error!(
+            "Drop: images downloaded={} failed={failed} before one insert",
+            saved.len()
+        );
+        let replace = |text: String| {
+            replacements
+                .iter()
+                .fold(text, |text, (placeholder, embed)| {
+                    text.replace(placeholder, embed)
+                })
+        };
+        let _ = cx.update_window(handle, |_, window, cx| {
+            let result = match pending {
+                Pending::Prepared(text) => {
+                    insert_prepared(&input, &anchor, &replace(text), window, cx)
+                }
+                Pending::Fit {
+                    text,
+                    block,
+                    markdown,
+                } => insert_at_anchor(&input, &anchor, &replace(text), block, markdown, window, cx)
+                    .map(|_| ()),
+            };
+            if let Err(missed) = result {
+                for name in saved {
+                    if let Ok(_admission) = name.admission.enter() {
+                        for path in name.paths {
+                            let _ = std::fs::remove_file(path);
+                        }
+                    }
+                }
+                on_missed();
+                not_inserted(missed, "", window, cx);
+            } else if failed > 0 {
+                reader_toast::transient(router::failed_images_text(failed), window, cx);
+            }
+        });
+    })
+    .detach();
+}
+
+/// Insert text already fitted for the drop point at `anchor`: as the
+/// block's own paragraph for a block drop, as it is otherwise. A drop never
+/// goes to the caret when its point is gone.
+fn insert_prepared(
+    target: &Target,
+    anchor: &Anchor,
+    text: &str,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<(), Missed> {
+    let Some(input) = target.live(cx) else {
+        return Err(Missed::Closed);
+    };
+    input.update(cx, |state, cx| {
+        let current = state.value().to_string();
+        let Some(at) = anchor.locate(&current) else {
+            diagnostic_error!("Drop: not inserted (the drop point is gone)");
+            return Err(Missed::Moved);
+        };
+        let (at, edit) = if target.slot {
+            let slot = BlockSlot::new(&current, at);
+            (slot.at, slot.edit(text))
+        } else {
+            (at, text.to_string())
+        };
+        if state.replace_source_range(at..at, &edit, window, cx) {
+            Ok(())
+        } else {
+            Err(Missed::Closed)
+        }
+    })
 }
 
 #[cfg(test)]
@@ -1852,6 +2122,79 @@ mod reader_drop_tests {
         visual.run_until_parked();
         let (source, _) = source_and_line(&reader, visual, "![[");
         assert_eq!(source, NOTE, "one Undo: byte-identical, no empty slot left");
+    }
+
+    /// Review of #3078: HTML with a remote image dropped onto a rendered
+    /// block. The image is downloaded first and the text goes in once with
+    /// its embed; one Undo restores the note byte for byte.
+    #[gpui::test]
+    fn a_dropped_remote_image_goes_in_once_with_the_text(cx: &mut TestAppContext) {
+        use std::io::{Read as _, Write as _};
+        let (reader, visual, temp) = reader_on_note(cx);
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let png = png.into_inner();
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = server.local_addr().unwrap();
+        let responder = std::thread::spawn(move || {
+            let (mut stream, _) = server.accept().unwrap();
+            let mut request = [0; 4096];
+            assert!(
+                stream.read(&mut request).unwrap() > 0,
+                "actual HTTP request"
+            );
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                png.len()
+            )
+            .unwrap();
+            stream.write_all(&png).unwrap();
+        });
+        let next = reader.read_with(visual, |r, cx| {
+            r.content.read(cx).list_state().bounds_for_item(2).unwrap()
+        });
+        let html = format!("<p>Look <img alt=\"cat\" src=\"http://{address}/cat.png\"></p>");
+        drop_data_at(
+            visual,
+            next.center(),
+            &[
+                ("public.html", html.as_bytes()),
+                ("public.utf8-plain-text", b"Look"),
+            ],
+        );
+        responder.join().unwrap();
+        visual.run_until_parked();
+        let (source, line) = source_and_line(&reader, visual, "Look");
+        let line = line.unwrap_or_else(|| panic!("the dropped text is in the note: {source:?}"));
+        assert!(
+            line.contains("![[") && !line.contains("http://"),
+            "the downloaded image's embed, not the remote link: {line:?}"
+        );
+        assert_eq!(
+            source,
+            format!("# Title\n\nFirst paragraph.\n\n{line}\n\n## Next\n\nBody.\n")
+        );
+        fn saved(dir: &std::path::Path) -> bool {
+            std::fs::read_dir(dir).unwrap().flatten().any(|entry| {
+                let path = entry.path();
+                if path.is_dir() {
+                    saved(&path)
+                } else {
+                    entry.file_name().to_string_lossy().starts_with("cat")
+                }
+            })
+        }
+        assert!(
+            saved(&temp.path().join("vault")),
+            "positive control: the image was saved into the vault"
+        );
+        visual.dispatch_action(gpui_component::input::Undo);
+        visual.run_until_parked();
+        let (source, _) = source_and_line(&reader, visual, "Look");
+        assert_eq!(source, NOTE, "one Undo: byte-identical");
     }
 
     #[test]
