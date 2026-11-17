@@ -247,7 +247,7 @@ impl offer::Pasteboard for DroppedData {
 /// trailing NUL some writers add is not text.
 fn dropped_text(kind: &str, bytes: &[u8]) -> Option<String> {
     let text = if kind.contains("utf16") {
-        if bytes.len() % 2 != 0 {
+        if !bytes.len().is_multiple_of(2) {
             return None;
         }
         let (big_endian, bytes) = match bytes {

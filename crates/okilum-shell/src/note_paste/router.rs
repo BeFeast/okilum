@@ -2138,10 +2138,9 @@ mod tests {
             crate::note_paste::DroppedData(gpui::ExternalData::new([gpui::SharedString::from(
                 offer::UTF8_TEXT,
             )]));
-        assert!(
-            route(&types_only, &cx).map_or(true, |routed| routed.insert.is_none()
-                && routed.follow_up.is_none())
-        );
+        if let Ok(routed) = route(&types_only, &cx) {
+            assert!(routed.insert.is_none() && routed.follow_up.is_none());
+        }
     }
 
     /// #1615: UTF-16 flavors are decoded, with or without a byte-order mark.
