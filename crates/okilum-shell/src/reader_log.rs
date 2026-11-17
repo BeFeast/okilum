@@ -5850,7 +5850,7 @@ mod tests {
             reader.update(cx, |reader, _| {
                 assert!(!reader.loading.as_ref().unwrap().published);
                 assert!(reader.pane.file_preview.is_none());
-                reader.queued_open_note = Some("notes.md".into());
+                reader.pane.queued_open_note = Some("notes.md".into());
             });
             entity = Some(reader.clone());
             Root::new(reader, window, cx)
@@ -5859,7 +5859,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
             assert!(
-                reader.queued_open_note.is_none(),
+                reader.pane.queued_open_note.is_none(),
                 "publication consumed the request"
             );
             assert_eq!(reader.selected_file(), "notes.md");

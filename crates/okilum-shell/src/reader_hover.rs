@@ -350,7 +350,7 @@ impl Reader {
         };
         let vault = self.vault.clone();
         let root = self.vault_root.clone();
-        let navigation = self.pane.navigation.generation;
+        let ticket = self.pane.navigation_ticket();
         cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(delay).await;
             let proceed = this
@@ -408,7 +408,7 @@ impl Reader {
                 .await;
             let _ = this.update_in_own_window(cx, |this, _, cx| {
                 if this.pane.hover_preview.generation != generation
-                    || this.pane.navigation.generation != navigation
+                    || !this.pane.holds_navigation(ticket)
                     || this.vault_root != root
                 {
                     return;
