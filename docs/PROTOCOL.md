@@ -38,8 +38,8 @@ Each entry is the serialized `Backlink` (`crates/okilum-core/src/vault.rs`):
 | Field | Meaning |
 |---|---|
 | `path`, `title` | The note that contains the link. |
-| `context` | The source line that contains the link, as written. |
-| `link` | The link target as written in that source (`[[target\|alias]]` records `target`), so a client can find it inside `context` without re-resolving. |
+| `context` | The source line that contains the link, raw Markdown with surrounding whitespace trimmed and cut to its first 240 characters (`graph_links` in `crates/okilum-core/src/vault.rs`). On a longer line the link itself can fall past the cut, so `context` may not contain it. |
+| `link` | The link target as written in that source (`[[target\|alias]]` records `target`), so a client can find it inside `context` without re-resolving, when the cut above kept it. |
 | `ambiguous` | `true` when the link named several notes and this note is only one of them. A client must show it as ambiguous, never as an ordinary backlink (PRD §4). |
 | `property` | Present only when the link sits in the source's frontmatter (`related: [[x]]`): the property key (#386). Omitted otherwise. |
 
