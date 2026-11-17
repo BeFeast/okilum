@@ -813,10 +813,20 @@ fn service_path_follows_routing_and_selects_in_the_shared_inspector(cx: &mut Tes
         .workspace
         .read_with(h.visual, |ws, _| ws.path_service.clone().unwrap());
     // A target Pod opens in the same inspector; the path stays on its Service.
+    let geometry = format!(
+        "node {:?} band {:?} list {:?} dock {:?} chip {:?}",
+        h.visual.debug_bounds("k8s-path-endpoint-0-1"),
+        h.visual.debug_bounds("k8s-path"),
+        h.visual.debug_bounds("k8s-list"),
+        h.visual.debug_bounds("k8s-dock"),
+        h.visual.debug_bounds("k8s-path-endpoint-0-1-api"),
+    );
     h.click("k8s-path-endpoint-0-1");
     h.workspace.read_with(h.visual, |ws, _| {
         assert!(
-            matches!(&ws.selected, Some(Key::Object { kind: Kind::Pod, uid, .. }) if uid == "pod-b")
+            matches!(&ws.selected, Some(Key::Object { kind: Kind::Pod, uid, .. }) if uid == "pod-b"),
+            "selected {:?}; {geometry}",
+            ws.selected
         );
         assert_eq!(ws.path_service.as_ref(), Some(&service));
         assert_eq!(ws.lens, Lens::ServicePath);
