@@ -273,7 +273,7 @@ impl Reader {
                     if state.source_stamp() == stamp {
                         Some(offset)
                     } else {
-                        Anchor::at(&snapshot, offset).locate_block(state.value().as_ref())
+                        Anchor::at_block(&snapshot, offset).locate_block(state.value().as_ref())
                     }
                 };
                 let Some(offset) = offset else {
@@ -378,7 +378,7 @@ impl Reader {
                     // leaves the note as it was.
                     Some(slot) => {
                         if let Some(follow_up) = routed.follow_up.as_mut() {
-                            retarget(follow_up, Anchor::at(&original, slot.at));
+                            retarget(follow_up, Anchor::at_block(&original, slot.at));
                         }
                         (slot.at, true)
                     }
