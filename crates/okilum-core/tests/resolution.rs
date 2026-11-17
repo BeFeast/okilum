@@ -345,3 +345,151 @@ fn backlinks_are_uncapped_and_grouped_by_source_note() {
     let mid = bl.iter().find(|b| b.path == "m/mid.md").unwrap();
     assert_eq!(mid.context_plain(), "also T");
 }
+
+// #2905: data files are graph destinations, never note sources.
+#[test]
+fn data_file_wikilink_has_exactly_one_backlink() {
+    let (_root, vault) = vault_with(
+        "data-file-wiki-2905",
+        &[("note.md", "[[data.json]]\n"), ("data.json", "{}")],
+    );
+    let links = vault.backlinks("data.json");
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].path, "note.md");
+    assert!(!links[0].ambiguous);
+    assert_eq!(vault.notes.len(), 1);
+}
+
+#[test]
+fn data_file_markdown_links_keep_relative_root_and_suffix_intent() {
+    let (_root, vault) = vault_with(
+        "data-file-markdown-2905",
+        &[
+            ("notes/start.md", "[local](data.json)\n[root](/data.json)\n[explicit](../a/shared.json)\n[ambiguous](shared.json)\n[space](../a/my%20data.json)\n[missing](missing.json)\n"),
+            ("data.json", "{}"),
+            ("notes/data.json", "{}"),
+            ("a/shared.json", "{}"),
+            ("b/shared.json", "{}"),
+            ("a/my data.json", "{}"),
+        ],
+    );
+    assert_eq!(vault.backlinks("notes/data.json")[0].link, "data.json");
+    assert_eq!(vault.backlinks("data.json")[0].link, "/data.json");
+    let shared = vault.backlinks("a/shared.json");
+    assert_eq!(shared.len(), 2);
+    assert!(!shared[0].ambiguous);
+    assert!(shared[1].ambiguous);
+    assert!(vault.backlinks("b/shared.json")[0].ambiguous);
+    assert_eq!(vault.backlinks("a/my data.json").len(), 1);
+    assert!(vault.backlinks("missing.json").is_empty());
+}
+
+#[test]
+fn data_file_wikilinks_keep_relative_qualified_and_ambiguous_intent() {
+    let (_root, vault) = vault_with(
+        "data-file-resolution-2905",
+        &[
+            ("notes/start.md", "[[data.json]]\n[[../a/shared.json]]\n[[shared.json]]\n[[a/shared.json]]\n[[missing.json]]\n"),
+            ("data.json", "{}"),
+            ("a/shared.json", "{}"),
+            ("b/shared.json", "{}"),
+        ],
+    );
+    assert_eq!(vault.backlinks("data.json").len(), 1);
+    assert_eq!(vault.backlinks("a/shared.json").len(), 3);
+    assert!(vault.backlinks("b/shared.json")[0].ambiguous);
+    assert!(vault.backlinks("missing.json").is_empty());
+}
+
+/// What the Reader opens for `target` from `from`: the graph must agree.
+fn opens(vault: &Vault, target: &str, wiki: bool, from: &str) -> Vec<String> {
+    okilum_core::document_links::IndexedResolver::new(vault)
+        .resolve(target, wiki, from)
+        .candidates
+}
+
+fn sources(vault: &Vault, target: &str) -> Vec<(String, String)> {
+    vault
+        .backlinks(target)
+        .iter()
+        .map(|b| (b.path.clone(), b.link.clone()))
+        .collect()
+}
+
+// A data file and a note that differ only by `.md` are two identities.
+#[test]
+fn data_file_and_its_md_namesake_keep_separate_backlinks() {
+    let (_root, vault) = vault_with(
+        "data-file-md-namesake-2905",
+        &[
+            (
+                "a.md",
+                "[[data.json]]\n[[data.json.md]]\n[f](data.json)\n[n](data.json.md)\n",
+            ),
+            ("b.md", "[[data.json.md]]\n"),
+            ("data.json", "{}"),
+            ("data.json.md", "# Data\n"),
+        ],
+    );
+    assert_eq!(opens(&vault, "data.json", true, "a.md"), ["data.json"]);
+    assert_eq!(
+        opens(&vault, "data.json.md", true, "a.md"),
+        ["data.json.md"]
+    );
+    assert_eq!(opens(&vault, "data.json", false, "a.md"), ["data.json"]);
+    assert_eq!(
+        sources(&vault, "data.json"),
+        [
+            ("a.md".into(), "data.json".into()),
+            ("a.md".into(), "data.json".into())
+        ]
+    );
+    assert_eq!(
+        sources(&vault, "data.json.md"),
+        [
+            ("a.md".into(), "data.json.md".into()),
+            ("a.md".into(), "data.json.md".into()),
+            ("b.md".into(), "data.json.md".into()),
+        ]
+    );
+    assert!(vault.backlinks("data.json").iter().all(|b| !b.ambiguous));
+    assert!(vault.backlinks("data.json.md").iter().all(|b| !b.ambiguous));
+}
+
+// `[[data.json]]` names a file, so a nested `sub/data.json` answers it,
+// never the note `data.json.md`; the Reader opens the same file.
+#[test]
+fn data_file_link_reaches_the_nested_file_not_the_md_namesake() {
+    let (_root, vault) = vault_with(
+        "data-file-nested-namesake-2905",
+        &[
+            ("note.md", "[[data.json]]\n"),
+            ("sub/data.json", "{}"),
+            ("data.json.md", "# Data\n"),
+        ],
+    );
+    assert_eq!(
+        opens(&vault, "data.json", true, "note.md"),
+        ["sub/data.json"]
+    );
+    assert_eq!(
+        sources(&vault, "sub/data.json"),
+        [("note.md".into(), "data.json".into())]
+    );
+    assert!(vault.backlinks("data.json.md").is_empty());
+}
+
+#[test]
+fn data_file_identity_never_shadows_notes() {
+    let (_root, vault) = vault_with(
+        "data-file-shadow-2905",
+        &[
+            ("note.md", "[[Makefile]]\n"),
+            ("Makefile.md", "# Make\n"),
+            ("Makefile", "all:\n"),
+        ],
+    );
+    assert_eq!(vault.resolve("Makefile").path(), Some("Makefile.md"));
+    assert_eq!(vault.backlinks("Makefile.md").len(), 1);
+    assert!(vault.backlinks("Makefile").is_empty());
+}
