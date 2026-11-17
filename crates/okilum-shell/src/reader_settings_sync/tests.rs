@@ -2740,7 +2740,11 @@ fn issue2490_approval_notice_once_per_request_and_retracted_when_answered(cx: &m
     assert_eq!(shown[0].title.as_ref(), "Laptop wants to connect");
     assert_eq!(
         shown[0].body.as_ref(),
-        "Open Okilum to approve or reject this computer. No files are shared before approval."
+        "Open Okilum and check this computer's device ID before you approve or reject it. No files are shared before approval."
+    );
+    assert!(
+        !shown[0].body.contains("approved"),
+        "the notice only sends the user back to Okilum"
     );
     assert!(shown[0].actions.is_empty());
 
@@ -2783,4 +2787,186 @@ fn issue2490_approval_notice_once_per_request_and_retracted_when_answered(cx: &m
         visual.delivered_system_notifications().is_empty(),
         "no approval request left in the notification center"
     );
+}
+
+/// Outcome the fake controller returns for the answered request.
+#[derive(Clone, Copy)]
+enum Answer {
+    Approve,
+    Reject,
+    Expired,
+}
+
+/// #2490 review: the banner names the requester's device ID; Approve and
+/// Reject send exactly that request id; any answer, including a stale request
+/// the controller refuses as expired, retracts the OS notice.
+fn issue2490_answer(cx: &mut TestAppContext, answer: Answer) {
+    cx.update(crate::test_init);
+    let state = tempfile::tempdir().unwrap();
+    cx.update(|cx| {
+        reader_features::install(state.path(), cx);
+        cx.set_global(reader_history::TestSessionDirectory(
+            state.path().to_owned(),
+        ));
+        reader_features::set_enabled(reader_features::Feature::Sync, true, cx);
+        cx.set_app_identity("com.befeast.okilum", "Okilum");
+    });
+    let directory = tempfile::tempdir().unwrap();
+    let controller = Controller::open(directory.path().join("direct"), vec![]).unwrap();
+    let request = uuid::Uuid::new_v4();
+    let device = "ABCDEFG-HIJKLMN-OPQRSTU-VWXYZ23-4567ABC-DEFGHIJ-KLMNOPQ-RSTUVWX";
+    let output = {
+        let controller = controller.clone();
+        move |snapshot| Output {
+            runtime_health: Default::default(),
+            first_sync: Default::default(),
+            overview: Default::default(),
+            connection_error: None,
+            diagnostic: None,
+            controller: controller.clone(),
+            snapshot,
+            inspected: None,
+            selected_destination: None,
+            #[cfg(target_os = "linux")]
+            runtimes: vec![],
+            vaults: vec![],
+        }
+    };
+    let incoming = snapshot(Some(direct::Pending {
+        request_id: request,
+        incoming: true,
+        name: "Laptop".into(),
+        device_id: device.into(),
+        fingerprint: "F".repeat(64),
+    }));
+    let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    cx.update({
+        let calls = calls.clone();
+        let output = output.clone();
+        move |cx| {
+            cx.set_global(TestWorker(std::sync::Arc::new(move |operation| {
+                let call = match &operation {
+                    Operation::Approve(id) => format!("approve {id}"),
+                    Operation::Reject(id) => format!("reject {id}"),
+                    _ => "other".into(),
+                };
+                calls.lock().unwrap().push(call);
+                match answer {
+                    Answer::Expired => anyhow::bail!("pairing request expired"),
+                    Answer::Approve => {
+                        let mut paired = snapshot(None);
+                        paired.status = "Ready".into();
+                        paired.peers.push(direct::Peer {
+                            id: request,
+                            name: "Laptop".into(),
+                            device_id: device.into(),
+                        });
+                        Ok(output(paired))
+                    }
+                    Answer::Reject => Ok(output(snapshot(None))),
+                }
+            })))
+        }
+    });
+    let (root, visual) =
+        cx.add_window_view(|window, cx| Root::new(cx.new(|cx| fixture(window, cx)), window, cx));
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<SyncSettings>().unwrap()
+    });
+    view.update(visual, |view, cx| {
+        view.presentation.wizard = None;
+        view.publish(output(incoming.clone()), cx);
+        let pending = view.snapshot.as_ref().unwrap().pending.as_ref().unwrap();
+        assert_eq!(
+            super::presentation::device_line(pending),
+            format!("Device ID {device}"),
+            "the full device ID, not a shortened or derived one"
+        );
+        assert!(super::presentation::approval_check(&pending.name)
+            .contains("device ID shown on Laptop"));
+    });
+    draw_sync_fixture(visual);
+    assert!(
+        visual.debug_bounds("sync-approval-device").is_some(),
+        "the banner shows the requester's device ID next to Approve"
+    );
+    assert_eq!(visual.shown_system_notifications().len(), 1);
+    let button = match answer {
+        Answer::Approve | Answer::Expired => "sync-approve-computer",
+        Answer::Reject => "sync-reject-computer",
+    };
+    let target = visual.debug_bounds(button).unwrap();
+    visual.simulate_click(target.center(), Modifiers::default());
+    draw_sync_fixture(visual);
+    let expected = match answer {
+        Answer::Reject => format!("reject {request}"),
+        _ => format!("approve {request}"),
+    };
+    assert_eq!(*calls.lock().unwrap(), vec![expected]);
+    assert_eq!(
+        visual.dismissed_system_notifications(),
+        vec![super::presentation::approval_tag(request)],
+        "the answered request's notice is retracted"
+    );
+    assert!(visual.delivered_system_notifications().is_empty());
+    assert!(visual.debug_bounds("sync-approve-computer").is_none());
+    assert!(visual.debug_bounds("sync-approval-device").is_none());
+    view.update(visual, |view, _| {
+        assert!(view.presentation.notice.is_none());
+        let peers = &view.snapshot.as_ref().unwrap().peers;
+        match answer {
+            Answer::Approve => assert_eq!(peers[0].device_id, device),
+            Answer::Reject | Answer::Expired => assert!(peers.is_empty()),
+        }
+        if matches!(answer, Answer::Expired) {
+            assert!(view.error.is_some(), "a stale request reports why");
+        }
+    });
+    // The same request reported again by a lagging refresh does not re-notify.
+    view.update(visual, |view, cx| view.publish(output(incoming), cx));
+    assert_eq!(visual.shown_system_notifications().len(), 1);
+}
+
+#[gpui::test]
+fn issue2490_approve_sends_the_shown_request_and_retracts_the_notice(cx: &mut TestAppContext) {
+    issue2490_answer(cx, Answer::Approve);
+}
+
+#[gpui::test]
+fn issue2490_reject_sends_the_shown_request_and_retracts_the_notice(cx: &mut TestAppContext) {
+    issue2490_answer(cx, Answer::Reject);
+}
+
+#[gpui::test]
+fn issue2490_stale_request_refused_as_expired_retracts_the_notice(cx: &mut TestAppContext) {
+    issue2490_answer(cx, Answer::Expired);
+}
+
+/// #2490 review: the requesting computer shows its own device ID while it
+/// waits, the line the approving computer's banner repeats.
+#[gpui::test]
+fn issue2490_waiting_computer_shows_its_own_device_id(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let (_root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = fixture(window, cx);
+            view.presentation.wizard = Some(super::presentation::Step::Waiting);
+            view.snapshot = Some(snapshot(Some(direct::Pending {
+                request_id: uuid::Uuid::new_v4(),
+                incoming: false,
+                name: "Laptop".into(),
+                device_id: "OWN-DEVICE".into(),
+                fingerprint: "own-identity".into(),
+            })));
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    draw_sync_fixture(visual);
+    assert!(
+        visual.debug_bounds("sync-cancel-request").is_some(),
+        "positive control: waiting step rendered"
+    );
+    assert!(visual.debug_bounds("sync-waiting-device").is_some());
+    assert!(visual.debug_bounds("sync-approval-device").is_none());
 }

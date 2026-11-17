@@ -172,11 +172,25 @@ pub(super) fn last_seen(value: &str) -> String {
     }
 }
 
-/// Title and body of the OS notification for an incoming pairing request.
+/// Title and body of the OS notification for an incoming pairing request. It
+/// only sends the user back to Okilum: the decision needs the device ID there.
 pub(super) fn approval_text(name: &str) -> (String, &'static str) {
     (
         format!("{name} wants to connect"),
-        "Open Okilum to approve or reject this computer. No files are shared before approval.",
+        "Open Okilum and check this computer's device ID before you approve or reject it. No files are shared before approval.",
+    )
+}
+
+/// The requester's identity as both computers show it: the Syncthing device ID,
+/// or the pairing key fingerprint when no Syncthing device is attached yet.
+pub(super) fn device_line(pending: &direct::Pending) -> String {
+    format!("Device ID {}", pending.device_id)
+}
+
+/// Shown under the approval banner's device ID (#2490 review).
+pub(super) fn approval_check(name: &str) -> String {
+    format!(
+        "Approve only if it matches the device ID shown on {name}. Approval lets it choose your shared vaults."
     )
 }
 
