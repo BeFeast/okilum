@@ -140,11 +140,12 @@ impl Render for Surface {
     }
 }
 
-/// A scrolled editor with the caret on the last line, in view.
-fn scrolled_editor<'a>(
+/// An editor at the top of the note with the caret at `caret`.
+fn editor_at<'a>(
     cx: &'a mut TestAppContext,
     text: &str,
     provider: Arc<dyn ProjectionProvider>,
+    caret: usize,
 ) -> (Entity<EditorState>, &'a mut VisualTestContext) {
     cx.update(crate::test_init);
     let mut input = None;
@@ -170,8 +171,19 @@ fn scrolled_editor<'a>(
     visual.run_until_parked();
     let input = input.unwrap();
     input.update(visual, |state, cx| {
-        state.set_selected_range(text.len()..text.len(), cx)
+        state.set_selected_range(caret..caret, cx)
     });
+    visual.run_until_parked();
+    (input, visual)
+}
+
+/// A scrolled editor with the caret on the last line, in view.
+fn scrolled_editor<'a>(
+    cx: &'a mut TestAppContext,
+    text: &str,
+    provider: Arc<dyn ProjectionProvider>,
+) -> (Entity<EditorState>, &'a mut VisualTestContext) {
+    let (input, visual) = editor_at(cx, text, provider, text.len());
     let bounds = input.read_with(visual, |state, _| state.input_bounds());
     visual.simulate_event(ScrollWheelEvent {
         position: bounds.center(),
@@ -274,8 +286,10 @@ fn layout_frames_name_the_raw_edit_frame_and_its_anchor(cx: &mut TestAppContext)
             .any(|r| (rows - r).abs() < 0.05),
         "{edit:?} line {line}"
     );
+    // #1304: the adoption anchors from the classified layout before the
+    // raw frame, not from the raw rows.
     assert!(
-        !adopted.edit && !adopted.raw && adopted.anchor == "caret",
+        !adopted.edit && !adopted.raw && adopted.anchor == "reference",
         "{adopted:?}"
     );
     assert!(
@@ -285,4 +299,111 @@ fn layout_frames_name_the_raw_edit_frame_and_its_anchor(cx: &mut TestAppContext)
     assert!(input
         .read_with(visual, |state, _| state.take_layout_frames())
         .is_empty());
+}
+
+fn scroll_y(input: &Entity<EditorState>, visual: &mut VisualTestContext) -> f32 {
+    f32::from(input.read_with(visual, |state, _| state.scroll_offset().y))
+}
+
+/// Draw the edit as source, then adopt the classification again, and check
+/// that the view at the top of the note is where it was before the edit.
+/// `edit` makes the change while the provider has no projection.
+fn assert_top_held_across_a_raw_frame(
+    cx: &mut TestAppContext,
+    edit: impl FnOnce(&Entity<EditorState>, &mut VisualTestContext),
+    setup: impl FnOnce(&Entity<EditorState>, &mut VisualTestContext),
+    what: &str,
+) {
+    let headings: String = (0..HEADINGS).map(|i| format!("Heading {i}\n")).collect();
+    let body: String = (0..60).map(|i| format!("body line {i}\n")).collect();
+    let text = format!("{headings}{body}");
+    let provider = Arc::new(Headings {
+        raw: AtomicBool::new(false),
+    });
+    let heading = text.find("Heading 5").unwrap();
+    let (input, visual) = editor_at(cx, &text, provider.clone(), heading + "Heading 5".len());
+    let provider_ref = provider.clone() as Arc<dyn ProjectionProvider>;
+    setup(&input, visual);
+    draw(&input, heading, visual);
+    let before = draw(&input, heading, visual);
+    let top = before.reference.expect("the heading is in view");
+    assert!(
+        scroll_y(&input, visual).abs() < 0.5,
+        "{what}: control, the note is at its top"
+    );
+
+    provider.raw.store(true, Ordering::SeqCst);
+    edit(&input, visual);
+    let raw = draw(&input, heading, visual);
+    // Positive control: this frame is drawn raw, the five headings above lose
+    // half their height, and the anchor's scroll down is clamped at the top.
+    let line = raw.line;
+    let raw_top = raw.reference.expect("the heading stays in view");
+    let rows_up = f32::from(top - raw_top) / f32::from(line);
+    assert!(
+        (rows_up - 5.).abs() < 0.05,
+        "{what}: control, the raw frame moved the heading {rows_up} rows"
+    );
+    assert!(
+        scroll_y(&input, visual).abs() < 0.5,
+        "{what}: control, clamped at the top"
+    );
+
+    provider.raw.store(false, Ordering::SeqCst);
+    input.update(visual, |state, cx| {
+        state.set_projection_provider(Some(provider_ref.clone()), cx)
+    });
+    for frame in ["adopted", "settled"] {
+        let after = draw(&input, heading, visual);
+        let scroll = scroll_y(&input, visual);
+        assert!(
+            scroll.abs() < 0.5,
+            "{what}, {frame}: the note scrolled by {scroll} px (one row is {line:?})"
+        );
+        let moved = f32::from(after.reference.expect("the heading is in view") - top);
+        assert!(
+            moved.abs() < 0.5,
+            "{what}, {frame}: the heading moved by {moved} px from before the edit"
+        );
+    }
+}
+
+/// #1304 (#1266): typing at the top of a note while the edit falls back to a
+/// raw frame. The clamp at the top kept none of that frame's correction, and
+/// the full reverse correction from the raw rows scrolled the note down by the
+/// height the rows above lost.
+#[gpui::test]
+fn typing_at_the_top_through_a_raw_frame_keeps_the_view(cx: &mut TestAppContext) {
+    assert_top_held_across_a_raw_frame(
+        cx,
+        |_, visual| visual.simulate_input("x"),
+        |_, _| {},
+        "typing",
+    );
+}
+
+/// #1304 (#1266): Undo at the top of a note while the edit falls back to a
+/// raw frame. Anchored from the raw layout, the next frame scrolled the note.
+#[gpui::test]
+fn undo_at_the_top_through_a_raw_frame_keeps_the_view(cx: &mut TestAppContext) {
+    assert_top_held_across_a_raw_frame(
+        cx,
+        |input, visual| {
+            let typed = input.read_with(visual, |state, _| state.value().len());
+            visual.update(|window, cx| {
+                window.dispatch_action(Box::new(gpui_component::input::Undo), cx)
+            });
+            input.read_with(visual, |state, _| {
+                assert_eq!(state.value().len(), typed - 1, "Undo reached the editor")
+            });
+        },
+        |input, visual| {
+            visual.simulate_input("x");
+            draw(input, 0, visual);
+            input.read_with(visual, |state, _| {
+                assert!(state.value().contains("Heading 5x"), "the typed character")
+            });
+        },
+        "Undo",
+    );
 }
