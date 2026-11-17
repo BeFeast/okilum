@@ -93,10 +93,8 @@ enum Failure {
 
 impl SessionGateway {
     pub fn new(env: Environment, source: Arc<dyn SessionSource>) -> anyhow::Result<Self> {
-        let http = Client::builder()
-            .user_agent(concat!("okilum/", env!("CARGO_PKG_VERSION")))
+        let http = crate::network::builder(&env.origin(), Duration::from_secs(30))?
             .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(Duration::from_secs(30))
             // A session cookie must not follow a redirect to another host.
             .redirect(reqwest::redirect::Policy::none())
             .build()?;

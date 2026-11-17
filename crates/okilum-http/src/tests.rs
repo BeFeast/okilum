@@ -190,3 +190,37 @@ fn async_builder_preserves_no_redirect_and_user_agent_with_tighter_timeouts() {
     assert!(request.contains("user-agent: okilum/slice1 ("));
     assert!(async_builder("file:///private", "test", Duration::from_secs(1)).is_err());
 }
+#[test]
+fn loopback_endpoints_are_recognised_without_name_tricks() {
+    for local in [
+        "http://127.0.0.1:3773/",
+        "http://127.8.9.10/",
+        "http://[::1]:8080/",
+        "http://localhost:3773/",
+        "https://LOCALHOST/",
+    ] {
+        assert!(is_loopback(&url::Url::parse(local).unwrap()), "{local}");
+    }
+    for remote in [
+        "https://t3.example.test/",
+        "https://localhost.example.test/",
+        "https://127.0.0.1.example.test/",
+        "http://10.0.0.1/",
+    ] {
+        assert!(!is_loopback(&url::Url::parse(remote).unwrap()), "{remote}");
+    }
+}
+#[cfg(windows)]
+#[test]
+fn windows_loopback_policy_is_direct_without_proxy_discovery() {
+    let endpoint = url::Url::parse("http://127.0.0.1:3773/mcp").unwrap();
+    assert!(matches!(
+        windows_policy(&endpoint).unwrap(),
+        windows_proxy::Policy::Direct
+    ));
+}
+#[test]
+fn async_policy_refuses_non_http_endpoints() {
+    assert!(async_builder("ftp://example.test/", "test", Duration::from_secs(1)).is_err());
+    assert!(builder("wss://example.test/", "test", Duration::from_secs(1)).is_err());
+}

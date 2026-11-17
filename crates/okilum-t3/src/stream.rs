@@ -184,7 +184,7 @@ impl NativeClient {
         if timeout.is_zero() {
             return Err(StreamError::Protocol("zero network timeout"));
         }
-        let http = auth::http(timeout)?;
+        let http = auth::http(&environment, timeout)?;
         Ok(Self {
             environment,
             token,

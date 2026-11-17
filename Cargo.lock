@@ -6407,6 +6407,7 @@ dependencies = [
  "chrono",
  "getrandom 0.3.4",
  "okilum-core",
+ "okilum-http",
  "okilum-network-access",
  "okilum-write-authority",
  "reqwest",

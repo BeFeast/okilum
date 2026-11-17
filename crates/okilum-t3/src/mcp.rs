@@ -77,10 +77,8 @@ impl From<GatewayError> for Failure {
 
 impl McpGateway {
     pub fn new(env: Environment, token: Option<StoredToken>) -> anyhow::Result<Self> {
-        let http = Client::builder()
-            .user_agent(concat!("okilum/", env!("CARGO_PKG_VERSION")))
+        let http = crate::network::builder(&env.origin(), Duration::from_secs(30))?
             .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(30))
             // A bearer token must not follow a redirect to another host.
             .redirect(reqwest::redirect::Policy::none())
             .build()?;

@@ -54,7 +54,7 @@ pub fn connect(
     open_browser: impl FnOnce(&Url) -> Result<()>,
     timeout: Duration,
 ) -> Result<StoredToken> {
-    let http = http_client()?;
+    let http = http_client(env)?;
     let metadata = discover(&http, env)?;
     let callback = Callback::bind()?;
     let client_id = register(&http, &metadata, client_name, callback.redirect_uri())?;
@@ -85,13 +85,15 @@ pub fn connect(
     )
 }
 
-pub fn http_client() -> Result<Client> {
-    Ok(Client::builder()
-        .user_agent(concat!("okilum/", env!("CARGO_PKG_VERSION")))
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?)
+/// One client per flow: discovery checks every endpoint shares `env`'s origin,
+/// so the per-origin Windows TLS/proxy policy covers the whole exchange.
+pub fn http_client(env: &Environment) -> Result<Client> {
+    Ok(
+        crate::network::builder(&env.origin(), Duration::from_secs(30))?
+            .connect_timeout(Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?,
+    )
 }
 
 /// Reads the authorization server metadata and checks that it belongs to

@@ -1,4 +1,6 @@
 //! Explicit per-endpoint HTTP policy with Windows OS trust and system proxy support.
+//! Every outbound single-origin client in the Windows binary builds here; the
+//! inventory test in `tests/client_inventory.rs` names each deliberate exception.
 //! Windows uses SChannel's OS trust policy, never a verification bypass.
 use anyhow::{Context, Result};
 use reqwest::blocking::{Client, ClientBuilder};
@@ -14,11 +16,7 @@ pub fn client(endpoint: &str, version: &str, timeout: Duration) -> Result<Client
 }
 
 pub fn builder(endpoint: &str, version: &str, timeout: Duration) -> Result<ClientBuilder> {
-    let endpoint = url::Url::parse(endpoint).context("Invalid HTTP endpoint")?;
-    anyhow::ensure!(
-        matches!(endpoint.scheme(), "https" | "http"),
-        "Unsupported HTTP scheme"
-    );
+    let endpoint = parse_endpoint(endpoint)?;
     let builder = Client::builder()
         .user_agent(format!("Okilum/{version} ({})", std::env::consts::OS))
         .connect_timeout(Duration::from_secs(5))
@@ -27,13 +25,44 @@ pub fn builder(endpoint: &str, version: &str, timeout: Duration) -> Result<Clien
     #[cfg(windows)]
     let builder = {
         let builder = builder.use_native_tls();
-        match windows_proxy::resolve(&endpoint)? {
+        match windows_policy(&endpoint)? {
             windows_proxy::Policy::Inherit => builder,
             windows_proxy::Policy::Direct => builder.no_proxy(),
             windows_proxy::Policy::Proxy(proxy) => builder.proxy(proxy),
         }
     };
+    #[cfg(not(windows))]
+    let _ = endpoint;
     Ok(builder)
+}
+
+fn parse_endpoint(endpoint: &str) -> Result<url::Url> {
+    let endpoint = url::Url::parse(endpoint).context("Invalid HTTP endpoint")?;
+    anyhow::ensure!(
+        matches!(endpoint.scheme(), "https" | "http"),
+        "Unsupported HTTP scheme"
+    );
+    Ok(endpoint)
+}
+
+/// A loopback endpoint never reaches a system or PAC proxy: a corporate proxy
+/// cannot route back to this machine, and WinHTTP discovery would only add the
+/// PAC failure modes to a purely local connection.
+pub fn is_loopback(endpoint: &url::Url) -> bool {
+    match endpoint.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        None => false,
+    }
+}
+
+#[cfg(windows)]
+fn windows_policy(endpoint: &url::Url) -> Result<windows_proxy::Policy> {
+    if is_loopback(endpoint) {
+        return Ok(windows_proxy::Policy::Direct);
+    }
+    windows_proxy::resolve(endpoint)
 }
 
 /// Async uploads preserve an early HTTP rejection while the body is streaming.
@@ -50,11 +79,7 @@ pub fn async_builder(
     version: &str,
     timeout: Duration,
 ) -> Result<reqwest::ClientBuilder> {
-    let endpoint = url::Url::parse(endpoint).context("Invalid HTTP endpoint")?;
-    anyhow::ensure!(
-        matches!(endpoint.scheme(), "https" | "http"),
-        "Unsupported HTTP scheme"
-    );
+    let endpoint = parse_endpoint(endpoint)?;
     let builder = reqwest::Client::builder()
         .user_agent(format!("Okilum/{version} ({})", std::env::consts::OS))
         .connect_timeout(Duration::from_secs(5))
@@ -63,12 +88,14 @@ pub fn async_builder(
     #[cfg(windows)]
     let builder = {
         let builder = builder.use_native_tls();
-        match windows_proxy::resolve(&endpoint)? {
+        match windows_policy(&endpoint)? {
             windows_proxy::Policy::Inherit => builder,
             windows_proxy::Policy::Direct => builder.no_proxy(),
             windows_proxy::Policy::Proxy(proxy) => builder.proxy(proxy),
         }
     };
+    #[cfg(not(windows))]
+    let _ = endpoint;
     Ok(builder)
 }
 

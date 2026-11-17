@@ -169,15 +169,16 @@ impl NativeToken {
     }
 }
 
-pub(super) fn http(timeout: Duration) -> StreamResult<Client> {
+/// The ticket client follows the shared per-origin policy. The WebSocket that
+/// spends the ticket does not yet (#1944 follow-up): see docs/windows-network-policy.md.
+pub(super) fn http(environment: &Environment, timeout: Duration) -> StreamResult<Client> {
     if timeout.is_zero() {
         return Err(StreamError::Protocol("zero network timeout"));
     }
-    Client::builder()
+    crate::network::builder(&environment.origin(), timeout)
+        .map_err(|_| StreamError::Unreachable)?
         .connect_timeout(timeout)
-        .timeout(timeout)
         .redirect(reqwest::redirect::Policy::none())
-        .user_agent(concat!("okilum/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|_| StreamError::Unreachable)
 }

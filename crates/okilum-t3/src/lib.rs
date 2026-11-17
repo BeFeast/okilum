@@ -27,6 +27,7 @@ mod gateway;
 pub mod launch;
 pub mod manifest;
 mod mcp;
+pub(crate) mod network;
 pub mod message_types;
 pub mod models;
 pub mod oauth;
