@@ -96,19 +96,21 @@ fn changes(old: &str, current: &str) -> String {
 impl Reader {
     pub(super) fn active_timeline(&self) -> Option<&Timeline> {
         self.pane.timeline.as_ref().filter(|t| {
-            t.root == self.vault_root && t.rel == self.current_rel && !self.current_rel.is_empty()
+            t.root == self.vault_root
+                && t.rel == self.pane.current_rel
+                && !self.pane.current_rel.is_empty()
         })
     }
 
     pub(super) fn open_timeline(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.current_rel.is_empty() || self.pane.file_preview.is_some() {
+        if self.pane.current_rel.is_empty() || self.pane.file_preview.is_some() {
             return;
         }
         let Some(state) = self.session_directory.clone() else {
             return;
         };
         let root = self.vault_root.clone();
-        let rel = self.current_rel.clone();
+        let rel = self.pane.current_rel.clone();
         let id = uuid::Uuid::new_v4();
         self.pane.timeline = Some(Timeline {
             id,
@@ -438,7 +440,7 @@ impl Reader {
                             .debug_selector(|| "history-undo".into())
                             .on_click(cx.listener(move |notice,_,window,cx| {
                                 let result = reader.update(cx, |r,cx| {
-                                    anyhow::ensure!(r.vault_root == root && r.current_rel == rel,
+                                    anyhow::ensure!(r.vault_root == root && r.pane.current_rel == rel,
                                         "Open the restored note before undoing");
                                     anyhow::ensure!(root.join(&rel).canonicalize().ok().as_ref() == Some(&note), "The note path changed; open history again");
                                     if raw_restore { r.restore_source_bytes(&restored_bytes, &replaced_bytes, window, cx) }
@@ -621,7 +623,7 @@ impl Reader {
                         .py_2()
                         .child(div().min_w_0().text_sm().truncate().child(format!(
                             "{} · {}",
-                            self.current_title,
+                            self.pane.current_title,
                             age(version.created)
                         )))
                         .child(
@@ -806,7 +808,7 @@ mod tests {
         let reader = reader.unwrap();
         visual.run_until_parked();
         reader.update_in(visual, |r, w, cx| {
-            assert_eq!(r.current_rel, "note.md");
+            assert_eq!(r.pane.current_rel, "note.md");
             r.source_history(false, w, cx);
             assert!(!w.has_active_dialog(cx));
         });
@@ -824,7 +826,7 @@ mod tests {
             assert!(!t.loading);
             assert!(t.content.is_some());
             assert_eq!(t.source.as_ref().unwrap().read(cx).value().as_ref(), old);
-            assert!(r.note_source.contains("Current"));
+            assert!(r.pane.note_source.contains("Current"));
             assert!(r.editing.is_none());
         });
         visual.update(|w, cx| w.draw(cx).clear(cx));
@@ -1017,7 +1019,7 @@ mod tests {
             r.open_timeline(w, cx);
             r.show_empty_vault(w, cx);
             assert!(w.has_active_dialog(cx));
-            assert_eq!(r.current_rel, "note.md");
+            assert_eq!(r.pane.current_rel, "note.md");
             assert!(r.active_timeline().is_some());
         });
         visual.run_until_parked();
@@ -1030,7 +1032,7 @@ mod tests {
         visual.simulate_click(dont_save.center(), Modifiers::default());
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
-            assert!(r.current_rel.is_empty());
+            assert!(r.pane.current_rel.is_empty());
             assert!(r.active_timeline().is_none());
         });
         assert!(

@@ -150,7 +150,10 @@ fn records_1892_actual_project_tabs_preserve_board_and_append_only_to_visible_ma
     visual.simulate_click(open.center(), Modifiers::default());
     visual.run_until_parked();
     reader.read_with(visual, |r, _| {
-        assert_eq!(r.current_rel, "project/ops/decisions/2026-11-06-choice.md")
+        assert_eq!(
+            r.pane.current_rel,
+            "project/ops/decisions/2026-11-06-choice.md"
+        )
     });
     assert_eq!(std::fs::read_to_string(&source).unwrap(), original);
 }

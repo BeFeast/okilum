@@ -149,7 +149,7 @@ impl Reader {
     pub(super) fn deleted_current(&self) -> Option<&DeletedNote> {
         self.deleted_note.as_ref().filter(|deleted| {
             deleted.root == self.vault_root
-                && deleted.rel == self.current_rel
+                && deleted.rel == self.pane.current_rel
                 && self.pane.file_preview.is_none()
         })
     }
@@ -176,11 +176,13 @@ impl Reader {
         if self.deleted_note.is_some() && self.deleted_current().is_none() {
             self.deleted_note = None;
         }
-        if self.current_rel.is_empty() || self.pane.file_preview.is_some() || !self.document_ready()
+        if self.pane.current_rel.is_empty()
+            || self.pane.file_preview.is_some()
+            || !self.document_ready()
         {
             return false;
         }
-        let path = self.vault_root.join(&self.current_rel);
+        let path = self.vault_root.join(&self.pane.current_rel);
         let on_disk = match std::fs::symlink_metadata(&path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             // An unreadable or redirected return cannot authorize replacing
@@ -196,7 +198,7 @@ impl Reader {
                     Ok(text) => Some(text),
                     Err(_) => return true,
                 },
-                None => match sources.get(&self.current_rel) {
+                None => match sources.get(&self.pane.current_rel) {
                     Some(raw) => Some(raw.clone()),
                     None => return false,
                 },
@@ -221,14 +223,15 @@ impl Reader {
             }
             (None, None) => {
                 let contents = self.source_text(cx).unwrap_or_else(|| {
-                    self.note_canonical_source
+                    self.pane
+                        .note_canonical_source
                         .as_deref()
                         .map(str::to_owned)
-                        .unwrap_or_else(|| self.note_source.clone())
+                        .unwrap_or_else(|| self.pane.note_source.clone())
                 });
                 self.deleted_note = Some(DeletedNote {
                     root: self.vault_root.clone(),
-                    rel: self.current_rel.clone(),
+                    rel: self.pane.current_rel.clone(),
                     contents,
                     disk: Disk::Missing,
                 });
@@ -269,7 +272,7 @@ impl Reader {
         cx: &mut Context<Self>,
     ) {
         let root = self.vault_root.clone();
-        let rel = self.current_rel.clone();
+        let rel = self.pane.current_rel.clone();
         self.navigation.reconciliation_generation =
             self.navigation.reconciliation_generation.wrapping_add(1);
         let generation = self.navigation.reconciliation_generation;
@@ -295,7 +298,7 @@ impl Reader {
             let result = task.await;
             let _ = this.update_in_own_window(cx, |this, window, cx| {
                 if this.vault_root != root
-                    || this.current_rel != rel
+                    || this.pane.current_rel != rel
                     || this.editing.is_some()
                     || this.navigation.reconciliation_generation != generation
                 {
@@ -441,7 +444,7 @@ impl Reader {
         if self.deleted_current().map(|deleted| deleted.disk) != Some(Disk::Missing) {
             return;
         }
-        let rel = self.current_rel.clone();
+        let rel = self.pane.current_rel.clone();
         let path = self.vault_root.join(&rel);
         let result = (|| -> anyhow::Result<()> {
             if let Some(parent) = Path::new(&rel)
@@ -504,7 +507,7 @@ impl Reader {
             self.resolve_source(true, window, cx);
             return;
         }
-        let path = self.vault_root.join(&self.current_rel);
+        let path = self.vault_root.join(&self.pane.current_rel);
         match std::fs::read_to_string(&path) {
             Ok(raw) => {
                 self.deleted_note = None;
@@ -534,7 +537,7 @@ impl Reader {
             return;
         };
         let root = self.vault_root.clone();
-        let rel = self.current_rel.clone();
+        let rel = self.pane.current_rel.clone();
         let original = root.join(&rel);
         let directory = original
             .parent()
@@ -558,7 +561,7 @@ impl Reader {
                 // A picker can outlive the document or edits made behind it.
                 // Never mark newer contents saved or replay stale navigation.
                 if this.vault_root != root
-                    || this.current_rel != rel
+                    || this.pane.current_rel != rel
                     || this.navigation.preparation_generation != generation
                 {
                     return;
@@ -581,7 +584,7 @@ impl Reader {
                     );
                     return;
                 }
-                let same = this.vault_root == root && this.current_rel == rel;
+                let same = this.vault_root == root && this.pane.current_rel == rel;
                 if same {
                     this.deleted_note = None;
                     // Its contents are saved: the editor of the deleted file
@@ -710,9 +713,9 @@ mod tests {
         reader.read_with(visual, |r, _| {
             assert!(r.watcher.is_some(), "positive control: a watcher");
             assert_eq!(r.single_file, folder);
-            assert_eq!(r.current_rel, "Start.md", "positive control: opened");
+            assert_eq!(r.pane.current_rel, "Start.md", "positive control: opened");
             assert!(
-                r.note_source.contains("only copy"),
+                r.pane.note_source.contains("only copy"),
                 "positive control: shown"
             );
         });
@@ -761,8 +764,8 @@ mod tests {
             disk(r) == Some(Disk::Missing)
         });
         reader.read_with(visual, |r, _| {
-            assert_eq!(r.current_rel, "Start.md");
-            assert!(r.note_source.contains("only copy"), "still shown");
+            assert_eq!(r.pane.current_rel, "Start.md");
+            assert!(r.pane.note_source.contains("only copy"), "still shown");
             assert!(
                 !r.link_notice
                     .as_deref()
@@ -790,7 +793,7 @@ mod tests {
         }
         reader.read_with(visual, |r, _| {
             assert!(r.deleted_current().is_none());
-            assert!(r.note_source.contains("only copy"));
+            assert!(r.pane.note_source.contains("only copy"));
         });
         draw(visual);
         assert!(visual.debug_bounds("deleted-note-notice").is_none());
@@ -822,7 +825,10 @@ mod tests {
             disk(r) == Some(Disk::Different)
         });
         reader.read_with(visual, |r, _| {
-            assert!(r.note_source.contains("only copy"), "not replaced silently");
+            assert!(
+                r.pane.note_source.contains("only copy"),
+                "not replaced silently"
+            );
         });
         draw(visual);
         assert!(visual.debug_bounds("deleted-note-notice").is_some());
@@ -832,7 +838,7 @@ mod tests {
         );
         click(visual, "deleted-note-reload");
         settle(visual, &reader, "reloaded", |r| {
-            r.note_source.contains("branch version") && r.deleted_current().is_none()
+            r.pane.note_source.contains("branch version") && r.deleted_current().is_none()
         });
     }
 
@@ -857,8 +863,8 @@ mod tests {
         click(visual, "deleted-note-cancel");
         assert!(!visual.update(|window, cx| window.has_active_dialog(cx)));
         reader.read_with(visual, |r, _| {
-            assert_eq!(r.current_rel, "Start.md");
-            assert!(r.note_source.contains("only copy"));
+            assert_eq!(r.pane.current_rel, "Start.md");
+            assert!(r.pane.note_source.contains("only copy"));
             assert_eq!(disk(r), Some(Disk::Missing));
         });
 
@@ -877,7 +883,7 @@ mod tests {
         visual.run_until_parked();
         assert_eq!(std::fs::read_to_string(&saved).unwrap(), START);
         settle(visual, &reader, "navigation continued", |r| {
-            r.current_rel == "Other.md" && r.note_source.contains("otherword")
+            r.pane.current_rel == "Other.md" && r.pane.note_source.contains("otherword")
         });
         reader.read_with(visual, |r, _| assert!(r.deleted_note.is_none()));
     }
@@ -891,14 +897,14 @@ mod tests {
             r.open_note("Other.md", None, window, cx)
         });
         settle(visual, &reader, "plain navigation", |r| {
-            r.current_rel == "Other.md"
+            r.pane.current_rel == "Other.md"
         });
         assert!(!visual.update(|window, cx| window.has_active_dialog(cx)));
         reader.update_in(visual, |r, window, cx| {
             r.open_note("Start.md", None, window, cx)
         });
         settle(visual, &reader, "back", |r| {
-            r.current_rel == "Start.md" && r.note_source.contains("only copy")
+            r.pane.current_rel == "Start.md" && r.pane.note_source.contains("only copy")
         });
 
         std::fs::remove_file(root.join("Start.md")).unwrap();
@@ -910,7 +916,9 @@ mod tests {
         });
         visual.run_until_parked();
         click(visual, "deleted-note-dont-save");
-        settle(visual, &reader, "left", |r| r.current_rel == "Other.md");
+        settle(visual, &reader, "left", |r| {
+            r.pane.current_rel == "Other.md"
+        });
         assert!(!root.join("Start.md").exists(), "nothing written");
         reader.read_with(visual, |r, _| assert!(r.deleted_note.is_none()));
     }
@@ -999,7 +1007,7 @@ mod tests {
         assert!(visual.update(|window, cx| window.has_active_dialog(cx)));
         click(visual, "deleted-note-cancel");
         reader.read_with(visual, |r, cx| {
-            assert_eq!(r.current_rel, "Start.md");
+            assert_eq!(r.pane.current_rel, "Start.md");
             assert_eq!(r.source_text(cx).as_deref(), Some(edited));
             assert!(r.editing.is_some());
         });
@@ -1014,7 +1022,7 @@ mod tests {
         visual.simulate_new_path_selection(|_| None);
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
-            assert_eq!(r.current_rel, "Start.md");
+            assert_eq!(r.pane.current_rel, "Start.md");
             assert_eq!(r.source_text(cx).as_deref(), Some(edited));
             assert_eq!(disk(r), Some(Disk::Missing));
         });
@@ -1029,7 +1037,7 @@ mod tests {
         visual.simulate_new_path_selection(move |_| Some(invalid));
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
-            assert_eq!(r.current_rel, "Start.md");
+            assert_eq!(r.pane.current_rel, "Start.md");
             assert_eq!(r.source_text(cx).as_deref(), Some(edited));
             assert!(r.deleted_current().is_some());
         });
@@ -1048,7 +1056,7 @@ mod tests {
             std::fs::read_to_string(root.join("Existing.md")).unwrap(),
             "external bytes"
         );
-        reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "Start.md"));
+        reader.read_with(visual, |r, _| assert_eq!(r.pane.current_rel, "Start.md"));
 
         // Successful Save As writes the editor buffer, then continues once.
         reader.update_in(visual, |r, window, cx| {
@@ -1064,7 +1072,7 @@ mod tests {
             edited
         );
         settle(visual, &reader, "saved editor navigation", |r| {
-            r.current_rel == "Other.md"
+            r.pane.current_rel == "Other.md"
         });
         assert!(!root.join("Start.md").exists());
     }
@@ -1098,7 +1106,7 @@ mod tests {
         visual.run_until_parked();
         click(visual, "deleted-note-dont-save");
         settle(visual, &reader, "discard navigation", |r| {
-            r.current_rel == "Other.md"
+            r.pane.current_rel == "Other.md"
         });
         assert!(!root.join("Start.md").exists());
         assert!(okilum_core::file_editor::FileEditor::has_unsaved_draft(
@@ -1148,7 +1156,10 @@ mod tests {
             "no stale copy published"
         );
         reader.read_with(visual, |r, cx| {
-            assert_eq!(r.current_rel, "Start.md", "no pending navigation replay");
+            assert_eq!(
+                r.pane.current_rel, "Start.md",
+                "no pending navigation replay"
+            );
             assert_eq!(r.source_text(cx).as_deref(), Some(latest));
             assert_eq!(disk(r), Some(Disk::Missing));
         });
@@ -1168,7 +1179,7 @@ mod tests {
             visual,
             &reader,
             "latest copy saved and navigation resumed",
-            |r| r.current_rel == "Other.md",
+            |r| r.pane.current_rel == "Other.md",
         );
         assert!(!root.join("Start.md").exists());
     }
@@ -1192,7 +1203,7 @@ mod tests {
         });
         click(visual, "deleted-note-dont-save");
         reader.read_with(visual, |r, _| {
-            assert_eq!(r.current_rel, "Start.md");
+            assert_eq!(r.pane.current_rel, "Start.md");
             assert_eq!(disk(r), Some(Disk::Missing));
         });
         reader.update_in(visual, |r, window, cx| {
@@ -1208,7 +1219,7 @@ mod tests {
         visual.run_until_parked();
         assert!(!root.join("StaleGeneration.md").exists());
         reader.read_with(visual, |r, _| {
-            assert_eq!(r.current_rel, "Start.md");
+            assert_eq!(r.pane.current_rel, "Start.md");
             assert_eq!(disk(r), Some(Disk::Missing));
         });
     }
@@ -1227,22 +1238,30 @@ mod tests {
             r.open_note("Other.md", None, window, cx)
         });
         visual.run_until_parked();
-        reader.update_in(visual, |r, _, _| r.current_rel = "NewIdentity.md".into());
+        reader.update_in(visual, |r, _, _| {
+            r.pane.current_rel = "NewIdentity.md".into()
+        });
         click(visual, "deleted-note-dont-save");
-        reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "NewIdentity.md"));
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.pane.current_rel, "NewIdentity.md")
+        });
 
         reader.update_in(visual, |r, window, cx| {
-            r.current_rel = "Start.md".into();
+            r.pane.current_rel = "Start.md".into();
             r.save_deleted_note_as(None, window, cx);
         });
         visual.run_until_parked();
         assert!(visual.did_prompt_for_new_path());
-        reader.update_in(visual, |r, _, _| r.current_rel = "NewIdentity.md".into());
+        reader.update_in(visual, |r, _, _| {
+            r.pane.current_rel = "NewIdentity.md".into()
+        });
         let saved = root.join("Stale.md");
         visual.simulate_new_path_selection(move |_| Some(saved));
         visual.run_until_parked();
         assert!(!root.join("Stale.md").exists());
-        reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "NewIdentity.md"));
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.pane.current_rel, "NewIdentity.md")
+        });
     }
 
     #[gpui::test]
@@ -1354,11 +1373,11 @@ mod tests {
         reader.update_in(visual, |r, window, cx| r.close_note(window, cx));
         visual.run_until_parked();
         click(visual, "deleted-note-cancel");
-        reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "Start.md"));
+        reader.read_with(visual, |r, _| assert_eq!(r.pane.current_rel, "Start.md"));
         reader.update_in(visual, |r, window, cx| r.close_note(window, cx));
         visual.run_until_parked();
         click(visual, "deleted-note-dont-save");
-        reader.read_with(visual, |r, _| assert!(r.current_rel.is_empty()));
+        reader.read_with(visual, |r, _| assert!(r.pane.current_rel.is_empty()));
     }
 
     #[test]
@@ -1396,10 +1415,12 @@ mod tests {
         settle(visual, &reader, "changed return", |r| {
             disk(r) == Some(Disk::Different)
         });
-        reader.read_with(visual, |r, _| assert!(r.note_source.contains("only copy")));
+        reader.read_with(visual, |r, _| {
+            assert!(r.pane.note_source.contains("only copy"))
+        });
         click(visual, "deleted-note-reload");
         settle(visual, &reader, "explicit reload", |r| {
-            r.note_source.contains("Returned version") && disk(r).is_none()
+            r.pane.note_source.contains("Returned version") && disk(r).is_none()
         });
         std::fs::remove_file(root.join("Start.md")).unwrap();
         settle(visual, &reader, "third deletion", |r| {
@@ -1483,7 +1504,7 @@ mod tests {
         click(visual, "deleted-note-dont-save");
         reader.read_with(visual, |r, cx| {
             assert!(!r.single_file);
-            assert_eq!(r.current_rel, "Start.md");
+            assert_eq!(r.pane.current_rel, "Start.md");
             assert_eq!(r.source_text(cx).as_deref(), Some(latest));
             assert!(r.editing.is_some());
             assert!(r
@@ -1517,7 +1538,7 @@ mod tests {
         visual.run_until_parked();
         click(visual, "deleted-note-dont-save");
         reader.read_with(visual, |r, cx| {
-            assert_eq!(r.current_rel, "Start.md");
+            assert_eq!(r.pane.current_rel, "Start.md");
             assert_eq!(r.source_text(cx).as_deref(), Some("# Unsaved draft\n"));
             assert!(r.deleted_current().is_some());
             assert!(r
@@ -1556,8 +1577,8 @@ mod tests {
         visual.run_until_parked();
         click(visual, "deleted-note-cancel");
         reader.read_with(visual, |r, _| {
-            assert_eq!(r.current_rel, "Start.md");
-            assert!(r.note_source.contains("only copy"));
+            assert_eq!(r.pane.current_rel, "Start.md");
+            assert!(r.pane.note_source.contains("only copy"));
         });
         reader.update_in(visual, |r, window, cx| {
             r.open_note("Start.md", None, window, cx)
@@ -1565,7 +1586,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert_eq!(disk(r), Some(Disk::Missing));
-            assert!(r.note_source.contains("only copy"));
+            assert!(r.pane.note_source.contains("only copy"));
         });
         // Choosing another target while the dialog is open cannot bypass it.
         reader.update_in(visual, |r, window, cx| {
@@ -1574,6 +1595,6 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |r, window, cx| r.show_empty_vault(window, cx));
         click(visual, "deleted-note-cancel");
-        reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "Start.md"));
+        reader.read_with(visual, |r, _| assert_eq!(r.pane.current_rel, "Start.md"));
     }
 }

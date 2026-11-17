@@ -471,7 +471,7 @@ mod tests {
         visual.run_until_parked();
         visual.update(|window, cx| assert_eq!(window.notifications(cx).len(), 1));
         reader.read_with(visual, |r, _| {
-            assert_eq!(r.current_rel, "start.md");
+            assert_eq!(r.pane.current_rel, "start.md");
             assert!(r.file_menu.is_none() && r.pane.file_preview.is_none());
         });
         assert_eq!(visual.debug_bounds("reader-document").unwrap(), before);

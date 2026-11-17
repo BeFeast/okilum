@@ -55,7 +55,7 @@ pub(crate) fn entry() -> bool {
                                 let reference = okilum_core::render::image_reference::references(
                                     &source,
                                     &reader.vault,
-                                    &reader.current_rel,
+                                    &reader.pane.current_rel,
                                 )
                                 .into_iter()
                                 .find(|reference| {

@@ -17,7 +17,7 @@ impl Origin {
     fn matches(&self, reader: &Reader, editing: &Editing, entity: EntityId) -> bool {
         self.reader == entity
             && self.root == reader.vault_root
-            && self.reader_path == reader.current_rel
+            && self.reader_path == reader.pane.current_rel
             && self.selected == reader.selected_file()
             && self.file == editing.store.path()
             && self.input == editing.input.entity_id()
@@ -121,7 +121,7 @@ impl LivePreview {
             origin: Origin {
                 reader: entity,
                 root: reader.vault_root.clone(),
-                reader_path: reader.current_rel.clone(),
+                reader_path: reader.pane.current_rel.clone(),
                 selected: reader.selected_file().to_owned(),
                 file: store.path().to_owned(),
                 input: input.entity_id(),
@@ -3139,8 +3139,8 @@ mod tests {
                 input.clone(),
                 (
                     2,
-                    r.note_canonical_source.clone().unwrap(),
-                    r.note_source.clone(),
+                    r.pane.note_canonical_source.clone().unwrap(),
+                    r.pane.note_source.clone(),
                 ),
                 window,
                 cx,
@@ -3329,7 +3329,10 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
-            assert_eq!(r.current_rel, "target.md", "navigation positive control")
+            assert_eq!(
+                r.pane.current_rel, "target.md",
+                "navigation positive control"
+            )
         });
         reader.update_in(visual, |r, window, cx| r.history_move(-1, window, cx));
         for _ in 0..110 {
@@ -3337,7 +3340,7 @@ mod tests {
             visual.executor().advance_clock(Duration::from_millis(50));
         }
         reader.read_with(visual, |r, cx| {
-            assert_eq!(r.current_rel, "note.md");
+            assert_eq!(r.pane.current_rel, "note.md");
             assert!(r.live_preview_shown(), "Back keeps Live Preview");
             assert_eq!(
                 r.editing
@@ -3368,8 +3371,8 @@ mod tests {
                 input.clone(),
                 (
                     1,
-                    r.note_canonical_source.clone().unwrap(),
-                    r.note_source.clone(),
+                    r.pane.note_canonical_source.clone().unwrap(),
+                    r.pane.note_source.clone(),
                 ),
                 window,
                 cx,
@@ -3402,8 +3405,8 @@ mod tests {
                 input.clone(),
                 (
                     1,
-                    r.note_canonical_source.clone().unwrap(),
-                    r.note_source.clone(),
+                    r.pane.note_canonical_source.clone().unwrap(),
+                    r.pane.note_source.clone(),
                 ),
                 window,
                 cx,
@@ -3537,7 +3540,10 @@ mod tests {
         });
         visual.run_until_parked();
         reader.update_in(visual, |r, _, _| {
-            assert_eq!(r.current_rel, "target.md", "actual next note was accepted");
+            assert_eq!(
+                r.pane.current_rel, "target.md",
+                "actual next note was accepted"
+            );
             assert_ne!(
                 r.editing
                     .as_ref()
@@ -3893,16 +3899,16 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |r, _, cx| {
             let root = r.vault_root.clone();
-            let path = r.current_rel.clone();
+            let path = r.pane.current_rel.clone();
             assert!(r.checked_live_provider(cx.entity_id(), cx).is_some());
             r.vault_root = root.join("different-owner-root");
             r.schedule_live_preview(cx);
             assert!(r.checked_live_provider(cx.entity_id(), cx).is_none());
             r.vault_root = root;
-            r.current_rel = "foreign.md".into();
+            r.pane.current_rel = "foreign.md".into();
             r.schedule_live_preview(cx);
             assert!(r.checked_live_provider(cx.entity_id(), cx).is_none());
-            r.current_rel = path;
+            r.pane.current_rel = path;
             // An exact held legacy snapshot is reusable, not fresh Nav admission.
             assert!(r.checked_live_provider(cx.entity_id(), cx).is_some());
             let live = r.live_input(cx.entity_id(), cx).unwrap();
@@ -4035,7 +4041,7 @@ mod tests {
                 .clone()
                 .expect("REAL autosave worker is pending");
             let sources = std::collections::HashMap::from([(
-                r.current_rel.clone(),
+                r.pane.current_rel.clone(),
                 std::fs::read_to_string(editing.store.path()).unwrap(),
             )]);
             // Separate consumer-boundary proof: deliver the EXISTING publication
@@ -4154,7 +4160,7 @@ mod tests {
         visual.simulate_keystrokes("enter");
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
-            assert_eq!(r.current_rel, "renamed.md");
+            assert_eq!(r.pane.current_rel, "renamed.md");
             assert!(!dir.path().join("vault/note.md").exists());
             let e = r.editing.as_ref().unwrap();
             assert!(

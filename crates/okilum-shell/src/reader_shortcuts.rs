@@ -1111,7 +1111,10 @@ mod tests {
         let reader = reader.unwrap();
         visual.run_until_parked();
         reader.update_in(visual, |this, window, cx| {
-            assert_eq!(this.current_rel, "One.md", "loaded-note positive control");
+            assert_eq!(
+                this.pane.current_rel, "One.md",
+                "loaded-note positive control"
+            );
             this.focus_handle.focus(window, cx);
         });
         assert!(visual.debug_bounds("shortcut-sheet").is_none());

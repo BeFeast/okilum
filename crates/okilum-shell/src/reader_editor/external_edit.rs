@@ -405,7 +405,7 @@ impl Reader {
             reader_toast::error("This note can’t be changed right now.", window, cx);
             return None;
         }
-        let mut session = match Session::start(&text, &block, &self.current_rel) {
+        let mut session = match Session::start(&text, &block, &self.pane.current_rel) {
             Ok(session) => session,
             Err(error) => {
                 reader_toast::error(

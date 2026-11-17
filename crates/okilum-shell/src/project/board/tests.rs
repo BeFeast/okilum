@@ -505,7 +505,7 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
     visual.run_until_parked();
     reader.read_with(visual, |reader, _| {
         assert!(
-            reader.note_source.contains("Changed bytes"),
+            reader.pane.note_source.contains("Changed bytes"),
             "positive control: background replacement was applied"
         );
         assert!(reader.project_navigation.board_visible);
@@ -646,7 +646,7 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
     visual.simulate_click(note.center(), Modifiers::default());
     visual.run_until_parked();
     reader.read_with(visual, |reader, cx| {
-        assert_eq!(reader.current_rel, "project/note.md");
+        assert_eq!(reader.pane.current_rel, "project/note.md");
         assert!(!reader.project_navigation.board_visible);
         assert!(reader
             .project
@@ -712,7 +712,7 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
     visual.simulate_click(attention.center(), Modifiers::default());
     visual.run_until_parked();
     reader.read_with(visual, |reader, cx| {
-        assert_eq!(reader.current_rel, "project/note.md");
+        assert_eq!(reader.pane.current_rel, "project/note.md");
         assert!(!reader.project_navigation.board_visible);
         assert!(reader
             .project
@@ -800,7 +800,7 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
     visual.simulate_click(note.center(), Modifiers::default());
     visual.run_until_parked();
     reader.read_with(visual, |reader, _| {
-        assert_eq!(reader.current_rel, "project/decision.md");
+        assert_eq!(reader.pane.current_rel, "project/decision.md");
         assert!(!reader.project_navigation.board_visible);
     });
     let back = visual.debug_bounds("project-return-board").unwrap();

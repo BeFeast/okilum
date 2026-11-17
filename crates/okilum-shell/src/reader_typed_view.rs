@@ -165,7 +165,7 @@ pub(super) fn render(
     let on_overdue = lens.is_some();
     let source = match lens {
         Some(source) => source,
-        None => reader.note_canonical_source.clone()?,
+        None => reader.pane.note_canonical_source.clone()?,
     };
     let preferences = reader_ui_state::typed_views(cx);
     let today = reader_tasks::today();
@@ -496,7 +496,7 @@ mod tests {
         visual.run_until_parked();
         assert!(visual.debug_bounds("native-tasks-dashboard").is_some());
         reader.read_with(visual, |r, _| {
-            assert_eq!(r.current_rel, "Dashboard.md");
+            assert_eq!(r.pane.current_rel, "Dashboard.md");
             assert!(r.navigation.pending_landing.is_none());
         });
         visual.simulate_keystrokes(if cfg!(target_os = "macos") {
@@ -711,7 +711,7 @@ mod tests {
         visual.run_until_parked();
         assert!(visual.debug_bounds("native-tasks-dashboard").is_some());
         view.update(visual, |v, cx| {
-            v.note_canonical_source =
+            v.pane.note_canonical_source =
                 Some(Arc::from(source.replace("view: tasks", "view: unknown")));
             cx.notify();
         });

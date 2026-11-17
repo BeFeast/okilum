@@ -91,7 +91,7 @@ impl Target {
                 .is_some_and(|path| reader.vault.cloud_placeholders.contains(path));
         Self {
             root: reader.vault_root.clone(),
-            note: reader.current_rel.clone(),
+            note: reader.pane.current_rel.clone(),
             generation: reader.navigation.preparation_generation,
             url: (relative.is_some() || remote).then(|| url.unwrap().to_owned()),
             local,
@@ -102,7 +102,7 @@ impl Target {
     }
     fn matches(&self, reader: &Reader) -> bool {
         self.root == reader.vault_root
-            && self.note == reader.current_rel
+            && self.note == reader.pane.current_rel
             && self.generation == reader.navigation.preparation_generation
     }
     fn matches_accepted(&self, reader: &Reader, cx: &App) -> bool {
@@ -303,7 +303,7 @@ impl Reader {
         let Some(image) = okilum_core::render::image_reference::references(
             source,
             &self.vault,
-            &self.current_rel,
+            &self.pane.current_rel,
         )
         .into_iter()
         .find(|image| image.range.contains(&offset)) else {
@@ -647,21 +647,21 @@ impl SourceFacts {
         let stamp = source.stamp;
         if snapshot.stamp != Some(stamp)
             || snapshot.root != reader.vault_root
-            || snapshot.note != reader.current_rel
+            || snapshot.note != reader.pane.current_rel
             || snapshot.generation != reader.navigation.preparation_generation
         {
             snapshot.ranges = if source.text.len() <= okilum_core::source_classifier::MAX_BYTES {
                 okilum_core::render::image_reference::references(
                     &source.text,
                     &reader.vault,
-                    &reader.current_rel,
+                    &reader.pane.current_rel,
                 )
             } else {
                 Vec::new()
             };
             snapshot.stamp = Some(stamp);
             snapshot.root = reader.vault_root.clone();
-            snapshot.note = reader.current_rel.clone();
+            snapshot.note = reader.pane.current_rel.clone();
             snapshot.generation = reader.navigation.preparation_generation;
         }
         snapshot.selected = snapshot
