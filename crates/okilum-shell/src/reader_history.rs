@@ -531,7 +531,7 @@ mod tests {
         ReadingHistory::record_document_mode(&state, &quick, "file.md", true).unwrap();
         assert_eq!(
             ReadingHistory::known_vault_roots(&state).unwrap(),
-            [vault.clone()]
+            std::slice::from_ref(&vault)
         );
         assert_eq!(
             ReadingHistory::known_vaults(&state).unwrap()[0].last_opened,
