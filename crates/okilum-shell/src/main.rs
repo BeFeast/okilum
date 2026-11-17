@@ -500,6 +500,15 @@ const PASTE_AS_TITLED_LINK_KEY: &str = windows_key("secondary-alt-v", "ctrl-shif
 pub(crate) const MAXIMIZE_NOTE_KEY: &str = windows_key("secondary-alt-f", "ctrl-shift-enter");
 /// Not Ctrl+Shift+B on Windows: Microsoft Pinyin opens its emoji panel there.
 /// Y is free in every Okilum context and in the common Windows IMEs.
+/// The Notes sidebar (Oleg, 2026-11-17, #773): ⌘⇧\\ / Ctrl+Shift+\\, so that
+/// ⌘\\ / Ctrl+\\ is free for split view. macOS folds Shift into punctuation:
+/// Cmd+Shift+backslash arrives as cmd-|. Now / Tree, which used this chord,
+/// keeps its menu item and toolbar button without a default shortcut.
+pub(crate) const NOTES_KEY: &str = if cfg!(target_os = "macos") {
+    "cmd-|"
+} else {
+    "ctrl-shift-\\"
+};
 pub(crate) const BACKLINKS_KEY: &str = windows_key("ctrl-alt-\\", "ctrl-shift-y");
 pub(crate) const PARAGRAPH_KEY: &str = windows_key("secondary-alt-0", "ctrl-shift-t");
 pub(crate) const FORMAT_CODE_KEY: &str = windows_key("alt-shift-f", "ctrl-shift-g");
@@ -840,25 +849,14 @@ fn bind_keys(cx: &mut App) {
             FocusCurrentFolder,
             Some("Reader > Input"),
         ),
+        // ⌘\\ / Ctrl+\\ stays unbound: it is reserved for split view (#773).
+        KeyBinding::new(NOTES_KEY, ToggleNotes, ctx),
+        // Layouts that report Shift+backslash as the bar itself.
         #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-shift-\\", ToggleLeftMode, ctx),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-|", ToggleLeftMode, ctx),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-shift-\\", ToggleLeftMode, Some("Reader > Input")),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-|", ToggleLeftMode, Some("Reader > Input")),
-        // macOS folds Shift into punctuation: Cmd+Shift+backslash is cmd-|.
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-|", ToggleLeftMode, ctx),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-|", ToggleLeftMode, Some("Reader > Input")),
-        KeyBinding::new("ctrl-\\", ToggleNotes, ctx),
+        KeyBinding::new("ctrl-|", ToggleNotes, ctx),
         KeyBinding::new(BACKLINKS_KEY, ToggleBacklinks, ctx),
         KeyBinding::new(MAXIMIZE_NOTE_KEY, MaximizeNote, ctx),
         KeyBinding::new(MAXIMIZE_NOTE_KEY, MaximizeNote, Some("Reader > Input")),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-\\", ToggleNotes, ctx),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-alt-\\", ToggleBacklinks, ctx),
         KeyBinding::new("down", TreeDown, Some("ReaderTree && !Input")),
@@ -12653,8 +12651,19 @@ mod document_link_landing_tests {
             visual.simulate_keystrokes("escape");
             visual.run_until_parked();
             view.read_with(visual, |v, _| assert!(v.panels.visible(side, 800.)));
+            if side == reader_layout::Panel::Notes {
+                // #773: the old chord is free for split view and no longer
+                // toggles the sidebar.
+                visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+                    "cmd-\\"
+                } else {
+                    "ctrl-\\"
+                });
+                visual.run_until_parked();
+                view.read_with(visual, |v, _| assert!(v.panels.visible(side, 800.)));
+            }
             visual.simulate_keystrokes(if side == reader_layout::Panel::Notes {
-                "ctrl-\\"
+                NOTES_KEY
             } else {
                 BACKLINKS_KEY
             });
@@ -13498,7 +13507,7 @@ mod document_link_landing_tests {
         });
         visual.run_until_parked();
         std::fs::remove_file(preference).unwrap();
-        visual.simulate_keystrokes("ctrl-\\");
+        visual.simulate_keystrokes(NOTES_KEY);
         visual.run_until_parked();
         view.update_in(visual, |v, window, cx| {
             assert_eq!(
