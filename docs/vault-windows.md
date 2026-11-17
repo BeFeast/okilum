@@ -1,7 +1,8 @@
 # Vault windows (#551)
 
 Opening a full vault through Open folder, Recent, `--vault`, or native Open With
-focuses its existing window. Canonical directory identity includes symlink aliases.
+focuses its existing window (a folder that is not yet a vault opens as a folder
+view, #3098). Canonical directory identity includes symlink aliases.
 A pending opening reserves that identity before inventory preparation. Opening a
 Markdown file inside an open full vault navigates that window, preserving #560.
 For a different vault, Settings → Appearance → Open another vault offers In this

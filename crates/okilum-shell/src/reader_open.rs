@@ -849,7 +849,8 @@ fn new_vault(cx: &mut App) {
             .spawn(async move { create_vault_folder(&path).map(|()| path) })
             .await;
         cx.update(|cx| match created {
-            Ok(path) => dispatch_path(&path, cx),
+            // The folder was made to be a vault, never a folder view (#3098).
+            Ok(path) => dispatch_vault(&path, cx),
             Err(error) => show_error(error, cx),
         });
     })
@@ -911,6 +912,13 @@ pub(crate) fn dispatch_urls(urls: Vec<String>, cx: &mut App) {
     for url in urls {
         if has_scheme(&url, "okilum:") {
             open_deep_link(&url, cx);
+            continue;
+        }
+        if let Some(url) = url.strip_prefix(VAULT_URL_PREFIX) {
+            match file_url_path(url) {
+                Ok(path) => dispatch_vault(&path, cx),
+                Err(error) => show_error(error, cx),
+            }
             continue;
         }
         match file_url_path(&url) {
@@ -1069,6 +1077,8 @@ fn open_remote_logs(
     }
 }
 
+/// A file or folder the user opened (picker, Finder/Explorer, drop, command
+/// line). A folder that is not yet a vault opens as a folder view (#3098).
 fn dispatch_path(path: &Path, cx: &mut App) {
     super::reader_startup::supersede(cx);
     let opts = super::Opts {
@@ -1079,6 +1089,39 @@ fn dispatch_path(path: &Path, cx: &mut App) {
     if let Err(error) = open_window(opts, cx) {
         show_error(error, cx);
     }
+}
+
+/// An explicit request to open `root` as a vault: New Vault and the
+/// «Open in Okilum as Vault» Finder Service (#2066). A plain folder open goes
+/// through [`dispatch_path`] and becomes a folder view instead (#3098).
+pub(crate) fn dispatch_vault(root: &Path, cx: &mut App) {
+    super::reader_startup::supersede(cx);
+    let opts = super::Opts {
+        vault: Some(root.to_path_buf()),
+        reusable_roots: reusable_roots(cx),
+        ..Default::default()
+    };
+    if let Err(error) = open_window(opts, cx) {
+        show_error(error, cx);
+    }
+}
+
+/// Prefix the Finder Service puts on its folder URL so the shared open queue
+/// can tell «Open in Okilum as Vault» from an ordinary folder open (#3098).
+/// No OS route delivers this scheme; at most it opens a folder as a vault,
+/// which the user can always do.
+pub(crate) const VAULT_URL_PREFIX: &str = "okilum-open-as-vault+";
+
+/// Vaults the user already has: open vault windows and full vaults in the
+/// reading history (quick-viewer folders are not vaults). Opening one of these
+/// folders opens the vault again instead of a folder view (#3098).
+fn is_known_vault(folder: &Path, open_vaults: &[PathBuf], state: Option<&Path>) -> bool {
+    let same =
+        |root: &PathBuf| root == folder || root.canonicalize().ok().as_deref() == Some(folder);
+    open_vaults.iter().any(same)
+        || state
+            .and_then(|state| super::reader_history::ReadingHistory::known_vault_roots(state).ok())
+            .is_some_and(|roots| roots.iter().any(same))
 }
 
 /// Resolve aliases away from the UI thread, then choose or reserve the window
@@ -1100,6 +1143,13 @@ pub(crate) fn resolve(mut opts: super::Opts, cx: &mut App) -> gpui::Task<Result<
     if opts.reusable_roots.is_empty() {
         opts.reusable_roots = reusable_roots(cx);
     }
+    // Where known vaults are listed, as the Reader itself resolves it.
+    let state = opts.session_directory.clone();
+    #[cfg(test)]
+    let state = state.or_else(|| {
+        cx.try_global::<super::reader_history::TestSessionDirectory>()
+            .map(|directory| directory.0.clone())
+    });
     cx.background_executor().spawn(async move {
         let path = opts
             .open_path
@@ -1112,6 +1162,7 @@ pub(crate) fn resolve(mut opts: super::Opts, cx: &mut App) -> gpui::Task<Result<
                 })
             })
             .context("No file or vault was requested")?;
+        let plain_open = opts.open_path.is_some() && opts.vault.is_none();
         let path = if opts.open_path.is_some() {
             let (path, created) = resolve_explicit_path(&path, opts.vault.as_deref())?;
             opts.created_note |= created;
@@ -1120,17 +1171,34 @@ pub(crate) fn resolve(mut opts: super::Opts, cx: &mut App) -> gpui::Task<Result<
             okilum_core::vault::canonical_root(&path)
                 .context("This file or folder couldn’t be opened.")?
         };
+        // #3098: a folder opened like a file is a folder view, with
+        // «Open folder as vault» to convert it, unless it already is a vault.
+        // A folder view restored after a restart arrives as a single-file
+        // request whose path is the folder itself.
+        let folder_view = path.is_dir()
+            && (opts.single_file
+                || (plain_open && {
+                    #[cfg(not(test))]
+                    let state = state.or_else(|| super::reader_history::state_directory().ok());
+                    !is_known_vault(&path, &opts.reusable_roots, state.as_deref())
+                }));
         let intent = OpenIntent::validate_cached(
             &path,
-            opts.vault.as_deref(),
+            if folder_view {
+                None
+            } else {
+                opts.vault.as_deref()
+            },
             opts.reusable_roots
                 .iter()
                 .find(|root| path.starts_with(root))
                 .map(PathBuf::as_path),
         )?;
         opts.vault = Some(intent.root.clone());
-        opts.single_file |= intent.single_file;
-        if intent.note.is_some() {
+        opts.single_file |= intent.single_file || folder_view;
+        if folder_view {
+            opts.note = None;
+        } else if intent.note.is_some() {
             opts.note = intent.note;
         }
         opts.open_path = None;
@@ -2929,8 +2997,8 @@ mod entry_tests {
                         .unwrap()
                 })
             };
-            // As the gate did: each vault from the picker, and New Window on
-            // the first two before the next vault opens.
+            // As the gate did: each vault opened, and New Window on the first
+            // two before the next vault opens.
             for (i, root) in roots.iter().enumerate() {
                 if i > 0 {
                     let previous = window_of(cx, &roots[i - 1]);
@@ -2940,7 +3008,7 @@ mod entry_tests {
                     });
                     cx.run_until_parked();
                 }
-                cx.update(|cx| dispatch_path(root, cx));
+                cx.update(|cx| dispatch_vault(root, cx));
                 cx.run_until_parked();
             }
             assert_eq!(cx.windows().len(), 5, "three vaults and two duplicates");
@@ -3525,7 +3593,7 @@ mod entry_tests {
             }
         };
         // Amber, a second Amber window (New Window), then Bravo.
-        cx.update(|cx| dispatch_path(&roots[0], cx));
+        cx.update(|cx| dispatch_vault(&roots[0], cx));
         settle(cx);
         let amber = cx.update(|cx| cx.windows()[0]);
         cx.update(|cx| {
@@ -3533,7 +3601,7 @@ mod entry_tests {
             new_window(cx);
         });
         settle(cx);
-        cx.update(|cx| dispatch_path(&roots[1], cx));
+        cx.update(|cx| dispatch_vault(&roots[1], cx));
         settle(cx);
         let count = |cx: &mut TestAppContext| {
             cx.update(|cx| {
@@ -3664,6 +3732,221 @@ mod entry_tests {
             assert_eq!(saved.len(), 2);
             assert_eq!(saved.iter().filter(|(_, quick)| *quick).count(), 1);
         });
+    }
+
+    /// #3098: a folder opened like a file (picker, Finder, drop, command
+    /// line) is a folder view: single-file mode on that folder, no file
+    /// selected, nothing indexed and not listed as a vault. «Open folder as
+    /// vault» converts it; after that the same folder opens as the vault.
+    #[gpui::test]
+    fn a_plain_folder_open_is_a_folder_view_until_converted(cx: &mut TestAppContext) {
+        use super::super::{
+            reader_history::ReadingHistory, reader_history::TestSessionDirectory, Opts,
+        };
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let root = fixture.path().join("Cline");
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+        std::fs::write(root.join("notes.md"), "# Notes").unwrap();
+        std::fs::write(root.join("tasks/deep.md"), "# Deep").unwrap();
+        let root = root.canonicalize().unwrap();
+        let plain = |cx: &mut App| {
+            open_window(
+                Opts {
+                    open_path: Some(root.clone()),
+                    session_directory: Some(state.clone()),
+                    cache_base_override: Some(fixture.path().join("cache")),
+                    ..Default::default()
+                },
+                cx,
+            )
+            .unwrap();
+        };
+        cx.update(|cx| {
+            crate::test_init(cx);
+            install(cx);
+            cx.set_global(TestSessionDirectory(state.clone()));
+            super::super::reader_ui_state::install(&state, cx);
+            super::super::reader_ui_state::set_vault_open("new", cx);
+            plain(cx);
+        });
+        cx.run_until_parked();
+        let reader = cx.update(|cx| {
+            let all = readers(cx);
+            assert_eq!(all.len(), 1, "one window for the folder");
+            all[0].clone()
+        });
+        cx.update(|cx| {
+            let r = reader.read(cx);
+            assert!(r.single_file, "a plain folder open is not a vault");
+            assert_eq!(r.vault_root, root);
+            assert_eq!(r.selected_file(), "", "no file is chosen for the user");
+            assert!(
+                r.searcher.is_none() && r.index_dir.is_none(),
+                "nothing indexed"
+            );
+            let listed = |path: &str| r.vault.entries.iter().any(|entry| entry.path == path);
+            assert!(
+                listed("notes.md") && listed("tasks"),
+                "the folder is listed"
+            );
+            assert!(
+                !listed("tasks/deep.md"),
+                "shallow, like a single file's folder"
+            );
+            assert_eq!(r.window_mode_label(), "Open folder as vault");
+        });
+        assert!(
+            !ReadingHistory::known_vault_roots(&state)
+                .unwrap()
+                .contains(&root),
+            "a folder view is not recorded as a vault"
+        );
+        // «Open folder as vault» converts the same window.
+        cx.update(|cx| {
+            reader
+                .read(cx)
+                .reader_window
+                .update(cx, |_, window, cx| {
+                    reader.update(cx, |reader, cx| reader.switch_window_mode(window, cx));
+                })
+                .unwrap();
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let r = reader.read(cx);
+            assert!(!r.single_file, "converted to a vault");
+            assert_eq!(r.vault_root, root);
+            assert!(r.searcher.is_some(), "the vault is indexed");
+        });
+        assert!(
+            ReadingHistory::known_vault_roots(&state)
+                .unwrap()
+                .contains(&root),
+            "the converted folder is a known vault"
+        );
+        // The converted folder opens as its vault again: the open window is reused.
+        cx.update(plain);
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(readers(cx).len(), 1, "the vault window is reused");
+            assert!(!reader.read(cx).single_file);
+        });
+        // A closed known vault also reopens as a vault, not a folder view.
+        cx.update(|cx| {
+            reader
+                .read(cx)
+                .reader_window
+                .update(cx, |_, window, _| window.remove_window())
+                .unwrap();
+        });
+        cx.run_until_parked();
+        cx.update(plain);
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let open: Vec<_> = readers(cx)
+                .into_iter()
+                .filter(|r| cx.windows().contains(&r.read(cx).reader_window))
+                .collect();
+            assert_eq!(open.len(), 1);
+            assert!(!open[0].read(cx).single_file, "history makes it a vault");
+        });
+    }
+
+    /// #3098 control: the Finder Service «Open in Okilum as Vault» shares the
+    /// open queue with ordinary folder opens and still opens a vault; the same
+    /// folder URL without its mark is a folder view.
+    #[gpui::test]
+    fn the_vault_service_url_opens_a_vault_and_a_plain_folder_url_does_not(
+        cx: &mut TestAppContext,
+    ) {
+        use super::super::reader_history::TestSessionDirectory;
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let make = |name: &str| {
+            let root = fixture.path().join(name);
+            std::fs::create_dir(&root).unwrap();
+            std::fs::write(root.join("a.md"), "# A").unwrap();
+            root.canonicalize().unwrap()
+        };
+        let (service, plain) = (make("Service"), make("Plain"));
+        let url = |root: &Path| String::from(url::Url::from_file_path(root).unwrap());
+        cx.update(|cx| {
+            crate::test_init(cx);
+            install(cx);
+            cx.set_global(TestSessionDirectory(state.clone()));
+            super::super::reader_ui_state::install(&state, cx);
+            super::super::reader_ui_state::set_vault_open("new", cx);
+            dispatch_urls(vec![format!("{VAULT_URL_PREFIX}{}", url(&service))], cx);
+        });
+        cx.run_until_parked();
+        cx.update(|cx| dispatch_urls(vec![url(&plain)], cx));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let all = readers(cx);
+            assert_eq!(all.len(), 2);
+            let mode = |root: &Path| {
+                all.iter()
+                    .find(|r| r.read(cx).vault_root == root)
+                    .map(|r| r.read(cx).single_file)
+                    .unwrap()
+            };
+            assert!(!mode(&service), "the Service opens a vault");
+            assert!(mode(&plain), "an ordinary folder open is a folder view");
+        });
+    }
+
+    /// #3098: a folder view survives restarts. The update restart captures
+    /// it as a single-file window whose path is the folder; the session
+    /// restore as a single-file window without a note.
+    #[gpui::test]
+    async fn a_folder_view_resolves_back_to_a_folder_view(cx: &mut TestAppContext) {
+        use super::super::Opts;
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("Folder");
+        std::fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        cx.update(|cx| {
+            crate::test_init(cx);
+            install(cx);
+        });
+        let restart = cx.update(|cx| {
+            resolve(
+                Opts {
+                    vault: root.parent().map(Path::to_path_buf),
+                    note: Some("Folder".into()),
+                    single_file: true,
+                    ..Default::default()
+                },
+                cx,
+            )
+        });
+        let session = cx.update(|cx| {
+            resolve(
+                Opts {
+                    vault: Some(root.clone()),
+                    single_file: true,
+                    ..Default::default()
+                },
+                cx,
+            )
+        });
+        for opts in [restart.await.unwrap(), session.await.unwrap()] {
+            assert_eq!(opts.vault.as_deref(), Some(root.as_path()));
+            assert_eq!(opts.note, None);
+            assert!(opts.single_file);
+        }
+        // Control: an explicit vault request for the same folder stays a vault.
+        let vault = cx.update(|cx| {
+            resolve(
+                Opts {
+                    vault: Some(root.clone()),
+                    ..Default::default()
+                },
+                cx,
+            )
+        });
+        assert!(!vault.await.unwrap().single_file);
     }
 
     /// #1357: «Create a new vault…» names a folder in the save dialog,
@@ -3913,7 +4196,7 @@ mod entry_tests {
                 roots
             })
         };
-        cx.update(|cx| dispatch_path(&roots[0], cx));
+        cx.update(|cx| dispatch_vault(&roots[0], cx));
         settle(cx);
         let amber = cx.update(|cx| reader_of(&roots[0], cx)).unwrap();
         // Amber cannot share its session yet.
@@ -4602,9 +4885,9 @@ mod entry_tests {
         cx.quit();
     }
 
-    /// #1110: on a clean first run, choosing a vault folder on the start
-    /// screen (the picker's `dispatch_path`) never leaves the app without a
-    /// window, and the vault opens.
+    /// #1110: on a clean first run, opening a vault from the start screen
+    /// (New Vault's `dispatch_vault`) never leaves the app without a window,
+    /// and the vault opens. A plain folder pick is a folder view (#3098).
     #[gpui::test]
     fn first_run_choosing_a_vault_folder_keeps_a_window_until_it_opens(cx: &mut TestAppContext) {
         use super::super::{reader_history::TestSessionDirectory, reader_startup, Opts};
@@ -4635,7 +4918,7 @@ mod entry_tests {
         );
         let entry = cx.update(|cx| cx.windows()[0]);
         cx.update(|cx| {
-            dispatch_path(&root, cx);
+            dispatch_vault(&root, cx);
             assert_eq!(
                 cx.windows(),
                 vec![entry],

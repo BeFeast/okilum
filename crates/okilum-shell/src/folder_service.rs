@@ -16,8 +16,14 @@ extern "C" fn open(url: *const c_char) {
         return;
     }
     if let (Some(sender), Ok(url)) = (OPENS.get(), unsafe { CStr::from_ptr(url) }.to_str()) {
-        let _ = sender.try_send(vec![url.to_owned()]);
+        // This Service asks for a vault; a plain folder open is a folder view (#3098).
+        let _ = sender.try_send(vec![vault_request(url)]);
     }
+}
+
+/// The queued form of a Service folder URL: marked as an explicit vault request.
+fn vault_request(url: &str) -> String {
+    format!("{}{url}", crate::reader_open::VAULT_URL_PREFIX)
 }
 
 pub(crate) fn install(sender: async_channel::Sender<Vec<String>>) {

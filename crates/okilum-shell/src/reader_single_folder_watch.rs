@@ -245,8 +245,8 @@ mod tests {
             let entity = cx.new(|cx| {
                 Reader::new(
                     Opts {
-                        // #2066: directories open as vaults; keep this shallow watcher
-                        // fixture explicitly in the single-document quick viewer.
+                        // Keep this shallow watcher fixture explicitly in the
+                        // single-document quick viewer of a file.
                         open_path: Some(root.join("start.md")),
                         single_file: true,
                         session_directory: Some(fixture.path().join("state")),
