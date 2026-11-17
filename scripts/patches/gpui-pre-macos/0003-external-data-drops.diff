@@ -5,8 +5,9 @@ types next to file names. A drag without file names is announced as
 `FileDropEvent::DataEntered` with the pasteboard's types; at the drop the
 accepted flavors are read and handed over as `DataSubmit`: every accepted
 text type, small metadata (a link's title, the source page, an editor's
-language hint) and only the first offered image type. Private and dynamic
-types, file promises and further image representations are never read.
+language hint) and one image: the first offered image type, in preference
+order, that can be read within its limit (PNG before JPEG, GIF, WebP, HEIC,
+TIFF). Private and dynamic types and file promises are never read.
 Each representation has a byte limit (text 32 MiB, image 64 MiB, metadata
 64 KiB) and all reads together 128 MiB; a representation over its limit is
 skipped and released at once. File drags are unchanged. Depends on the
@@ -71,7 +72,7 @@ gpui change that adds `ExternalData`.
          && send_file_drop_event(window_state, event)
      {
          if is_source_window {
-@@ -3304,7 +3316,153 @@
+@@ -3304,7 +3316,169 @@
  extern "C" fn perform_drag_operation(this: &Object, _: Sel, dragging_info: id) -> BOOL {
      let window_state = unsafe { get_window_state(this) };
      let position = drag_event_position(&window_state, dragging_info);
@@ -101,8 +102,9 @@ gpui change that adds `ExternalData`.
 +];
 +
 +/// Image types a window accepts from a drag, most faithful and compact
-+/// first. Only the first one offered is read: a browser image often comes
-+/// as PNG and as a far larger TIFF of the same pixels.
++/// first. Only one image is read: the first offered one that can be read
++/// within its limit (a browser image often comes as PNG and as a far larger
++/// TIFF of the same pixels; the TIFF is read only when the PNG cannot be).
 +const DROPPED_IMAGE_TYPES: [&str; 6] = [
 +    "public.png",
 +    "public.jpeg",
@@ -143,25 +145,35 @@ gpui change that adds `ExternalData`.
 +    })
 +}
 +
-+/// The offered types a drop reads, each with its byte limit, in reading
-+/// order: every accepted text type, small metadata, then the first image
-+/// type. Anything else the source offered (private and dynamic types, file
-+/// promises, other image representations) is never read.
-+fn dropped_reads(types: &[SharedString], limits: &DropLimits) -> Vec<(SharedString, usize)> {
++/// One representation a drop may read.
++struct DroppedRead {
++    kind: SharedString,
++    limit: usize,
++    /// An image flavor: once one image is read, the others are skipped.
++    image: bool,
++}
++
++/// The offered types a drop may read, each with its byte limit, in reading
++/// order: every accepted text type, small metadata, then the offered image
++/// types in preference order (only the first that can be read is). Anything
++/// else the source offered (private and dynamic types, file promises) is
++/// never read.
++fn dropped_reads(types: &[SharedString], limits: &DropLimits) -> Vec<DroppedRead> {
 +    let offered = |wanted: &str| types.iter().find(|kind| kind.as_ref() == wanted).cloned();
++    let read =
++        |limit: usize, image: bool| move |kind: SharedString| DroppedRead { kind, limit, image };
 +    DROPPED_TEXT_TYPES
 +        .iter()
-+        .filter_map(|kind| offered(kind).map(|kind| (kind, limits.text)))
++        .filter_map(|kind| offered(kind).map(read(limits.text, false)))
 +        .chain(
 +            DROPPED_METADATA_TYPES
 +                .iter()
-+                .filter_map(|kind| offered(kind).map(|kind| (kind, limits.metadata))),
++                .filter_map(|kind| offered(kind).map(read(limits.metadata, false))),
 +        )
 +        .chain(
 +            DROPPED_IMAGE_TYPES
 +                .iter()
-+                .find_map(|kind| offered(kind))
-+                .map(|kind| (kind, limits.image)),
++                .filter_map(|kind| offered(kind).map(read(limits.image, true))),
 +        )
 +        .collect()
 +}
@@ -200,7 +212,11 @@ gpui change that adds `ExternalData`.
 +    }
 +    let mut total = 0;
 +    let mut contents = Vec::new();
-+    for (kind, limit) in dropped_reads(&types, limits) {
++    let mut image_read = false;
++    for DroppedRead { kind, limit, image } in dropped_reads(&types, limits) {
++        if image && image_read {
++            continue;
++        }
 +        // A skipped representation is released with this pool right away.
 +        let pool = unsafe { NSAutoreleasePool::new(nil) };
 +        let data: id = unsafe { msg_send![pasteboard, dataForType: ns_string(&kind)] };
@@ -215,6 +231,7 @@ gpui change that adds `ExternalData`.
 +                    Arc::from(unsafe { std::slice::from_raw_parts(bytes, length) })
 +                };
 +                total += length;
++                image_read |= image;
 +                contents.push((kind, bytes));
 +            } else {
 +                log::warn!("data drop: skipped {kind} ({length} bytes) over the read limit");
@@ -226,7 +243,7 @@ gpui change that adds `ExternalData`.
  }
  
  fn external_paths_from_event(dragging_info: *mut Object) -> Option<ExternalPaths> {
-@@ -3397,7 +3555,7 @@
+@@ -3397,7 +3571,7 @@
      file_drop_event: FileDropEvent,
  ) -> bool {
      let external_files_dragged = match file_drop_event {
@@ -235,7 +252,7 @@ gpui change that adds `ExternalData`.
          FileDropEvent::Exited | FileDropEvent::Ended => Some(false),
          _ => None,
      };
-@@ -3630,4 +3788,134 @@
+@@ -3630,4 +3804,152 @@
          note_tabbing_may_be_active();
          assert!(TABBING_MAY_BE_ACTIVE.load(Ordering::Acquire));
      }
@@ -267,18 +284,20 @@ gpui change that adds `ExternalData`.
 +            ]),
 +            &DROP_LIMITS,
 +        );
-+        let reads: Vec<(&str, usize)> = reads
++        let reads: Vec<(&str, usize, bool)> = reads
 +            .iter()
-+            .map(|(kind, limit)| (kind.as_ref(), *limit))
++            .map(|read| (read.kind.as_ref(), read.limit, read.image))
 +            .collect();
-+        // Text, then metadata, then only the preferred image; never the
-+        // TIFF of the same image, private or dynamic types, or promises.
++        // Text, then metadata, then the images in preference order (the
++        // TIFF only if the PNG cannot be read); never private or dynamic
++        // types, or promises.
 +        assert_eq!(
 +            reads,
 +            [
-+                ("public.utf8-plain-text", DROP_LIMITS.text),
-+                ("public.url-name", DROP_LIMITS.metadata),
-+                ("public.png", DROP_LIMITS.image),
++                ("public.utf8-plain-text", DROP_LIMITS.text, false),
++                ("public.url-name", DROP_LIMITS.metadata, false),
++                ("public.png", DROP_LIMITS.image, true),
++                ("public.tiff", DROP_LIMITS.image, true),
 +            ]
 +        );
 +    }
@@ -359,6 +378,22 @@ gpui change that adds `ExternalData`.
 +            assert_eq!(data.contents("public.html"), None, "12 + 14 bytes > 20");
 +            assert_eq!(data.contents("public.png"), Some(&b"\x89PNG\r\n\x1a\n"[..]));
 +            let () = msg_send![pasteboard, releaseGlobally];
++
++            // The preferred image over its limit: the next offered one that
++            // fits is read instead, and only that one.
++            let images: id = msg_send![class!(NSPasteboard), pasteboardWithUniqueName];
++            let _: NSInteger = msg_send![images, clearContents];
++            set_data(images, "public.png", &[0x89; 64]);
++            set_data(images, "public.jpeg", b"\xff\xd8\xff\xe0jpeg");
++            set_data(images, "public.tiff", b"II*\0");
++            let data = external_data_with_limits(images, &limits).expect("an image drag is data");
++            assert_eq!(data.contents("public.png"), None, "over its limit");
++            assert_eq!(
++                data.contents("public.jpeg"),
++                Some(&b"\xff\xd8\xff\xe0jpeg"[..])
++            );
++            assert_eq!(data.contents("public.tiff"), None, "one image only");
++            let () = msg_send![images, releaseGlobally];
 +
 +            // A drag of private data only is not a data drop.
 +            let private: id = msg_send![class!(NSPasteboard), pasteboardWithUniqueName];
