@@ -2085,4 +2085,80 @@ mod tests {
         assert!(done.text.starts_with("x\n\nx"), "{:?}", &done.text[..10]);
         assert!(done.remote.is_empty());
     }
+
+    /// #1615: what GPUI read from a drop of data, as a board.
+    fn dropped(items: &[(&str, &[u8])]) -> crate::note_paste::DroppedData {
+        crate::note_paste::DroppedData(gpui::ExternalData::with_contents(
+            items
+                .iter()
+                .map(|(kind, _)| gpui::SharedString::from(kind.to_string())),
+            items
+                .iter()
+                .map(|(kind, bytes)| (gpui::SharedString::from(kind.to_string()), (*bytes).into())),
+        ))
+    }
+
+    /// #1615: dropped text goes in as a paste of it would: plain text as it
+    /// is, HTML as Markdown with its remote images downloaded afterwards,
+    /// image data as a saved image.
+    #[test]
+    fn dropped_data_routes_like_a_paste() {
+        let note = Note::new();
+        let cx = note.cx(Mode::Smart, "", 0..0);
+        let text = dropped(&[(offer::UTF8_TEXT, b"one\r\ntwo")]);
+        let routed = route(&text, &cx).unwrap();
+        assert_eq!(routed.route, Route::Text);
+        assert_eq!(routed.insert.as_deref(), Some("one\ntwo"));
+
+        let page = dropped(&[
+            (
+                "public.html",
+                b"<p><b>Bold</b> and <img alt=\"cat\" src=\"https://ex.org/cat.png\"></p>",
+            ),
+            (offer::UTF8_TEXT, b"Bold and"),
+        ]);
+        let routed = route(&page, &cx).unwrap();
+        assert_eq!(routed.route, Route::RichText);
+        let inserted = routed.insert.clone().unwrap();
+        assert!(
+            inserted.contains("**Bold**") && inserted.contains("![cat](https://ex.org/cat.png)"),
+            "{inserted:?}"
+        );
+        assert!(matches!(
+            routed.follow_up,
+            Some(FollowUp::RemoteImages { ref images, .. }) if images.len() == 1
+        ));
+
+        let image = dropped(&[("public.png", PNG)]);
+        let routed = route(&image, &cx).unwrap();
+        assert_eq!(routed.route, Route::Image);
+
+        // Types without contents (a drag still over the window) route nothing.
+        let types_only =
+            crate::note_paste::DroppedData(gpui::ExternalData::new([gpui::SharedString::from(
+                offer::UTF8_TEXT,
+            )]));
+        assert!(
+            route(&types_only, &cx).map_or(true, |routed| routed.insert.is_none()
+                && routed.follow_up.is_none())
+        );
+    }
+
+    /// #1615: UTF-16 flavors are decoded, with or without a byte-order mark.
+    #[test]
+    fn dropped_utf16_text_is_decoded() {
+        let note = Note::new();
+        let cx = note.cx(Mode::Smart, "", 0..0);
+        let le: Vec<u8> = "héllo"
+            .encode_utf16()
+            .flat_map(|unit| unit.to_le_bytes())
+            .collect();
+        let mut be = vec![0xFE, 0xFF];
+        be.extend("wörld".encode_utf16().flat_map(|unit| unit.to_be_bytes()));
+        for (bytes, expected) in [(le, "héllo"), (be, "wörld")] {
+            let board = dropped(&[("public.utf16-plain-text", &bytes)]);
+            let routed = route(&board, &cx).unwrap();
+            assert_eq!(routed.insert.as_deref(), Some(expected));
+        }
+    }
 }

@@ -15,13 +15,41 @@ use crate::note_paste::block_drop::BlockSlot;
 use crate::note_paste::download::{self, DownloadError};
 use crate::note_paste::files::{self, FileAction, FilePlan};
 use crate::note_paste::router::{self, FollowUp, RemoteImage, RichJob, RouteContext, Routed};
-use crate::note_paste::{attachments, fetch, title, DroppedFiles};
+use crate::note_paste::{attachments, fetch, title, DroppedData, DroppedFiles};
 use gpui_component::input::clipboard::PasteMode;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 /// A background paste job shows its progress toast after this long.
 const PROGRESS_AFTER: Duration = Duration::from_millis(300);
+
+/// What was dropped onto a note: files, or (#1615) text, rich text, a URL or
+/// image data from another application.
+pub(crate) enum Dropped {
+    Files(Vec<PathBuf>),
+    Data(gpui::ExternalData),
+}
+
+impl From<&ExternalPaths> for Dropped {
+    fn from(paths: &ExternalPaths) -> Self {
+        Self::Files(paths.0.to_vec())
+    }
+}
+
+impl From<&gpui::ExternalData> for Dropped {
+    fn from(data: &gpui::ExternalData) -> Self {
+        Self::Data(data.clone())
+    }
+}
+
+impl Dropped {
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::Files(paths) => paths.is_empty(),
+            Self::Data(data) => data.types().is_empty(),
+        }
+    }
+}
 
 /// Where a drop goes in the note's source.
 #[derive(Clone, Copy, Debug)]
@@ -203,17 +231,18 @@ impl Reader {
 
     /// Files dropped onto the note: the same router as a paste of their
     /// URLs, at the drop point (the caret when the point has no offset).
-    pub(super) fn drop_on_editor(
+    /// Dropped text, rich text, URLs and image data (#1615): the same router
+    /// as a paste of them.
+    pub(crate) fn drop_on_editor(
         &mut self,
-        paths: &ExternalPaths,
+        dropped: Dropped,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(input) = self.source_input() else {
             return;
         };
-        let paths = paths.0.to_vec();
-        if paths.is_empty() {
+        if dropped.is_empty() {
             return;
         }
         let position = window.mouse_position();
@@ -223,13 +252,7 @@ impl Reader {
                 .source_offset_for_point(position)
                 .unwrap_or_else(|| state.cursor())
         };
-        self.route_drop(
-            input,
-            &DroppedFiles(paths),
-            DropAt::Inline(offset),
-            window,
-            cx,
-        );
+        self.route_dropped(input, dropped, DropAt::Inline(offset), window, cx);
     }
 
     /// #1615: files dropped onto the rendered note. The note switches to
@@ -238,12 +261,11 @@ impl Reader {
     /// note that cannot be edited explains why, as Edit does.
     pub(crate) fn drop_on_reader(
         &mut self,
-        paths: &ExternalPaths,
+        dropped: Dropped,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let paths = paths.0.to_vec();
-        if paths.is_empty() || self.editing.is_some() {
+        if dropped.is_empty() || self.editing.is_some() {
             return;
         }
         let block = self.reader_block_at(window.mouse_position(), cx);
@@ -311,13 +333,7 @@ impl Reader {
                     );
                     return;
                 };
-                this.route_drop(
-                    input,
-                    &DroppedFiles(paths),
-                    DropAt::Block(offset),
-                    window,
-                    cx,
-                );
+                this.route_dropped(input, dropped, DropAt::Block(offset), window, cx);
             });
         })
         .detach();
@@ -335,12 +351,33 @@ impl Reader {
             .map(|(ix, _)| ix)
     }
 
+    fn route_dropped(
+        &mut self,
+        input: Entity<EditorState>,
+        dropped: Dropped,
+        at: DropAt,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match dropped {
+            Dropped::Files(paths) => {
+                let failure = "The dropped files couldn’t be read.";
+                self.route_drop(input, &DroppedFiles(paths), at, failure, window, cx)
+            }
+            Dropped::Data(data) => {
+                let failure = "The dropped content couldn’t be read.";
+                self.route_drop(input, &DroppedData(data), at, failure, window, cx)
+            }
+        }
+    }
+
     /// Route a drop through the paste router and insert it.
     fn route_drop(
         &mut self,
         input: Entity<EditorState>,
         board: &impl crate::note_paste::offer::Pasteboard,
         at: DropAt,
+        failure: &'static str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -414,7 +451,7 @@ impl Reader {
             }
             Err(error) => {
                 diagnostic_error!("Drop: not inserted ({error:?})");
-                reader_toast::error("The dropped files couldn’t be read.", window, cx);
+                reader_toast::error(failure, window, cx);
             }
         }
     }
@@ -1370,7 +1407,11 @@ mod attachment_refresh_tests {
             // Withhold OS delivery: a completed local write must publish its
             // known endpoints, even if Syncthing/native notifications lag.
             reader.open_live_preview(window, cx);
-            reader.drop_on_editor(&ExternalPaths(vec![original.clone()].into()), window, cx);
+            reader.drop_on_editor(
+                (&ExternalPaths(vec![original.clone()].into())).into(),
+                window,
+                cx,
+            );
             watcher
         });
         visual.run_until_parked();
@@ -1572,7 +1613,11 @@ mod reader_drop_tests {
         let spec = temp.path().join("vault/docs/spec.txt");
         let typed = "Typed above.\n\nMore typed.\n\n";
         reader.update_in(visual, |r, window, cx| {
-            r.drop_on_reader(&ExternalPaths(vec![spec].into_iter().collect()), window, cx);
+            r.drop_on_reader(
+                (&ExternalPaths(vec![spec].into_iter().collect())).into(),
+                window,
+                cx,
+            );
             let input = r.source_input().expect("Edit opens at the drop");
             assert_eq!(
                 input.read(cx).value().as_ref(),
@@ -1996,5 +2041,90 @@ mod reader_drop_tests {
         assert_eq!(line_start(text, 4), Some(7));
         assert_eq!(line_start(text, 5), None);
         assert_eq!(line_start(text, 0), None);
+    }
+
+    /// A native drop of data at `position`: the real DataEntered/DataSubmit
+    /// path (#1615), types first, contents at the drop.
+    fn drop_data_at(
+        visual: &mut VisualTestContext,
+        position: Point<Pixels>,
+        items: &[(&str, &[u8])],
+    ) {
+        let types: Vec<SharedString> = items
+            .iter()
+            .map(|(kind, _)| SharedString::from(kind.to_string()))
+            .collect();
+        visual.simulate_event(gpui::FileDropEvent::DataEntered {
+            position,
+            data: gpui::ExternalData::new(types.clone()),
+        });
+        visual.simulate_event(gpui::FileDropEvent::DataSubmit {
+            position,
+            data: gpui::ExternalData::with_contents(
+                types,
+                items
+                    .iter()
+                    .map(|(kind, bytes)| (SharedString::from(kind.to_string()), (*bytes).into())),
+            ),
+        });
+        visual.run_until_parked();
+    }
+
+    /// #1615: HTML dragged from a browser onto a rendered block in Read goes
+    /// in as Markdown before that block, as its own paragraph.
+    #[gpui::test]
+    fn dropped_html_in_read_goes_before_the_block_as_markdown(cx: &mut TestAppContext) {
+        let (reader, visual, _temp) = reader_on_note(cx);
+        let next = reader.read_with(visual, |r, cx| {
+            assert!(
+                r.editing.is_none(),
+                "positive control: the note opens in Read"
+            );
+            r.content.read(cx).list_state().bounds_for_item(2).unwrap()
+        });
+        drop_data_at(
+            visual,
+            next.center(),
+            &[
+                ("public.html", b"<p><b>Dropped</b> text</p>"),
+                ("public.utf8-plain-text", b"Dropped text"),
+            ],
+        );
+        reader.read_with(visual, |r, cx| {
+            let source = r
+                .source_input()
+                .expect("the drop switched the note to Edit")
+                .read(cx)
+                .value()
+                .to_string();
+            let middle = source
+                .strip_prefix("# Title\n\nFirst paragraph.\n\n")
+                .and_then(|rest| rest.strip_suffix("\n\n## Next\n\nBody.\n"))
+                .unwrap_or_else(|| panic!("dropped between the blocks: {source:?}"));
+            assert_eq!(middle.trim(), "**Dropped** text", "{source:?}");
+        });
+    }
+
+    /// #1615: plain text dropped onto the editor goes in at the drop point
+    /// like a paste; nothing else changes.
+    #[gpui::test]
+    fn dropped_text_in_edit_is_inserted(cx: &mut TestAppContext) {
+        let (reader, visual, _temp) = reader_on_note(cx);
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        let center = reader.read_with(visual, |r, cx| {
+            let input = r.source_input().expect("positive control: Edit");
+            assert_eq!(input.read(cx).value().as_ref(), NOTE);
+            r.body_bounds.center()
+        });
+        drop_data_at(visual, center, &[("public.utf8-plain-text", b"XYZ")]);
+        reader.read_with(visual, |r, cx| {
+            let source = r.source_input().unwrap().read(cx).value().to_string();
+            assert!(
+                source.contains("XYZ"),
+                "the text was dropped in: {source:?}"
+            );
+            assert_eq!(source.replacen("XYZ", "", 1), NOTE);
+        });
     }
 }
