@@ -13,7 +13,7 @@ impl Selection {
     fn current(reader: &Reader) -> Option<Self> {
         if !reader.document_ready()
             || reader.current_rel.is_empty()
-            || reader.file_preview.is_some()
+            || reader.pane.file_preview.is_some()
             || reader
                 .loading
                 .as_ref()

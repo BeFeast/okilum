@@ -2443,7 +2443,7 @@ mod local_reader_without_t3_tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
-            let preview = r.file_preview.as_ref().expect("the log is open");
+            let preview = r.pane.file_preview.as_ref().expect("the log is open");
             assert_eq!(preview.rel, "app.log");
             assert!(preview.log.is_some(), "the log viewer reads it");
         });

@@ -51,6 +51,7 @@ fn open_json(cx: &mut TestAppContext, width: f32) -> (Fixture, &mut VisualTestCo
     let reader = reader.unwrap();
     reader.read_with(visual, |r, cx| {
         let preview = r
+            .pane
             .file_preview
             .as_ref()
             .expect("JSON opens as a file preview");
@@ -96,7 +97,7 @@ fn click_document(fixture: &Fixture, visual: &mut VisualTestContext) {
     );
     settle(visual);
     fixture.reader.update_in(visual, |r, window, cx| {
-        let code = r.file_preview.as_ref().unwrap().code.clone().unwrap();
+        let code = r.pane.file_preview.as_ref().unwrap().code.clone().unwrap();
         assert!(
             code.read(cx).contains_focus(window, cx),
             "positive control: the click put focus in the document"
@@ -128,7 +129,7 @@ fn issue2957_maximize_chord_twice_in_formatted_json_restores_panels_and_keeps_sh
     press(visual, crate::MAXIMIZE_NOTE_KEY);
     fixture.reader.update_in(visual, |r, window, cx| {
         assert!(r.panels.maximized(), "first press maximizes");
-        let code = r.file_preview.as_ref().unwrap().code.clone().unwrap();
+        let code = r.pane.file_preview.as_ref().unwrap().code.clone().unwrap();
         assert!(
             code.read(cx).contains_focus(window, cx),
             "focus stays in the JSON viewer, so its keyboard scrolling and selection keep working"

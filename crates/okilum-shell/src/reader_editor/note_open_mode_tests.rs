@@ -133,7 +133,7 @@ fn edit_setting_opens_notes_in_edit_and_files_in_read(cx: &mut TestAppContext) {
         open(&reader, visual, file);
         reader.read_with(visual, |r, _| {
             assert!(
-                r.file_preview.is_some(),
+                r.pane.file_preview.is_some(),
                 "positive control: {file} is a file view"
             )
         });

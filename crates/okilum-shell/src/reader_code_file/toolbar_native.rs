@@ -170,7 +170,7 @@ pub(super) fn entry() -> bool {
             let code=loop {
                 cx.background_executor().timer(Duration::from_millis(50)).await;
                 assert!(start.elapsed()<Duration::from_secs(60),"Reader Tree never ready");
-                let code=cx.update(|cx| reader.read(cx).file_preview.as_ref().and_then(|p|p.code.clone()));
+                let code=cx.update(|cx| reader.read(cx).pane.file_preview.as_ref().and_then(|p|p.code.clone()));
                 if let Some(code)=code {
                     if cx.update(|cx|code.read(cx).document.is_some() && code.read(cx).view==View::Tree) {break code;}
                 }

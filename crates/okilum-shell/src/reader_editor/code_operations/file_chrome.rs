@@ -566,7 +566,7 @@ impl Reader {
     }
 
     pub(crate) fn repair_code_entry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.file_preview.is_some() && self.editing.is_none() {
+        if self.pane.file_preview.is_some() && self.editing.is_none() {
             self.toggle_source(window, cx);
         }
         if self.editing.is_some() {

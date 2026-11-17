@@ -34,11 +34,12 @@ pub(super) fn render_file(
     // an empty «Linked from» only takes space (#2885), so it appears only
     // when a note actually links the file; Contents uses the room otherwise.
     // Notes and documents always keep it.
-    let service = service_file(reader) && reader.backlinks.is_empty();
+    let service = service_file(reader) && reader.pane.backlinks.is_empty();
     // A HAR file: its Overview takes the place of Contents, which has
     // nothing to list in either view (#2932; Source has no JSON Contents for
     // HAR, `contents_format`).
     let har = reader
+        .pane
         .file_preview
         .as_ref()
         .and_then(|preview| preview.har.clone());
@@ -128,7 +129,7 @@ pub(super) fn render_file(
 /// Files the code viewer, the HAR viewer, the log viewer or the plain-text
 /// viewer shows: data and service files.
 pub(super) fn service_file(reader: &Reader) -> bool {
-    reader.file_preview.as_ref().is_some_and(|preview| {
+    reader.pane.file_preview.as_ref().is_some_and(|preview| {
         preview.code.is_some()
             || preview.har.is_some()
             || preview.log.is_some()

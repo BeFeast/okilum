@@ -2681,7 +2681,7 @@ mod tests {
                         if *folder { "a" } else { "Zebra heading" }
                     );
                     assert_eq!(
-                        reader.outline[0].text, "Zebra heading",
+                        reader.pane.outline[0].text, "Zebra heading",
                         "the opened note retains its real H1"
                     );
                     assert_eq!(

@@ -793,7 +793,7 @@ impl Reader {
         if self.move_applying {
             return;
         }
-        if self.note_encoding_damaged && self.file_preview.is_none() {
+        if self.note_encoding_damaged && self.pane.file_preview.is_none() {
             self.link_notice = Some(reader_loading::ENCODING_NOTICE.into());
             cx.notify();
             return;
@@ -804,7 +804,7 @@ impl Reader {
         }
         let plain_file = self.file_is_source();
         // A code file over the size cap stays in its read-only note (#998).
-        if self.file_preview.is_some() && (!plain_file || !self.code_file_editable(cx)) {
+        if self.pane.file_preview.is_some() && (!plain_file || !self.code_file_editable(cx)) {
             return;
         }
         if self.editing.is_some() {
@@ -831,6 +831,7 @@ impl Reader {
                 let rel = self.selected_file().to_owned();
                 self.preview_file(&rel, window, cx);
                 if let Some((code, saved)) = self
+                    .pane
                     .file_preview
                     .as_ref()
                     .and_then(|p| p.code.as_ref())
@@ -856,6 +857,7 @@ impl Reader {
         // The typed definition view shares this exact editor/recovery namespace.
         // Explicit Source takes ownership only once its Save/selection is idle.
         if let Some(panel) = self
+            .pane
             .file_preview
             .as_ref()
             .and_then(|preview| preview.virtual_log.clone())
@@ -881,6 +883,7 @@ impl Reader {
                 FileEditor::open(&path, &drafts)?
             };
             if self
+                .pane
                 .file_preview
                 .as_ref()
                 .is_some_and(|preview| preview.code.is_some())
@@ -902,6 +905,7 @@ impl Reader {
                 // Record storage admission only after the existing edit attempt
                 // failed; a read must never probe writability for the header.
                 if let Some(code) = self
+                    .pane
                     .file_preview
                     .as_ref()
                     .and_then(|preview| preview.code.as_ref())
@@ -917,6 +921,7 @@ impl Reader {
             }
         };
         if let Some(code) = self
+            .pane
             .file_preview
             .as_ref()
             .and_then(|preview| preview.code.as_ref())
@@ -965,6 +970,7 @@ impl Reader {
         let language = code.unwrap_or(if plain_file { "text" } else { "markdown" });
         let wrap = code.is_none() || reader_ui_state::code_soft_wrap(cx);
         let read_state = self
+            .pane
             .file_preview
             .as_ref()
             .and_then(|preview| preview.code.as_ref())
@@ -1572,7 +1578,7 @@ impl Reader {
     /// retain another complete data tree; explicit Read rebuilds it normally.
     fn retire_large_plain_preview(&mut self, bytes: usize) {
         if bytes > 4 * 1024 * 1024 {
-            if let Some(preview) = self.file_preview.as_mut() {
+            if let Some(preview) = self.pane.file_preview.as_mut() {
                 preview.code.take();
             }
         }
@@ -1639,7 +1645,7 @@ impl Reader {
             .id("source-save-status")
             .flex_none()
             .px_2()
-            .when(self.file_preview.is_some(), |dot| dot.px_0().w(px(8.)))
+            .when(self.pane.file_preview.is_some(), |dot| dot.px_0().w(px(8.)))
             .text_color(if editing.conflict_detected || editing.save_failed {
                 cx.theme().warning
             } else {
@@ -2131,7 +2137,7 @@ impl Reader {
                 if let Some((absolute_path, saved_revision)) = rules_revision {
                     self.agents_rules_saved(&absolute_path, &saved_revision, cx);
                 }
-                if source_changed && self.file_preview.is_none() {
+                if source_changed && self.pane.file_preview.is_none() {
                     self.queue_saved_source(cx);
                 }
                 cx.notify();
@@ -2398,7 +2404,7 @@ impl Reader {
                     let epoch = editing.recovery_epoch;
                     self.schedule_autosave(input_id, epoch, cx);
                 }
-                if self.file_preview.is_none() {
+                if self.pane.file_preview.is_none() {
                     self.queue_saved_source(cx);
                 }
             }
@@ -2442,7 +2448,7 @@ impl Reader {
         self.editing = None;
         self.resume_code_presentation(cx);
         self.outline_list
-            .reset_with_uniform_height(self.outline.len(), px(OUTLINE_ROW_HEIGHT));
+            .reset_with_uniform_height(self.pane.outline.len(), px(OUTLINE_ROW_HEIGHT));
         true
     }
 
@@ -2472,7 +2478,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(preview) = &self.file_preview else {
+        let Some(preview) = &self.pane.file_preview else {
             return;
         };
         if !self.ui_state.source_mode || self.editing.is_some() || !self.file_is_source() {
@@ -2487,6 +2493,7 @@ impl Reader {
                 }
                 pending.set(false);
                 let current = this
+                    .pane
                     .file_preview
                     .as_ref()
                     .and_then(|preview| preview.code.as_ref())
@@ -2535,7 +2542,7 @@ impl Reader {
             || self.ui_state.read_chosen.is_some()
             || self.ui_state.source_mode
             || self.editing.is_some()
-            || self.file_preview.is_some()
+            || self.pane.file_preview.is_some()
             || self.current_rel.is_empty()
         {
             return;
@@ -2627,7 +2634,7 @@ impl Reader {
                     this.editing = None;
                     this.ui_state.auto_edit = false;
                     this.outline_list
-                        .reset_with_uniform_height(this.outline.len(), px(OUTLINE_ROW_HEIGHT));
+                        .reset_with_uniform_height(this.pane.outline.len(), px(OUTLINE_ROW_HEIGHT));
                     let rel = this.current_rel.clone();
                     this.prepare_document_at_place(&rel, place, window, cx);
                     this.link_notice = Some(notice.into());
@@ -4022,7 +4029,7 @@ impl Reader {
                                 );
                             }
                         }
-                        if let Some(file) = &r.file_preview {
+                        if let Some(file) = &r.pane.file_preview {
                             let next = okilum_core::link_rewrite::moved_path(
                                 &file.rel,
                                 &preview.from,
@@ -5951,6 +5958,7 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |reader, _, cx| {
             let backlink = reader
+                .pane
                 .backlinks
                 .iter()
                 .find(|b| b.path == "backlink.md")
@@ -8093,7 +8101,7 @@ mod mode_navigation_tests {
         reader.read_with(visual, |r, cx| {
             assert_mode(r, "asset.bin", None, cx);
             assert!(
-                r.file_preview.is_some(),
+                r.pane.file_preview.is_some(),
                 "actual unsupported-Markdown preview fallback"
             );
         });
@@ -8135,7 +8143,10 @@ mod mode_navigation_tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
-            assert!(r.file_preview.is_some(), "positive control: a file view");
+            assert!(
+                r.pane.file_preview.is_some(),
+                "positive control: a file view"
+            );
             assert_mode(r, "plain.txt", Some(false), cx);
         });
         reader.update_in(visual, |r, window, cx| {
@@ -8149,7 +8160,8 @@ mod mode_navigation_tests {
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
             assert!(
-                r.file_preview
+                r.pane
+                    .file_preview
                     .as_ref()
                     .is_some_and(|preview| preview.code.is_some()),
                 "positive control: the code view, which loads asynchronously"

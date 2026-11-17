@@ -275,7 +275,7 @@ impl Reader {
                 &state.join("editor-drafts"),
                 version.bytes(),
             )?;
-            self.timeline = None;
+            self.pane.timeline = None;
             self.prepare_document(&rel, None, None, window, cx);
             Ok(())
         })();
