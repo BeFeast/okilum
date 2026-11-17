@@ -330,7 +330,7 @@ impl Reader {
             .link_notice
             .clone()
             .filter(|notice| !self.file_conflict_in_status(notice));
-        let choices = self.link_choices.clone();
+        let choices = self.pane.link_choices.clone();
         if notice == self.displayed_notice && choices == self.displayed_choices {
             return;
         }
@@ -391,7 +391,7 @@ impl Reader {
                                         && this.link_notice.as_ref() == Some(&dismissed)
                                     {
                                         this.link_notice = None;
-                                        this.link_choices.clear();
+                                        this.pane.link_choices.clear();
                                         cx.notify();
                                     }
                                 });
@@ -450,12 +450,13 @@ mod tests {
         visual.run_until_parked();
         let url = reader.read_with(visual, |r, _| {
             let (url, state) = r
+                .pane
                 .prepared_links
                 .iter()
                 .find(|(_, s)| s.status == LinkStatus::MissingFile)
                 .expect("background missing-file evidence");
             assert_eq!(state.reason, "File not found");
-            let p = prepared_links::presentation(url, &r.prepared_links);
+            let p = prepared_links::presentation(url, &r.pane.prepared_links);
             assert!(!p.inert && p.style.color.is_some() && p.style.underline.is_some());
             assert!(p
                 .tooltip
@@ -715,7 +716,7 @@ mod tests {
         visual.update(|window, cx| assert!(window.notifications(cx).is_empty()));
         reader.update_in(visual, |r, _, cx| {
             r.recovery_offer = false;
-            r.link_choices = vec![("start.md".into(), None)];
+            r.pane.link_choices = vec![("start.md".into(), None)];
             r.link_notice = Some("Choose the matching note".into());
             cx.notify();
         });
@@ -723,7 +724,7 @@ mod tests {
         assert_eq!(visual.debug_bounds("reader-document").unwrap(), before);
         visual.update(|window, cx| assert_eq!(window.notifications(cx).len(), 1));
         reader.update_in(visual, |r, _, cx| {
-            r.link_choices.clear();
+            r.pane.link_choices.clear();
             cx.notify();
         });
         reader.update_in(visual, |r, _, cx| {

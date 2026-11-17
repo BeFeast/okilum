@@ -32,6 +32,7 @@ pub(super) fn handle_link(
             reader_remote_markdown::authored_ssh_url(
                 url,
                 reader
+                    .pane
                     .link_identities
                     .iter()
                     .map(|link| (link.url.as_str(), link.wiki, link.target.as_str())),
@@ -68,8 +69,9 @@ pub(super) fn handle_link(
     }
     let prepared = entity.upgrade().and_then(|entity| {
         let reader = entity.read(cx);
-        reader.prepared_links.get(url).cloned().or_else(|| {
+        reader.pane.prepared_links.get(url).cloned().or_else(|| {
             reader
+                .pane
                 .link_identities
                 .iter()
                 .any(|link| link.url == url)
@@ -146,7 +148,7 @@ pub(super) fn handle_link(
                     &this.current_rel,
                 );
                 this.link_notice = Some(ambiguous_notice(&resolved.candidates).into());
-                this.link_choices = resolved
+                this.pane.link_choices = resolved
                     .candidates
                     .into_iter()
                     .map(|path| (path, resolved.heading.clone()))
@@ -158,7 +160,7 @@ pub(super) fn handle_link(
         if let Some(entity) = entity.upgrade() {
             entity.update(cx, |this, cx| {
                 this.link_notice = Some(okilum_core::document_links::decode(reason).into());
-                this.link_choices.clear();
+                this.pane.link_choices.clear();
                 cx.notify();
             });
         }

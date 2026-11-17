@@ -173,7 +173,7 @@ pub(super) fn link_presentation(
 impl Reader {
     #[cfg(any(unix, windows))]
     pub(super) fn missing_note_path(&self, url: &str) -> Option<String> {
-        missing_note_target(url, &self.prepared_links, &self.link_identities)
+        missing_note_target(url, &self.pane.prepared_links, &self.pane.link_identities)
     }
 
     pub(super) fn clear_hover(&mut self, cx: &mut Context<Self>) {
@@ -201,7 +201,7 @@ impl Reader {
         if self.quick_open.open || self.editing.is_some() || self.file_menu.is_some() {
             return;
         }
-        if let Some(target) = resolved_target(url, &self.prepared_links, &self.current_rel) {
+        if let Some(target) = resolved_target(url, &self.pane.prepared_links, &self.current_rel) {
             self.hover_note(url.to_owned(), target, position, window, cx);
         }
         #[cfg(any(unix, windows))]
@@ -910,29 +910,35 @@ mod tests {
             r.prepare_document("Life/Start.md", None, None, window, cx);
         });
         visual.run_until_parked();
-        let url = reader.read_with(visual, |r, _| r.link_identities[0].url.clone());
+        let url = reader.read_with(visual, |r, _| r.pane.link_identities[0].url.clone());
         reader.read_with(visual, |r, _| {
-            assert_eq!(r.prepared_links[&url].status, LinkStatus::MissingDocument);
-            let plain = prepared_links::presentation(&url, &r.prepared_links);
+            assert_eq!(
+                r.pane.prepared_links[&url].status,
+                LinkStatus::MissingDocument
+            );
+            let plain = prepared_links::presentation(&url, &r.pane.prepared_links);
             assert!(
                 plain.tooltip.is_some(),
                 "tooltip positive control without a card"
             );
-            assert!(missing_note_target(&url, &r.prepared_links, &r.link_identities).is_some());
+            assert!(
+                missing_note_target(&url, &r.pane.prepared_links, &r.pane.link_identities)
+                    .is_some()
+            );
             let cards = std::collections::BTreeSet::from([url.clone()]);
-            let card = link_presentation(&url, &r.prepared_links, &cards);
+            let card = link_presentation(&url, &r.pane.prepared_links, &cards);
             assert!(
                 card.tooltip.is_none(),
                 "Create note card owns the explanation"
             );
             assert!(card.inert && card.style.underline.is_some());
             assert!(
-                link_presentation(&url, &r.prepared_links, &Default::default())
+                link_presentation(&url, &r.pane.prepared_links, &Default::default())
                     .tooltip
                     .is_some()
             );
             assert!(
-                link_presentation("https://example.org", &r.prepared_links, &cards)
+                link_presentation("https://example.org", &r.pane.prepared_links, &cards)
                     .tooltip
                     .is_some()
             );
@@ -1011,6 +1017,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert!(r
+                .pane
                 .prepared_links
                 .values()
                 .any(|s| s.status == LinkStatus::Resolved));
@@ -1031,7 +1038,7 @@ mod tests {
             r.prepare_document("Start.md", None, None, window, cx);
         });
         visual.run_until_parked();
-        let url = reader.read_with(visual, |r, _| r.link_identities[0].url.clone());
+        let url = reader.read_with(visual, |r, _| r.pane.link_identities[0].url.clone());
         reader.update_in(visual, |r, window, cx| {
             r.create_missing_note(&url, window, cx)
         });
@@ -1070,7 +1077,7 @@ mod tests {
                 LinkStatus::Ambiguous,
                 LinkStatus::MissingHeading,
             ] {
-                Arc::make_mut(&mut r.prepared_links)
+                Arc::make_mut(&mut r.pane.prepared_links)
                     .get_mut(&url)
                     .unwrap()
                     .status = status;
@@ -1209,18 +1216,19 @@ mod tests {
         });
         reader.update_in(visual, |v, window, cx| {
             let url = v
+                .pane
                 .link_identities
                 .iter()
                 .find(|link| {
-                    resolved_target(&link.url, &v.prepared_links, &v.current_rel).is_some()
+                    resolved_target(&link.url, &v.pane.prepared_links, &v.current_rel).is_some()
                 })
                 .expect("resolved internal positive control")
                 .url
                 .clone();
             assert!(
-                resolved_target(&url, &v.prepared_links, &v.current_rel).is_some(),
+                resolved_target(&url, &v.pane.prepared_links, &v.current_rel).is_some(),
                 "url={url}, states={:?}",
-                v.prepared_links
+                v.pane.prepared_links
             );
             v.hover_link(&url, true, point(px(650.), px(250.)), window, cx);
         });

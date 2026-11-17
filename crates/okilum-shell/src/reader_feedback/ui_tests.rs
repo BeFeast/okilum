@@ -710,7 +710,7 @@ fn feedback_keeps_the_main_window_interactive_and_metadata_belongs_to_its_source
             let root = window.root::<Root>().flatten().unwrap();
             let entity = root.read(cx).view().clone().downcast::<Reader>().unwrap();
             assert!(
-                entity.read(cx).find_open,
+                entity.read(cx).pane.find_open,
                 "main-window Find received its shortcut"
             );
         });

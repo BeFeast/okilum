@@ -83,11 +83,11 @@ fn startup_publication(reader: &Reader) -> Option<(u64, u64, u64)> {
             .is_some_and(|ready| Arc::ptr_eq(ready, &reader.workbench))
         && !reader.tree_rules_running
         && current_rules
-        && Arc::ptr_eq(&reader.prepared_links, &reader.link_presentations);
+        && Arc::ptr_eq(&reader.pane.prepared_links, &reader.pane.link_presentations);
     ready.then_some((
         reader.source_publication_epoch,
         reader.workbench_pending,
-        reader.link_preparation_generation,
+        reader.pane.link_preparation_generation,
     ))
 }
 

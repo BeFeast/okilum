@@ -1469,7 +1469,7 @@ impl Reader {
             cx.entity().downgrade(),
             self.sel_format,
             Arc::default(),
-            &self.link_identities,
+            &self.pane.link_identities,
             !self.single_file
                 && reader_features::enabled(reader_features::Feature::Agents, cx)
                 && okilum_core::agent_imports::is_agent_document(&rel),
@@ -1881,8 +1881,8 @@ impl Reader {
             self.navigation.reconciliation_generation.wrapping_add(1);
         let reconciliation = self.navigation.reconciliation_generation;
         let previous_canonical = self.note_canonical_source.clone();
-        let previous_rendered = self.link_rendered_source.clone();
-        let previous_original = self.link_original_source.clone();
+        let previous_rendered = self.pane.link_rendered_source.clone();
+        let previous_original = self.pane.link_original_source.clone();
         let previous_damaged = self.note_encoding_damaged;
         cx.spawn_in(window, async move |this, cx| {
             let target = rel.clone();
@@ -4602,7 +4602,8 @@ mod tests {
             assert!(v.document_ready());
             assert!(!v.panel_preferences_ready);
             v.open_find(window, cx);
-            v.find_input
+            v.pane
+                .find_input
                 .update(cx, |input, cx| input.set_value("Usable", window, cx));
             v.set_panel_width(reader_layout::Panel::Notes, 350.);
         });
@@ -5213,8 +5214,8 @@ mod tests {
                 TextView::new(&v.content),
                 cx.entity().downgrade(),
                 v.sel_format,
-                v.prepared_links.clone(),
-                &v.link_identities,
+                v.pane.prepared_links.clone(),
+                &v.pane.link_identities,
                 v.agent_document_enabled(cx),
             );
             v.content.update(cx, |state, cx| {
@@ -6023,8 +6024,11 @@ mod tests {
                 set_fs_phase(c"setup");
                 reader.update_in(visual, |v, _, cx| {
                     assert!(v.document_ready());
-                    assert_eq!(v.link_identities.len(), links);
-                    assert_eq!(v.link_original_source.as_deref(), Some(primary.as_str()));
+                    assert_eq!(v.pane.link_identities.len(), links);
+                    assert_eq!(
+                        v.pane.link_original_source.as_deref(),
+                        Some(primary.as_str())
+                    );
                     assert!(v.tree.rows.iter().any(|row| row.path == "last.md"));
                     v.content.update(cx, |state, cx| {
                         state.set_search_query("searchcanary", cx);
@@ -6363,7 +6367,8 @@ mod tests {
             assert_eq!(v.content.read(cx).preparation_status(), Some(Ok(())));
             assert!(v.searcher.is_none());
             v.open_find(window, cx);
-            v.find_input
+            v.pane
+                .find_input
                 .update(cx, |input, cx| input.set_value("Uncached", window, cx));
             v.run_find(window, cx);
             assert_eq!(v.content.read(cx).search_status().1, 300);
@@ -6416,7 +6421,7 @@ mod tests {
                     .offset_in_item,
                 px(7.)
             );
-            assert_eq!(v.find_input.read(cx).value().as_ref(), "Uncached");
+            assert_eq!(v.pane.find_input.read(cx).value().as_ref(), "Uncached");
         });
         assert_eq!(std::fs::read_to_string(root.join(deep)).unwrap(), source);
         diagnostic_error!(
@@ -6476,7 +6481,8 @@ mod tests {
             assert!(v.searcher.is_none(), "positive unfinished-work control");
             assert!(!v.vault.inventory_complete);
             v.open_find(window, cx);
-            v.find_input
+            v.pane
+                .find_input
                 .update(cx, |input, cx| input.set_value("Readable", window, cx));
             v.run_find(window, cx);
             v.content.read(cx).list_state().scroll_to_reveal_item(100);
@@ -6484,7 +6490,7 @@ mod tests {
         visual.run_until_parked();
         let input = start.elapsed();
         reader.update_in(visual, |v, window, cx| {
-            assert_eq!(v.find_input.read(cx).value().as_ref(), "Readable");
+            assert_eq!(v.pane.find_input.read(cx).value().as_ref(), "Readable");
             assert!(v.content.read(cx).list_state().logical_scroll_top().item_ix > 0);
             v.dismiss(window, cx);
             assert!(!v.loading.as_ref().unwrap().active);

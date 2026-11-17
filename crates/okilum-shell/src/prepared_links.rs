@@ -615,15 +615,16 @@ impl Reader {
     }
 
     pub(crate) fn invalidate_links(&mut self) {
-        self.link_preparation_generation = self.link_preparation_generation.wrapping_add(1);
+        self.pane.link_preparation_generation =
+            self.pane.link_preparation_generation.wrapping_add(1);
         // Action evidence is pending, but the displayed source has not changed.
         // Keep its verified appearance until a newer result replaces it.
-        self.prepared_links = Arc::default();
+        self.pane.prepared_links = Arc::default();
     }
 
     fn prepare_links(&mut self, source: LinkSource, cx: &mut Context<Self>) {
         self.invalidate_links();
-        let generation = self.link_preparation_generation;
+        let generation = self.pane.link_preparation_generation;
         let navigation = self.navigation.generation;
         let from = self.current_rel.clone();
         let vault = self.vault.clone();
@@ -631,7 +632,7 @@ impl Reader {
             LinkSource::Editing(_, stamp) => Some(*stamp),
             _ => None,
         };
-        let identities = self.link_identities.clone();
+        let identities = self.pane.link_identities.clone();
         cx.spawn(async move |this, cx| {
             let (states, identities) = cx
                 .background_executor()
@@ -674,7 +675,7 @@ impl Reader {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if this.link_preparation_generation != generation
+                if this.pane.link_preparation_generation != generation
                     || this.navigation.generation != navigation
                     || source_stamp.is_some_and(|stamp| {
                         this.editing
@@ -685,9 +686,10 @@ impl Reader {
                     return;
                 }
                 let retired_states =
-                    std::mem::replace(&mut this.link_presentations, states.clone());
-                let retired_identities = std::mem::replace(&mut this.link_identities, identities);
-                this.prepared_links = states;
+                    std::mem::replace(&mut this.pane.link_presentations, states.clone());
+                let retired_identities =
+                    std::mem::replace(&mut this.pane.link_identities, identities);
+                this.pane.prepared_links = states;
                 cx.background_executor()
                     .spawn(async move {
                         drop((retired_states, retired_identities));
@@ -713,8 +715,9 @@ impl Reader {
                 snapshot.text.id(),
             );
             self.prepare_links(LinkSource::Editing(text, snapshot.stamp), cx);
-        } else if let Some(original) = self.link_original_source.clone() {
+        } else if let Some(original) = self.pane.link_original_source.clone() {
             let rendered = self
+                .pane
                 .link_rendered_source
                 .clone()
                 .unwrap_or_else(|| original.clone());
@@ -808,7 +811,8 @@ mod tests {
         visual.run_until_parked();
         let url = reader.read_with(visual, |v, _| {
             assert!(v.editing.is_none() && v.incremental_active);
-            v.link_identities
+            v.pane
+                .link_identities
                 .iter()
                 .find(|link| link.target == "missing")
                 .unwrap()
@@ -850,11 +854,11 @@ mod tests {
         reader.read_with(visual, |v, _| {
             assert!(v.incremental_active);
             assert!(
-                v.prepared_links.is_empty(),
+                v.pane.prepared_links.is_empty(),
                 "action evidence remains pending"
             );
             assert_eq!(
-                v.link_presentations[&url].status,
+                v.pane.link_presentations[&url].status,
                 LinkStatus::MissingDocument
             );
         });
@@ -883,7 +887,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |v, _| {
             assert_eq!(v.current_rel, "target.md");
-            assert!(v.prepared_links.is_empty() && v.link_presentations.is_empty());
+            assert!(v.pane.prepared_links.is_empty() && v.pane.link_presentations.is_empty());
         });
         PAINTED_LINKS.with(|trace| *trace.borrow_mut() = None);
     }
@@ -1307,6 +1311,7 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |v, _, _| {
             assert!(v
+                .pane
                 .prepared_links
                 .values()
                 .any(|state| state.status == LinkStatus::MissingDocument));
@@ -1655,7 +1660,8 @@ mod tests {
         visual.run_until_parked();
         let url = "okilum://unresolved/target.md%23Landing";
         let urls = reader.read_with(visual, |v, _| {
-            v.link_identities
+            v.pane
+                .link_identities
                 .iter()
                 .map(|link| link.url.clone())
                 .collect::<Vec<_>>()
@@ -1683,7 +1689,10 @@ mod tests {
         };
         assert_paint(true);
         let content = reader.update_in(visual, |v, _, cx| {
-            assert_eq!(v.prepared_links[url].status, LinkStatus::MissingDocument);
+            assert_eq!(
+                v.pane.prepared_links[url].status,
+                LinkStatus::MissingDocument
+            );
             v.content.update(cx, |s, cx| s.select_all(cx));
             v.link_notice = Some("Retain notice".into());
             v.content.entity_id()
@@ -1720,13 +1729,13 @@ mod tests {
                 changes.changed.insert("target.md".into());
                 v.apply_vault_changes(changes, window, cx);
                 assert!(
-                    v.prepared_links.is_empty(),
+                    v.pane.prepared_links.is_empty(),
                     "refresh immediately exposes pending evidence"
                 );
             });
             visual.run_until_parked();
             reader.update_in(visual, |v, _, cx| {
-                assert_eq!(v.prepared_links[url].status, expected);
+                assert_eq!(v.pane.prepared_links[url].status, expected);
                 assert_eq!(v.content.read(cx).selected_text(), selection);
                 assert_eq!(v.content.entity_id(), content);
                 assert_eq!(v.navigation.history, ["start.md"]);
@@ -1739,7 +1748,7 @@ mod tests {
             v.invalidate_links();
         });
         visual.run_until_parked();
-        reader.update_in(visual, |v, _, _| assert!(v.prepared_links.is_empty()));
+        reader.update_in(visual, |v, _, _| assert!(v.pane.prepared_links.is_empty()));
         assert_eq!(
             std::fs::read_to_string(root.join("start.md")).unwrap(),
             source
@@ -1779,8 +1788,8 @@ mod tests {
         let reader = reader.unwrap();
         visual.run_until_parked();
         let url = reader.update_in(visual, |v, _, _| {
-            let url = v.link_identities[0].url.clone();
-            assert_eq!(v.prepared_links[&url].status, LinkStatus::Resolved);
+            let url = v.pane.link_identities[0].url.clone();
+            assert_eq!(v.pane.prepared_links[&url].status, LinkStatus::Resolved);
             url
         });
         visual.update(|window, cx| handle_link(&reader.downgrade(), &url, window, cx));
@@ -1789,7 +1798,7 @@ mod tests {
             assert_eq!(v.current_rel, "target.md");
             assert!(v.link_notice.is_none());
             assert_eq!(
-                v.prepared_links[&v.link_identities[0].url].status,
+                v.pane.prepared_links[&v.pane.link_identities[0].url].status,
                 LinkStatus::Resolved,
                 "self and cross-note heading states agree"
             );
@@ -1806,7 +1815,7 @@ mod tests {
             // Progressive first-source URLs may be unresolved until inventory;
             // Back prepares a new emitted identity against the full inventory.
             assert_eq!(
-                v.prepared_links[&v.link_identities[0].url].status,
+                v.pane.prepared_links[&v.pane.link_identities[0].url].status,
                 LinkStatus::Unknown
             );
         });
@@ -1847,8 +1856,8 @@ mod tests {
         let reader = reader.unwrap();
         visual.run_until_parked();
         let url = reader.update_in(visual, |v, _, _| {
-            let url = v.link_identities[0].url.clone();
-            assert_eq!(v.prepared_links[&url].status, LinkStatus::Resolved);
+            let url = v.pane.link_identities[0].url.clone();
+            assert_eq!(v.pane.prepared_links[&url].status, LinkStatus::Resolved);
             url
         });
         visual.update(|window, cx| handle_link(&reader.downgrade(), &url, window, cx));
@@ -1857,7 +1866,7 @@ mod tests {
             assert_eq!(v.current_rel, "target.md");
             assert!(v.link_notice.is_none());
             assert_eq!(
-                v.prepared_links[&v.link_identities[0].url].status,
+                v.pane.prepared_links[&v.pane.link_identities[0].url].status,
                 LinkStatus::Resolved,
                 "self and cross-note heading states agree"
             );
@@ -1904,8 +1913,8 @@ mod tests {
         let reader = reader.unwrap();
         visual.run_until_parked();
         let url = reader.update_in(visual, |v, _, _| {
-            let url = v.link_identities[0].url.clone();
-            assert_eq!(v.prepared_links[&url].status, LinkStatus::Resolved);
+            let url = v.pane.link_identities[0].url.clone();
+            assert_eq!(v.pane.prepared_links[&url].status, LinkStatus::Resolved);
             url
         });
         visual.update(|window, cx| handle_link(&reader.downgrade(), &url, window, cx));
@@ -1914,7 +1923,7 @@ mod tests {
             assert_eq!(v.current_rel, "target.md");
             assert!(v.link_notice.is_none());
             assert_eq!(
-                v.prepared_links[&v.link_identities[0].url].status,
+                v.pane.prepared_links[&v.pane.link_identities[0].url].status,
                 LinkStatus::Resolved,
                 "self and cross-note heading states agree"
             );

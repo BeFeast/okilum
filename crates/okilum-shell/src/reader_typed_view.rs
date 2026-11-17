@@ -204,8 +204,8 @@ pub(super) fn render(
             )
         })
         .collect();
-    let search = if reader.find_open {
-        reader.find_input.read(cx).value().to_string()
+    let search = if reader.pane.find_open {
+        reader.pane.find_input.read(cx).value().to_string()
     } else {
         String::new()
     };
@@ -470,7 +470,7 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
-            assert!(r.find_open, "ordinary note positive control")
+            assert!(r.pane.find_open, "ordinary note positive control")
         });
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
@@ -495,7 +495,7 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
-            assert!(r.find_open, "Find after heading navigation")
+            assert!(r.pane.find_open, "Find after heading navigation")
         });
         visual.simulate_input("Review");
         visual.run_until_parked();
@@ -678,7 +678,8 @@ mod tests {
         });
         view.update_in(visual, |v, window, cx| {
             v.open_find(window, cx);
-            v.find_input
+            v.pane
+                .find_input
                 .update(cx, |input, cx| input.set_value("Ship 059", window, cx));
             v.run_find(window, cx);
         });

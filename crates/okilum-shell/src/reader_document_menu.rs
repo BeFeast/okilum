@@ -595,7 +595,7 @@ impl Reader {
         self.file_preview = None;
         self.editing = None;
         self.table_overlay = None;
-        self.find_open = false;
+        self.pane.find_open = false;
         self.usable_document = false;
         self.outline.clear();
         self.outline_list.reset(0);
@@ -603,12 +603,12 @@ impl Reader {
         self.set_backlinks(Vec::new(), true);
         self.properties = Ok(Vec::new());
         self.link_notice = None;
-        self.link_choices.clear();
+        self.pane.link_choices.clear();
         self.invalidate_links();
-        self.link_presentations = Arc::default();
-        self.link_original_source = None;
-        self.link_rendered_source = None;
-        self.link_identities = Arc::default();
+        self.pane.link_presentations = Arc::default();
+        self.pane.link_original_source = None;
+        self.pane.link_rendered_source = None;
+        self.pane.link_identities = Arc::default();
         self.last_recorded_document = None;
         if let Some(send) = &self.session_records {
             let _ = send.try_send(reader_loading::SessionRecord {

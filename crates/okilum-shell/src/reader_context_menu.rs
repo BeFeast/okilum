@@ -143,7 +143,7 @@ impl Reader {
     /// this; the `okilum:` link itself is made by the Copy (#1414).
     pub(crate) fn link_address(&self, url: &str) -> Option<LinkTarget> {
         use okilum_core::document_links::prepared::LinkStatus;
-        let state = self.prepared_links.get(url);
+        let state = self.pane.prepared_links.get(url);
         if state.is_some_and(|state| {
             !matches!(state.status, LinkStatus::Resolved | LinkStatus::External)
         }) {

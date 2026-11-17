@@ -320,7 +320,7 @@ fn issue2957_rename_field_and_note_find_keep_focus_and_a_hidden_field_hands_it_t
     press(visual, "secondary-f");
     let query = fixture
         .reader
-        .read_with(visual, |r, _| r.find_input.clone());
+        .read_with(visual, |r, _| r.pane.find_input.clone());
     assert!(focused(&query, visual), "positive control: note Find");
     type_text(visual, "Syn");
     press(visual, crate::MAXIMIZE_NOTE_KEY);
