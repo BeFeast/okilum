@@ -1,0 +1,119 @@
+# #2094: the four Stable speed budgets (cold start, typing, open 10 MiB note,
+# search 10k notes) on one exact source. Report-only unless `enforce` is set;
+# making it block Stable promotion is Oleg's decision and is not wired here.
+name: stable-speed
+on:
+  push:
+    # Calibration and agent runs of a branch head; nothing else listens here.
+    branches: ['stable-speed/**']
+  workflow_dispatch:
+    inputs:
+      source:
+        description: 'Exact Stable candidate SHA (empty = the dispatched ref)'
+        required: false
+        type: string
+        default: ''
+      enforce:
+        description: 'Fail the run when a median exceeds its hosted ceiling (off: report-only)'
+        required: false
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: stable-speed-${{ github.ref }}-${{ inputs.source || github.sha }}
+  cancel-in-progress: false
+jobs:
+  speed:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+      RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source || github.sha }}
+          persist-credentials: false
+      - name: Record exact source
+        id: source
+        env:
+          REQUESTED: ${{ inputs.source }}
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          if [ -n "$REQUESTED" ] && [ "$sha" != "$(git rev-parse "$REQUESTED^{commit}")" ]; then
+            echo "checked-out $sha is not the requested source $REQUESTED" >&2; exit 2
+          fi
+          if [ ! -f scripts/perf/speed/collect.py ]; then
+            echo "predates the speed budget harness (#2094): measure a newer source" >&2; exit 2
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Install build and runtime dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential cmake pkg-config curl git mold zstd \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev libvulkan1 mesa-vulkan-drivers \
+            xvfb xdotool x11-apps xclip dbus
+      - name: Prepare pinned vendor
+        run: |
+          rustc -Vv
+          scripts/vendor-setup.sh
+          scripts/vendor-setup.sh --verify
+      - name: Validate the speed collector and verdict
+        run: python3 -m unittest discover -s scripts/perf/speed -p 'test_*.py'
+      - name: Build the shipped release binary
+        id: build
+        run: |
+          set -euo pipefail
+          cargo build --release --locked -p okilum-shell --bin okilum
+          mkdir -p "$RUNNER_TEMP/bin"
+          cp target/release/okilum "$RUNNER_TEMP/bin/okilum"
+      - name: Search 10,000 notes (release core probe)
+        env:
+          OKILUM_SPEED_SEARCH_REPORT: ${{ runner.temp }}/search.json
+        run: |
+          cargo test --release --locked -p okilum-core --test search_bench \
+            synthetic_10k_query_latency -- --ignored --exact --nocapture --test-threads=1
+      - name: Start the software display
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          Xvfb :99 -screen 0 1366x768x24 >/dev/null 2>&1 &
+          sleep 2
+      - name: Measure cold start, typing and 10 MiB open
+        # Runs even when the search probe failed: that metric is then NO_EVIDENCE.
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          export DISPLAY=:99
+          timeout --signal=TERM --kill-after=5s 600s dbus-run-session -- \
+            python3 scripts/perf/speed/collect.py "$RUNNER_TEMP/bin/okilum" "$RUNNER_TEMP/speed" \
+            --search-report "$RUNNER_TEMP/search.json" --source-commit "$SOURCE_SHA"
+      - name: Judge the budgets
+        if: ${{ !cancelled() }}
+        env:
+          ENFORCE: ${{ inputs.enforce }}
+        run: |
+          flags=()
+          if [ "$ENFORCE" = true ]; then flags+=(--enforce); fi
+          test -f "$RUNNER_TEMP/speed/summary.json" || { echo "NO EVIDENCE: no collector summary" >&2; exit 2; }
+          python3 scripts/perf/speed/judge.py "$RUNNER_TEMP/speed/summary.json" \
+            --report "$RUNNER_TEMP/speed/report.json" --markdown "$GITHUB_STEP_SUMMARY" "${flags[@]}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stable-speed-${{ steps.source.outputs.sha || github.sha }}
+          path: |
+            ${{ runner.temp }}/speed/summary.json
+            ${{ runner.temp }}/speed/report.json
+            ${{ runner.temp }}/speed/**/sample.json
+            ${{ runner.temp }}/speed/**/app.log
+            ${{ runner.temp }}/speed/**/home/okilum/reader-diagnostic.log
+            ${{ runner.temp }}/search.json
+          retention-days: 30
+          if-no-files-found: warn

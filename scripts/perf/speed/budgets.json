@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "metrics": {
+    "cold_start_ms": {"product_budget_ms": 300, "hosted_limit_ms": 1500},
+    "typing_ms": {"product_budget_ms": 16, "hosted_limit_ms": 100},
+    "open_10mib_ms": {"product_budget_ms": 1000, "hosted_limit_ms": 3000},
+    "search_10k_ms": {"product_budget_ms": 100, "hosted_limit_ms": 300}
+  },
+  "calibration": "provisional; replaced by measured hosted runs before merge"
+}
