@@ -9,7 +9,10 @@ sections of [Remote Log view](remote-log-view.md). The reader remains read-only.
 History, live reconciliation and field values share `remote_log::transport::Kibana`.
 They POST to `/internal/search/es`, with `Authorization: ApiKey`, `kbn-xsrf: true`,
 `Content-Type: application/json`, `elastic-api-version: 1`, and
-`x-elastic-internal-origin: Kibana`. Search keys are directly inside `params`,
+`x-elastic-internal-origin: Kibana`. Only `/internal/` routes carry
+`elastic-api-version: 1`. Public `/api/` routes (data views, status) reject an
+integer version with HTTP 400 on Kibana 8.17–9.5, so the header is omitted
+there. The [compatibility runner](kibana-compatibility-runner.md) found this (#1440). Search keys are directly inside `params`,
 including `index`, `size`, `track_total_hits`, `query` and `sort`.
 There is no nested `params.body` and no console-proxy or PIT acquisition.
 

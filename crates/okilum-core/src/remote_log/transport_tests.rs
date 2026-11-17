@@ -477,6 +477,40 @@ fn fake_rejects_nested_body_and_missing_headers_with_positive_control() {
     assert_eq!(server.state.lock().unwrap().rejected_headers, 1);
 }
 #[test]
+fn public_routes_omit_the_internal_api_version_that_real_kibana_rejects() {
+    // #1440: Kibana 8.17-9.5 answers `elastic-api-version: 1` on /api routes with
+    // HTTP 400 "Invalid version"; the fake mirrors that rule.
+    let server = server(3, Scenario::default());
+    let client = client(&server);
+    let mut imported = source(&server);
+    imported.index_pattern = None;
+    let resolved = client.resolve_source(&imported).unwrap();
+    assert_eq!(resolved.index_pattern.as_deref(), Some("remote-*:events"));
+    assert!(client.version().is_some());
+    assert_eq!(server.state.lock().unwrap().rejected_headers, 0);
+    // Positive control: the old header on a public route is rejected.
+    let status = |version: &str| {
+        client
+            .runtime
+            .block_on(async {
+                client
+                    .client
+                    .get(format!("{}/api/status", server.endpoint))
+                    .header("Authorization", "ApiKey test-secret")
+                    .header("kbn-xsrf", "true")
+                    .header("x-elastic-internal-origin", "Kibana")
+                    .header("elastic-api-version", version)
+                    .send()
+                    .await
+            })
+            .unwrap()
+            .status()
+            .as_u16()
+    };
+    assert_eq!(status("1"), 400);
+    assert_eq!(status("2023-10-31"), 200);
+}
+#[test]
 fn legacy_sources_load_losslessly_and_direct_source_validation_keeps_https_in_release() {
     let dir = tempfile::tempdir().unwrap();
     let vault = dir.path().join("vault");

@@ -55,3 +55,11 @@ Evidence supplied and inspected by the manager:
 
 The receipts stay in the existing research evidence directory outside this
 public repository. No credentials, event payloads or research scripts are copied.
+
+## Containerised compatibility runner (17 November 2026)
+
+[Kibana compatibility runner](kibana-compatibility-runner.md) runs the current
+internal-search connector against real, digest-pinned Kibana and Elasticsearch
+8.17.10, 8.19.25, 9.5.4 and 9.5.5 on GitHub-hosted runners, with synthetic
+data. It is evidence for the protocol only: it says nothing about Integration
+data, ingest lag or the five-second target.

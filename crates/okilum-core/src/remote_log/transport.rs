@@ -256,8 +256,13 @@ impl Kibana {
             .request(method, url)
             .header(reqwest::header::AUTHORIZATION, auth)
             .header("kbn-xsrf", "true")
-            .header("x-elastic-internal-origin", "Kibana")
-            .header("elastic-api-version", "1");
+            .header("x-elastic-internal-origin", "Kibana");
+        // Internal routes take integer API versions. Public /api routes reject
+        // them ("Invalid version", HTTP 400 on Kibana 8.17-9.5, #1440) and use
+        // their only published version when the header is absent.
+        if route.starts_with("/internal/") {
+            request = request.header("elastic-api-version", "1");
+        }
         if let Some(body) = body {
             request = request.json(body);
         }

@@ -200,9 +200,25 @@ fn respond(mut stream: TcpStream, state: Arc<Mutex<State>>) -> std::io::Result<(
         });
         let required = [
             ("kbn-xsrf", "true"),
-            ("elastic-api-version", "1"),
             ("x-elastic-internal-origin", "Kibana"),
         ];
+        // Like Kibana 8.17-9.5 (#1440): internal routes require integer version 1,
+        // public /api routes accept only a date version or none.
+        let version = headers.get("elastic-api-version").map(String::as_str);
+        let version_ok = if path.contains("/internal/") {
+            version == Some("1")
+        } else {
+            version.is_none_or(|v| {
+                v.len() == 10
+                    && v.bytes().enumerate().all(|(i, b)| {
+                        if i == 4 || i == 7 {
+                            b == b'-'
+                        } else {
+                            b.is_ascii_digit()
+                        }
+                    })
+            })
+        };
         if !s.scenario.never_complete {
             s.pending.retain(|_, (_, left, _)| *left > 0);
         }
@@ -210,9 +226,10 @@ fn respond(mut stream: TcpStream, state: Arc<Mutex<State>>) -> std::io::Result<(
             != Some("ApiKey test-secret")
         {
             (401, json!({"error":"authentication required"}))
-        } else if required
-            .iter()
-            .any(|(k, v)| headers.get(*k).map(String::as_str) != Some(*v))
+        } else if !version_ok
+            || required
+                .iter()
+                .any(|(k, v)| headers.get(*k).map(String::as_str) != Some(*v))
             || (method == "POST"
                 && headers.get("content-type").map(String::as_str) != Some("application/json"))
         {
