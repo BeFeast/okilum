@@ -846,7 +846,11 @@ impl Reader {
             editing.link_complete.open = None;
             editing.link_complete.preferred = None;
             editing.link_complete.dismissed = None;
-            editing.link_complete.requested = None;
+            // A fence request belongs to the document, not to the index: the
+            // first request in an editor arrives before any index exists.
+            if editing.link_complete.from != from {
+                editing.link_complete.requested = None;
+            }
             editing.link_complete.metadata_page = None;
             editing.link_complete.metadata_cache = Default::default();
         }
