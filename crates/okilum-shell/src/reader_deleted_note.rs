@@ -683,8 +683,8 @@ mod tests {
                     Opts {
                         vault: (!folder).then(|| root.to_path_buf()),
                         open_path: folder.then(|| root.join("Start.md")),
-                        // #2066 makes a folder open a vault. Keep testing the
-                        // explicit quick viewer's lazy folder/recovery path.
+                        // The explicit quick viewer of a file: its lazy
+                        // folder/recovery path (a folder alone is a folder view, #3098).
                         single_file: folder,
                         note: Some("Start.md".into()),
                         index_dir: (!folder).then(|| state.join("index")),

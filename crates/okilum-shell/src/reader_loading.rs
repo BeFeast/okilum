@@ -189,6 +189,45 @@ fn prepare_log(path: &Path, root: Option<&Path>, cancel: &Cancellation) -> Resul
     })
 }
 
+/// A folder opened like a file (#3098): the quick viewer of that folder with
+/// no document selected yet. Nothing is indexed, cached or recorded as a
+/// vault; the siblings listing follows publication as for a single file, and
+/// «Open folder as vault» converts the window.
+fn prepare_folder_view(root: &Path, cancel: &Cancellation) -> Result<Event> {
+    std::fs::read_dir(root).context("The requested directory cannot be read")?;
+    cancel.check()?;
+    let intent = reader_open::OpenIntent {
+        root: root.to_path_buf(),
+        single_file: true,
+        note: None,
+        created_note: false,
+    };
+    let mut vault = Vault::from_note_paths(std::iter::empty::<String>());
+    vault.root = intent.root.clone();
+    vault.single_file = true;
+    Ok(Event::First {
+        intent,
+        vault,
+        cache_lease: None,
+        searcher: None,
+        snapshot: None,
+        document: Some((
+            String::new(),
+            prepared_links::PreparedDocument {
+                encoding_damaged: false,
+                canonical_source: None,
+                source: String::new(),
+                original: Some(String::new()),
+                identities: Vec::new(),
+                frontmatter: None,
+            },
+        )),
+        published: None,
+        recovery_notice: None,
+        log: None,
+    })
+}
+
 /// Opened through the file viewer, like `open_note` does, never rendered as a note.
 fn opens_as_file(rel: &str) -> bool {
     !rel.is_empty() && !rel.to_lowercase().ends_with(".md")
@@ -287,6 +326,9 @@ fn prepare_first_existing_document(
         && reader_delimited::previewable(&canonical_path.to_string_lossy())
     {
         return prepare_plain_file(&canonical_path, root, cancel);
+    }
+    if opts.single_file && canonical_path.is_dir() {
+        return prepare_folder_view(&canonical_path, cancel);
     }
     if opts.single_file || (canonical_path.is_file() && root.is_none() && reusable.is_none()) {
         let mut intent = reader_open::OpenIntent::validate_cached(&canonical_path, root, None)?;
@@ -7936,14 +7978,17 @@ impl Reader {
     }
 
     pub(super) fn switch_window_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_file().is_empty() || self.loading.as_ref().is_some_and(|load| load.active)
+        // A folder view has no file yet and still converts to a vault (#3098);
+        // single-file mode needs the file it will show.
+        if (!self.single_file && self.selected_file().is_empty())
+            || self.loading.as_ref().is_some_and(|load| load.active)
         {
             return;
         }
         self.start_loading(
             Opts {
                 vault: Some(self.vault_root.clone()),
-                note: Some(self.selected_file().to_owned()),
+                note: Some(self.selected_file().to_owned()).filter(|note| !note.is_empty()),
                 single_file: !self.single_file,
                 use_html: self.use_html,
                 index_dir: self

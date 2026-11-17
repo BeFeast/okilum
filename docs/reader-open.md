@@ -1,7 +1,8 @@
 # Opening local Markdown (#327)
 
 `okilum '/path/space/Note.md'` opens that exact document in a read-only Reader.
-`okilum '/path/folder'` opens a local Reader folder. Existing `--vault ROOT
+`okilum '/path/folder'` opens that folder as a folder view, or its vault when the
+folder already is one ([single-file-viewer.md](single-file-viewer.md#folder-view-3098)). Existing `--vault ROOT
 --note REL`, `--query`, `--copy-source`, `--html` and explicit `--index-dir` remain
 available. A positional target cannot be combined with `--note` or `--jump`;
 contradictory Reader and explicit managed inputs are rejected.

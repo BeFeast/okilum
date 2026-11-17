@@ -876,7 +876,8 @@ impl Reader {
                 }
             }
         }
-        if !self.selected_file().is_empty()
+        // A folder view has no file yet and still converts to a vault (#3098).
+        if (self.single_file || !self.selected_file().is_empty())
             && !palette.query.trim().is_empty()
             && self
                 .window_mode_label()
@@ -3217,6 +3218,68 @@ canaryhidden [[Target]]",
                 Line::Hint(text) => Some(text),
                 _ => None,
             })
+    }
+
+    /// #3098: a fresh folder view has no file selected; ⌘K still finds
+    /// «Open folder as vault» and Enter converts the window.
+    #[gpui::test]
+    fn palette_converts_a_folder_view_without_a_selected_file(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let folder = fixture.path().join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("note.md"), "# Note\n").unwrap();
+        let folder = folder.canonicalize().unwrap();
+        cx.update(|cx| {
+            crate::test_init(cx);
+            bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(folder.clone()),
+                        single_file: true,
+                        session_directory: Some(fixture.path().join("state")),
+                        cache_base_override: Some(fixture.path().join("cache")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert!(v.single_file, "positive control: a folder view");
+            assert_eq!(v.selected_file(), "", "no file is selected");
+        });
+        reader.update_in(visual, |v, window, cx| v.open_quick_open(false, window, cx));
+        visual.run_until_parked();
+        reader.update_in(visual, |v, window, cx| {
+            v.quick_open.input.update(cx, |input, cx| {
+                input.set_value("open folder as vault", window, cx)
+            });
+            v.refresh_quick_open(cx);
+        });
+        visual.run_until_parked();
+        let row = reader.read_with(visual, |v, _| {
+            let rows = palette_rows(v);
+            rows.iter()
+                .position(|row| row == "Files: Open folder as vault")
+                .unwrap_or_else(|| panic!("the conversion is offered: {rows:?}"))
+        });
+        reader.update(visual, |v, _| v.quick_open.selected = row);
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert!(!v.quick_open.open);
+            assert!(!v.single_file, "the palette converted the folder view");
+            assert_eq!(v.vault_root, folder);
+        });
     }
 
     #[gpui::test]
