@@ -836,10 +836,16 @@ def roll_back(settings, release, stage, previous_build):
 def launch(image, receipt=None, run=subprocess.run, suffix=None):
     """Open Okilum in its own transient unit in the app slice, as a launcher
     (uwsm) does: a child of this service would die with the service. The unit
-    gets the session's environment from the user manager."""
+    gets the session's environment from the user manager.
+
+    ExitType=cgroup keeps the unit alive until its last process exits, not only
+    the main one. With the default ExitType=main, in-app Restart now stops the
+    unit as soon as Okilum quits and kills the update helper it just armed in
+    the same cgroup, so the update is never applied (#3077)."""
     unit = f'app-okilum-beta-deliver-{suffix or time.time_ns()}.service'
     command = ['systemd-run', '--user', '--quiet', '--collect', '--unit', unit,
                '--slice', 'app-graphical.slice', '--property', 'Type=exec',
+               '--property', 'ExitType=cgroup',
                # UnsetEnvironment= applies after --setenv: never list the receipt there.
                '--property', 'UnsetEnvironment=' + ' '.join(
                    name for name in RUNTIME_ENV if not (receipt and name == 'OKILUM_APPIMAGE_UPDATE_RECEIPT')),
