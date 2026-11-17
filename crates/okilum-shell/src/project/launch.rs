@@ -15,8 +15,9 @@ pub(super) struct Form {
     requested: Option<String>,
     /// Progress of the delivered request named by `requested`, read from T3.
     tracker: Option<Tracker>,
-    /// The request whose status loop is running; at most one loop runs.
-    polling: Option<String>,
+    /// Owner of the running status loop: request and connection generation.
+    /// A reconnect or a newer request makes any other loop stale.
+    pub(super) polling: Option<(String, u64)>,
     status_error: Option<String>,
     error: Option<String>,
     _inputs: Vec<Subscription>,
@@ -195,33 +196,34 @@ impl ProjectView {
     }
 
     /// Follows the delivered request in T3 until its final outcome. Reads run
-    /// on the background executor; an observation of another request or of an
-    /// older tracker revision never replaces the current state.
+    /// on the background executor. The loop belongs to one request on one
+    /// connection generation; a result of any other owner, request or older
+    /// tracker revision never replaces the current state.
     pub(super) fn poll_launch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tracker) = self.launch.tracker.as_ref() else {
             return;
         };
+        let owner = (tracker.request_id.clone(), self.generation);
         if tracker.progress.finished()
-            || self.launch.polling.as_deref() == Some(tracker.request_id.as_str())
+            || self.gateway.is_none()
+            || self.chat.as_ref().map(|chat| chat.thread_id.as_str())
+                != Some(tracker.manager_thread_id())
+            || self.launch.polling.as_ref() == Some(&owner)
         {
             return;
         }
-        // A loop of an older request sees this and ends at its next turn.
-        let request_id = tracker.request_id.clone();
-        self.launch.polling = Some(request_id.clone());
-        let generation = self.generation;
+        // Any older loop sees another owner and ends at its next turn.
+        self.launch.polling = Some(owner.clone());
         cx.spawn_in(window, async move |this, cx| loop {
             let job = this
                 .update_in(cx, |this, window, _| {
-                    let own = this.launch.polling.as_deref() == Some(request_id.as_str());
+                    let own = this.launch_owner(&owner);
                     let job = this
                         .launch
                         .tracker
                         .as_ref()
                         .filter(|tracker| {
-                            own && this.generation == generation
-                                && tracker.request_id == request_id
-                                && !tracker.progress.finished()
+                            own && !tracker.progress.finished()
                                 && this.chat.as_ref().map(|chat| chat.thread_id.as_str())
                                     == Some(tracker.manager_thread_id())
                         })
@@ -251,45 +253,13 @@ impl ProjectView {
                         .into_iter()
                         .find(|r| r.message.client_request_id == tracker.client_request_id)
                         .and_then(|r| r.receipt);
-                    let observation: Option<Observation> =
-                        tracker.observe(gateway.as_ref(), receipt.as_ref())?;
+                    let observation = tracker.observe(gateway.as_ref(), receipt.as_ref())?;
                     Ok::<_, anyhow::Error>((receipt, observation))
                 })
                 .await;
             let delay = this
                 .update_in(cx, |this, _, cx| {
-                    let current = this
-                        .launch
-                        .tracker
-                        .as_mut()
-                        .filter(|tracker| tracker.request_id == request_id)?;
-                    let mut changed = false;
-                    let delay = match result {
-                        Ok((receipt, observation)) => {
-                            if let Some(receipt) = &receipt {
-                                changed |= current.record_receipt(receipt);
-                            }
-                            if let Some(observation) = observation {
-                                changed |= current.apply(observation);
-                            }
-                            changed |= this.launch.status_error.take().is_some();
-                            if focused {
-                                2_000
-                            } else {
-                                10_000
-                            }
-                        }
-                        Err(error) => {
-                            let error = Some(format!("{error:#}"));
-                            changed |= this.launch.status_error != error;
-                            this.launch.status_error = error;
-                            15_000
-                        }
-                    };
-                    if changed {
-                        cx.notify();
-                    }
-                    Some(delay)
+                    this.apply_launch_result(&owner, result, focused, cx)
                 })
                 .ok()
                 .flatten();
@@ -300,6 +270,57 @@ impl ProjectView {
             }
         })
         .detach();
+    }
+
+    fn launch_owner(&self, owner: &(String, u64)) -> bool {
+        self.generation == owner.1 && self.launch.polling.as_ref() == Some(owner)
+    }
+
+    /// Applies one loop's T3 read only while that loop still owns the launch:
+    /// the same request on the same connection generation. Returns the delay
+    /// before its next read, or `None` when the result was stale.
+    fn apply_launch_result(
+        &mut self,
+        owner: &(String, u64),
+        result: anyhow::Result<(Option<okilum_t3::SendReceipt>, Option<Observation>)>,
+        focused: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<u64> {
+        if !self.launch_owner(owner) {
+            return None;
+        }
+        let current = self
+            .launch
+            .tracker
+            .as_mut()
+            .filter(|tracker| tracker.request_id == owner.0)?;
+        let mut changed = false;
+        let delay = match result {
+            Ok((receipt, observation)) => {
+                if let Some(receipt) = &receipt {
+                    changed |= current.record_receipt(receipt);
+                }
+                if let Some(observation) = observation {
+                    changed |= current.apply(observation);
+                }
+                changed |= self.launch.status_error.take().is_some();
+                if focused {
+                    2_000
+                } else {
+                    10_000
+                }
+            }
+            Err(error) => {
+                let error = Some(format!("{error:#}"));
+                changed |= self.launch.status_error != error;
+                self.launch.status_error = error;
+                15_000
+            }
+        };
+        if changed {
+            cx.notify();
+        }
+        Some(delay)
     }
 
     pub(super) fn render_launch(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -709,7 +730,10 @@ mod tests {
         view.read_with(visual, |v, _| {
             let executor = v.launch.tracker.as_ref().unwrap().progress.executor.clone();
             assert_eq!(executor.unwrap().thread_id, "mcp:fixture-executor-new");
-            assert_eq!(v.launch.polling.as_deref(), Some(first.as_str()));
+            assert_eq!(
+                v.launch.polling.as_ref().map(|(id, _)| id.as_str()),
+                Some(first.as_str())
+            );
         });
         let reads = gateway.launch_reads.lock().unwrap().clone();
         assert!(
@@ -745,7 +769,10 @@ mod tests {
                 "the older launch's completed thread never reaches the newer request"
             );
             assert!(tracker.progress.executor.is_none());
-            assert_eq!(v.launch.polling.as_deref(), Some(second.as_str()));
+            assert_eq!(
+                v.launch.polling.as_ref().map(|(id, _)| id.as_str()),
+                Some(second.as_str())
+            );
         });
         assert_eq!(gateway.sends.lock().unwrap().len(), 2);
 
@@ -778,5 +805,122 @@ mod tests {
             assert!(v.launch.polling.is_none(), "a final outcome ends polling")
         });
         assert_eq!(gateway.sends.lock().unwrap().len(), 2, "status never sends");
+    }
+
+    #[gpui::test]
+    fn review_reconnect_resumes_the_retained_launch_and_drops_an_old_connection_result(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        let files = tempfile::tempdir().unwrap();
+        let area = files.path().join("area");
+        std::fs::create_dir_all(area.join("ops")).unwrap();
+        std::fs::write(area.join("brief.md"), "# UI brief\nFixture request\n").unwrap();
+        let gateway = Arc::new(fixture::Fake::default());
+        launch_frame(&gateway, "not-yet-requested", 0);
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                let mut view =
+                    fixture::view(files.path().join("state"), gateway.clone(), window, cx);
+                view.area = Some(area.clone());
+                std::fs::write(
+                    area.join("ops/project.yaml"),
+                    serde_yaml::to_string(&serde_json::json!({"t3":view.binding})).unwrap(),
+                )
+                .unwrap();
+                for (input, value) in [
+                    (&view.launch.role, "UI"),
+                    (&view.launch.brief, "brief.md"),
+                    (&view.launch.worktree, "/server/worktrees/ui"),
+                    (&view.launch.branch, "feature/ui"),
+                ] {
+                    input.update(cx, |input, cx| input.set_value(value, window, cx));
+                }
+                view
+            });
+            entity = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view = entity.unwrap();
+        visual.run_until_parked();
+        visual.update(|window, cx| view.update(cx, |v, cx| v.open_launch(window, cx)));
+        visual.run_until_parked();
+        visual.update(|window, cx| view.update(cx, |v, cx| v.submit_launch(window, cx)));
+        visual.run_until_parked();
+        let request = view.read_with(visual, |v, _| {
+            v.launch.tracker.as_ref().unwrap().request_id.clone()
+        });
+        for index in 0..4 {
+            launch_frame(&gateway, &request, index);
+            next_poll(visual);
+        }
+        assert_eq!(
+            status_line(&view, visual),
+            "requested → accepted → preparing → [running] → completed"
+        );
+
+        // Disconnect and reconnect to the same manager with the panel open.
+        let old_owner = view.read_with(visual, |v, _| v.launch.polling.clone().unwrap());
+        view.update_in(visual, |v, window, cx| {
+            let environment = v.environment.clone().unwrap();
+            v.clear_connection(cx);
+            assert!(
+                v.launch.polling.is_none(),
+                "a disconnect ends the old loop's ownership"
+            );
+            assert!(v.launch.tracker.is_some() && v.launch.open);
+            let restored: Arc<dyn ManagerGateway> = gateway.clone();
+            v.finish_connection(Ok((environment, restored)), window, cx);
+            let owner = v
+                .launch
+                .polling
+                .clone()
+                .expect("tracking resumes on reconnect");
+            assert_eq!(owner.0, request);
+            assert_ne!(owner.1, old_owner.1);
+        });
+
+        // A delayed result of the old connection's loop, taken at the current
+        // tracker revision and reporting a failure, must not be applied.
+        let recorded: serde_json::Value =
+            serde_json::from_str(&LAUNCH_FIXTURE.replace("{{REQUEST_ID}}", &request)).unwrap();
+        let mut frame = recorded["frames"][3].clone();
+        frame["executors"][2] = recorded["outcomes"]["failed"].clone();
+        *gateway.launch_t3.lock().unwrap() = Some(serde_json::json!({
+            "frame": frame, "timelines": recorded["timelines"], "receipt": recorded["receipt"],
+        }));
+        view.update_in(visual, |v, _, cx| {
+            let tracker = v.launch.tracker.clone().unwrap();
+            let receipt = v.records[0].receipt.clone();
+            let observation = tracker.observe(gateway.as_ref(), receipt.as_ref()).unwrap();
+            assert!(
+                v.apply_launch_result(&old_owner, Ok((receipt, observation)), true, cx)
+                    .is_none(),
+                "an old connection's result is stale"
+            );
+            assert!(!v.launch.tracker.as_ref().unwrap().progress.finished());
+        });
+        assert_eq!(
+            status_line(&view, visual),
+            "requested → accepted → preparing → [running] → completed"
+        );
+
+        // The executor completes; the existing request reaches completed on
+        // the new connection without reopening the panel or resending.
+        launch_frame(&gateway, &request, 4);
+        visual.run_until_parked();
+        next_poll(visual);
+        assert_eq!(
+            status_line(&view, visual),
+            "requested → accepted → preparing → running → [completed]"
+        );
+        assert!(visual.debug_bounds("project-launch-status-line").is_some());
+        next_poll(visual);
+        view.read_with(visual, |v, _| {
+            assert!(v.launch.polling.is_none(), "a final outcome ends polling");
+            assert_eq!(v.records.len(), 1);
+        });
+        assert_eq!(gateway.sends.lock().unwrap().len(), 1, "nothing is resent");
     }
 }
