@@ -757,6 +757,20 @@ fn bind_keys(cx: &mut App) {
             reader_editor::OpenBlockExternally,
             Some("ReaderSource > Input"),
         ),
+        // #2340: the code block languages after ```, before anything is typed.
+        // macOS usually takes Ctrl+Space for the input source, so Option+Esc
+        // (Xcode's completion key) is bound there too.
+        KeyBinding::new(
+            "ctrl-space",
+            reader_editor::ShowCodeLanguages,
+            Some("ReaderSource > Input"),
+        ),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new(
+            "alt-escape",
+            reader_editor::ShowCodeLanguages,
+            Some("ReaderSource > Input"),
+        ),
         // #1611: Paste as Plain Text / as Titled Link, in the note editor.
         // Plain Text is macOS's own "Paste and Match Style" key, Option+Shift+Cmd+V:
         // Cmd+Shift+V is commonly a global clipboard-history hotkey (Raycast).

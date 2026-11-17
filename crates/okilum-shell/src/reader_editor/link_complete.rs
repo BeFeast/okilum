@@ -14,6 +14,11 @@
 //! source edit and one Undo step. Nothing opens in a fenced code block, the
 //! front matter or an inline code span, while an input method composes, or
 //! in a code or text file.
+//!
+//! A fence's language list opens as its name is typed after ```` ``` ````. With
+//! nothing typed yet it opens only on request (Ctrl+Space, and Option+Esc on
+//! macOS, where Ctrl+Space usually switches the input source), with every
+//! language (#2340); the same key reopens a list Escape closed.
 use super::ime_guard::Trigger;
 #[path = "inline_complete.rs"]
 mod providers;
@@ -24,6 +29,8 @@ use gpui_component::input::{Enter, Escape, IndentInline, MoveDown, MoveUp, RopeE
 use okilum_core::vault::warm::SourceRevision;
 use providers::Kind;
 use std::ops::Range;
+
+gpui::actions!(okilum, [ShowCodeLanguages]);
 
 /// Rows the list shows at most.
 pub(super) const MAX_ROWS: usize = 8;
@@ -93,6 +100,24 @@ pub(super) fn link_query(text: &str, caret: usize) -> Option<LinkQuery> {
         }
     }
     Some(query)
+}
+
+/// The trigger before the caret, from at most 1 KiB of its line.
+fn caret_query(input: &EditorState) -> Option<LinkQuery> {
+    let selection = input.selected_range();
+    let row = input.cursor_position().line as usize;
+    let start = input.text().line_start_offset(row);
+    // Only the bounded lookbehind is copied, even beyond column 1024.
+    // Move a byte cut to a UTF-8 boundary; the worker owns full context.
+    let mut window_start = selection.start.saturating_sub(1024).max(start);
+    while !input.text().is_char_boundary(window_start) {
+        window_start += 1;
+    }
+    let line = input
+        .text()
+        .slice(window_start..selection.start)
+        .to_string();
+    line_query(&line, window_start, selection.start)
 }
 
 /// The UI only copies the bounded tail of the caret's line. Full Markdown
@@ -733,6 +758,9 @@ pub(super) struct State {
     /// The `[[` whose list Escape closed (or a choice completed); it stays
     /// closed until the caret leaves that link.
     dismissed: Option<usize>,
+    /// The fence whose language list was asked for, which then opens with
+    /// nothing typed (#2340); cleared when the caret leaves that info string.
+    requested: Option<usize>,
     index: Option<Arc<Index>>,
     task: Option<Task<()>>,
     heading_source: Option<HeadingSource>,
@@ -818,6 +846,11 @@ impl Reader {
             editing.link_complete.open = None;
             editing.link_complete.preferred = None;
             editing.link_complete.dismissed = None;
+            // A fence request belongs to the document, not to the index: the
+            // first request in an editor arrives before any index exists.
+            if editing.link_complete.from != from {
+                editing.link_complete.requested = None;
+            }
             editing.link_complete.metadata_page = None;
             editing.link_complete.metadata_cache = Default::default();
         }
@@ -828,28 +861,21 @@ impl Reader {
         editing.link_complete.editable = input.is_editable();
         editing.link_complete.markdown = editing.markdown;
         editing.link_complete.from = from.clone();
+        let requested = editing.link_complete.requested;
         let query = (editing.markdown
             && selection.is_empty()
             && input.is_editable()
             && !input.ime_composing()
             && editing.link_complete.pasted != Some(input.source_stamp()))
-        .then(|| {
-            let row = input.cursor_position().line as usize;
-            let start = input.text().line_start_offset(row);
-            // Only the bounded lookbehind is copied, even beyond column 1024.
-            // Move a byte cut to a UTF-8 boundary; the worker owns full context.
-            let mut window_start = selection.start.saturating_sub(1024).max(start);
-            while !input.text().is_char_boundary(window_start) {
-                window_start += 1;
-            }
-            let line = input
-                .text()
-                .slice(window_start..selection.start)
-                .to_string();
-            line_query(&line, window_start, selection.start)
-                .filter(|query| emoji || !matches!(query.kind, Kind::Emoji))
-        })
-        .flatten();
+        .then(|| caret_query(input))
+        .flatten()
+        .filter(|query| emoji || !matches!(query.kind, Kind::Emoji))
+        // An empty fence info string opens only on request: Enter after ```
+        // still enters the block.
+        .filter(|query| {
+            !(matches!(query.kind, Kind::Language) && query.query.is_empty())
+                || requested == Some(query.start)
+        });
         let source = input.text().clone();
         let input_entity = editing.input.clone();
         let state = &mut editing.link_complete;
@@ -858,6 +884,13 @@ impl Reader {
         state.accept_pending = None;
         state.heading_source = None;
         state.heading_accepting = false;
+        if state.requested.is_some_and(|start| {
+            query
+                .as_ref()
+                .is_none_or(|query| query.start != start || !matches!(query.kind, Kind::Language))
+        }) {
+            state.requested = None;
+        }
         let Some(query) = query else {
             state.dismissed = None;
             state.preferred = None;
@@ -999,6 +1032,39 @@ impl Reader {
             }));
         }
         cx.notify();
+    }
+
+    /// Ctrl+Space (#2340): the caret's fence language list, with every language
+    /// while nothing is typed, or reopened after Escape. Anywhere else the key
+    /// goes on as before.
+    fn show_code_languages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_link_complete(window, cx);
+        let Some(editing) = self.editing.as_mut() else {
+            cx.propagate();
+            return;
+        };
+        let input = editing.input.read(cx);
+        let query = (editing.markdown
+            && input.selected_range().is_empty()
+            && input.is_editable()
+            && !input.ime_composing()
+            && input.focus_handle(cx).is_focused(window))
+        .then(|| caret_query(input))
+        .flatten()
+        .filter(|query| matches!(query.kind, Kind::Language));
+        let Some(query) = query else {
+            cx.propagate();
+            return;
+        };
+        let state = &mut editing.link_complete;
+        state.requested = Some(query.start);
+        state.pasted = None;
+        if state.dismissed == Some(query.start) {
+            state.dismissed = None;
+        }
+        // Recompute even though the source and caret did not move.
+        state.seen = None;
+        self.refresh_link_complete(window, cx);
     }
 
     /// Internal hook for initial rows and keyboard paging; slot32's editor
@@ -1347,6 +1413,9 @@ impl Reader {
             .capture_action(
                 cx.listener(|this, _: &Escape, window, cx| this.link_complete_dismiss(window, cx)),
             )
+            .on_action(cx.listener(|this, _: &ShowCodeLanguages, window, cx| {
+                this.show_code_languages(window, cx)
+            }))
     }
 
     /// The list under the caret, while the editor has focus.
@@ -2812,12 +2881,154 @@ mod tests {
         );
     }
 
+    /// The languages on offer, as written; `None` while the list is closed.
+    fn languages(note: &Note, visual: &mut VisualTestContext) -> Option<Vec<String>> {
+        note.reader.read_with(visual, |r, _| {
+            let open = r.editing.as_ref()?.link_complete.open.as_ref()?;
+            assert!(matches!(open.query.kind, Kind::Language));
+            Some(open.items.iter().map(|c| c.target.clone()).collect())
+        })
+    }
+
+    /// The highlighted row's language.
+    fn chosen(note: &Note, visual: &mut VisualTestContext) -> String {
+        note.reader.read_with(visual, |r, _| {
+            let open = r
+                .editing
+                .as_ref()
+                .unwrap()
+                .link_complete
+                .open
+                .as_ref()
+                .unwrap();
+            open.items[open.selected].target.clone()
+        })
+    }
+
+    fn every_language(typed: &str) -> Vec<String> {
+        catalog(&LinkQuery {
+            start: 3,
+            caret: 3 + typed.len(),
+            query: typed.into(),
+            kind: Kind::Language,
+        })
+        .into_iter()
+        .map(|c| c.target)
+        .collect()
+    }
+
+    #[gpui::test]
+    fn issue2340_ctrl_space_lists_every_fence_language_and_narrows_like_typing(
+        cx: &mut TestAppContext,
+    ) {
+        let (note, visual) = open(cx);
+        let all = every_language("");
+        assert!(all.len() > MAX_ROWS, "the full list pages within the popup");
+        set(&note, visual, "```|\n```");
+        assert_eq!(
+            languages(&note, visual),
+            None,
+            "nothing opens by itself after ```"
+        );
+        keys(visual, "ctrl-space");
+        assert_eq!(
+            languages(&note, visual),
+            Some(all.clone()),
+            "every language"
+        );
+        assert_eq!(shown(&note, visual), "```|\n```", "the key types nothing");
+        typed(visual, "p");
+        assert_eq!(languages(&note, visual), Some(every_language("p")));
+        typed(visual, "y");
+        let narrowed = every_language("py");
+        assert!(narrowed.len() < every_language("p").len());
+        assert_eq!(languages(&note, visual), Some(narrowed));
+        let python = chosen(&note, visual);
+        keys(visual, "enter");
+        assert_eq!(
+            shown(&note, visual),
+            format!("```{python}\n|\n```"),
+            "the caret goes to the block's first line"
+        );
+        assert_eq!(languages(&note, visual), None);
+        undo(visual);
+        assert_eq!(shown(&note, visual), "```py|\n```", "one Undo step");
+
+        // Arrow keys and Tab work on the full list as on a typed one.
+        set(&note, visual, "```|\n```");
+        keys(visual, "ctrl-space");
+        keys(visual, "down");
+        assert_eq!(chosen(&note, visual), all[1]);
+        keys(visual, "tab");
+        assert_eq!(shown(&note, visual), format!("```{}\n|\n```", all[1]));
+
+        // Escape closes it and leaves Enter to enter the block.
+        set(&note, visual, "```|\n```");
+        keys(visual, "ctrl-space");
+        keys(visual, "escape");
+        assert_eq!(languages(&note, visual), None);
+        keys(visual, "enter");
+        assert_eq!(shown(&note, visual), "```\n|\n```");
+        // Without the key, Enter enters the block as before.
+        set(&note, visual, "```|\n```");
+        keys(visual, "enter");
+        assert_eq!(shown(&note, visual), "```\n|\n```");
+    }
+
+    #[gpui::test]
+    fn issue2340_ctrl_space_reopens_a_typed_language_filtered(cx: &mut TestAppContext) {
+        let (note, visual) = open(cx);
+        set(&note, visual, "```ru|\n```");
+        assert_eq!(languages(&note, visual), Some(every_language("ru")));
+        keys(visual, "escape");
+        assert_eq!(languages(&note, visual), None);
+        keys(visual, "ctrl-space");
+        assert_eq!(
+            languages(&note, visual),
+            Some(every_language("ru")),
+            "filtered, not the full list"
+        );
+        #[cfg(target_os = "macos")]
+        {
+            set(&note, visual, "```|\n```");
+            keys(visual, "alt-escape");
+            assert_eq!(languages(&note, visual), Some(every_language("")));
+        }
+    }
+
+    #[gpui::test]
+    fn issue2340_ctrl_space_elsewhere_opens_no_language_list(cx: &mut TestAppContext) {
+        let (note, visual) = open(cx);
+        for source in [
+            "Hello|",
+            "a ```|",
+            " ```|",
+            "~~~|",
+            "```rust\ncode|\n```",
+            "```rust\ncode\n```|",
+            "```rust\n```|\n```",
+            "```rust {|\n```",
+            "Hello\n```|",
+        ] {
+            set(&note, visual, source);
+            keys(visual, "ctrl-space");
+            if source == "Hello\n```|" {
+                // Positive control: an opening fence after prose.
+                assert_eq!(languages(&note, visual), Some(every_language("")));
+                continue;
+            }
+            assert_eq!(languages(&note, visual), None, "{source}");
+            assert_eq!(shown(&note, visual), source, "{source}");
+        }
+    }
+
     #[gpui::test]
     fn providers_share_keyboard_acceptance_and_one_step_undo(cx: &mut TestAppContext) {
         let (note, visual) = open(cx);
         for (source, expected) in [
             ("Hello :smi|", "Hello 😄|"),
-            ("```rus|\n\n```", "```rust|\n\n```"),
+            // #2340: a fence language puts the caret on the block's first line.
+            ("```rus|\n\n```", "```rust\n|\n```"),
             ("/tas|", "- [ ] |"),
             ("# Goals\n\n[[#Go|", "# Goals\n\n[[#Goals]]|"),
         ] {

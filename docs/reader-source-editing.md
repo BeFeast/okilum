@@ -128,6 +128,15 @@ Enter/Tab or a row click inserts the target once. Escape leaves the authored
 text unchanged. The shared `HeadingInventory` excludes ambiguous or unsupported
 heading destinations; completion does not guess between duplicate note names.
 
+Fence language completion (#2340) opens as a language name is typed after an
+opening ```` ``` ````. With nothing typed it stays closed, so Enter still enters
+the block; Ctrl+Space (also Option+Esc on macOS, where Ctrl+Space usually
+switches the input source) opens the same popup with every language, or reopens
+a typed name's filtered list after Escape. The key does nothing new anywhere
+else. Choosing a language puts the caret on the block's first line, adding an
+empty one when the next line is the closing fence or the note ends; it is one
+edit and one Undo step.
+
 Completion refresh copies at most 1 KiB before the caret on its current line,
 clips the window to UTF-8 boundaries, and shares an immutable Rope snapshot. Ranking and full Markdown-context checks run on the
 background executor; code spans, code blocks and frontmatter publish no rows.

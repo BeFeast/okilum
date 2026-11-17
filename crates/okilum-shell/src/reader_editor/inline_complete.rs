@@ -94,12 +94,14 @@ pub(super) fn trigger(line: &str, emoji: bool) -> Option<(Kind, usize, String)> 
             return Some((Kind::Note, open + 2, query.into()));
         }
     }
-    // Only a new fence's info string, never a code block's contents.
+    // Only a new fence's info string, never a code block's contents. An empty
+    // info string is a syntactic query too, but the host opens its full list
+    // only on an explicit request (Ctrl+Space, #2340): typing ``` and Enter
+    // must still enter the block.
     if let Some(query) = line.strip_prefix("```") {
-        if !query.is_empty()
-            && query
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '#' | '-'))
+        if query
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '#' | '-'))
         {
             return Some((Kind::Language, 3, query.into()));
         }
@@ -151,7 +153,9 @@ pub(super) fn in_inline_code(prefix: &str) -> bool {
 }
 
 /// One replacement, one Undo step. Existing link aliases and closing marks
-/// stay authored; emoji consumes its optional closing colon.
+/// stay authored; emoji consumes its optional closing colon. A fence language
+/// leaves the caret on the block's first line, opening an empty one when the
+/// fence is followed by its closer or ends the note (#2340).
 pub(super) fn replacement(
     text: &str,
     start: usize,
@@ -178,6 +182,9 @@ pub(super) fn replacement(
         } else {
             target.to_owned()
         };
+        if matches!(kind, Kind::Language) {
+            return into_block(text, start, end, target, crlf);
+        }
         let after = start
             + if matches!(kind, Kind::Block) && target == "```\n\n```" {
                 if crlf {
@@ -206,6 +213,46 @@ pub(super) fn replacement(
             format!("{target}]]"),
             start + target.len() + 2,
         )
+    }
+}
+
+/// Write the language over `start..end` of an opening fence line and put the
+/// caret at the start of the block's first line. When the next line closes the
+/// block, or there is none, the same edit adds an empty first line.
+fn into_block(
+    text: &str,
+    start: usize,
+    end: usize,
+    target: &str,
+    crlf: bool,
+) -> (std::ops::Range<usize>, String, usize) {
+    let newline = text[end..].find('\n').map(|at| end + at);
+    let closes = newline.is_some_and(|at| {
+        let next = &text[at + 1..];
+        let next = &next[..next.find('\n').unwrap_or(next.len())];
+        super::super::code_comforts::fence(next)
+            .is_some_and(|(ch, run, info)| ch == '`' && run >= 3 && info.is_empty())
+    });
+    match newline {
+        Some(at) if !closes => (
+            start..end,
+            target.to_owned(),
+            at + 1 - (end - start) + target.len(),
+        ),
+        _ => {
+            // Keep the rest of the fence line (and its `\r`) before the new line.
+            let line_end = newline.map_or(text.len(), |at| {
+                if at > end && text.as_bytes()[at - 1] == b'\r' {
+                    at - 1
+                } else {
+                    at
+                }
+            });
+            let eol = if crlf { "\r\n" } else { "\n" };
+            let inserted = format!("{target}{}{eol}", &text[end..line_end]);
+            let caret = start + inserted.len();
+            (start..line_end, inserted, caret)
+        }
     }
 }
 
@@ -400,6 +447,11 @@ mod tests {
             trigger("```ru", true),
             Some((Kind::Language, 3, "ru".into()))
         );
+        assert_eq!(
+            trigger("```", true),
+            Some((Kind::Language, 3, "".into())),
+            "#2340: the empty info string is a query the host opens on request"
+        );
         assert_eq!(trigger("/", true), Some((Kind::Block, 0, "".into())));
         assert_eq!(
             trigger("Hi :smi", true),
@@ -414,7 +466,9 @@ mod tests {
             "word:smile",
             "x /task",
             "/tmp/file",
-            "```",
+            "```rust {",
+            "````",
+            " ```",
         ] {
             assert_eq!(trigger(line, true), None, "{line}");
         }
@@ -560,7 +614,17 @@ mod tests {
         assert_eq!(accept("[[#Go¦", "#Goals"), "[[#Goals]]¦");
         assert_eq!(accept("[[Pl¦an] suffix", "Plan"), "[[Plan]]¦ suffix");
         assert_eq!(accept("Hi :smi¦le:!", "😄"), "Hi 😄¦!");
-        assert_eq!(accept("```ru¦st\ncode\n```", "rust"), "```rust¦\ncode\n```");
+        // #2340: a fence language moves the caret to the block's first line.
+        assert_eq!(accept("```ru¦st\ncode\n```", "rust"), "```rust\n¦code\n```");
+        assert_eq!(accept("```¦\n```", "rust"), "```rust\n¦\n```");
+        assert_eq!(accept("```ru¦\n\n```", "rust"), "```rust\n¦\n```");
+        assert_eq!(accept("```¦\r\n```", "go"), "```go\r\n¦\r\n```");
+        assert_eq!(accept("```ru¦", "rust"), "```rust\n¦");
+        assert_eq!(
+            accept("x\n```py¦\n````\nafter", "python"),
+            "x\n```python\n¦\n````\nafter"
+        );
+        assert_eq!(accept("```py¦\n~~~\n```", "python"), "```python\n¦~~~\n```");
         assert_eq!(accept("/ta¦sk", "- [ ] "), "- [ ] ¦");
         assert_eq!(accept("before\n/co¦", "```\n\n```"), "before\n```\n¦\n```");
         assert_eq!(

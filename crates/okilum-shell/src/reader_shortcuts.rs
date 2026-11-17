@@ -93,6 +93,7 @@ fn catalog() -> Vec<Entry> {
         entry::<ToggleTask>("Toggle task", Notes),
         entry::<reader_editor::OpenRenderedBlock>("Edit table, image or callout", Notes),
         entry::<reader_editor::OpenBlockExternally>("Open code block in external editor", Notes),
+        entry::<reader_editor::ShowCodeLanguages>("Code block languages", Notes),
         entry::<gpui_component::input::Paste>("Paste", Notes),
         entry::<note_paste::PasteAsPlainText>("Paste as plain text", Notes),
         entry::<note_paste::PasteAsTitledLink>("Paste as titled link", Notes),
