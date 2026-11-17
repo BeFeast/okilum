@@ -99,7 +99,11 @@ fn load(_: &Editor) -> Option<Arc<RenderImage>> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    // Explicit: a glob would bring GPUI's `test` attribute over `#[test]`.
+    use super::super::{Editor, LineArg};
+    use super::{collect, lookup, raster};
+    use gpui::{size, DevicePixels};
+    use std::sync::Arc;
 
     fn editor(id: &'static str) -> Editor {
         Editor {
