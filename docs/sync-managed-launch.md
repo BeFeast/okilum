@@ -141,3 +141,21 @@ second folder keeps transferring. Explicit recovery then publishes the same
 withheld change, both retained drafts save, and the consumed recovery snapshot
 cannot replay. Uncoordinated external editors remain unsupported. Non-empty
 direct attachment remains refused.
+
+### Scoped receipt refusal and recovery controls (#2508)
+
+`issue2508_scoped_receipt_refuses_unproven_states_and_recovers_each_boundary`
+exercises `ScopedHold` against the pinned runtime. Its refusal controls are an
+external runtime, local and transport roots that differ, and a folder already
+paused by someone else (no intent is persisted). They also include a completed
+receipt offered as recovery proof for a later operation, and a configuration
+changed under a live receipt, which `validate`, `release_and_resume`, recovery
+and `resume_committed` all refuse. Fault injection rewinds the durable intent
+to the boundary a dead holder last reached. For a lost PATCH (intent and cursor
+durable, folder never paused), recovery re-submits the pause, withholds the
+inbound change and publishes it after release. For a lost acknowledgement
+(paused, no receipt), recovery accepts only this operation's labelled
+`FolderPaused`. When a holder dies at quiescence, `resume_committed` refuses
+another operation ID, restores the original label, and is idempotent. A fresh
+operation cannot start while an unfinished hold is pending. The second folder on
+the shared runtime is never paused.
