@@ -3,6 +3,12 @@ use presentation::Step;
 
 impl Render for SyncSettings {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if super::portable_build(cx) {
+            // A pairing link or the share menu never opens the wizard here.
+            self.presentation.wizard = None;
+            self.presentation.managing = None;
+            return self.render_portable(cx);
+        }
         self.inputs(window, cx);
         use gpui_component::WindowExt;
         if !window.has_active_dialog(cx) {
@@ -455,11 +461,70 @@ impl Render for SyncSettings {
                     .child(content),
             );
         panel = panel.children(gpui_component::Root::render_dialog_layer(window, cx));
-        panel
+        panel.into_any_element()
     }
 }
 
 impl SyncSettings {
+    /// #1029, #1037: the portable copy explains where Sync lives instead of
+    /// starting the pairing flow it cannot complete.
+    fn render_portable(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = brand::palette(cx);
+        v_flex()
+            .id("sync-panel")
+            .debug_selector(|| "sync-panel".into())
+            .size_full()
+            .min_w_0()
+            .gap_6()
+            .child(
+                div()
+                    .w_full()
+                    .text_xl()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Sync"),
+            )
+            .child(
+                v_flex()
+                    .id("sync-portable")
+                    .debug_selector(|| "sync-portable".into())
+                    .w_full()
+                    .p_6()
+                    .gap_4()
+                    .items_center()
+                    .border_1()
+                    .border_color(p.border)
+                    .rounded_lg()
+                    .child(
+                        gpui_component::Icon::new(IconName::Network)
+                            .size_8()
+                            .text_color(p.text_muted),
+                    )
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Sync is available in the installed version"),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .whitespace_normal()
+                            .text_sm()
+                            .text_color(p.text_muted)
+                            .child(
+                                "This portable copy runs without background helpers and leaves nothing behind, so it cannot keep your vaults in sync. Install Okilum to share vaults with your other computers. Your notes stay where they are.",
+                            ),
+                    )
+                    .child(
+                        Button::new("sync-portable-install")
+                            .debug_selector(|| "sync-portable-install".into())
+                            .primary()
+                            .label("Download the installer")
+                            .on_click(|_, _, cx| cx.open_url(super::INSTALLER_URL)),
+                    ),
+            )
+            .into_any_element()
+    }
     fn render_status(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = brand::palette(cx);
         let mut status = presentation::summary(self.snapshot.as_ref(), self.error.as_deref());
