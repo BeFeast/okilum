@@ -99,7 +99,7 @@ foreach ($pe in $pes) {
 }
 
 # The ZIP is required: a missing, unreadable or substituted ZIP fails here (no fallback).
-$zip = Save-Catalogued 'Okilum-windows-portable.zip' "$archive/Okilum-windows-portable.zip"
+$zip = Save-Catalogued 'Okilum-windows-portable.zip' "$Base/builds/31847/Okilum-windows-portable.zip"
 $portable = Join-Path $Work 'portable'
 [IO.Compression.ZipFile]::ExtractToDirectory($zip, $portable)
 $exe = @(Get-ChildItem -LiteralPath $portable -Recurse -File -Filter 'okilum.exe')
