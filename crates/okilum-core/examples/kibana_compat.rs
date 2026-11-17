@@ -190,8 +190,8 @@ mod compat {
         }
     }
 
-    /// Diagnostic only: the HTTP status and Kibana's error message for a route,
-    /// with the product's headers, so a failed check names its server-side cause.
+    /// Diagnostic only: the HTTP status and Kibana's error message for a public
+    /// route, with the product's headers, so a failed check names its server-side cause.
     /// Never prints credentials or response rows.
     fn probe(es: &Elasticsearch, kibana: &url::Url, path: &str, api_key: &str) -> String {
         probe_route(es, kibana, path, api_key)
@@ -209,7 +209,6 @@ mod compat {
             .header("Authorization", format!("ApiKey {api_key}"))
             .header("kbn-xsrf", "true")
             .header("x-elastic-internal-origin", "Kibana")
-            .header("elastic-api-version", "1")
             .send()?;
         let status = response.status().as_u16();
         let body: Value = serde_json::from_str(&response.text()?).unwrap_or(Value::Null);
