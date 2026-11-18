@@ -1023,7 +1023,7 @@ impl Controller {
         // Approving a removed computer again readmits it, and only the vault
         // owner may do that (#3079).
         if let Some(device) = paired.syncthing_device.clone() {
-            removal::ensure_may_readmit(&db, &device)?;
+            removal::ensure_may_readmit(&db, &device, &request.removals, &request.removal_vaults)?;
             removal::readmit_with_vaults(
                 &mut db,
                 &device,

@@ -314,11 +314,11 @@ fn rebroadcast(db: &mut Database, ids: &[Uuid]) {
             .peers
             .iter()
             .filter(|(peer, _)| {
-                vaults.iter().any(|v| knows(db, **peer, v))
-                    || db
-                        .transfers
-                        .iter()
-                        .any(|t| t.peer() == **peer && vaults.contains(t.vault()))
+                // Only the vault owner announces a close. A receiver that
+                // learned it does not push that close back (#3079).
+                vaults
+                    .iter()
+                    .any(|v| foreign_owner(db, v).is_none() && knows(db, **peer, v))
             })
             .map(|(peer, paired)| (*peer, paired.clone()))
             .collect();
@@ -597,7 +597,14 @@ pub(super) fn readmit_with_vaults(
     // close it for the vaults shared here and deliver that closed version to
     // their peers, which may still hold it open (#3079).
     // Only the vaults that removal covered, and only those shared here.
-    let shared: BTreeSet<String> = db.attached.iter().map(|v| v.folder_id.clone()).collect();
+    // Tombstones cover only vaults this computer decides. A received vault
+    // stays the owner's to close (#3079).
+    let shared: BTreeSet<String> = db
+        .attached
+        .iter()
+        .filter(|v| foreign_owner(db, &v.folder_id).is_none())
+        .map(|v| v.folder_id.clone())
+        .collect();
     for id in new {
         let mut tombstone = Removal::tombstone(id, device, pairing);
         tombstone.vaults = known_vaults
@@ -863,11 +870,17 @@ pub(super) fn foreign_owner(db: &Database, vault: &str) -> Option<Uuid> {
         })
         .or(Some(recorded))
 }
-/// A removal is the vault owner's decision when every vault that has a
-/// recorded owner was received from `sender`'s computer. No recorded owner
-/// keeps the authenticated removal (this computer owns the vault, or the
-/// journal predates per-vault owners).
+/// A removal is the vault owner's decision when every vault was received
+/// from `sender`'s computer. Empty, or any vault this computer itself
+/// shared, is not a decision a peer may deliver (#3079).
 pub(super) fn removal_from_owner(db: &Database, sender: Uuid, vaults: &BTreeSet<String>) -> bool {
+    if vaults.is_empty()
+        || vaults
+            .iter()
+            .any(|vault| db.sources.iter().any(|source| source.owns(vault)))
+    {
+        return false;
+    }
     let sender_device = device_of(db, sender);
     vaults.iter().all(|vault| match foreign_owner(db, vault) {
         Some(owner) => sender_device.is_some() && device_of(db, owner) == sender_device,
@@ -875,8 +888,14 @@ pub(super) fn removal_from_owner(db: &Database, sender: Uuid, vaults: &BTreeSet<
     })
 }
 /// `device` has an open removal of a vault this computer received from
-/// someone else. Only that owner may readmit it (#3079).
-pub(super) fn ensure_may_readmit(db: &Database, device: &str) -> Result<()> {
+/// someone else, or the returning computer reports one this computer has
+/// not seen. Only that vault's owner may readmit it (#3079).
+pub(super) fn ensure_may_readmit(
+    db: &Database,
+    device: &str,
+    known: &[Uuid],
+    known_vaults: &BTreeMap<Uuid, BTreeSet<String>>,
+) -> Result<()> {
     let blocked = db.removals.iter().any(|removal| {
         removal.device == device
             && !removal.superseded()
@@ -884,6 +903,19 @@ pub(super) fn ensure_may_readmit(db: &Database, device: &str) -> Result<()> {
                 .vaults
                 .iter()
                 .any(|vault| foreign_owner(db, vault).is_some())
+    }) || known.iter().any(|id| {
+        if db.removals.iter().any(|removal| removal.id == *id) {
+            return false;
+        }
+        match known_vaults.get(id) {
+            Some(vaults) => vaults
+                .iter()
+                .any(|vault| foreign_owner(db, vault).is_some()),
+            None => db
+                .attached
+                .iter()
+                .any(|vault| foreign_owner(db, &vault.folder_id).is_some()),
+        }
     });
     ensure!(!blocked, "Only the vault owner can readmit this computer");
     Ok(())
@@ -1205,6 +1237,12 @@ impl Controller {
                     known.device == device,
                     "Removal identity conflicts with its durable request"
                 );
+                if !known.vaults.is_empty() {
+                    ensure!(
+                        removal_from_owner(&db, scope, &known.vaults),
+                        "Only the vault owner can remove a computer from this vault"
+                    );
+                }
                 if known.superseded() && !learn {
                     // Already closed here: a replay changes nothing. An open
                     // delivery means the sender still holds it open, so the
@@ -1673,22 +1711,21 @@ impl Controller {
                     && vaults
                         .iter()
                         .all(|vault| foreign_owner(&db, vault).is_none())
-                    && vaults.iter().any(|vault| knows(&db, sender, vault)),
+                    && vaults.iter().all(|vault| knows(&db, sender, vault)),
                 "Only the vault owner decides removal"
             );
             if db.removals.iter().any(|removal| {
-                removal.device == device
-                    && !removal.superseded()
-                    && vaults.iter().all(|vault| removal.vaults.contains(vault))
+                removal.id == id
+                    && removal.device == device
+                    && (removal.local_applied || removal.superseded())
             }) {
                 return Ok(Reply::RemovalRecorded { id });
             }
         }
-        let minted = Uuid::new_v4();
-        self.queue_removal(minted, &device, vaults, None, None)?;
-        self.prepare_removal(minted)?;
+        self.queue_removal(id, &device, vaults, None, None)?;
+        self.prepare_removal(id)?;
         let _guard = self.shared.transfer_lock.lock().unwrap();
-        self.apply_removal(minted)?;
+        self.apply_removal(id)?;
         Ok(Reply::RemovalRecorded { id })
     }
     fn deliver_removal_requests(&self) -> Result<()> {
