@@ -195,37 +195,47 @@ for it, and lets the runtime start only when all of these hold:
   then match the saved root identity, or the folder is paused before the
   leases are released.
 
-Such a folder starts unpaused, because only a startup pause recreates a root.
+Every verified managed root runs behind its own marker. At launch, before the
+child starts, the launch command points each admitted folder's `markerName` at
+`.stfolder/okilum-root-<uuid>`, a file it creates once inside Syncthing's own
+`.stfolder` directory (pinned v2.1.6 `fs.IsInternal`: never scanned or synced)
+and reuses afterwards. Supervision does the same for a folder added while the
+runtime runs. `CheckPath` stats `<root>/<markerName>` before every scan, every
+scan batch commit and every pull, and `CreateMarker` never creates a
+non-default marker. So a foreign directory that takes a root's path, even one
+with its own `.stfolder` and even between supervision rounds or while the
+launch gate is held, fails the check before any byte is scanned, committed or
+pulled. A folder with an unfinished scoped transport hold keeps its exact
+configuration, because its resume compares it field by field. Residual: a copy
+of the same root that includes its `.stfolder` passes the check.
+
+A missing root starts unpaused, because only a startup pause recreates a root.
 Before the child starts, the launch command fences it in the offline
 configuration. It replaces the folder's `markerName` with a unique
-`.okilum-missing-root-<uuid>` and records the original in
-`fenced-folders.json` before `config.xml` is written, so a launcher killed in
-between still knows the marker it replaced. Pinned v2.1.6 `CheckPath` requires
-`<root>/<markerName>`, and `CreateMarker` never creates a non-default marker.
-So no directory that appears at the path, before or after child start and
-including a foreign one with `.stfolder`, can be scanned or synced, and a
-folder with history is never recreated. The original marker is restored only
-when the saved root identity is back and the authority admits a writer through
-an Open admission. That happens at readiness (a drain that began during
-startup keeps it fenced), in the launcher's 2-second supervision loop, or
-offline at the next launch. A held folder whose root returns gets its real
-marker back and stays closed by the hold fence until explicit recovery.
+`.okilum-missing-root-<uuid>` that never exists, and records the marker it
+replaced (and whether it also paused the folder) in `fenced-folders.json`
+before `config.xml` is written. The unfence never returns to `.stfolder`: it
+points the folder at its root marker again, only when the saved root identity
+is back and the authority admits a writer through an Open admission. That
+happens at readiness (a drain that began during startup keeps it fenced), in
+the launcher's 2-second supervision loop, or offline at the next launch. A held
+folder whose root returns stays fenced until explicit recovery, after which
+supervision unfences it.
 
 Supervision watches every managed folder for the whole life of the launch
-command, not only the folders fenced at launch. Whenever a saved root goes
-missing, is replaced, or is configured at another path while the runtime runs,
-including again after an unfence, it fences that folder again with a fresh
-unique marker. The current marker is recorded first. A folder without index
-history is also paused at runtime, because changing its marker restarts it and
-pinned v2.1.6 `newFolder` would recreate a sequence-zero root, while
-`restartFolder` into a pause never does. The record notes that pause, so the
-unfence undoes exactly it; a user's or the hold fence's pause is never
-recorded and never undone. If an unfence restored the marker but could not
-drop its record, the next supervision round drops the stale record without
-touching pause. A launch undoes a fence pause only while the folder still
-carries a fence marker. Remaining window: up to one 2-second round between
-a root disappearing and its fence. Supervision takes the launch gate only for
-an actual transition, because configuration admission refuses a busy gate.
+command. Whenever a saved root goes missing, is replaced, or is configured at
+another path while the runtime runs, including again after an unfence, it
+fences that folder again with a fresh unique marker. The current marker is
+recorded first. A folder without index history is also paused at runtime,
+because changing its marker restarts it and pinned v2.1.6 `newFolder` would
+recreate a sequence-zero root, while `restartFolder` into a pause never does.
+The record notes that pause, so the unfence undoes exactly it; a user's or the
+hold fence's pause is never recorded and never undone. If an unfence restored
+the marker but could not drop its record, the next supervision round drops the
+stale record without touching pause. A launch undoes a fence pause only while
+the folder still carries a fence marker. Supervision takes the launch gate only
+for an actual transition, because configuration admission refuses a busy gate;
+the root marker, not supervision, is what keeps a replaced root from syncing.
 
 Every other missing root (paused, without index history, with an unfinished or
 unreadable hold, or unbound) keeps the launch fail-closed, as before. The runtime
@@ -251,8 +261,8 @@ Pinned-runtime controls:
   and receives nothing. When the saved root returns, it is unfenced and syncs.
 - `issue2582_launcher_killed_after_fencing_keeps_the_original_marker`: the
   launch command is killed after fencing `config.xml` and before the child
-  starts, then started again. Once the root returns, `.stfolder` is restored
-  and the folder transfers.
+  starts, then started again. Once the root returns, it runs behind its root
+  marker again and the folder transfers.
 - `issue2582_root_lost_while_running_is_fenced_again_every_time`: twice in
   one runtime session the root is unplugged and a foreign Syncthing directory
   takes its path. Each time the folder is fenced again, never paused, and no
@@ -266,6 +276,13 @@ Pinned-runtime controls:
   record and leaves the folder as it is. In a second round, the user pauses the
   folder and the runtime restarts with the stale record on disk; the folder
   stays paused.
+- `issue2582_replaced_root_never_syncs_between_polls_or_under_the_gate`: after
+  one fence and unfence the folder runs behind its root marker. With the launch
+  gate held, so that no supervision round can run, the verified root is
+  replaced by a foreign Syncthing directory. No byte moves in either direction
+  and no deletion reaches the peer, while the other vault transfers. Once the
+  gate is free the replaced root is fenced, and when the saved root returns it
+  runs behind the same stable marker and syncs.
 - `issue2582_root_swapped_before_start_never_syncs`: a foreign Syncthing
   directory takes the missing path between the launch decision and child start
   (fixture-only launch pause). No byte moves in either direction while the

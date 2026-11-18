@@ -200,6 +200,41 @@ struct Fence {
 }
 const DEFAULT_MARKER: &str = ".stfolder";
 const FENCE_PREFIX: &str = ".okilum-missing-root-";
+/// Every verified managed root carries its own marker inside Syncthing's
+/// internal `.stfolder` directory (never scanned or synced, `fs.IsInternal`),
+/// and `markerName` points at it while Okilum manages the runtime. A foreign
+/// directory that takes the path, even one with its own `.stfolder`, lacks
+/// that file, so `CheckPath` fails before any scan, batch commit or pull.
+/// Stable per folder: reused across launches, fences and unfences.
+#[cfg(target_os = "linux")]
+const ROOT_MARKER_PREFIX: &str = ".stfolder/okilum-root-";
+/// Reuse `candidate` if it is this root's marker and the file is there;
+/// otherwise create a fresh one. The caller holds the root's writer lease.
+#[cfg(target_os = "linux")]
+fn ensure_root_marker(root: &Path, candidate: Option<&str>) -> Result<String> {
+    if let Some(marker) = candidate.filter(|m| m.starts_with(ROOT_MARKER_PREFIX)) {
+        let file = root.join(marker);
+        if std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) {
+            return Ok(marker.to_owned());
+        }
+    }
+    let directory = root.join(DEFAULT_MARKER);
+    match std::fs::symlink_metadata(&directory) {
+        Ok(meta) => ensure!(meta.is_dir(), "Syncthing marker directory replaced"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::create_dir(&directory)?,
+        Err(e) => return Err(e.into()),
+    }
+    let marker = format!("{ROOT_MARKER_PREFIX}{}", Uuid::new_v4());
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(root.join(&marker))?;
+    std::io::Write::write_all(&mut file, b"Okilum managed folder root marker\n")?;
+    file.sync_all()?;
+    File::open(&directory)?.sync_all()?;
+    Ok(marker)
+}
 fn read_fenced(r: &Reference) -> Result<BTreeMap<String, Fence>> {
     let path = r.directory.join(FENCED);
     if !path.try_exists()? {
@@ -217,6 +252,7 @@ fn write_fenced(r: &Reference, fenced: &BTreeMap<String, Fence>) -> Result<()> {
     }
     private::write(&path, &serde_json::to_vec(fenced)?)
 }
+#[cfg(target_os = "linux")]
 fn set_unpaused(folder: &mut Element) {
     folder.attributes.remove("paused");
     folder
@@ -839,18 +875,37 @@ fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
         // Only a folder that still carries a fence marker may have its fence
         // pause undone; a stale record (its unfence already restored the marker)
         // must never resume a folder the user paused since.
-        let still_fenced = marker_of(e).is_some_and(|m| m.starts_with(FENCE_PREFIX));
-        if let Some(fence) = fenced.get(&id) {
-            set_marker(e, &fence.marker);
+        let current = marker_of(e);
+        let still_fenced = current
+            .as_deref()
+            .is_some_and(|m| m.starts_with(FENCE_PREFIX));
+        let fence = fenced.get(&id).cloned();
+        // A scoped transport hold compares this folder's whole configuration on
+        // resume: give it back exactly the marker it had, never a new one.
+        let scoped = cfg!(target_os = "linux") && quiescence::unfinished(&r.directory, &id)?;
+        if scoped && still_fenced {
+            if let Some(fence) = &fence {
+                set_marker(e, &fence.marker);
+            }
         }
         let a = saved.authority.open()?;
         // An admission refusal can be a hold OR uncertainty. Never infer Open
         // from a failed read. The actual admission closes check/effect races.
         match a.admit() {
             Ok(lease) => {
-                // Undo only a pause the fence itself added (never a user's).
-                if still_fenced && fenced.get(&id).is_some_and(|fence| fence.paused) {
-                    set_unpaused(e);
+                #[cfg(target_os = "linux")]
+                if !scoped {
+                    // The verified root runs behind its own marker, never `.stfolder`.
+                    let candidate = if still_fenced {
+                        fence.as_ref().map(|f| f.marker.clone())
+                    } else {
+                        current.clone()
+                    };
+                    set_marker(e, &ensure_root_marker(&saved.root, candidate.as_deref())?);
+                    // Undo only a pause the fence itself added (never a user's).
+                    if still_fenced && fence.as_ref().is_some_and(|f| f.paused) {
+                        set_unpaused(e);
+                    }
                 }
                 leases.push(lease);
             }
@@ -1016,10 +1071,8 @@ pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
                             None
                         };
                         if let Some(_lease) = lease {
-                            api.patch_folder(
-                                id,
-                                &serde_json::json!({"markerName": original.marker}),
-                            )?;
+                            let marker = ensure_root_marker(&saved.root, Some(&original.marker))?;
+                            api.patch_folder(id, &serde_json::json!({"markerName": marker}))?;
                         } else {
                             ensure!(
                                 api.folder(id)?["markerName"]
@@ -1143,6 +1196,10 @@ fn supervise(r: &Reference, daemon: &DaemonIdentity) -> Result<()> {
         api.status(id)
             .is_ok_and(|status| status["sequence"].as_i64().unwrap_or(0) > 0)
     };
+    let rooted = |marker: &str, root: &Path| -> bool {
+        marker.starts_with(ROOT_MARKER_PREFIX)
+            && std::fs::symlink_metadata(root.join(marker)).is_ok_and(|m| m.is_file())
+    };
     // Exactly the saved root, at the saved path, with the saved identity.
     // Any error counts as a mismatch: fencing is the safe answer.
     let intact = |path: &Path, saved: &Folder| -> bool {
@@ -1174,7 +1231,13 @@ fn supervise(r: &Reference, daemon: &DaemonIdentity) -> Result<()> {
                 .get(&f.id)
                 .is_some_and(|saved| intact(&f.path, saved))
     });
-    if !fresh && !lost && !returned {
+    let unrooted = folders.iter().any(|f| {
+        !f.marker.starts_with(FENCE_PREFIX)
+            && b.folders
+                .get(&f.id)
+                .is_some_and(|saved| intact(&f.path, saved) && !rooted(&f.marker, &saved.root))
+    });
+    if !fresh && !lost && !returned && !unrooted {
         return Ok(());
     }
     let Ok(_gate) = r.gate() else {
@@ -1206,7 +1269,11 @@ fn supervise(r: &Reference, daemon: &DaemonIdentity) -> Result<()> {
             let Ok(_lease) = saved.authority.open().and_then(|a| a.admit()) else {
                 continue; // a hold or drain keeps it fenced
             };
-            let mut change = serde_json::json!({"markerName": fence.marker});
+            if quiescence::unfinished(&r.directory, &f.id)? {
+                continue; // a scoped hold's resume restores its own configuration
+            }
+            let marker = ensure_root_marker(&saved.root, Some(&fence.marker))?;
+            let mut change = serde_json::json!({"markerName": marker});
             if fence.paused {
                 change["paused"] = false.into();
             }
@@ -1218,6 +1285,15 @@ fn supervise(r: &Reference, daemon: &DaemonIdentity) -> Result<()> {
             // now and never touch the pause state (the user may have paused it).
             if fenced.remove(&f.id).is_some() {
                 write_fenced(r, &fenced)?;
+            }
+            // A verified root without its own marker (a folder added while
+            // running, or resumed after recovery): give it one now.
+            if !rooted(&f.marker, &saved.root) && !quiescence::unfinished(&r.directory, &f.id)? {
+                let Ok(_lease) = saved.authority.open().and_then(|a| a.admit()) else {
+                    continue;
+                };
+                let marker = ensure_root_marker(&saved.root, Some(&f.marker))?;
+                api.patch_folder(&f.id, &serde_json::json!({"markerName": marker}))?;
             }
         } else {
             // Lost while running (unplugged, moved, replaced): fence it again.
