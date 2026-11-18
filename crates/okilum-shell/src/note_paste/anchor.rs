@@ -20,6 +20,9 @@ pub struct Anchor {
     after: String,
     /// `after` runs to the end of the text.
     to_end: bool,
+    /// A block anchor whose `after` occurs more than once (the later of two
+    /// identical blocks): `before` decides, and must precede the position.
+    before_required: bool,
 }
 
 impl Anchor {
@@ -33,6 +36,7 @@ impl Anchor {
             before: source[from..offset].to_string(),
             after: source[offset..to].to_string(),
             to_end: to == source.len(),
+            before_required: false,
         }
     }
 
@@ -46,7 +50,8 @@ impl Anchor {
         let mut anchor = Self::at(source, offset);
         let rest = &source[anchor.offset..];
         let once = |len: usize| occurs_once(source, &rest[..len]);
-        let len = if rest.is_empty() || !once(rest.len()) {
+        let repeated = !rest.is_empty() && !once(rest.len());
+        let len = if rest.is_empty() || repeated {
             rest.len()
         } else {
             // A longer start of a unique start is unique too: search the
@@ -67,6 +72,35 @@ impl Anchor {
         };
         anchor.after = rest[..len].to_string();
         anchor.to_end = anchor.offset + len == source.len();
+        if repeated {
+            // The rest of the note occurs more than once (the later of two
+            // identical blocks): keep the shortest end of the text before it
+            // that makes the pair unique. The whole head always does: the
+            // pair is then the whole note.
+            let head = &source[..anchor.offset];
+            let unique =
+                |from: usize| occurs_once(source, &format!("{}{}", &head[from..], anchor.after));
+            let (mut low, mut high) = (0, head.len());
+            while high - low > 1 {
+                let mut mid = floor(head, low + (high - low) / 2);
+                if mid <= low {
+                    mid = ceil(head, low + 1);
+                }
+                if mid >= high {
+                    break;
+                }
+                if unique(mid) {
+                    low = mid;
+                } else {
+                    high = mid;
+                }
+            }
+            if high > low && unique(high) {
+                low = high;
+            }
+            anchor.before = head[low..].to_string();
+            anchor.before_required = true;
+        }
         anchor
     }
 
@@ -125,7 +159,9 @@ impl Anchor {
         let rest = current.get(at..)?;
         let intact =
             rest.starts_with(&self.after) && (!self.to_end || rest.len() == self.after.len());
-        intact.then_some(at)
+        // `after` is not unique: the text before must still be there too.
+        let placed = !self.before_required || current[..at].ends_with(&self.before);
+        (intact && placed).then_some(at)
     }
 
     /// The position of `expected` text that was inserted at the anchor, if it
@@ -273,6 +309,45 @@ mod tests {
         // An edit past the unique start: still the same block.
         let edited = long.replacen("first.", "fIRST, edited.", 1);
         assert_eq!(block.locate_block(&edited), Some(at));
+        // The later of two identical blocks: the rest is not unique, the
+        // text before it decides.
+        let same = "## Notes\n\nSame.\n\n## Notes\n\nSame.\n";
+        let second = same.rfind("## Notes").unwrap();
+        let later = Anchor::at_block(same, second);
+        // The later copy deleted with the blank line before it.
+        let gone = &same[..second - 1];
+        assert_eq!(gone, "## Notes\n\nSame.\n");
+        assert_eq!(
+            later.locate(gone),
+            Some(0),
+            "positive control: locate alone"
+        );
+        assert_eq!(
+            later.locate_block(gone),
+            None,
+            "not before the surviving copy"
+        );
+        // The earlier copy edited: still the later block.
+        let edited = same.replacen("Same.", "Same, edited.", 1);
+        assert_eq!(later.locate_block(&edited), edited.rfind("## Notes"));
+        // The same with a repeated preamble longer than the 48 bytes of context.
+        let preamble = "A long shared preamble paragraph that repeats before each section.\n\n";
+        assert!(preamble.len() > 48);
+        let twice = format!("{preamble}## Notes\n\nSame.\n\n{preamble}## Notes\n\nSame.\n");
+        let at = twice.rfind("## Notes").unwrap();
+        let block = Anchor::at_block(&twice, at);
+        let deleted =
+            twice[..twice.len() - preamble.len() - "## Notes\n\nSame.\n".len()].to_string();
+        assert_eq!(deleted, format!("{preamble}## Notes\n\nSame.\n\n"));
+        assert!(
+            block.locate(&deleted).is_some(),
+            "positive control: locate alone"
+        );
+        assert_eq!(
+            block.locate_block(&deleted),
+            None,
+            "not before the earlier copy"
+        );
         // Unique from the first byte, or not at all.
         assert_eq!(Anchor::at_block("a\nb\n", 2).after, "b");
         assert_eq!(Anchor::at_block("x\nx\n", 2).after, "x\n");
