@@ -343,8 +343,8 @@ fn rebroadcast(db: &mut Database, ids: &[Uuid]) {
 fn next_epoch(db: &Database, device: &str) -> Result<Epoch> {
     next_epoch_above(db, device, 0)
 }
-/// The highest admission or removal counter of `device` known here. A
-/// returning computer sends its own, so its approval is minted above it.
+/// The highest admission or removal counter of `device` known here.
+/// A pairing request may not claim a history far beyond it (#3079).
 pub(super) fn high_water(db: &Database, device: &str) -> u64 {
     db.removals
         .iter()
