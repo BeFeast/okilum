@@ -88,7 +88,13 @@ desktop's own first (GNOME: ptyxis, kgx, gnome-terminal; KDE: konsole; Xfce:
 xfce4-terminal), each given one `--working-directory=<folder>`-style word.
 macOS runs
 `/usr/bin/open -a Terminal <folder>`; Okilum has no terminal-app preference
-yet, so Terminal.app is used. Windows runs `wt.exe -d <folder>`; a folder
+yet, so Terminal.app is used. Windows runs `wt.exe -w 0 new-tab -d <folder>`.
+Every wt launch (folder and project) targets the most recent window with
+`-w 0` (#3135): a Terminal started with no window open first restores the
+windows saved in its state.json and then handles the command line
+(microsoft/terminal#18566), so without `-w 0` the folder opened as a second
+window next to a restored shell in %USERPROFILE%. With it the folder is a
+tab in the restored or already open window, or the only window. A folder
 containing `;` (which wt treats as a command separator) and the PowerShell
 fallback use the encoded PowerShell route above, where the folder is base64
 data for `Set-Location -LiteralPath`. Folders are absolute, so a name starting

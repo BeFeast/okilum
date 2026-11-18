@@ -405,6 +405,20 @@ else {{
         .collect()
 }
 
+/// The fixed start of every Windows Terminal launch: a new tab in the most
+/// recent window (#3135). A Terminal that starts with no window open first
+/// restores the windows saved in its state.json, then handles our command
+/// line (microsoft/terminal#18566). Without `-w 0` that command line opens
+/// one more window, so the user gets the restored shell in %USERPROFILE%
+/// next to the requested folder. With `-w 0` the tab joins the restored
+/// window, joins an already open window, or opens the only window.
+fn wt_new_tab() -> Vec<OsString> {
+    ["-w", "0", "new-tab"]
+        .into_iter()
+        .map(OsString::from)
+        .collect()
+}
+
 fn posix_plan(program: &Path, dash_e: bool, words: Vec<OsString>) -> Plan {
     let mut args = if dash_e { vec!["-e".into()] } else { vec![] };
     args.extend(words);
@@ -441,7 +455,8 @@ pub fn plan(initial: &Initial, launcher: &Launcher) -> Plan {
         // wt parses semicolons itself. Only fixed flags, the absolute System32
         // PowerShell and base64 cross its parser; no cmd.exe is involved.
         Kind::WindowsTerminal { powershell } => {
-            let mut args = vec!["new-tab".into(), powershell.clone().into_os_string()];
+            let mut args = wt_new_tab();
+            args.push(powershell.clone().into_os_string());
             args.extend(powershell_args(initial));
             Plan {
                 program,
@@ -506,11 +521,15 @@ pub fn folder_plan(directory: &Path, launcher: &Launcher, mac_app: &str) -> Resu
         Kind::AppleScript => plan(&encoded(text()?), launcher),
         // wt splits its command line at `;`; such a folder takes the encoded
         // PowerShell route, which carries the folder as base64 data.
-        Kind::WindowsTerminal { .. } if !text()?.contains(';') => Plan {
-            program,
-            args: vec!["-d".into(), directory.as_os_str().to_owned()],
-            new_console: false,
-        },
+        Kind::WindowsTerminal { .. } if !text()?.contains(';') => {
+            let mut args = wt_new_tab();
+            args.extend(["-d".into(), directory.as_os_str().to_owned()]);
+            Plan {
+                program,
+                args,
+                new_console: false,
+            }
+        }
         Kind::WindowsTerminal { .. } | Kind::PowerShell => plan(&encoded(text()?), launcher),
         Kind::Folder { flags, option } => {
             let mut args: Vec<OsString> = flags.iter().map(OsString::from).collect();
