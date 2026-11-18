@@ -1596,7 +1596,7 @@ mod tests {
         visual.executor().advance_clock(Duration::from_millis(300));
         visual.run_until_parked();
         reader.update(visual, |r, cx| {
-            assert_eq!(r.current_rel, "Work.md");
+            assert_eq!(r.pane.current_rel, "Work.md");
             assert_eq!(r.content.read(cx).search_status().1, 1);
             assert!(r.editing.is_none(), "read-only navigation");
         });

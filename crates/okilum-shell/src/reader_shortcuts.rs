@@ -921,6 +921,39 @@ mod tests {
     }
 
     #[gpui::test]
+    fn reveal3110_windows_reveal_key_is_not_a_game_bar_chord(cx: &mut TestAppContext) {
+        // Win+Alt+R starts an Xbox Game Bar recording; Windows takes it before
+        // any app sees it, so the menu advertised a dead key (#3110).
+        let keymap = reader_keymap(cx);
+        let strokes: Vec<String> = keymap
+            .bindings()
+            .filter(|binding| binding.action().name() == RevealFile::name_for_type())
+            .flat_map(|binding| binding.keystrokes().iter())
+            .map(|stroke| {
+                let m = stroke.modifiers();
+                format!(
+                    "{}{}{}{}{}",
+                    if m.control { "ctrl-" } else { "" },
+                    if m.alt { "alt-" } else { "" },
+                    if m.shift { "shift-" } else { "" },
+                    if m.platform { "win-" } else { "" },
+                    stroke.key()
+                )
+            })
+            .collect();
+        // Positive control: the action has a default on every OS.
+        assert!(!strokes.is_empty(), "RevealFile lost its default");
+        if cfg!(windows) {
+            assert_eq!(strokes, ["ctrl-shift-s"]);
+        } else if cfg!(target_os = "macos") {
+            assert_eq!(strokes, ["alt-win-r"]);
+        }
+        // The Windows chord obeys the AltGr / language-switch rule too.
+        let windows = gpui::Keystroke::parse("ctrl-shift-s").unwrap();
+        assert!(altgr_conflict(true, &windows.modifiers, &windows.key).is_none());
+    }
+
+    #[gpui::test]
     fn file_menu_actions_are_catalogued_without_unsolicited_shortcuts(cx: &mut TestAppContext) {
         let keymap = reader_keymap(cx);
         for (action, label) in [
@@ -1111,7 +1144,10 @@ mod tests {
         let reader = reader.unwrap();
         visual.run_until_parked();
         reader.update_in(visual, |this, window, cx| {
-            assert_eq!(this.current_rel, "One.md", "loaded-note positive control");
+            assert_eq!(
+                this.pane.current_rel, "One.md",
+                "loaded-note positive control"
+            );
             this.focus_handle.focus(window, cx);
         });
         assert!(visual.debug_bounds("shortcut-sheet").is_none());

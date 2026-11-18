@@ -51,7 +51,7 @@ fn return_to_section(cx: &mut gpui::TestAppContext, folder: bool, history: bool)
     settle(visual);
     view.update(visual, |v, cx| {
         assert_eq!(v.single_file, folder, "positive control: actual open mode");
-        assert_eq!(v.current_rel, "A.md");
+        assert_eq!(v.pane.current_rel, "A.md");
         assert_eq!(v.pane.outline.len(), 4);
         assert_eq!(v.current_section(cx), Some(0));
         v.panels.open(reader_layout::Panel::Backlinks);
@@ -100,7 +100,7 @@ fn return_to_section(cx: &mut gpui::TestAppContext, folder: bool, history: bool)
     view.update_in(visual, |v, window, cx| open_row(v, window, cx, "B.md"));
     settle(visual);
     view.read_with(visual, |v, cx| {
-        assert_eq!(v.current_rel, "B.md");
+        assert_eq!(v.pane.current_rel, "B.md");
         assert_eq!(
             v.current_section(cx),
             Some(0),
@@ -116,7 +116,7 @@ fn return_to_section(cx: &mut gpui::TestAppContext, folder: bool, history: bool)
     });
     settle(visual);
     view.read_with(visual, |v, cx| {
-        assert_eq!(v.current_rel, "A.md");
+        assert_eq!(v.pane.current_rel, "A.md");
         assert_eq!(
             v.current_section(cx),
             Some(2),
@@ -130,7 +130,7 @@ fn return_to_section(cx: &mut gpui::TestAppContext, folder: bool, history: bool)
         view.update_in(visual, |v, window, cx| v.history_move(1, window, cx));
         settle(visual);
         view.read_with(visual, |v, cx| {
-            assert_eq!(v.current_rel, "B.md");
+            assert_eq!(v.pane.current_rel, "B.md");
             assert_eq!(v.current_section(cx), Some(0));
         });
     }

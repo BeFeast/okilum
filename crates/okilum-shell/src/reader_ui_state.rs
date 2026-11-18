@@ -1121,8 +1121,8 @@ impl Reader {
         self.ui_state.live_preview = saved.live_preview;
         if saved.source {
             self.ui_state.source_reader_position =
-                (saved.note == self.current_rel).then(|| saved.position.list());
-            self.ui_state.source = Some(if saved.note == self.current_rel {
+                (saved.note == self.pane.current_rel).then(|| saved.position.list());
+            self.ui_state.source = Some(if saved.note == self.pane.current_rel {
                 saved.source_scroll
             } else {
                 [0.; 2]
@@ -1158,7 +1158,7 @@ impl Reader {
         if known && saved.note.is_empty() && !explicit {
             self.show_empty_vault(window, cx);
         }
-        if known && saved.note == self.current_rel {
+        if known && saved.note == self.pane.current_rel {
             let visits: Vec<_> = saved
                 .history
                 .iter()
@@ -1168,7 +1168,7 @@ impl Reader {
             if visits.len() == saved.history.len()
                 && visits
                     .get(saved.history_index)
-                    .is_some_and(|visit| visit.note == self.current_rel)
+                    .is_some_and(|visit| visit.note == self.pane.current_rel)
             {
                 self.navigation.history = visits.iter().map(|visit| visit.note.clone()).collect();
                 self.navigation.history_positions =
@@ -1255,7 +1255,7 @@ impl Reader {
             return;
         };
         if self.editing.is_none()
-            && !self.current_rel.is_empty()
+            && !self.pane.current_rel.is_empty()
             && self.pane.file_preview.is_none()
         {
             self.cancel_pending_landing();
@@ -1411,7 +1411,7 @@ impl Reader {
                 .file_preview
                 .as_ref()
                 .filter(|p| p.log.is_some() || reader_delimited::previewable(&p.rel))
-                .map_or_else(|| self.current_rel.clone(), |p| p.rel.clone()),
+                .map_or_else(|| self.pane.current_rel.clone(), |p| p.rel.clone()),
             history,
             history_index: self.navigation.history_ix,
             position: position.into(),
@@ -3560,7 +3560,7 @@ mod tests {
                 reader.ui_state.ready,
                 "positive control: vault state was restored"
             );
-            assert!(reader.current_rel.is_empty());
+            assert!(reader.pane.current_rel.is_empty());
             assert_eq!(
                 cx.windows().len(),
                 1,

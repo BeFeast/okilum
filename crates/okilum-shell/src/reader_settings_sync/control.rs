@@ -71,7 +71,7 @@ pub(super) fn answer(
     };
     // Pairing polls also wait for the owner's own refresh: two concurrent
     // redeem polls would race to record the same approval.
-    let _serial = serial_actions();
+    let _serial = admitted_actions()?;
     Ok(match call {
         Call::RefreshPairing => Answer::Snapshot(Box::new(controller.refresh_pairing()?)),
         Call::Approve(id) => Answer::Snapshot(Box::new(controller.approve(id)?)),

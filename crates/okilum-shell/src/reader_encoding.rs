@@ -5,7 +5,7 @@ use okilum_core::file_editor::{FileEditor, Save};
 impl Reader {
     pub(super) fn repair_note_encoding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.note_encoding_damaged
-            || self.current_rel.is_empty()
+            || self.pane.current_rel.is_empty()
             || self.encoding_repair_pending.is_some()
             || self.move_applying
             || self.editing.is_some()
@@ -20,7 +20,7 @@ impl Reader {
             return;
         };
         let root = self.vault_root.clone();
-        let rel = self.current_rel.clone();
+        let rel = self.pane.current_rel.clone();
         let path = root.join(&rel);
         self.encoding_repair_pending = Some(path.clone());
         cx.notify();
@@ -39,7 +39,7 @@ impl Reader {
                         ..Default::default()
                     }, cx);
                 }
-                if reader.vault_root != root || reader.current_rel != rel { cx.notify(); return; }
+                if reader.vault_root != root || reader.pane.current_rel != rel { cx.notify(); return; }
                 match result {
                     Ok(Save::Saved) => {
                         reader.link_notice = None;
@@ -70,7 +70,7 @@ impl Reader {
             !self.source_is_dirty(cx),
             "Save or discard unsaved edits before restoring a version"
         );
-        self.check_move_editors(std::slice::from_ref(&self.current_rel), cx)?;
+        self.check_move_editors(std::slice::from_ref(&self.pane.current_rel), cx)?;
         if self.editing.is_some() {
             anyhow::ensure!(
                 self.leave_source(cx),
@@ -82,7 +82,7 @@ impl Reader {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No recovery storage"))?;
         let result = FileEditor::replace_bytes(
-            &self.vault_root.join(&self.current_rel),
+            &self.vault_root.join(&self.pane.current_rel),
             &state.join("editor-drafts"),
             reviewed,
             proposed,
@@ -92,7 +92,7 @@ impl Reader {
             "The note changed after preview; open History again"
         );
         self.queue_saved_source(cx);
-        let rel = self.current_rel.clone();
+        let rel = self.pane.current_rel.clone();
         self.prepare_document(&rel, None, None, window, cx);
         Ok(())
     }
@@ -140,7 +140,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
             assert!(reader.document_ready());
-            assert_eq!(reader.current_rel, "Note.md");
+            assert_eq!(reader.pane.current_rel, "Note.md");
             assert!(!reader.note_encoding_damaged);
             assert!(reader
                 .vault

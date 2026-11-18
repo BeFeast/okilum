@@ -42,6 +42,13 @@ Vaults and Recent, and the «Open in Okilum as Vault» Finder Service, Linux
 desktop action and Explorer verb. A folder view is restored as a folder view on
 restart.
 
+A quick viewer or folder view keeps the folder it was opened with as its root
+(#3124). When the last document sits in a subfolder, the window still comes back
+rooted at that folder, on that document, after the last window was closed, after
+Quit and after an update restart; the root is never narrowed to the document's
+subfolder. The document is listed in Recent as well. A window opened on a single
+file still starts at that file's folder.
+
 The More menu and the ⌘K palette offer **Switch to single file mode** in a vault
 window and **Open folder as vault** in a quick viewer (#1527). Switching a
 Markdown document retains its rendered content and reading position. A downgrade

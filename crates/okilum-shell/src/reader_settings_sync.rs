@@ -1105,7 +1105,7 @@ fn perform_scoped(
     operation: Operation,
     ticket: &Ticket,
 ) -> anyhow::Result<Output> {
-    let _serial = serial_actions();
+    let _serial = admitted_actions()?;
     let result = perform_with_locations(controller, operation, ticket, locations);
     #[cfg(target_os = "macos")]
     let result = result.map_err(with_helper_failure);
@@ -1132,11 +1132,86 @@ fn with_helper_failure(error: anyhow::Error) -> anyhow::Error {
 
 /// One Sync action at a time per process: Settings, `okilum sync serve` and the
 /// commands other processes forward to this one share a controller (#2589).
-fn serial_actions() -> std::sync::MutexGuard<'static, ()> {
-    static ACTIONS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static ACTIONS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Whether Sync actions may run at all. Uninstall (#588) closes it before the
+/// helper stops and reopens it only when the uninstall is refused, so actions
+/// queued on the action lock during the stop are refused once they get it.
+pub(crate) struct Admission(std::sync::atomic::AtomicBool);
+impl Admission {
+    const fn open() -> Self {
+        Self(std::sync::atomic::AtomicBool::new(false))
+    }
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub(crate) fn close(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub(crate) fn reopen(&self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+    /// The action lock, checked after it is held: no discovery or bootstrap
+    /// runs for an action that waited behind a closing uninstall.
+    fn admit<'a>(
+        &self,
+        actions: &'a std::sync::Mutex<()>,
+    ) -> anyhow::Result<std::sync::MutexGuard<'a, ()>> {
+        let guard = actions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        anyhow::ensure!(
+            !self.0.load(std::sync::atomic::Ordering::SeqCst),
+            "Okilum is being uninstalled; Sync actions are closed"
+        );
+        Ok(guard)
+    }
+}
+pub(crate) static ADMISSION: Admission = Admission::open();
+
+/// Uninstall only: the action lock regardless of admission, held across the
+/// helper's stop and the purge (#588).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn serial_actions() -> std::sync::MutexGuard<'static, ()> {
     ACTIONS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+/// Every Sync action: Settings, background serving, forwarded commands.
+fn admitted_actions() -> anyhow::Result<std::sync::MutexGuard<'static, ()>> {
+    ADMISSION.admit(&ACTIONS)
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::Admission;
+    use std::sync::{mpsc, Mutex};
+
+    #[test]
+    fn a_closed_gate_refuses_actions_queued_behind_the_uninstall() {
+        let actions = Mutex::new(());
+        let gate = Admission::open();
+        gate.close();
+        // The uninstall holds the lock across the stop and the purge.
+        let held = actions.lock().unwrap();
+        let (queued, waiting) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let action = scope.spawn(|| {
+                queued.send(()).unwrap();
+                gate.admit(&actions).map(drop).is_ok()
+            });
+            waiting.recv().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            drop(held);
+            assert!(
+                !action.join().unwrap(),
+                "an action queued during the stop must not run after it"
+            );
+        });
+        assert!(gate.admit(&actions).is_err(), "new actions stay refused");
+        // A refused uninstall reopens the gate: the same action runs.
+        gate.reopen();
+        assert!(gate.admit(&actions).is_ok());
+    }
 }
 fn perform_with_locations(
     controller: Option<Controller>,

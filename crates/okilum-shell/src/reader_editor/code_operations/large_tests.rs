@@ -479,7 +479,7 @@ fn large2804_rebound_reader_rejects_result_even_with_identical_native_stamp(
     std::fs::write(f.directory.path().join("vault/other.md"), original).unwrap();
     f.reader.update_in(visual, |reader, window, cx| {
         reader.code_operation(Action::Format, window, cx);
-        reader.current_rel = "other.md".into();
+        reader.pane.current_rel = "other.md".into();
         assert_eq!(reader.selected_file(), "other.md");
     });
     assert_eq!(
@@ -499,7 +499,7 @@ fn large2804_rebound_reader_rejects_result_even_with_identical_native_stamp(
             .as_deref()
             .unwrap()
             .contains("Source changed"));
-        reader.current_rel = "note.md".into();
+        reader.pane.current_rel = "note.md".into();
     });
     assert_eq!(
         std::fs::read_to_string(f.directory.path().join("vault/other.md")).unwrap(),
@@ -521,7 +521,7 @@ fn large2804_repair_apply_rejects_rebound_binding_with_same_source(cx: &mut Test
             .operations
             .preview
             .is_some());
-        reader.current_rel = "other.md".into();
+        reader.pane.current_rel = "other.md".into();
         assert_eq!(reader.selected_file(), "other.md");
         reader.apply_code_repair(window, cx);
         assert_eq!(value(&f, cx), original);
@@ -534,7 +534,7 @@ fn large2804_repair_apply_rejects_rebound_binding_with_same_source(cx: &mut Test
             .as_deref()
             .unwrap()
             .contains("stale"));
-        reader.current_rel = "note.md".into();
+        reader.pane.current_rel = "note.md".into();
     });
 }
 

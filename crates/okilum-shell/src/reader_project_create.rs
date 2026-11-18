@@ -138,7 +138,8 @@ impl Reader {
             .selected_creation_folder()
             .filter(|folder| !folder.is_empty())
             .or_else(|| {
-                self.current_rel
+                self.pane
+                    .current_rel
                     .rsplit_once('/')
                     .map(|(folder, _)| folder.to_owned())
             })

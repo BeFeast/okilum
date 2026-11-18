@@ -933,7 +933,7 @@ pub(super) fn retire(
 impl Reader {
     /// The draft folder of the document on screen, if it is an untitled draft.
     pub(super) fn current_draft(&self) -> Option<PathBuf> {
-        if !self.single_file || self.current_rel != FILE {
+        if !self.single_file || self.pane.current_rel != FILE {
             return None;
         }
         draft_folder(self.session_directory.as_deref()?, &self.vault_root)
@@ -1021,7 +1021,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.single_file && self.vault_root.join(&self.current_rel) == file {
+        if self.single_file && self.vault_root.join(&self.pane.current_rel) == file {
             return;
         }
         if self.single_file {
@@ -1667,7 +1667,7 @@ I named it a.png yesterday, see `![[a.png]]`.\n\
             format!(
                 "root={:?} rel={:?} single={} editing={} loading={:?} notice={:?}",
                 r.vault_root,
-                r.current_rel,
+                r.pane.current_rel,
                 r.single_file,
                 r.editing.is_some(),
                 r.loading.as_ref().map(|l| l.active),
@@ -1724,7 +1724,7 @@ I named it a.png yesterday, see `![[a.png]]`.\n\
         let (reader, visual) = open_single(cx, &docs.join("Start.md"), &session);
         reader.update_in(visual, |r, window, cx| {
             assert!(r.single_file, "positive control: a file opened on its own");
-            assert_eq!(r.current_rel, "Start.md");
+            assert_eq!(r.pane.current_rel, "Start.md");
             assert!(r.current_draft().is_none());
             r.new_untitled(window, cx);
         });
@@ -1812,7 +1812,7 @@ I named it a.png yesterday, see `![[a.png]]`.\n\
         });
         visual.simulate_keystrokes("enter");
         settle(visual, &reader, "the draft is back on screen", |r, _| {
-            r.current_draft().is_some() && r.note_source.contains("milk")
+            r.current_draft().is_some() && r.pane.note_source.contains("milk")
         });
 
         // Save: the dialog starts in the folder the draft came from.
@@ -1835,7 +1835,7 @@ I named it a.png yesterday, see `![[a.png]]`.\n\
             visual,
             &reader,
             "the saved file replaces the draft",
-            |r, _| r.current_rel == "Shopping list.md" && r.current_draft().is_none(),
+            |r, _| r.pane.current_rel == "Shopping list.md" && r.current_draft().is_none(),
         );
         assert_eq!(proposed.borrow().as_deref(), Some(docs.as_path()));
         assert_eq!(
@@ -1878,7 +1878,7 @@ I named it a.png yesterday, see `![[a.png]]`.\n\
         std::fs::write(&draft, "Mine\n").unwrap();
         let (reader, visual) = open_single(cx, &draft, &session);
         settle(visual, &reader, "the draft is on screen", |r, _| {
-            r.current_draft().is_some() && r.note_source.contains("Mine")
+            r.current_draft().is_some() && r.pane.note_source.contains("Mine")
         });
         reader.update_in(visual, |r, window, cx| r.focus_handle.focus(window, cx));
         visual.simulate_keystrokes("secondary-s");
@@ -1892,7 +1892,7 @@ I named it a.png yesterday, see `![[a.png]]`.\n\
             move |_| Some(saved)
         });
         settle(visual, &reader, "the saved file is on screen", |r, _| {
-            r.current_rel == "Mine.md"
+            r.pane.current_rel == "Mine.md"
         });
         assert_eq!(std::fs::read_to_string(&saved).unwrap(), "Mine\n");
         assert_eq!(
@@ -1933,7 +1933,7 @@ I named it a.png yesterday, see `![[a.png]]`.\n\
         std::fs::write(&draft, text).unwrap();
         let (reader, visual) = open_single(cx, &draft, &session);
         settle(visual, &reader, "the draft is on screen", |r, _| {
-            r.current_draft().is_some() && r.note_source.contains("Mine")
+            r.current_draft().is_some() && r.pane.note_source.contains("Mine")
         });
         reader.update_in(visual, |r, window, cx| r.focus_handle.focus(window, cx));
         visual.simulate_keystrokes("secondary-s");

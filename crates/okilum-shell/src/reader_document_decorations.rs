@@ -451,7 +451,7 @@ impl Reader {
     pub(super) fn agent_document_enabled(&self, cx: &App) -> bool {
         reader_features::enabled(reader_features::Feature::Agents, cx)
             && !self.single_file
-            && okilum_core::agent_imports::is_agent_document(&self.current_rel)
+            && okilum_core::agent_imports::is_agent_document(&self.pane.current_rel)
     }
 
     pub(super) fn open_agent_import(

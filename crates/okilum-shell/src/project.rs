@@ -2395,7 +2395,7 @@ impl Reader {
             cx.notify();
             return;
         }
-        let note = self.vault_root.join(&self.current_rel);
+        let note = self.vault_root.join(&self.pane.current_rel);
         let area = connections::area_for(&self.vault_root, &note)
             .unwrap_or_else(|_| self.vault_root.clone());
         self.open_project_area(area, window, cx);

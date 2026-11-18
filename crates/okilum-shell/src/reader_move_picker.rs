@@ -731,7 +731,7 @@ mod tests {
         // Check before background index/watcher work can repair the tree. The
         // open note is unrelated to the moved folder (the QA reproduction).
         reader.read_with(visual, |r, _| {
-            assert_eq!(r.current_rel, "Start.md");
+            assert_eq!(r.pane.current_rel, "Start.md");
             assert!(r.tree.rows.iter().any(|row| row.path == "Source"));
             assert!(!r.tree.rows.iter().any(|row| row.path == "Target/Source"));
         });
