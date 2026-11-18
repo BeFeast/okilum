@@ -484,7 +484,7 @@ mod tests {
             let reader = reader.read(cx);
             assert!(reader.single_file, "still not a vault");
             assert_eq!(reader.vault_root, root);
-            assert_eq!(reader.current_rel, "B/C.md");
+            assert_eq!(reader.pane.current_rel, "B/C.md");
         });
     }
 
