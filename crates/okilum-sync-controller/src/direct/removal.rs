@@ -175,7 +175,7 @@ pub(super) fn requests(db: &Database, scope: Uuid) -> Vec<Request> {
                 device: r.device.clone(),
                 superseded: r.readmitted.is_some(),
                 epoch: r.epoch.clone(),
-                admission: Some(admitted(db, &r.device)),
+                admission: known_admission(db, &r.device),
                 mesh: r.mesh.as_ref().map(|mesh| {
                     mesh.iter()
                         .filter(|(v, _)| vaults.contains(*v))
@@ -216,6 +216,12 @@ fn departing(removal: &Removal) -> bool {
 /// The current admission epoch of `device` on this computer (#3079).
 pub(super) fn admitted(db: &Database, device: &str) -> Epoch {
     db.admissions.get(device).cloned().unwrap_or_default()
+}
+/// The admission to put on the wire: none before any readmission, so a
+/// peer on the previous version, which refuses unknown fields, still
+/// accepts the message (#3079).
+pub(super) fn known_admission(db: &Database, device: &str) -> Option<Epoch> {
+    Some(admitted(db, device)).filter(|epoch| epoch.counter != 0)
 }
 /// Whether a removal of `device` from `epoch` is older than what this
 /// computer knows. A removal without an epoch (older software or journal) is
@@ -1769,7 +1775,7 @@ impl Controller {
                                 r.local_applied,
                                 r.folders.is_some(),
                                 r.epoch.clone(),
-                                Some(admitted(&db, &r.device)),
+                                known_admission(&db, &r.device),
                             )
                         })
                 }) else {
@@ -4499,6 +4505,39 @@ mod tests {
         assert!(!db.local_removed, "an approval within range must readmit");
         drop(db);
         returning.shutdown();
+        Ok(())
+    }
+
+    /// Review 83358: before any readmission no admission goes on the wire,
+    /// so peers on the previous version (which refuse unknown fields) accept
+    /// removal deliveries and approvals unchanged.
+    #[test]
+    fn issue3079_default_admission_is_not_sent() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let controller = Controller::open(root.path().join("wire"), vec![])?;
+        let device = ["BBBBBBB"; 8].join("-");
+        let receiver = pairing(&["AAAAAAA"; 8].join("-"), wire::public(&wire::random()?)?)?;
+        let mut db = controller.shared.db.lock().unwrap();
+        let mut legacy = removal(Uuid::new_v4(), &device);
+        legacy.epoch = None;
+        legacy.pending.insert(receiver.peer.id, receiver.clone());
+        db.removals.push(legacy);
+        assert_eq!(known_admission(&db, &device), None);
+        let pulled = serde_json::to_value(&requests(&db, receiver.peer.id))?;
+        assert!(pulled[0].get("admission").is_none() && pulled[0].get("epoch").is_none());
+        let pushed = serde_json::to_value(Operation::RemoveComputer {
+            id: Uuid::new_v4(),
+            device: device.clone(),
+            vaults: BTreeSet::new(),
+            superseded: false,
+            epoch: None,
+            admission: known_admission(&db, &device),
+        })?;
+        assert!(pushed.get("admission").is_none() && pushed.get("epoch").is_none());
+        db.admissions.insert(device.clone(), epoch(1, "CCCC"));
+        assert_eq!(known_admission(&db, &device), Some(epoch(1, "CCCC")));
+        drop(db);
+        controller.shutdown();
         Ok(())
     }
 }

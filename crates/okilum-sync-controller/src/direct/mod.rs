@@ -1382,7 +1382,7 @@ impl Controller {
                         admission: local
                             .syncthing_device
                             .as_deref()
-                            .map(|device| removal::admitted(db, device)),
+                            .and_then(|device| removal::known_admission(db, device)),
                     })
                 } else {
                     Ok(Reply::Pending)
