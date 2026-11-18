@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded HTTPS provisioning without modifying the runner's apt sources."""
+"""Bounded HTTPS-first provisioning without modifying the runner's apt sources."""
 import os
 from pathlib import Path
 import re
@@ -8,9 +8,12 @@ import sys
 import tempfile
 
 HELPER = Path(__file__).with_name('apt-bounded.sh')
-# Match only official Ubuntu archive origins, including regional archive hosts.
+# Match only official Ubuntu archive origins, including regional archive hosts
+# such as azure.archive, us.archive and the AWS-region mirrors the hosted image
+# ships since 2026-11 (us-east-2.ec2.archive). An unmatched regional host stays
+# first in GitHub's mirror list and silently keeps serving every package over HTTP.
 OFFICIAL = re.compile(
-    r'\bhttps?://(?:azure\.archive|(?:[a-z]{2}\.)?archive|security)\.ubuntu\.com(?=/ubuntu(?:/|\s|$))')
+    r'\bhttps?://(?:(?:[a-z0-9-]+\.)*archive|security)\.ubuntu\.com(?=/ubuntu(?:/|\s|$))')
 MIRROR_FILE = re.compile(r'mirror\+file:(/{1,3}[^\s#]+)')
 
 
@@ -64,6 +67,18 @@ def provision(packages, source_root=Path('/etc/apt')):
             return subprocess.run(['bash', str(HELPER), *common, *options, *args],
                                   env=env, check=False).returncode
 
+        def attempt(label, options):
+            status = apt(options, '60s', 'update')
+            if status == 0:
+                status = apt(options, '150s', 'install', '--download-only', '-y',
+                             '--no-install-recommends', *packages)
+            if status == 0:
+                return apt(options, '4m', 'install', '--no-download', '-y',
+                           '--no-install-recommends', *packages)
+            print(f'Hosted Ubuntu provisioning: {label} failed (status {status})',
+                  file=sys.stderr, flush=True)
+            return None
+
         # Keep both official routes first. The independently hosted kernel.org
         # mirror also serves Ubuntu-signed indexes/packages when Ubuntu DNS is
         # unavailable; retain the original keyrings, TLS checks and outer bound.
@@ -73,16 +88,23 @@ def provision(packages, source_root=Path('/etc/apt')):
             target.mkdir()
             options = source_copy(source_root, target, mirror)
             print(f'Hosted Ubuntu provisioning: HTTPS {mirror} (bounded update + download)', flush=True)
-            status = apt(options, '60s', 'update')
-            if status == 0:
-                status = apt(options, '150s', 'install', '--download-only', '-y',
-                             '--no-install-recommends', *packages)
-            if status == 0:
-                return apt(options, '4m', 'install', '--no-download', '-y',
-                           '--no-install-recommends', *packages)
-            print(f'Hosted Ubuntu provisioning: {mirror} failed (status {status})',
-                  file=sys.stderr, flush=True)
+            status = attempt(mirror, options)
+            if status is not None:
+                return status
         print('Hosted Ubuntu provisioning: all HTTPS Ubuntu routes failed', file=sys.stderr)
+        # HTTPS is preferred for throughput (HTTP archive downloads stalled at
+        # ~80 KB/s in October), not for integrity: apt still verifies the signed
+        # Release files and package hashes over HTTP. As the last route, use the
+        # runner's own sources and mirror lists unchanged, with the same bounds
+        # and the shared cache, so completed downloads are reused.
+        print('Hosted Ubuntu provisioning: runner original sources (bounded update + download)',
+              flush=True)
+        status = attempt('runner original sources',
+                         ['-o', f'Dir::Etc::sourcelist={source_root / "sources.list"}',
+                          '-o', f'Dir::Etc::sourceparts={source_root / "sources.list.d"}'])
+        if status is not None:
+            return status
+        print('Hosted Ubuntu provisioning: every route failed', file=sys.stderr)
         if source_root == Path('/etc/apt'):
             # Read-only diagnostics for the actual ephemeral runner; fake-apt
             # tests stay offline. Never turn transport probes into a verdict.
