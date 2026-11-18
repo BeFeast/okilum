@@ -213,9 +213,18 @@ impl FolderController {
                     &j.daemon,
                     &j.descriptor.folder_id,
                 )?;
-                api.add_paused_folder(&json!({"id":j.descriptor.folder_id,"label":owned_label(&j),"path":j.path,"type":"receiveonly","paused":true,"devices":[{"deviceID":j.daemon.device_id},{"deviceID":j.descriptor.hub_device_id}]}))?;
+                #[allow(unused_mut)]
+                let mut body = json!({"id":j.descriptor.folder_id,"label":owned_label(&j),"path":j.path,"type":"receiveonly","paused":true,"devices":[{"deviceID":j.daemon.device_id},{"deviceID":j.descriptor.hub_device_id}]});
+                // Born behind its own root marker: never runs on `.stfolder` (#2582).
+                #[cfg(target_os = "linux")]
+                {
+                    body["markerName"] = json!(crate::managed_launch::new_root_marker());
+                }
+                api.add_paused_folder(&body)?;
             }
             let folder = api.folder(&j.descriptor.folder_id)?;
+            #[cfg(target_os = "linux")]
+            crate::managed_launch::materialize_root_marker(&j.path, &folder)?;
             validate_owned(&j, &folder)?;
             if j.phase == Phase::Preparing {
                 ensure!(

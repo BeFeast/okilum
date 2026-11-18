@@ -211,29 +211,91 @@ const ROOT_MARKER_PREFIX: &str = ".stfolder/okilum-root-";
 /// Reuse `candidate` if it is this root's marker and the file is there;
 /// otherwise create a fresh one. The caller holds the root's writer lease.
 #[cfg(target_os = "linux")]
-fn ensure_root_marker(root: &Path, candidate: Option<&str>) -> Result<String> {
-    if let Some(marker) = candidate.filter(|m| m.starts_with(ROOT_MARKER_PREFIX)) {
-        let file = root.join(marker);
-        if std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) {
-            return Ok(marker.to_owned());
-        }
-    }
+fn valid_root_marker(marker: &str) -> bool {
+    marker
+        .strip_prefix(ROOT_MARKER_PREFIX)
+        .is_some_and(|id| id.len() == 36 && Uuid::parse_str(id).is_ok())
+}
+#[cfg(target_os = "linux")]
+fn root_marker_present(root: &Path, marker: &str) -> bool {
+    valid_root_marker(marker)
+        && std::fs::symlink_metadata(root.join(marker)).is_ok_and(|m| m.is_file())
+}
+/// Create exactly `marker` (a validated root-marker name) in `root`. The caller
+/// holds the root's writer lease. Idempotent.
+#[cfg(target_os = "linux")]
+fn create_root_marker(root: &Path, marker: &str) -> Result<()> {
+    ensure!(valid_root_marker(marker), "invalid managed root marker");
     let directory = root.join(DEFAULT_MARKER);
     match std::fs::symlink_metadata(&directory) {
         Ok(meta) => ensure!(meta.is_dir(), "Syncthing marker directory replaced"),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::create_dir(&directory)?,
         Err(e) => return Err(e.into()),
     }
-    let marker = format!("{ROOT_MARKER_PREFIX}{}", Uuid::new_v4());
-    let mut file = OpenOptions::new()
+    match OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(root.join(&marker))?;
-    std::io::Write::write_all(&mut file, b"Okilum managed folder root marker\n")?;
-    file.sync_all()?;
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(root.join(marker))
+    {
+        Ok(mut file) => {
+            std::io::Write::write_all(&mut file, b"Okilum managed folder root marker\n")?;
+            file.sync_all()?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => ensure!(
+            root_marker_present(root, marker),
+            "managed root marker is not a regular file"
+        ),
+        Err(e) => return Err(e.into()),
+    }
     File::open(&directory)?.sync_all()?;
+    Ok(())
+}
+/// Reuse `candidate` if it is this root's marker and the file is there;
+/// otherwise create a fresh one. The caller holds the root's writer lease.
+#[cfg(target_os = "linux")]
+fn ensure_root_marker(root: &Path, candidate: Option<&str>) -> Result<String> {
+    if let Some(marker) = candidate.filter(|m| root_marker_present(root, m)) {
+        return Ok(marker.to_owned());
+    }
+    let marker = new_root_marker();
+    create_root_marker(root, &marker)?;
     Ok(marker)
+}
+/// A fresh root-marker name for a folder Okilum is about to create (paused).
+#[cfg(target_os = "linux")]
+pub(crate) fn new_root_marker() -> String {
+    format!("{ROOT_MARKER_PREFIX}{}", Uuid::new_v4())
+}
+/// After a paused `add_paused_folder` that named a root marker (and on every
+/// retry of that step): make sure the named file exists before the folder can
+/// ever be resumed. Folders with any other marker are left alone. The caller
+/// holds the root's writer lease.
+#[cfg(target_os = "linux")]
+pub(crate) fn materialize_root_marker(root: &Path, folder: &serde_json::Value) -> Result<()> {
+    match folder["markerName"].as_str() {
+        Some(marker) if valid_root_marker(marker) && !root_marker_present(root, marker) => {
+            create_root_marker(root, marker)
+        }
+        _ => Ok(()),
+    }
+}
+/// Ownership witnesses compare the whole folder. The launch command may have
+/// moved a verified folder onto its root marker (or a missing one onto a
+/// fence) since the witness was recorded; forgive exactly those markers.
+/// Any other marker drift still fails the caller's comparison.
+#[cfg(target_os = "linux")]
+pub(crate) fn forgive_managed_marker(
+    expected: &mut serde_json::Value,
+    actual: &serde_json::Value,
+    root: &Path,
+) {
+    if let Some(marker) = actual["markerName"].as_str() {
+        if root_marker_present(root, marker) || marker.starts_with(FENCE_PREFIX) {
+            expected["markerName"] = actual["markerName"].clone();
+        }
+    }
 }
 fn read_fenced(r: &Reference) -> Result<BTreeMap<String, Fence>> {
     let path = r.directory.join(FENCED);
@@ -1374,4 +1436,71 @@ pub fn live_generation(home: &Path) -> Result<Generation> {
         "managed REST generation changed"
     );
     Ok(generation)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod issue2582_root_marker_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn issue2582_witness_forgives_only_this_roots_own_marker() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root)?;
+        let marker = ensure_root_marker(&root, None)?;
+        assert!(root_marker_present(&root, &marker));
+        // A witness recorded before root markers existed.
+        let witness = json!({"id": "v", "markerName": ".stfolder", "path": root});
+        let check = |live: serde_json::Value| {
+            let mut expected = witness.clone();
+            forgive_managed_marker(&mut expected, &live, &root);
+            expected == live
+        };
+        assert!(check(
+            json!({"id": "v", "markerName": marker, "path": root})
+        ));
+        assert!(check(
+            json!({"id": "v", "markerName": ".okilum-missing-root-1", "path": root})
+        ));
+        // Anything else still fails the witness comparison.
+        assert!(!check(
+            json!({"id": "v", "markerName": ".other", "path": root})
+        ));
+        let absent = new_root_marker();
+        assert!(!check(
+            json!({"id": "v", "markerName": absent, "path": root})
+        ));
+        assert!(!check(
+            json!({"id": "v", "markerName": ".stfolder/okilum-root-../../x", "path": root})
+        ));
+        std::os::unix::fs::symlink(root.join(&marker), root.join(&absent))?;
+        assert!(
+            !check(json!({"id": "v", "markerName": absent, "path": root})),
+            "a symlinked marker is not this root's marker"
+        );
+        // Other fields are never forgiven.
+        assert!(!check(
+            json!({"id": "w", "markerName": marker, "path": root})
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn issue2582_materialize_creates_exactly_the_named_marker_and_is_idempotent() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root)?;
+        let marker = new_root_marker();
+        let folder = json!({"markerName": marker});
+        materialize_root_marker(&root, &folder)?;
+        assert!(root_marker_present(&root, &marker));
+        materialize_root_marker(&root, &folder)?;
+        assert_eq!(std::fs::read_dir(root.join(".stfolder"))?.count(), 1);
+        // Other markers are left alone; invalid names are never created.
+        materialize_root_marker(&root, &json!({"markerName": ".stfolder"}))?;
+        materialize_root_marker(&root, &json!({"markerName": ".stfolder/okilum-root-x"}))?;
+        assert_eq!(std::fs::read_dir(root.join(".stfolder"))?.count(), 1);
+        Ok(())
+    }
 }

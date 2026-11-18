@@ -965,6 +965,40 @@ fn issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_
         b.scan(vault)?;
         Ok(fs::read(here.join("later-there.md")).is_ok_and(|bytes| bytes == b"later source edit"))
     })?;
+    // #2582 review: the folder was born behind its root marker. Its saved
+    // witness keeps naming the marker it was recorded with even after a
+    // relaunch moves the folder onto a different root marker (here: the old
+    // marker file vanished while stopped). Refresh still reconciles and syncs.
+    // A `.stfolder` witness takes the same path; see managed_launch's
+    // issue2582_root_marker_tests for that exact value.
+    let marker = b.folder(vault)?["markerName"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(marker.starts_with(".stfolder/okilum-root-"), "{marker}");
+    assert!(here.join(&marker).is_file());
+    target_services.crash_runtime()?;
+    fs::remove_file(here.join(&marker))?;
+    target_services.launch()?;
+    target_services.remember_pid(target.config_file.parent().unwrap())?;
+    let b = target.connect()?;
+    let moved = b.folder(vault)?["markerName"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        moved != marker && moved.starts_with(".stfolder/okilum-root-"),
+        "{moved}"
+    );
+    assert!(here.join(&moved).is_file());
+    second.refresh()?;
+    fs::write(here.join("after-upgrade.md"), b"after upgrade")?;
+    wait("destination to source after the witness drift", || {
+        a.scan(vault)?;
+        b.scan(vault)?;
+        Ok(fs::read(there.join("after-upgrade.md")).is_ok_and(|bytes| bytes == b"after upgrade"))
+    })?;
+    second.refresh()?;
     drop(first);
     drop(second);
     source_runtime.disable()?;
@@ -2613,6 +2647,14 @@ fn issue2582_replaced_root_never_syncs_between_polls_or_under_the_gate() -> Resu
     fs::rename(f.away("gone"), f.vault("gone"))?;
     wait("unfenced to its root marker", || f.rooted("gone"))?;
     let marker = f.marker("gone")?;
+    // A folder enrolled while the runtime runs is born behind its own marker.
+    f.enroll("late", true)?;
+    f.transfers("late", "control.md")?;
+    assert!(
+        f.rooted("late")?,
+        "a folder added while running never uses .stfolder"
+    );
+    let late_marker = f.marker("late")?;
     // Hold the launch gate: no supervision round can run.
     let gate = fs::File::open(f.launch_dir().join("gate.lock"))?;
     gate.try_lock()
@@ -2625,12 +2667,24 @@ fn issue2582_replaced_root_never_syncs_between_polls_or_under_the_gate() -> Resu
         f.origin("gone").join("vault-data.md"),
         b"must stay in the vault",
     )?;
+    fs::rename(f.vault("late"), f.away("late"))?;
+    fs::create_dir_all(f.vault("late").join(".stfolder"))?;
+    fs::write(f.vault("late").join("foreign.md"), b"foreign vault data")?;
+    fs::write(
+        f.origin("late").join("late-data.md"),
+        b"must stay in the vault",
+    )?;
     fs::write(f.origin("kept").join("progress.md"), b"other vault runs")?;
     f.transfers("kept", "progress.md")?;
     for _ in 0..5 {
         f.source.api.scan("gone")?;
+        f.source.api.scan("late")?;
         thread::sleep(Duration::from_secs(2));
     }
+    assert_eq!(f.marker("late")?, late_marker);
+    assert!(!f.origin("late").join("foreign.md").exists());
+    assert!(!f.vault("late").join("late-data.md").exists());
+    assert!(f.origin("late").join("control.md").exists());
     assert_eq!(f.marker("gone")?, marker, "supervision could not react");
     assert!(
         !f.origin("gone").join("foreign.md").exists(),
@@ -2658,6 +2712,14 @@ fn issue2582_replaced_root_never_syncs_between_polls_or_under_the_gate() -> Resu
         "the root keeps its stable marker"
     );
     f.transfers("gone", "vault-data.md")?;
+    wait("late root fenced", || {
+        Ok(f.marker("late")?.starts_with(".okilum-missing-root-"))
+    })?;
+    fs::remove_dir_all(f.vault("late"))?;
+    fs::rename(f.away("late"), f.vault("late"))?;
+    wait("late root unfenced", || f.rooted("late"))?;
+    assert_eq!(f.marker("late")?, late_marker);
+    f.transfers("late", "late-data.md")?;
     f.runtime.disable()?;
     Ok(())
 }

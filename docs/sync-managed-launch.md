@@ -205,11 +205,16 @@ non-default marker. So a foreign directory that takes a root's path, even one
 with its own `.stfolder` and even between supervision rounds or while the
 launch gate is held, fails the check before any byte is scanned, committed or
 pulled. A folder with an unfinished scoped transport hold keeps its exact
-configuration, because its resume compares it field by field. Residuals: a
-copy of the same root that includes its `.stfolder` passes the check, and a
-folder created while the runtime runs keeps Syncthing's own `.stfolder` marker
-until the next launch. Changing it in place would alter the runtime
-configuration that first-Sync previews and ordinary holds bind to.
+configuration, because its resume compares it field by field. A folder Okilum
+creates while the runtime runs (enrollment, receive, first-Sync handoff, source
+share) is added paused with its own root marker already in `markerName`; the
+file is created right after, under the same writer lease and on every retry,
+before the folder can first resume. It never runs on `.stfolder` and no live
+folder is re-marked. Ownership witnesses compare the whole folder, so a witness
+recorded before root markers existed forgives exactly this folder's own root
+marker (a regular file in its canonical root) or a fence marker, and nothing
+else. Residual: a copy of the same root that includes its `.stfolder` passes
+the check.
 
 A missing root starts unpaused, because only a startup pause recreates a root.
 Before the child starts, the launch command fences it in the offline
@@ -284,7 +289,16 @@ Pinned-runtime controls:
   replaced by a foreign Syncthing directory. No byte moves in either direction
   and no deletion reaches the peer, while the other vault transfers. Once the
   gate is free the replaced root is fenced, and when the saved root returns it
-  runs behind the same stable marker and syncs.
+  runs behind the same stable marker and syncs. A folder enrolled while the
+  runtime runs is born behind its own marker and behaves the same.
+- `issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_handoff`
+  also checks that the handoff folder was born behind its root marker. It then
+  removes that marker file while the runtime is stopped, so the relaunch moves
+  the folder to a new root marker while the saved witness still names the old
+  one. Refresh still reconciles and the folder syncs. The lib tests
+  `issue2582_root_marker_tests` cover a `.stfolder` witness exactly, and check
+  that an arbitrary marker, a missing root-marker file, a symlinked marker or
+  any other field drift still fails.
 - `issue2582_root_swapped_before_start_never_syncs`: a foreign Syncthing
   directory takes the missing path between the launch decision and child start
   (fixture-only launch pause). No byte moves in either direction while the
