@@ -34,29 +34,46 @@ poc_acceptance https://t3.oklabs.uk <area> revoked <script that revokes the sess
   #2516).
 - **Connection drop.** `drop-resend` sends through a loopback HTTP → HTTPS
   forwarder. The forwarder passes the `t3_thread_send` request to T3, waits for
-  T3's reply, then closes the client socket without returning it.
+  T3's reply, keeps its status and JSON-RPC result (never headers), then closes
+  the client socket without returning it. The check passes only when that
+  withheld reply was HTTP 2xx with a `messageId` and no error, the resends
+  return the same `messageId`, the timeline holds one copy, and the manager
+  project gains no thread.
+- **Revoke.** The script revokes the session with `t3 auth session revoke`
+  and fails unless the session is then missing from `t3 auth session list`.
+  Only T3's explicit `invalid_mcp_credential` refusal
+  (`GatewayError::InvalidCredential`) passes, not any 401.
 
 ## Results — 2026-11-18
 
-Runner source `6ccf65db` (chat prompt lengthened in `96a6c154`). Release build
-on the build queue, slot 3, clippy `-D warnings` clean. Run host: maestro, over
-LAN through `https://t3.oklabs.uk`. T3 `0.1.10-nightly.20261116.4761`.
+Two runs from maestro over LAN to `https://t3.oklabs.uk`, T3
+`v0.1.10-nightly.20261116.4761` (`t3-version.txt`). Each runner build ran on the
+build queue: `cargo build --locked --release` plus
+`cargo clippy --locked -p okilum-t3 --example poc_acceptance -- -D warnings`,
+both clean (`checks.sh`, `build*.log`).
 
-| # | Item | Result | Evidence (key values) |
+- **Run 1**, runner `6ccf65db`, later `96a6c154` (only the chat prompt: 120 →
+  600 numbers; poll every 200 ms instead of 400 ms): connect, model, chat,
+  launch, executors, drop, revoke.
+- **Run 2**, runner `aa7cf5bf`, after the cross-family review tightened the
+  pass criteria: connect, executors, drop, revoke again (`run2/`).
+
+| # | Item | Result | Evidence |
 |---|---|---|---|
-| 1 | Connect via OAuth | **PASS** | PKCE + dynamic registration, scope `orchestration:read orchestration:operate settings:write source-control:write`, 30-day expiry; reconnect from the saved credential without a browser (`issued_token = None`, `Connected`). Approving with `auto` access was refused for the full-access manager (`runtime_mode_escalation_denied`), as designed. Keychain: see above. |
-| 2 | Chat: history, send, long reply | **PASS, except "growing"** | History: 7 items, 1 page. Send: `delivery: started`. A 600-line reply (5 219 chars) was read in full and settled after 26.6 s. **The reply was never seen growing:** with the `claudeAgent` and `cursor` drivers, T3's `t3_thread_read` shows an assistant message only once it is `completed`. A raw MCP probe every 150 ms saw no `running` assistant item and no partial text (`probe_stream*.log`). The Codex driver, which streams, could not be checked: `codex/gpt-6.1-sol` is rate-limited until 20.11, `codex/claude-sonnet-5` failed and `codex/gemini-3.8-flash-high` hung (interrupted). |
-| 3 | Executors tree | **PASS** | Registered executor `mcp:launch:3e7f…`: status `completed`, itemCount 16, PR list `[]`, 0 pending questions, Open in T3 `t3code://threads/<env>/<thread>`; no unregistered threads. |
-| 4 | Launch through the manager | **PASS** | `requested → accepted` at 0.2 s, `preparing` at 27.8 s, `running` at 44.7 s. The executor thread was matched by the request marker. The manager recorded it in the registry with the `request_id`. The executor wrote `result.md` on branch `qa1422-202611180526`, in T3's managed worktree directory rather than the requested path (see note). |
-| 5 | Change the manager's model | **PASS** | `codex/gpt-6.1-sol (high/default)` → `claudeAgent/claude-sonnet-5-5`. The configure read-back and a separate `t3_thread_configure` read both show the new model. Three more changes read back the same way. The original selection was restored afterwards and read back. |
-| 6 | Revoke on the server → "revoked" | **PASS** | `t3 auth session revoke <session>`. The first request after it, 17 ms later with no retry, was refused (`invalid_mcp_credential`). `GatewayStatus::Revoked` maps to the Project tab text "Your T3 connection was revoked. Reconnect to continue." |
-| 7 | Drop during send, resend | **PASS** | The first send was lost after T3 accepted it (`Unreachable`, "connection closed before message completed"). Sending the same `clientRequestId` twice more returned the same `messageId` both times. One copy is in the timeline. The manager project still has 1 thread before and after. |
-| 8 | Codex manager read `_AgentContract` | **PASS (earlier)** | #1421 setup receipt. |
+| 1 | Connect via OAuth | **PASS** | PKCE + dynamic registration. A full-access approval gave scope `orchestration:read orchestration:operate settings:write source-control:write` with a 30-day expiry. Reconnecting from the saved credential needed no browser (`reconnect_without_browser: true`, `Connected`), in both runs. An earlier `auto`-access approval also connected (`connect-auto-access.jsonl`), but T3 then refused its model change on the full-access manager (`runtime_mode_escalation_denied`, `model-auto-access-refused.jsonl`), as designed. Keychain: see above. |
+| 2 | Chat: history, send, long reply | **PASS, except "growing" (not observed)** | 120-number run (`chat-120-lines.jsonl`): history 7 items in 1 page; reply 1 037 chars, settled at 18.2 s. 600-number run (`chat.jsonl`): history 16 items in 1 page, `delivery: started`, reply 5 219 chars first seen at 21.8 s already `completed`, settled at 26.6 s. Both runs fail the growing criterion: it needs two length increases, and only one completed observation was seen. A raw MCP probe from the latest cursor every 150 ms (`probe_stream.log` claudeAgent, `probe_stream_cursor.log` Cursor driver) saw the assistant item appear once, already `completed` at 3 443 chars, with no `running` assistant item and no shorter text. **With these two drivers, T3's `t3_thread_read` exposes a reply only once it is complete.** The Codex driver was not observed: `codex/claude-sonnet-5` failed after 9.8 s with no reply (`manager-runs.tsv` ordinal 10, no reason recorded); `codex/gemini-3.8-flash-high` stayed `running` with no assistant item from 05:31:06 until we interrupted it at 05:36:29 (ordinal 12); `codex/gpt-6.1-sol` failed in 2.2 s (ordinal 13). That fits the 17.11 rate-limit probe in the model policy (Sol 429 until 20.11), but this run recorded no failure reason. **Open:** re-check growth on a working Codex model. |
+| 3 | Executors tree | **PASS** | Registered executor `mcp:launch:3e7f…`: listed, status `completed`, itemCount 16, PR list `[]`, 0 pending questions with no question error, Open in T3 `t3code://threads/<env>/<thread>`, no unregistered threads (run 2 requires all of these). |
+| 4 | Launch through the manager | **PASS** | `launch.jsonl`: accepted at 184 ms, preparing at 27 789 ms (sampled again at 41 612 ms), running at 44 658 ms. `running` requires the executor thread's first timeline line to be this request's marker. The registry gained the executor row with request id `okilum-launch-9a319e76-…` (`registry-thread-ids.md`). The executor wrote `result.md` ("Isolated executor reached running") on branch `qa1422-202611180526` (`executor-worktree.txt`, `executor-thread.json`), in T3's managed worktree directory rather than the requested path (see note). |
+| 5 | Change the manager's model | **PASS** | `model.jsonl`: `codex/gpt-6.1-sol (high/default)` → `claudeAgent/claude-sonnet-5-5`, confirmed by the configure read-back and a separate `t3_thread_configure` read. Three more changes read back the same way (`model-2..4.jsonl`). The original selection was restored and read back (`restore-model.log`). |
+| 6 | Revoke on the server → "revoked" | **PASS** | Run 2: the script revoked the session and confirmed it was gone from the list. The first request afterwards, 23 ms later with no retry, failed with `InvalidCredential`, and the status became `Revoked` (run 1: 17 ms). The runner does not render text. In the Project tab, `status_note` (`okilum-shell/src/project.rs`) maps `Revoked` to "Your T3 connection was revoked. Reconnect to continue." |
+| 7 | Drop during send, resend | **PASS** | Run 2 `drop.jsonl`: the withheld reply was HTTP 200, no error, `delivery: started`, with `messageId …okilum-f2993838…`. The client saw `Unreachable` ("connection closed before message completed"). Two resends with the same `clientRequestId` returned that same `messageId`. One copy in the timeline; manager project threads 1 → 1. |
+| 8 | Codex manager read `_AgentContract` | **PASS (earlier, not re-run)** | #1421 setup receipt (#1421 comment 34555). |
 
 Note on item 4: the request carries a worktree path, but T3's `t3_thread_launch`
-`workspaceStrategy` places the worktree under its own managed directory. The
-branch is honored. Okilum follows the launch by marker and T3 status, never by
+`workspaceStrategy` placed the worktree under T3's own managed directory. The
+branch was honored. Okilum follows the launch by marker and T3 status, never by
 path, so the tracker is unaffected.
 
-The full JSONL output, probe logs and build receipts are kept in the project
-brain under `Dev/Areas/okilum-t3-test/evidence/1422-2026-11-18/`.
+The full JSONL output, probe logs, run history and build logs are in the project
+brain under `Dev/Areas/okilum-t3-test/evidence/1422-2026-11-18/` (run 2 in
+`run2/`).
