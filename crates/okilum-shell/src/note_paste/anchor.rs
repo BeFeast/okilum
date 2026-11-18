@@ -155,13 +155,36 @@ impl Anchor {
     /// before another block, even one with the same first line (two
     /// `## Notes`).
     pub fn locate_block(&self, current: &str) -> Option<usize> {
-        let at = self.locate(current)?;
-        let rest = current.get(at..)?;
-        let intact =
-            rest.starts_with(&self.after) && (!self.to_end || rest.len() == self.after.len());
-        // `after` is not unique: the text before must still be there too.
-        let placed = !self.before_required || current[..at].ends_with(&self.before);
-        (intact && placed).then_some(at)
+        // Where the block's own text (and, for a repeated block, the text
+        // before it) still stands. Searched directly, so a short unique
+        // start (`##`) is found even when the text around the old position
+        // was edited.
+        let fits = |at: usize| {
+            current.is_char_boundary(at)
+                && current[at..].starts_with(&self.after)
+                && (!self.to_end || current.len() - at == self.after.len())
+                && (!self.before_required || current[..at].ends_with(&self.before))
+        };
+        let candidates: Vec<usize> = if self.after.is_empty() {
+            fits(current.len())
+                .then_some(current.len())
+                .into_iter()
+                .collect()
+        } else {
+            current
+                .match_indices(self.after.as_str())
+                .map(|(at, _)| at)
+                .filter(|at| fits(*at))
+                .collect()
+        };
+        match candidates.as_slice() {
+            [] => None,
+            [only] => Some(*only),
+            // The block's text now occurs more than once (typed again
+            // elsewhere): only the paste locator's own answer, if it is one
+            // of them.
+            _ => self.locate(current).filter(|at| candidates.contains(at)),
+        }
     }
 
     /// The position of `expected` text that was inserted at the anchor, if it
@@ -309,6 +332,22 @@ mod tests {
         // An edit past the unique start: still the same block.
         let edited = long.replacen("first.", "fIRST, edited.", 1);
         assert_eq!(block.locate_block(&edited), Some(at));
+        // A short unique start (`##`): the block is found again after the
+        // paragraph before it was edited, where the paste locator's
+        // context is gone and the start alone is too short for it.
+        let note = "# Title\n\nFirst paragraph.\n\n## Next\n\nBody.\n";
+        let next = Anchor::at_block(note, note.find("## Next").unwrap());
+        assert_eq!(next.after, "##", "positive control: a two-byte start");
+        let edited = note.replace("First paragraph.", "First paragraph, edited.");
+        assert_eq!(
+            next.locate(&edited),
+            None,
+            "positive control: locate alone fails"
+        );
+        assert_eq!(next.locate_block(&edited), edited.find("## Next"));
+        // The block's start typed again elsewhere: ambiguous, refused.
+        let doubled = edited.replace("Body.", "## Other\n\nBody.");
+        assert_eq!(next.locate_block(&doubled), None);
         // The later of two identical blocks: the rest is not unique, the
         // text before it decides.
         let same = "## Notes\n\nSame.\n\n## Notes\n\nSame.\n";

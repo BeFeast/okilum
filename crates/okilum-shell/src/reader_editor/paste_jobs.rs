@@ -46,6 +46,28 @@ fn retarget(follow_up: &mut FollowUp, anchor: Anchor) {
     }
 }
 
+/// Where a drop onto rendered block `block` goes in the editor's text
+/// `opened`: placed in the revision the Reader showed (`shown`), then found
+/// in `opened` by the block's unique text. `None` when the block cannot be
+/// placed, or is not in the opened text as it was shown (a recovered draft
+/// that changed it).
+fn shown_block_offset(
+    shown: Option<&str>,
+    opened: &str,
+    rendered: &str,
+    block: Option<usize>,
+) -> Option<usize> {
+    let Some(shown) = shown.filter(|shown| *shown != opened) else {
+        return block_drop_offset(opened, rendered, block);
+    };
+    if block.is_none() {
+        // Below the last block: the end of the note.
+        return Some(opened.len());
+    }
+    let at = block_drop_offset(shown, rendered, block)?;
+    Anchor::at_block(shown, at).locate_block(opened)
+}
+
 /// Where a drop onto rendered block `block` goes in the editor's `source`:
 /// the start of the block's first line, the end of the note below the last
 /// block (`block == None`), or `None` when the Reader's blocks and the
@@ -226,15 +248,19 @@ impl Reader {
         }
         let block = self.reader_block_at(window.mouse_position(), cx);
         let rendered = self.pane.note_source.clone();
+        // The revision the Reader showed: the editor may open a recovered
+        // draft that differs from it.
+        let shown = self.pane.note_canonical_source.clone();
         self.toggle_source(window, cx);
         let Some(input) = self.source_input() else {
             return;
         };
         diagnostic_error!("Drop: onto the Reader, block={block:?}");
-        // The mapping runs on the editor's text as it opened. Mapping the
-        // block to its source line parses the note, so it runs off the UI
-        // thread (as place_editor_at_reader does); text edited meanwhile is
-        // followed by an anchor, never by the old line number.
+        // The block is placed in the revision the Reader showed, then found
+        // in the editor's text by its own unique text (a recovered draft may
+        // have the sections moved). Mapping parses the note, so it runs off
+        // the UI thread (as place_editor_at_reader does); text edited
+        // meanwhile is followed by an anchor, never by the old line number.
         let (snapshot, stamp) = {
             let state = input.read(cx);
             (state.value().to_string(), state.source_stamp())
@@ -243,7 +269,7 @@ impl Reader {
             let (snapshot, offset) = cx
                 .background_executor()
                 .spawn(async move {
-                    let offset = block_drop_offset(&snapshot, &rendered, block);
+                    let offset = shown_block_offset(shown.as_deref(), &snapshot, &rendered, block);
                     (snapshot, offset)
                 })
                 .await;
@@ -1416,6 +1442,13 @@ mod reader_drop_tests {
     fn reader_on_note(
         cx: &mut TestAppContext,
     ) -> (Entity<Reader>, &mut VisualTestContext, tempfile::TempDir) {
+        reader_on(cx, NOTE)
+    }
+
+    fn reader_on<'a>(
+        cx: &'a mut TestAppContext,
+        note: &str,
+    ) -> (Entity<Reader>, &'a mut VisualTestContext, tempfile::TempDir) {
         cx.update(|cx| {
             crate::test_init(cx);
             bind_keys(cx);
@@ -1423,7 +1456,7 @@ mod reader_drop_tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("vault");
         std::fs::create_dir_all(root.join("docs")).unwrap();
-        std::fs::write(root.join("note.md"), NOTE).unwrap();
+        std::fs::write(root.join("note.md"), note).unwrap();
         std::fs::write(root.join("docs/spec.txt"), "spec").unwrap();
         let mut entity = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
@@ -1858,6 +1891,78 @@ mod reader_drop_tests {
         assert!(
             copied_into_vault(&temp),
             "the file was saved (the toast names it)"
+        );
+    }
+
+    /// Review of #3074: the Reader showed one revision (A) while the editor
+    /// opens another with the two sections swapped (B; as a recovered draft
+    /// would be), same block count. A drop onto heading B as shown goes
+    /// before heading B in the opened text, not before heading A.
+    #[gpui::test]
+    fn a_reader_drop_follows_the_shown_block_into_the_opened_text(cx: &mut TestAppContext) {
+        let shown = "# A\n\nParagraph A.\n\n# B\n\nParagraph B.\n";
+        let opened = "# B\n\nParagraph B.\n\n# A\n\nParagraph A.\n";
+        let (reader, visual, temp) = reader_on(cx, opened);
+        let heading = reader.update(visual, |r, cx| {
+            let bounds = r.content.read(cx).list_state().bounds_for_item(2).unwrap();
+            // What the Reader showed differs from what the editor opens.
+            r.pane.note_canonical_source = Some(std::sync::Arc::from(shown));
+            r.pane.note_source = shown.to_string();
+            bounds
+        });
+        drop_at(
+            visual,
+            heading.center(),
+            temp.path().join("vault/docs/spec.txt"),
+        );
+        let (source, link) = source_and_line(&reader, visual, "spec.txt");
+        let link = link.unwrap_or_else(|| panic!("the link is in the note: {source:?}"));
+        assert_eq!(
+            source,
+            format!("{link}\n\n{opened}"),
+            "before heading B, its start"
+        );
+    }
+
+    /// Review of #3074: the editor opened a recovered draft with the two
+    /// sections swapped (same block count). A drop onto heading B as the
+    /// Reader showed it goes before heading B in the draft, not before the
+    /// block at the same ordinal (heading A).
+    #[test]
+    fn a_drop_follows_the_shown_block_into_a_reordered_draft() {
+        let shown = "# A\n\nParagraph A.\n\n# B\n\nParagraph B.\n";
+        let draft = "# B\n\nParagraph B.\n\n# A\n\nParagraph A.\n";
+        assert_eq!(
+            block_drop_offset(draft, shown, Some(2)),
+            draft.find("# A"),
+            "positive control: the ordinal alone lands before heading A"
+        );
+        assert_eq!(
+            shown_block_offset(Some(shown), draft, shown, Some(2)),
+            Some(0)
+        );
+        assert_eq!(
+            shown_block_offset(Some(shown), draft, shown, Some(0)),
+            draft.find("# A")
+        );
+        assert_eq!(
+            shown_block_offset(Some(shown), draft, shown, None),
+            Some(draft.len())
+        );
+        // The shown block is gone from the draft: refused, not guessed.
+        let without_b = "# A\n\nParagraph A.\n\nOther.\n\nMore.\n";
+        assert_eq!(
+            shown_block_offset(Some(shown), without_b, shown, Some(2)),
+            None
+        );
+        // No draft: the editor's text is the shown one.
+        assert_eq!(
+            shown_block_offset(Some(shown), shown, shown, Some(2)),
+            shown.find("# B")
+        );
+        assert_eq!(
+            shown_block_offset(None, shown, shown, Some(2)),
+            shown.find("# B")
         );
     }
 
