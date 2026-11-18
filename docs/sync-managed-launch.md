@@ -199,15 +199,17 @@ Every verified managed root runs behind its own marker. At launch, before the
 child starts, the launch command points each admitted folder's `markerName` at
 `.stfolder/okilum-root-<uuid>`, a file it creates once inside Syncthing's own
 `.stfolder` directory (pinned v2.1.6 `fs.IsInternal`: never scanned or synced)
-and reuses afterwards. Supervision does the same for a folder added while the
-runtime runs. `CheckPath` stats `<root>/<markerName>` before every scan, every
+and reuses afterwards. `CheckPath` stats `<root>/<markerName>` before every scan, every
 scan batch commit and every pull, and `CreateMarker` never creates a
 non-default marker. So a foreign directory that takes a root's path, even one
 with its own `.stfolder` and even between supervision rounds or while the
 launch gate is held, fails the check before any byte is scanned, committed or
 pulled. A folder with an unfinished scoped transport hold keeps its exact
-configuration, because its resume compares it field by field. Residual: a copy
-of the same root that includes its `.stfolder` passes the check.
+configuration, because its resume compares it field by field. Residuals: a
+copy of the same root that includes its `.stfolder` passes the check, and a
+folder created while the runtime runs keeps Syncthing's own `.stfolder` marker
+until the next launch. Changing it in place would alter the runtime
+configuration that first-Sync previews and ordinary holds bind to.
 
 A missing root starts unpaused, because only a startup pause recreates a root.
 Before the child starts, the launch command fences it in the offline
@@ -220,7 +222,7 @@ is back and the authority admits a writer through an Open admission. That
 happens at readiness (a drain that began during startup keeps it fenced), in
 the launcher's 2-second supervision loop, or offline at the next launch. A held
 folder whose root returns stays fenced until explicit recovery, after which
-supervision unfences it.
+supervision unfences it; its record survives readiness for that.
 
 Supervision watches every managed folder for the whole life of the launch
 command. Whenever a saved root goes missing, is replaced, or is configured at

@@ -782,6 +782,9 @@ struct FencedFolders {
     /// Admitted while their root was absent (with their original marker);
     /// checked again after readiness.
     returning: Vec<(String, Folder, Fence)>,
+    /// Present but closed (held) folders that keep their fence marker: their
+    /// records must survive readiness so supervision can unfence them later.
+    held_fenced: BTreeMap<String, Fence>,
 }
 fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
     let mut xml = Element::parse(read_configuration(&b.home.join("config.xml"))?.as_slice())?;
@@ -804,6 +807,7 @@ fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
     let mut closed = Vec::new();
     let mut paused_at_start = Vec::new();
     let mut returning = Vec::new();
+    let mut held_fenced = BTreeMap::new();
     for e in xml
         .children
         .iter_mut()
@@ -910,6 +914,11 @@ fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
                 leases.push(lease);
             }
             Err(_) => {
+                if still_fenced && !scoped {
+                    if let Some(fence) = &fence {
+                        held_fenced.insert(id.clone(), fence.clone());
+                    }
+                }
                 // Validate durable state; corruption fails the entire launch.
                 ensure!(
                     a.snapshot()?.phase != Phase::Open,
@@ -937,6 +946,7 @@ fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
         closed,
         paused_at_start,
         returning,
+        held_fenced,
     })
 }
 #[cfg(target_os = "linux")]
@@ -966,6 +976,7 @@ pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
         closed,
         paused_at_start,
         returning,
+        held_fenced,
     } = fence_folders(r, &b)?;
     // Fixture-only interleaving point (#2582 review): the decision is taken and
     // its leases are held, the child is not started yet.
@@ -1056,7 +1067,7 @@ pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
                     // A root that returned during startup with the saved
                     // identity is unfenced now, under the startup leases;
                     // anything else stays fenced by its unique marker.
-                    let mut still_fenced = BTreeMap::new();
+                    let mut still_fenced = held_fenced.clone();
                     for (id, saved, original) in &returning {
                         let root = Path::new(saved.root.as_path());
                         let admitted = root.try_exists()?
@@ -1196,10 +1207,6 @@ fn supervise(r: &Reference, daemon: &DaemonIdentity) -> Result<()> {
         api.status(id)
             .is_ok_and(|status| status["sequence"].as_i64().unwrap_or(0) > 0)
     };
-    let rooted = |marker: &str, root: &Path| -> bool {
-        marker.starts_with(ROOT_MARKER_PREFIX)
-            && std::fs::symlink_metadata(root.join(marker)).is_ok_and(|m| m.is_file())
-    };
     // Exactly the saved root, at the saved path, with the saved identity.
     // Any error counts as a mismatch: fencing is the safe answer.
     let intact = |path: &Path, saved: &Folder| -> bool {
@@ -1231,13 +1238,7 @@ fn supervise(r: &Reference, daemon: &DaemonIdentity) -> Result<()> {
                 .get(&f.id)
                 .is_some_and(|saved| intact(&f.path, saved))
     });
-    let unrooted = folders.iter().any(|f| {
-        !f.marker.starts_with(FENCE_PREFIX)
-            && b.folders
-                .get(&f.id)
-                .is_some_and(|saved| intact(&f.path, saved) && !rooted(&f.marker, &saved.root))
-    });
-    if !fresh && !lost && !returned && !unrooted {
+    if !fresh && !lost && !returned {
         return Ok(());
     }
     let Ok(_gate) = r.gate() else {
@@ -1285,15 +1286,6 @@ fn supervise(r: &Reference, daemon: &DaemonIdentity) -> Result<()> {
             // now and never touch the pause state (the user may have paused it).
             if fenced.remove(&f.id).is_some() {
                 write_fenced(r, &fenced)?;
-            }
-            // A verified root without its own marker (a folder added while
-            // running, or resumed after recovery): give it one now.
-            if !rooted(&f.marker, &saved.root) && !quiescence::unfinished(&r.directory, &f.id)? {
-                let Ok(_lease) = saved.authority.open().and_then(|a| a.admit()) else {
-                    continue;
-                };
-                let marker = ensure_root_marker(&saved.root, Some(&f.marker))?;
-                api.patch_folder(&f.id, &serde_json::json!({"markerName": marker}))?;
             }
         } else {
             // Lost while running (unplugged, moved, replaced): fence it again.
