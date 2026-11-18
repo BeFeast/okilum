@@ -402,10 +402,17 @@ impl Reader {
             return Err(PaneExit::Missing);
         }
         // The guard runs on the active surface: swap the inactive pane in for
-        // the call only, then put it back whatever the outcome.
+        // the call only, then put it back whatever the outcome. Leaving an
+        // editor also writes window-level presentation (the remembered Live
+        // Preview choice, the «On this page» rows); none of that may come
+        // from a pane that is not the active one.
+        let live_preview = self.ui_state.live_preview;
         self.swap_panes();
         let left = self.leave_source(cx);
         self.swap_panes();
+        self.ui_state.live_preview = live_preview;
+        self.outline_list
+            .reset_with_uniform_height(self.pane.outline.len(), px(OUTLINE_ROW_HEIGHT));
         if left {
             Ok(())
         } else {

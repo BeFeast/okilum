@@ -25,7 +25,10 @@ impl Reader {
     }
 
     fn finish_window_close(&mut self, cx: &mut Context<Self>) -> bool {
-        if !self.save_source_for_close(cx) {
+        // Every pane of the window, the inactive one too (#773): an editor
+        // writes nothing when it is dropped with its window.
+        let saved = self.for_each_pane(cx, |this, cx| this.save_source_for_close(cx));
+        if !saved.into_iter().all(|saved| saved) {
             return false;
         }
         self.record_ui_state(self.ui_state.was_active(), cx);
