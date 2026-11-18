@@ -164,9 +164,20 @@ impl Controller {
             no_overlap(&configs, &path, &source.id)?;
             root.verify(&path)?;
             self.check()?;
-            api.add_paused_folder(&source.folder)?;
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+            crate::managed_launch::folder_instance_changing(&daemon, &source.id)?;
+            #[allow(unused_mut)]
+            let mut body = source.folder.clone();
+            // Born behind its own root marker: never runs on `.stfolder` (#2582).
+            #[cfg(target_os = "linux")]
+            {
+                body["markerName"] = json!(crate::managed_launch::new_root_marker());
+            }
+            api.add_paused_folder(&body)?;
         }
         let folder = api.folder(&source.id)?;
+        #[cfg(target_os = "linux")]
+        crate::managed_launch::materialize_root_marker(&path, &folder)?;
         if !source.active {
             let mut expected = source
                 .witness
@@ -177,6 +188,8 @@ impl Controller {
             if source.witness.is_some() {
                 expected["paused"] = json!(true);
                 actual["paused"] = json!(true);
+                #[cfg(target_os = "linux")]
+                crate::managed_launch::forgive_managed_marker(&mut expected, &actual, &path);
             }
             ensure!(
                 if source.witness.is_some() {

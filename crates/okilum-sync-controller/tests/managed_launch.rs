@@ -439,9 +439,26 @@ impl Services {
         Ok(())
     }
     fn remember_pid(&self, home: &Path) -> Result<Uuid> {
-        wait("authenticated helper generation ready", || {
+        if let Err(error) = wait("authenticated helper generation ready", || {
             Ok(live_generation(home).is_ok())
-        })?;
+        }) {
+            // Surface the launch command's own refusal; its log dies with the
+            // fixture directory.
+            let log = self
+                .0
+                .lock()
+                .unwrap()
+                .command
+                .as_ref()
+                .and_then(|command| {
+                    Path::new(&command[0])
+                        .parent()
+                        .map(|p| p.join("launch.log"))
+                })
+                .and_then(|path| fs::read_to_string(path).ok())
+                .unwrap_or_default();
+            return Err(error.context(format!("launch.log:\n{log}")));
+        }
         let generation = live_generation(home)?;
         self.0.lock().unwrap().runtime_pid = Some(generation.pid);
         Ok(generation.id)
@@ -948,6 +965,40 @@ fn issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_
         b.scan(vault)?;
         Ok(fs::read(here.join("later-there.md")).is_ok_and(|bytes| bytes == b"later source edit"))
     })?;
+    // #2582 review: the folder was born behind its root marker. Its saved
+    // witness keeps naming the marker it was recorded with even after a
+    // relaunch moves the folder onto a different root marker (here: the old
+    // marker file vanished while stopped). Refresh still reconciles and syncs.
+    // A `.stfolder` witness takes the same path; see managed_launch's
+    // issue2582_root_marker_tests for that exact value.
+    let marker = b.folder(vault)?["markerName"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(marker.starts_with(".stfolder/okilum-root-"), "{marker}");
+    assert!(here.join(&marker).is_file());
+    target_services.crash_runtime()?;
+    fs::remove_file(here.join(&marker))?;
+    target_services.launch()?;
+    target_services.remember_pid(target.config_file.parent().unwrap())?;
+    let b = target.connect()?;
+    let moved = b.folder(vault)?["markerName"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        moved != marker && moved.starts_with(".stfolder/okilum-root-"),
+        "{moved}"
+    );
+    assert!(here.join(&moved).is_file());
+    second.refresh()?;
+    fs::write(here.join("after-upgrade.md"), b"after upgrade")?;
+    wait("destination to source after the witness drift", || {
+        a.scan(vault)?;
+        b.scan(vault)?;
+        Ok(fs::read(there.join("after-upgrade.md")).is_ok_and(|bytes| bytes == b"after upgrade"))
+    })?;
+    second.refresh()?;
     drop(first);
     drop(second);
     source_runtime.disable()?;
@@ -1924,6 +1975,858 @@ fn issue2508_scoped_receipt_refuses_unproven_states_and_recovers_each_boundary()
         Ok(second.join("progress.md").exists())
     })?;
     runtime.disable()?;
+    Ok(())
+}
+
+/// #2582 fixture: one managed runtime and a source peer sharing `ids`.
+/// Every folder has transferred `control.md` unless listed in `empty`.
+struct MissingRootFixture {
+    // Field order is drop order: daemons stop before the directory goes.
+    runtime: Runtime<Services>,
+    services: Services,
+    identity: DaemonIdentity,
+    source: Peer,
+    base: PathBuf,
+    _root: tempfile::TempDir,
+}
+impl MissingRootFixture {
+    fn new(ids: &[&str], empty: &[&str]) -> Result<Self> {
+        subreaper()?;
+        let root = tempfile::tempdir()?;
+        let base = root.path().to_owned();
+        let services = Services::default();
+        let rest = TcpListener::bind("127.0.0.1:0")?;
+        let listen = TcpListener::bind("127.0.0.1:0")?;
+        let request = Preparation {
+            executable: binary()?,
+            rest_address: rest.local_addr()?,
+            listen_address: listen.local_addr()?,
+        };
+        drop((rest, listen));
+        let runtime = Runtime::with_services(
+            base.join("runtime"),
+            base.join("units"),
+            services.clone(),
+            launcher(),
+        );
+        let identity = runtime
+            .enable(Selection::Managed(request), &[])?
+            .identity
+            .unwrap();
+        services.remember_pid(identity.config_file.parent().unwrap())?;
+        let source = Peer::new(&base, "source", binary()?)?;
+        let api = identity.connect()?;
+        let address = api.config()?["options"]["listenAddresses"][0]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        source
+            .api
+            .add_device(&json!({"deviceID":identity.device_id,"addresses":[address]}))?;
+        let fixture = Self {
+            runtime,
+            services,
+            identity,
+            source,
+            base,
+            _root: root,
+        };
+        for id in ids {
+            fixture.enroll(id, !empty.contains(id))?;
+        }
+        for id in ids.iter().filter(|id| !empty.contains(id)) {
+            fixture.transfers(id, "control.md")?;
+        }
+        // A live generation records which folders have index history.
+        fixture.relaunch()?;
+        Ok(fixture)
+    }
+    /// Enroll `id` from a fresh source share; `file` seeds `control.md`.
+    fn enroll(&self, id: &str, file: bool) -> Result<()> {
+        fs::create_dir_all(self.vault(id))?;
+        fs::create_dir_all(self.origin(id))?;
+        FolderController::new(self.state(id)).enroll(
+            &self.identity,
+            std::slice::from_ref(&self.identity.config_file),
+            &approval(&self.identity, &self.source, id),
+            &self.vault(id),
+        )?;
+        add_source(&self.source, &self.identity, id, &self.origin(id))?;
+        if file {
+            fs::write(self.origin(id).join("control.md"), format!("{id} before"))?;
+        }
+        Ok(())
+    }
+    fn ids(&self, name: &str) -> Result<Vec<String>> {
+        let path = self.launch_dir().join(name);
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        Ok(serde_json::from_slice(&fs::read(path)?)?)
+    }
+    /// Folders the launcher fenced by a unique marker (missing root).
+    fn fenced(&self) -> Result<Vec<String>> {
+        let path = self.launch_dir().join("fenced-folders.json");
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let map: serde_json::Map<String, Value> = serde_json::from_slice(&fs::read(path)?)?;
+        Ok(map.keys().cloned().collect())
+    }
+    fn marker(&self, id: &str) -> Result<String> {
+        Ok(self.identity.connect()?.folder(id)?["markerName"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned())
+    }
+    /// The folder runs behind its own root marker (never `.stfolder`), and the
+    /// marker file exists in the verified root.
+    fn rooted(&self, id: &str) -> Result<bool> {
+        let marker = self.marker(id)?;
+        Ok(marker.starts_with(".stfolder/okilum-root-") && self.vault(id).join(&marker).is_file())
+    }
+    fn vault(&self, id: &str) -> PathBuf {
+        self.base.join(id)
+    }
+    fn origin(&self, id: &str) -> PathBuf {
+        self.base.join(format!("source-{id}"))
+    }
+    fn away(&self, id: &str) -> PathBuf {
+        self.base.join(format!("unmounted-{id}"))
+    }
+    fn state(&self, id: &str) -> PathBuf {
+        self.base.join(format!("{id}-state"))
+    }
+    fn home(&self) -> &Path {
+        self.identity.config_file.parent().unwrap()
+    }
+    fn launch_dir(&self) -> PathBuf {
+        self.home().parent().unwrap().join("managed-launch")
+    }
+    fn relaunch(&self) -> Result<()> {
+        self.services.crash_runtime()?;
+        self.services.launch()?;
+        self.services.remember_pid(self.home())?;
+        Ok(())
+    }
+    fn transfers(&self, id: &str, name: &str) -> Result<()> {
+        wait("folder transfers", || {
+            self.source.api.scan(id)?;
+            Ok(self.vault(id).join(name).exists())
+        })
+    }
+    fn withheld(&self, id: &str, name: &str) -> Result<()> {
+        for _ in 0..10 {
+            self.source.api.scan(id)?;
+            ensure!(!self.vault(id).join(name).exists(), "{id} published {name}");
+            thread::sleep(Duration::from_millis(100));
+        }
+        Ok(())
+    }
+    /// Kill a launch command paused at the fixture hook (no runtime started).
+    fn kill_launcher(&self) -> Result<()> {
+        let mut state = self.services.0.lock().unwrap();
+        let mut child = state.child.take().context("no launch helper")?;
+        child.kill()?;
+        child.wait()?;
+        Ok(())
+    }
+    /// The autonomous launch command must exit unsuccessfully before any runtime
+    /// starts, so nothing can recreate the missing root.
+    fn launch_refused(&self) -> Result<()> {
+        self.services.launch()?;
+        let mut state = self.services.0.lock().unwrap();
+        let child = state.child.as_mut().context("no launch helper")?;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            ensure!(Instant::now() < deadline, "launch was not refused");
+            thread::sleep(Duration::from_millis(50));
+        };
+        ensure!(!status.success(), "launch must fail closed");
+        state.child = None;
+        Ok(())
+    }
+}
+
+/// #2582: an indexed, unpaused folder whose root disappeared (moved, deleted,
+/// unmounted) and that has no unfinished hold never stops the runtime for the
+/// other vaults. It starts unpaused (no root recreation) behind a unique marker
+/// fence; only its own root returning with the saved identity lifts the fence.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_missing_root_never_stops_the_runtime_across_launches() -> Result<()> {
+    use okilum_sync_controller::network_policy::{self, Policy};
+    let f = MissingRootFixture::new(&["kept", "gone"], &[])?;
+    assert!(f.ids("indexed-folders.json")?.contains(&"gone".into()));
+    // No-op reconciliation (the Sync refresh) is admitted configuration that
+    // changes no folder instance: it keeps the evidence.
+    for _ in 0..3 {
+        FolderController::new(f.state("gone")).pause(false)?;
+    }
+    assert!(
+        f.ids("indexed-folders.json")?.contains(&"gone".into()),
+        "no-op reconciliation keeps index evidence"
+    );
+    f.services.crash_runtime()?;
+    fs::rename(f.vault("gone"), f.away("gone"))?;
+    for launch in 1..=2 {
+        f.services.launch()?;
+        f.services.remember_pid(f.home())?;
+        assert!(live_generation(f.home())?.paused_at_start.is_empty());
+        let api = f.identity.connect()?;
+        assert_eq!(api.folder("gone")?["paused"], false, "never paused");
+        assert!(f.marker("gone")?.starts_with(".okilum-missing-root-"));
+        assert!(f.fenced()?.contains(&"gone".into()));
+        let marker = format!("while-gone-{launch}.md");
+        fs::write(f.origin("kept").join(&marker), b"other vault keeps syncing")?;
+        f.transfers("kept", &marker)?;
+        f.source.api.scan("gone")?;
+        assert!(
+            !f.vault("gone").exists(),
+            "a missing root is never recreated"
+        );
+        assert!(
+            f.origin("gone").join("control.md").exists(),
+            "a missing root never propagates deletions"
+        );
+        if launch == 1 {
+            // Runtime-wide effects hold a root-independent lease for it.
+            network_policy::reconcile(
+                f.home().parent().unwrap(),
+                &f.identity,
+                Some(Policy::PublicDiscoveryAndRelays),
+            )?;
+            assert!(
+                FolderController::new(f.state("gone")).pause(true).is_err(),
+                "a configuration effect on the missing folder itself is refused"
+            );
+            f.services.crash_runtime()?;
+        }
+    }
+    // While the runtime runs, a foreign folder with a Syncthing marker appears
+    // at the path: it is not the saved root, so it stays fenced and unsynced.
+    fs::create_dir_all(f.vault("gone").join(".stfolder"))?;
+    fs::write(
+        f.origin("gone").join("foreign-check.md"),
+        b"must not arrive early",
+    )?;
+    for _ in 0..4 {
+        f.source.api.scan("gone")?;
+        thread::sleep(Duration::from_secs(2));
+    }
+    assert!(f.marker("gone")?.starts_with(".okilum-missing-root-"));
+    assert!(!f.vault("gone").join("foreign-check.md").exists());
+    fs::remove_dir_all(f.vault("gone"))?;
+    // The saved root returns while the runtime runs: supervision unfences it.
+    fs::rename(f.away("gone"), f.vault("gone"))?;
+    wait("returned root unfenced", || f.rooted("gone"))?;
+    assert!(f.fenced()?.is_empty());
+    f.transfers("gone", "foreign-check.md")?;
+    f.runtime.disable()?;
+    Ok(())
+}
+
+/// #2582 review: a folder added (or first filled) after launch gets index
+/// evidence from the live runtime, so an unmount before any restart does not
+/// stop the runtime for the other vaults.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_folder_added_after_launch_gains_evidence_without_restart() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept"], &[])?;
+    f.enroll("late", true)?;
+    // Evidence never needs the launch gate: hold it for the whole wait, the
+    // way a first-Sync review holds it, and the evidence still appears.
+    let gate = fs::File::open(f.launch_dir().join("gate.lock"))?;
+    gate.try_lock()
+        .map_err(|e| anyhow::anyhow!("fixture could not hold the gate: {e:?}"))?;
+    f.transfers("late", "control.md")?;
+    wait(
+        "live evidence for the late folder under a held gate",
+        || Ok(f.ids("indexed-folders.json")?.contains(&"late".into())),
+    )?;
+    drop(gate);
+    f.services.crash_runtime()?;
+    fs::rename(f.vault("late"), f.away("late"))?;
+    f.services.launch()?;
+    f.services.remember_pid(f.home())?;
+    assert!(f.marker("late")?.starts_with(".okilum-missing-root-"));
+    assert!(!f.vault("late").exists());
+    fs::write(f.origin("kept").join("progress.md"), b"other vault runs")?;
+    f.transfers("kept", "progress.md")?;
+    f.runtime.disable()?;
+    Ok(())
+}
+
+/// #2582 review: index evidence belongs to one folder instance. A failed
+/// removal keeps it; re-adding the same ID revokes it, and the new instance
+/// earns it only from its own index history.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_readded_folder_id_never_inherits_index_evidence() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept", "gone"], &[])?;
+    assert!(f.ids("indexed-folders.json")?.contains(&"gone".into()));
+    // The removal's REST call fails (runtime down): the instance survives and
+    // keeps its evidence.
+    f.services.crash_runtime()?;
+    assert!(FolderController::new(f.state("gone")).remove().is_err());
+    assert!(
+        f.ids("indexed-folders.json")?.contains(&"gone".into()),
+        "a failed removal keeps the surviving instance's evidence"
+    );
+    f.services.launch()?;
+    f.services.remember_pid(f.home())?;
+    FolderController::new(f.state("gone")).remove()?;
+    // Re-add the same ID at the same (emptied) root from an empty share, so the
+    // new instance has no index history of its own.
+    for entry in fs::read_dir(f.vault("gone"))? {
+        let entry = entry?.path();
+        if entry.is_dir() {
+            fs::remove_dir_all(entry)?;
+        } else {
+            fs::remove_file(entry)?;
+        }
+    }
+    f.source.api.remove_folder("gone")?;
+    fs::remove_dir_all(f.origin("gone"))?;
+    fs::create_dir(f.origin("gone"))?;
+    FolderController::new(f.base.join("gone-again-state")).enroll(
+        &f.identity,
+        std::slice::from_ref(&f.identity.config_file),
+        &approval(&f.identity, &f.source, "gone"),
+        &f.vault("gone"),
+    )?;
+    add_source(&f.source, &f.identity, "gone", &f.origin("gone"))?;
+    for _ in 0..3 {
+        thread::sleep(Duration::from_secs(2));
+        assert!(
+            !f.ids("indexed-folders.json")?.contains(&"gone".into()),
+            "a re-added ID never inherits the old instance's evidence"
+        );
+    }
+    assert!(f.ids("indexed-folders.json")?.contains(&"kept".into()));
+    f.services.crash_runtime()?;
+    fs::rename(f.vault("gone"), f.away("gone"))?;
+    for _ in 0..2 {
+        f.launch_refused()?;
+        assert!(!f.vault("gone").exists(), "missing root recreated");
+    }
+    Ok(())
+}
+
+/// #2582 review: a missing root's admission is a real writer lease held from
+/// the launch decision through child startup. A root that returns in that
+/// window cannot be drained under the runtime; a holder that completes later
+/// and dies is fenced by the next generation.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_missing_root_admission_is_held_through_startup() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept", "gone"], &[])?;
+    f.services.crash_runtime()?;
+    fs::rename(f.vault("gone"), f.away("gone"))?;
+    let pause = f.base.join("launch-pause");
+    fs::create_dir(&pause)?;
+    std::env::set_var("OKILUM_LAUNCH_FIXTURE_PAUSE", &pause);
+    let launched = f.services.launch();
+    std::env::remove_var("OKILUM_LAUNCH_FIXTURE_PAUSE");
+    launched?;
+    wait("missing root admitted, child not started", || {
+        Ok(pause.join("launch-admitted").exists())
+    })?;
+    // The root returns and another process starts draining it.
+    fs::rename(f.away("gone"), f.vault("gone"))?;
+    let authority = Authority::for_root(&f.vault("gone"))?;
+    let mut hold = authority.begin_drain("startup-race")?;
+    let token = hold.token().clone();
+    for _ in 0..5 {
+        assert!(
+            !hold.try_hold(&token)?,
+            "the launch lease pins the drain until startup completes"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+    fs::write(pause.join("launch-go"), "start")?;
+    f.services.remember_pid(f.home())?;
+    // The drain began during startup: readiness keeps the returned root
+    // fenced (no Open admission), so this generation publishes nothing.
+    assert!(f.marker("gone")?.starts_with(".okilum-missing-root-"));
+    fs::write(f.origin("gone").join("withheld.md"), b"competing change")?;
+    fs::write(f.origin("kept").join("progress.md"), b"sibling runs")?;
+    f.transfers("kept", "progress.md")?;
+    f.withheld("gone", "withheld.md")?;
+    wait("drain completes after startup", || hold.try_hold(&token))?;
+    drop(hold); // the holder dies before any transport pause
+    f.withheld("gone", "withheld.md")?;
+    assert!(f.marker("gone")?.starts_with(".okilum-missing-root-"));
+    // The next generation fences the held folder; the sibling keeps going.
+    f.relaunch()?;
+    assert!(live_generation(f.home())?
+        .paused_at_start
+        .contains(&"gone".into()));
+    // Held: the returned root keeps its fence until explicit recovery.
+    assert!(f.marker("gone")?.starts_with(".okilum-missing-root-"));
+    fs::write(f.origin("kept").join("progress-2.md"), b"sibling runs")?;
+    f.transfers("kept", "progress-2.md")?;
+    f.withheld("gone", "withheld.md")?;
+    let mut hold = authority.recover(&authority.snapshot()?)?;
+    let token = hold.token().clone();
+    assert!(hold.try_hold(&token)?);
+    let token = hold.token().clone();
+    hold.release(&token)?;
+    FolderController::new(f.state("gone")).pause(false)?;
+    f.transfers("gone", "withheld.md")?;
+    f.runtime.disable()?;
+    Ok(())
+}
+
+/// #2582 review: a foreign directory with a Syncthing marker that takes the
+/// missing root's path between the launch decision and child start never
+/// exchanges a byte: the folder starts behind its unique marker fence.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_root_swapped_before_start_never_syncs() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept", "gone"], &[])?;
+    f.services.crash_runtime()?;
+    fs::rename(f.vault("gone"), f.away("gone"))?;
+    let pause = f.base.join("launch-pause");
+    fs::create_dir(&pause)?;
+    std::env::set_var("OKILUM_LAUNCH_FIXTURE_PAUSE", &pause);
+    let launched = f.services.launch();
+    std::env::remove_var("OKILUM_LAUNCH_FIXTURE_PAUSE");
+    launched?;
+    wait("missing root admitted, child not started", || {
+        Ok(pause.join("launch-admitted").exists())
+    })?;
+    // A foreign Syncthing folder takes the path before the child starts.
+    fs::create_dir_all(f.vault("gone").join(".stfolder"))?;
+    fs::write(f.vault("gone").join("foreign.md"), b"foreign vault data")?;
+    fs::write(pause.join("launch-go"), "start")?;
+    f.services.remember_pid(f.home())?;
+    fs::write(
+        f.origin("gone").join("vault-data.md"),
+        b"must stay in the vault",
+    )?;
+    fs::write(f.origin("kept").join("progress.md"), b"other vault runs")?;
+    f.transfers("kept", "progress.md")?;
+    for _ in 0..5 {
+        f.source.api.scan("gone")?;
+        thread::sleep(Duration::from_secs(2));
+    }
+    assert!(f.marker("gone")?.starts_with(".okilum-missing-root-"));
+    assert!(
+        !f.origin("gone").join("foreign.md").exists(),
+        "foreign data reached the vault's peer"
+    );
+    assert!(
+        !f.vault("gone").join("vault-data.md").exists(),
+        "vault data reached the foreign directory"
+    );
+    // The foreign directory goes and the saved root returns: it syncs again.
+    fs::remove_dir_all(f.vault("gone"))?;
+    fs::rename(f.away("gone"), f.vault("gone"))?;
+    wait("returned root unfenced", || f.rooted("gone"))?;
+    f.transfers("gone", "vault-data.md")?;
+    f.runtime.disable()?;
+    Ok(())
+}
+
+/// #2582 review: the original marker is durable before config.xml carries the
+/// unique fence marker. A launch command killed in between, then started
+/// again, still runs the returned root behind its own root marker.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_launcher_killed_after_fencing_keeps_the_original_marker() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept", "gone"], &[])?;
+    f.services.crash_runtime()?;
+    fs::rename(f.vault("gone"), f.away("gone"))?;
+    let pause = f.base.join("launch-pause");
+    fs::create_dir(&pause)?;
+    std::env::set_var("OKILUM_LAUNCH_FIXTURE_PAUSE", &pause);
+    let launched = f.services.launch();
+    std::env::remove_var("OKILUM_LAUNCH_FIXTURE_PAUSE");
+    launched?;
+    wait("config.xml fenced, child not started", || {
+        Ok(pause.join("launch-admitted").exists())
+    })?;
+    let xml = fs::read_to_string(&f.identity.config_file)?;
+    assert!(
+        xml.contains(".okilum-missing-root-"),
+        "config.xml is fenced"
+    );
+    let record: Value =
+        serde_json::from_slice(&fs::read(f.launch_dir().join("fenced-folders.json"))?)?;
+    assert!(
+        record["gone"]["marker"]
+            .as_str()
+            .is_some_and(|m| m.starts_with(".stfolder/okilum-root-")),
+        "original recorded first"
+    );
+    f.kill_launcher()?;
+    // systemd starts the command again.
+    f.services.launch()?;
+    f.services.remember_pid(f.home())?;
+    assert!(f.marker("gone")?.starts_with(".okilum-missing-root-"));
+    fs::write(f.origin("kept").join("progress.md"), b"other vault runs")?;
+    f.transfers("kept", "progress.md")?;
+    fs::rename(f.away("gone"), f.vault("gone"))?;
+    wait("returned root unfenced", || f.rooted("gone"))?;
+    fs::write(f.origin("gone").join("after-restart.md"), b"syncs again")?;
+    f.transfers("gone", "after-restart.md")?;
+    f.runtime.disable()?;
+    Ok(())
+}
+
+/// #2582 review: supervision watches every managed folder for the whole run.
+/// A root lost while the runtime runs (again after an unfence, too) is fenced
+/// again, so a foreign Syncthing directory at its path never exchanges a byte.
+/// A folder without index history is also paused, so its root is never
+/// recreated; the unfence undoes exactly that pause.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_root_lost_while_running_is_fenced_again_every_time() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept", "gone"], &[])?;
+    f.enroll("fresh", false)?;
+    for round in 1..=2 {
+        fs::rename(f.vault("gone"), f.away("gone"))?;
+        wait("fenced again while running", || {
+            Ok(f.marker("gone")?.starts_with(".okilum-missing-root-"))
+        })?;
+        let api = f.identity.connect()?;
+        assert_eq!(
+            api.folder("gone")?["paused"],
+            false,
+            "indexed: never paused"
+        );
+        // A foreign Syncthing folder takes the path while the runtime runs.
+        fs::create_dir_all(f.vault("gone").join(".stfolder"))?;
+        let foreign = format!("foreign-{round}.md");
+        let ours = format!("vault-{round}.md");
+        fs::write(f.vault("gone").join(&foreign), b"foreign vault data")?;
+        fs::write(f.origin("gone").join(&ours), b"must stay in the vault")?;
+        let progress = format!("progress-{round}.md");
+        fs::write(f.origin("kept").join(&progress), b"other vault runs")?;
+        f.transfers("kept", &progress)?;
+        for _ in 0..4 {
+            f.source.api.scan("gone")?;
+            thread::sleep(Duration::from_secs(2));
+        }
+        assert!(f.marker("gone")?.starts_with(".okilum-missing-root-"));
+        assert!(
+            !f.origin("gone").join(&foreign).exists(),
+            "foreign data reached the vault's peer (round {round})"
+        );
+        assert!(
+            !f.vault("gone").join(&ours).exists(),
+            "vault data reached the foreign directory (round {round})"
+        );
+        // The foreign directory goes and the saved root returns.
+        fs::remove_dir_all(f.vault("gone"))?;
+        fs::rename(f.away("gone"), f.vault("gone"))?;
+        wait("returned root unfenced", || f.rooted("gone"))?;
+        f.transfers("gone", &ours)?;
+    }
+    // A folder that never indexed anything loses its root while running.
+    fs::rename(f.vault("fresh"), f.away("fresh"))?;
+    wait("history-free folder fenced and paused", || {
+        Ok(f.marker("fresh")?.starts_with(".okilum-missing-root-")
+            && f.identity.connect()?.folder("fresh")?["paused"] == true)
+    })?;
+    for _ in 0..3 {
+        thread::sleep(Duration::from_secs(2));
+        assert!(!f.vault("fresh").exists(), "history-free root recreated");
+    }
+    fs::rename(f.away("fresh"), f.vault("fresh"))?;
+    wait("history-free folder unfenced and resumed", || {
+        Ok(f.rooted("fresh")? && f.identity.connect()?.folder("fresh")?["paused"] == false)
+    })?;
+    fs::write(f.origin("fresh").join("first.md"), b"first file")?;
+    f.transfers("fresh", "first.md")?;
+    f.runtime.disable()?;
+    Ok(())
+}
+
+/// #2582 review: a fence record that outlives its unfence (the record write
+/// failed after the marker was restored) never resumes a folder the user paused
+/// since. Supervision drops such a stale record without touching pause, and the
+/// next launch undoes a fence pause only while the fence marker is still there.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_stale_fence_record_never_resumes_a_user_pause() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept"], &[])?;
+    f.enroll("fresh", false)?;
+    let state = f.launch_dir();
+    let record = state.join("fenced-folders.json");
+    let lock_state = |read_only: bool| -> Result<()> {
+        fs::set_permissions(
+            &state,
+            fs::Permissions::from_mode(if read_only { 0o500 } else { 0o700 }),
+        )?;
+        if read_only {
+            ensure!(
+                fs::write(state.join("probe"), b"x").is_err(),
+                "fixture must run unprivileged: a read-only directory must refuse writes"
+            );
+        }
+        Ok(())
+    };
+    let record_paused = || -> Result<bool> {
+        let value: Value = serde_json::from_slice(&fs::read(&record)?)?;
+        Ok(value["fresh"]["paused"] == true)
+    };
+    let api = || f.identity.connect();
+    for cycle in 1..=2 {
+        // The history-free folder loses its root while running: fenced + paused.
+        fs::rename(f.vault("fresh"), f.away("fresh"))?;
+        wait("history-free folder fenced and paused", || {
+            Ok(f.marker("fresh")?.starts_with(".okilum-missing-root-")
+                && api()?.folder("fresh")?["paused"] == true)
+        })?;
+        assert!(record_paused()?, "the fence records its own pause");
+        // The root returns, but the round cannot drop the record.
+        lock_state(true)?;
+        fs::rename(f.away("fresh"), f.vault("fresh"))?;
+        wait(
+            "unfenced and resumed despite the failed record write",
+            || Ok(f.rooted("fresh")? && api()?.folder("fresh")?["paused"] == false),
+        )?;
+        assert!(
+            record_paused()?,
+            "the stale record survived the failed write"
+        );
+        if cycle == 1 {
+            // Writes work again: supervision drops the stale record and leaves
+            // the folder exactly as it is.
+            lock_state(false)?;
+            wait("stale record dropped", || {
+                Ok(!record.exists() || !f.fenced()?.contains(&"fresh".into()))
+            })?;
+            assert_eq!(api()?.folder("fresh")?["paused"], false);
+            continue;
+        }
+        // The user pauses the folder; the runtime then restarts with the
+        // stale record still on disk.
+        FolderController::new(f.state("fresh")).pause(true)?;
+        assert_eq!(api()?.folder("fresh")?["paused"], true);
+        f.services.crash_runtime()?;
+        lock_state(false)?;
+        assert!(record_paused()?, "the stale record reaches the next launch");
+        f.services.launch()?;
+        f.services.remember_pid(f.home())?;
+        assert!(f.rooted("fresh")?);
+        assert_eq!(
+            api()?.folder("fresh")?["paused"],
+            true,
+            "a stale fence record must not resume the user's pause"
+        );
+        for _ in 0..3 {
+            thread::sleep(Duration::from_secs(2));
+            assert_eq!(api()?.folder("fresh")?["paused"], true);
+        }
+    }
+    fs::write(f.origin("kept").join("progress.md"), b"other vault runs")?;
+    f.transfers("kept", "progress.md")?;
+    f.runtime.disable()?;
+    Ok(())
+}
+
+/// #2582 review: a verified root runs behind its own marker inside
+/// `.stfolder`, so a foreign Syncthing directory that replaces it between
+/// supervision rounds, even while the launch gate is held and supervision
+/// cannot react at all, fails `CheckPath`: nothing is scanned, committed or
+/// pulled in either direction.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_replaced_root_never_syncs_between_polls_or_under_the_gate() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept", "gone"], &[])?;
+    assert!(
+        f.rooted("gone")?,
+        "launch gives a verified root its own marker"
+    );
+    assert!(f.rooted("kept")?);
+    // Through one fence and unfence first: the unfence returns to a root
+    // marker, never to `.stfolder`.
+    fs::rename(f.vault("gone"), f.away("gone"))?;
+    wait("fenced while missing", || {
+        Ok(f.marker("gone")?.starts_with(".okilum-missing-root-"))
+    })?;
+    fs::rename(f.away("gone"), f.vault("gone"))?;
+    wait("unfenced to its root marker", || f.rooted("gone"))?;
+    let marker = f.marker("gone")?;
+    // A folder enrolled while the runtime runs is born behind its own marker.
+    f.enroll("late", true)?;
+    f.transfers("late", "control.md")?;
+    assert!(
+        f.rooted("late")?,
+        "a folder added while running never uses .stfolder"
+    );
+    let late_marker = f.marker("late")?;
+    // Hold the launch gate: no supervision round can run.
+    let gate = fs::File::open(f.launch_dir().join("gate.lock"))?;
+    gate.try_lock()
+        .map_err(|e| anyhow::anyhow!("fixture could not hold the gate: {e:?}"))?;
+    // Replace the verified root with a foreign Syncthing folder.
+    fs::rename(f.vault("gone"), f.away("gone"))?;
+    fs::create_dir_all(f.vault("gone").join(".stfolder"))?;
+    fs::write(f.vault("gone").join("foreign.md"), b"foreign vault data")?;
+    fs::write(
+        f.origin("gone").join("vault-data.md"),
+        b"must stay in the vault",
+    )?;
+    fs::rename(f.vault("late"), f.away("late"))?;
+    fs::create_dir_all(f.vault("late").join(".stfolder"))?;
+    fs::write(f.vault("late").join("foreign.md"), b"foreign vault data")?;
+    fs::write(
+        f.origin("late").join("late-data.md"),
+        b"must stay in the vault",
+    )?;
+    fs::write(f.origin("kept").join("progress.md"), b"other vault runs")?;
+    f.transfers("kept", "progress.md")?;
+    for _ in 0..5 {
+        f.source.api.scan("gone")?;
+        f.source.api.scan("late")?;
+        thread::sleep(Duration::from_secs(2));
+    }
+    assert_eq!(f.marker("late")?, late_marker);
+    assert!(!f.origin("late").join("foreign.md").exists());
+    assert!(!f.vault("late").join("late-data.md").exists());
+    assert!(f.origin("late").join("control.md").exists());
+    assert_eq!(f.marker("gone")?, marker, "supervision could not react");
+    assert!(
+        !f.origin("gone").join("foreign.md").exists(),
+        "foreign data reached the vault's peer"
+    );
+    assert!(
+        !f.vault("gone").join("vault-data.md").exists(),
+        "vault data reached the foreign directory"
+    );
+    assert!(
+        f.origin("gone").join("control.md").exists(),
+        "no deletion reached the vault's peer"
+    );
+    drop(gate);
+    // With the gate free, supervision fences the replaced root as well.
+    wait("replaced root fenced", || {
+        Ok(f.marker("gone")?.starts_with(".okilum-missing-root-"))
+    })?;
+    fs::remove_dir_all(f.vault("gone"))?;
+    fs::rename(f.away("gone"), f.vault("gone"))?;
+    wait("verified root unfenced", || f.rooted("gone"))?;
+    assert_eq!(
+        f.marker("gone")?,
+        marker,
+        "the root keeps its stable marker"
+    );
+    f.transfers("gone", "vault-data.md")?;
+    wait("late root fenced", || {
+        Ok(f.marker("late")?.starts_with(".okilum-missing-root-"))
+    })?;
+    fs::remove_dir_all(f.vault("late"))?;
+    fs::rename(f.away("late"), f.vault("late"))?;
+    wait("late root unfenced", || f.rooted("late"))?;
+    assert_eq!(f.marker("late")?, late_marker);
+    f.transfers("late", "late-data.md")?;
+    f.runtime.disable()?;
+    Ok(())
+}
+
+/// #2582 review: a missing configured path must name exactly the saved root.
+/// An indexed, Open folder ID redirected to another path is refused, and
+/// nothing is ever published into the redirected destination.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_redirected_missing_root_is_refused() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept", "gone"], &[])?;
+    f.services.crash_runtime()?;
+    let config = f.identity.config_file.clone();
+    let xml = fs::read_to_string(&config)?;
+    let tag = xml.find("id=\"gone\"").context("gone folder in config")?;
+    let start = tag + xml[tag..].find("path=\"").context("folder path")? + "path=\"".len();
+    let end = start + xml[start..].find('"').context("path end")?;
+    let elsewhere = f.base.join("elsewhere");
+    let redirected = format!("{}{}{}", &xml[..start], elsewhere.display(), &xml[end..]);
+    fs::write(&config, redirected)?;
+    for _ in 0..2 {
+        f.launch_refused()?;
+        assert!(!elsewhere.exists(), "redirected root created");
+    }
+    // The redirected destination appears with its own unfinished hold.
+    fs::create_dir(&elsewhere)?;
+    let held = Authority::for_root(&elsewhere)?;
+    let mut hold = held.begin_drain("redirected")?;
+    let token = hold.token().clone();
+    assert!(hold.try_hold(&token)?);
+    drop(hold);
+    fs::write(f.origin("gone").join("redirected.md"), b"must not publish")?;
+    f.launch_refused()?;
+    assert!(
+        fs::read_dir(&elsewhere)?.next().is_none(),
+        "nothing is published into the redirected destination"
+    );
+    Ok(())
+}
+
+/// #2582 review controls: pinned v2.1.6 would recreate the root of a paused
+/// folder or of one without index history, and a returning root must never meet
+/// an unfinished hold inside a running runtime. Those missing roots keep the
+/// launch fail-closed, without creating anything.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_unsafe_missing_roots_fail_closed_without_recreating_them() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept", "paused", "empty", "held"], &["empty"])?;
+    let indexed: Vec<String> =
+        serde_json::from_slice(&fs::read(f.launch_dir().join("indexed-folders.json"))?)?;
+    assert!(
+        !indexed.contains(&"empty".into()),
+        "a folder without files has sequence zero"
+    );
+    FolderController::new(f.state("paused")).pause(true)?;
+    for id in ["paused", "empty"] {
+        f.services.crash_runtime()?;
+        fs::rename(f.vault(id), f.away(id))?;
+        for _ in 0..2 {
+            f.launch_refused()?;
+            assert!(!f.vault(id).exists(), "{id}: missing root recreated");
+        }
+        fs::rename(f.away(id), f.vault(id))?;
+        f.services.launch()?;
+        f.services.remember_pid(f.home())?;
+    }
+
+    // A holder dies with its hold unfinished, then the root disappears.
+    let authority = Authority::for_root(&f.vault("held"))?;
+    let mut hold = authority.begin_drain("dead-holder")?;
+    let token = hold.token().clone();
+    wait("local writers drained", || hold.try_hold(&token))?;
+    drop(hold); // the holder dies; the hold stays durable
+    f.services.crash_runtime()?;
+    fs::rename(f.vault("held"), f.away("held"))?;
+    f.launch_refused()?;
+    assert!(!f.vault("held").exists());
+    // The root returns: launch fences the held folder; the other folder runs.
+    fs::rename(f.away("held"), f.vault("held"))?;
+    f.services.launch()?;
+    f.services.remember_pid(f.home())?;
+    assert!(live_generation(f.home())?
+        .paused_at_start
+        .contains(&"held".into()));
+    fs::write(f.origin("held").join("withheld.md"), b"competing change")?;
+    fs::write(f.origin("kept").join("progress.md"), b"other folder runs")?;
+    f.transfers("kept", "progress.md")?;
+    f.withheld("held", "withheld.md")?;
+    assert!(
+        FolderController::new(f.state("held")).pause(false).is_err(),
+        "resume is refused while the hold is unfinished"
+    );
+    let mut hold = authority.recover(&authority.snapshot()?)?;
+    let token = hold.token().clone();
+    assert!(hold.try_hold(&token)?);
+    let token = hold.token().clone();
+    hold.release(&token)?;
+    FolderController::new(f.state("held")).pause(false)?;
+    f.transfers("held", "withheld.md")?;
+    f.runtime.disable()?;
     Ok(())
 }
 
