@@ -1278,10 +1278,10 @@ fn three_computers(root: &Path) -> Result<ThreeComputers> {
         elsewhere,
     })
 }
-/// #3079 review: a removed computer comes back through another computer that
-/// still syncs the vault, not the one it received from, with a journal written
-/// before removals recorded their released pairings. Its kept, edited copy at
-/// the original root rejoins through the lossless first merge.
+/// #3079: a computer that does not own the vault cannot readmit a removed
+/// computer. The vault owner can, including from a journal written before
+/// removals recorded their released pairings. The kept, edited copy at the
+/// original root rejoins through the lossless first merge.
 #[test]
 #[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
 fn issue3079_rejoin_through_another_computer_reuses_the_kept_copy() -> Result<()> {
@@ -1292,26 +1292,26 @@ fn issue3079_rejoin_through_another_computer_reuses_the_kept_copy() -> Result<()
             FirstSyncFixture {
                 source_runtime,
                 target_runtime,
-                source: _,
+                source,
                 target,
                 source_services,
                 target_services,
                 first,
                 second,
                 here,
-                there: _,
+                there,
                 peer,
                 vault,
             },
         third_runtime,
-        third,
+        third: _,
         third_services,
         other,
-        elsewhere,
+        elsewhere: _,
     } = three_computers(root.path())?;
     let vault = &vault;
+    let a = source.connect()?;
     let b = target.connect()?;
-    let c = third.connect()?;
     // The source removes the destination while every computer is online.
     let kept = first_sync_files(&here)?;
     first.remove_computer(&target.device_id)?;
@@ -1357,24 +1357,51 @@ fn issue3079_rejoin_through_another_computer_reuses_the_kept_copy() -> Result<()
     let second = Controller::open(state.clone(), vec![target.config_file.clone()])?;
     assert!(removed(&second)?);
 
-    // The third computer, not the original source, invites it back.
-    reinvite(&other, &second, &target.device_id)?;
+    // A computer that does not own the vault cannot readmit it.
+    let url = other
+        .begin_pairing_at(
+            "Third fixture",
+            "127.0.0.1:0".parse()?,
+            "127.0.0.1".parse()?,
+        )?
+        .offer_url
+        .context("third invitation")?;
+    second.redeem(&url, "Destination fixture")?;
+    let refused = other
+        .approve(
+            other
+                .snapshot()?
+                .pending
+                .context("third saw the request")?
+                .request_id,
+        )
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("Only the vault owner"),
+        "a non-owner readmitted the computer: {refused:#}"
+    );
+    assert!(removed(&second)?, "a non-owner cleared the removal");
+    second.cancel()?;
+    other.cancel()?;
+
+    // The vault owner invites it back.
+    reinvite(&first, &second, &target.device_id)?;
     let rejoined = second.refresh()?;
     ensure!(
         !rejoined.status.contains("removed from Sync"),
         "readmitted computer still reports removal: {}",
         rejoined.status
     );
-    let through_third = rejoined
+    let through_owner = rejoined
         .peers
         .iter()
         .map(|p| p.id)
         .find(|id| *id != peer)
-        .context("pairing with the third computer missing")?;
-    assert_eq!(second.catalog(through_third)?.len(), 1);
-    first_merge(&second, through_third, vault, &here)?;
+        .context("pairing with the owner missing")?;
+    assert_eq!(second.catalog(through_owner)?.len(), 1);
+    first_merge(&second, through_owner, vault, &here)?;
     let merged = first_sync_files(&here)?;
-    assert_eq!(merged, first_sync_files(&elsewhere)?);
+    assert_eq!(merged, first_sync_files(&there)?);
     assert_eq!(
         merged.get("while-removed-here.md").map(Vec::as_slice),
         Some(&b"edited on the removed computer"[..])
@@ -1386,15 +1413,15 @@ fn issue3079_rejoin_through_another_computer_reuses_the_kept_copy() -> Result<()
             "a kept version was lost"
         );
     }
-    fs::write(elsewhere.join("after-third.md"), b"from the third computer")?;
-    wait("rejoined copy receives from the third computer", || {
-        c.scan(vault)?;
+    fs::write(there.join("after-owner.md"), b"from the vault owner")?;
+    wait("rejoined copy receives from the vault owner", || {
+        a.scan(vault)?;
         b.scan(vault)?;
-        Ok(fs::read(here.join("after-third.md"))
-            .is_ok_and(|bytes| bytes == b"from the third computer"))
+        Ok(fs::read(here.join("after-owner.md"))
+            .is_ok_and(|bytes| bytes == b"from the vault owner"))
     })?;
     assert!(!removed(&second)?);
-    println!("ISSUE3079_REJOIN_THROUGH_THIRD_PASS: kept copy rejoined through another computer");
+    println!("ISSUE3079_REJOIN_THROUGH_OWNER_PASS: kept copy rejoined through the vault owner");
 
     drop((first, second, other));
     source_runtime.disable()?;
@@ -1403,10 +1430,10 @@ fn issue3079_rejoin_through_another_computer_reuses_the_kept_copy() -> Result<()
     drop((source_services, target_services, third_services));
     Ok(())
 }
-/// #3079 review: removed while its controller is offline, the computer is
-/// invited back by a third computer before that removal reaches it. Its copy,
-/// still enrolled with the original source, is released for the first merge,
-/// and the delayed removal is acknowledged without removing it again.
+/// #3079: a non-owner's invitation does not block the owner's removal.
+/// Removed while its controller is offline, the computer stays removable
+/// until the owner readmits it. The kept copy then rejoins through the
+/// lossless first merge, and that removal does not apply again.
 #[test]
 #[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
 fn issue3079_offline_removal_then_rejoin_through_another_computer() -> Result<()> {
@@ -1424,29 +1451,27 @@ fn issue3079_offline_removal_then_rejoin_through_another_computer() -> Result<()
                 first,
                 second,
                 here,
-                there: _,
+                there,
                 peer,
                 vault,
             },
         third_runtime,
-        third,
+        third: _,
         third_services,
         other,
-        elsewhere,
+        elsewhere: _,
     } = three_computers(root.path())?;
     let vault = &vault;
     let a = source.connect()?;
     let b = target.connect()?;
-    let c = third.connect()?;
-    // The source removes it while its controller is offline; the third
-    // computer receives that removal and invites it back before the removal
-    // reaches it. Its copy, received from the source and still enrolled, must
-    // be released for the first merge.
+    // The owner removes it while its controller is offline. A third computer
+    // receives that removal and cannot readmit it, so the removal still applies
+    // when the computer comes back. The owner then readmits it.
     let state = root.path().join("target-controller");
     second.shutdown();
     drop(second);
     first.remove_computer(&target.device_id)?;
-    wait("the third computer receives the source's removal", || {
+    wait("the third computer receives the owner's removal", || {
         other.refresh()?;
         first.refresh()?;
         Ok(first.snapshot()?.pending_removals == 1)
@@ -1458,51 +1483,70 @@ fn issue3079_offline_removal_then_rejoin_through_another_computer() -> Result<()
     )?;
     let second = Controller::open(state, vec![target.config_file.clone()])?;
     assert!(!removed(&second)?, "the removal has not reached it yet");
-    reinvite(&other, &second, &target.device_id)?;
-    wait("stale removal from the source is acknowledged", || {
+    let url = other
+        .begin_pairing_at(
+            "Third fixture",
+            "127.0.0.1:0".parse()?,
+            "127.0.0.1".parse()?,
+        )?
+        .offer_url
+        .context("third invitation")?;
+    second.redeem(&url, "Destination fixture")?;
+    let refused = other
+        .approve(
+            other
+                .snapshot()?
+                .pending
+                .context("third saw the request")?
+                .request_id,
+        )
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("Only the vault owner"),
+        "a non-owner readmitted the computer: {refused:#}"
+    );
+    second.cancel()?;
+    other.cancel()?;
+    wait("the owner's removal still applies", || {
         let snapshot = second.refresh()?;
-        ensure!(
-            !snapshot.status.contains("removed from Sync"),
-            "a stale removal removed the readmitted computer: {}",
-            snapshot.status
-        );
         first.refresh()?;
-        // The source learns of the readmission and passes the closed removal
-        // on to the third computer, which acknowledges it on its refresh.
         other.refresh()?;
-        Ok(first.snapshot()?.pending_removals == 0)
+        Ok(
+            snapshot.status.contains("removed from Sync")
+                && first.snapshot()?.pending_removals == 0,
+        )
     })?;
-    let current = second.snapshot()?.peers;
-    // The pairing with the source is not revoked here: the source
-    // re-establishes its own side once it learns of the readmission (#3079).
-    let through_third = current
+    reinvite(&first, &second, &target.device_id)?;
+    let rejoined = second.refresh()?;
+    ensure!(
+        !rejoined.status.contains("removed from Sync"),
+        "the owner could not readmit: {}",
+        rejoined.status
+    );
+    let through_owner = rejoined
+        .peers
         .iter()
         .map(|p| p.id)
         .find(|id| *id != peer)
-        .context("pairing with the third computer missing")?;
-    assert_eq!(current.len(), 2, "unexpected pairings: {current:?}");
-    assert_eq!(second.catalog(through_third)?.len(), 1);
-    first_merge(&second, through_third, vault, &here)?;
+        .context("pairing with the owner missing")?;
+    assert_eq!(second.catalog(through_owner)?.len(), 1);
+    first_merge(&second, through_owner, vault, &here)?;
     let merged = first_sync_files(&here)?;
-    assert_eq!(merged, first_sync_files(&elsewhere)?);
+    assert_eq!(merged, first_sync_files(&there)?);
     assert_eq!(
         merged.get("offline-here.md").map(Vec::as_slice),
         Some(&b"edited while removed offline"[..])
     );
-    fs::write(
-        elsewhere.join("after-offline.md"),
-        b"from the third computer",
-    )?;
-    wait("rejoined copy receives from the third computer", || {
-        c.scan(vault)?;
+    fs::write(there.join("after-offline.md"), b"from the vault owner")?;
+    wait("rejoined copy receives from the vault owner", || {
+        a.scan(vault)?;
         b.scan(vault)?;
+        second.refresh()?;
         Ok(fs::read(here.join("after-offline.md"))
-            .is_ok_and(|bytes| bytes == b"from the third computer"))
+            .is_ok_and(|bytes| bytes == b"from the vault owner")
+            && !removed(&second)?)
     })?;
-    assert!(!removed(&second)?);
-    println!(
-        "ISSUE3079_OFFLINE_REJOIN_PASS: unapplied removal released the copy through another computer"
-    );
+    println!("ISSUE3079_OFFLINE_REJOIN_PASS: a non-owner could not block the owner's removal");
     drop((first, second, other));
     source_runtime.disable()?;
     target_runtime.disable()?;

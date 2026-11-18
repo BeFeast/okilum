@@ -1772,33 +1772,6 @@ impl Transfer {
     }
 }
 
-/// A removal's membership change was undone after a readmission (#3079): the
-/// folder's new configuration is the witness again, and a transfer whose
-/// source was the readmitted device resumes when its pairing is live.
-pub(super) fn record_restored_membership(
-    db: &mut Database,
-    vault: &ExistingVault,
-    device: &str,
-    after: &Value,
-) {
-    let live: Vec<Uuid> = db.peers.keys().copied().collect();
-    for transfer in db
-        .transfers
-        .iter_mut()
-        .filter(|t| t.path == vault.path && t.daemon == vault.daemon && t.vault == vault.folder_id)
-    {
-        transfer.witness = Some(after.clone());
-        if transfer.phase != Phase::Legacy
-            && live.contains(&transfer.peer)
-            && transfer
-                .connection
-                .as_ref()
-                .is_some_and(|c| c.device_id == device)
-        {
-            transfer.active = true;
-        }
-    }
-}
 pub(super) fn record_removed_membership(
     db: &mut Database,
     vault: &ExistingVault,

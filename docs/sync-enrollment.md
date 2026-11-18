@@ -330,19 +330,27 @@ vault or change transport settings.
 
 ### Rejoin after removal (#3079)
 
-A removed computer comes back only through a fresh invitation from a computer
-that still syncs the vault; the old pairing stays revoked. A removed computer
-cannot create invitations itself. It keeps its Syncthing device ID, and approval
-of its new request readmits it:
+For each vault, one computer decides removals and readmissions: the computer
+that shared the vault. Every other computer applies that owner's decision and
+does not mint a removal or a readmission of its own. **Remove** on a computer
+that does not own the vault sends a request; the removal happens when the owner
+applies it. Removing the owner itself is still the handoff above: the owner
+runs that handoff when it applies the request.
 
-- Every removal of that device the inviter has recorded, plus every removal the
+A removed computer comes back only through a fresh invitation from the vault
+owner; the old pairing stays revoked. A removed computer cannot create
+invitations itself, and neither can another computer that merely syncs the
+vault. It keeps its Syncthing device ID, and the owner's approval of its new
+request readmits it:
+
+- Every removal of that device the owner has recorded, plus every removal the
   returning computer reports it applied, is closed by that approval. Closed
   removals stay as small replay tombstones. A delayed delivery of one, for
   example to a computer that was offline or had recorded the removal without
   applying it yet, closes it there too and is acknowledged without removing the
-  computer again. A removal recorded after the approval is a new decision and
-  applies normally. A computer whose removal is still being applied on the
-  inviter cannot be approved until that removal finishes.
+  computer again. A removal the owner records after the approval is a new
+  decision and applies normally. A computer whose removal is still being applied
+  on the owner cannot be approved until that removal finishes.
 - The returning computer leaves the removed state and retires its older
   pairings with the inviter. Each kept copy of a vault the closed removal
   covered, received through an earlier pairing, is released from its Syncthing
@@ -358,7 +366,8 @@ of its new request readmits it:
   in Syncthing.
 
 A remaining computer that applied the removal before the approval learns the
-returning computer again through its sharing computer's introduction.
+returning computer again through the vault owner's introduction. Nothing puts
+the old membership back by itself.
 
 There is no device list in the vault. First setup, common-folder authorization,
 selected daemon/root checks, exact membership PATCH/readback and existing

@@ -192,8 +192,12 @@ struct Database {
     revoked_peers: BTreeMap<Uuid, Paired>,
     #[serde(default)]
     removals: Vec<removal::Removal>,
-    /// Admission epoch per Syncthing device: raised by every readmission
-    /// (#3079); removals from an older epoch never take effect.
+    /// A non-owner's ask that the vault owner remove a computer (#3079).
+    /// It changes nothing here until the owner records the removal.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    removal_requests: Vec<removal::RemovalRequest>,
+    /// Admission epoch per Syncthing device: raised by the vault owner's
+    /// readmission (#3079); removals from an older epoch never take effect.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     admissions: BTreeMap<String, removal::Epoch>,
     seed: [u8; 32],
@@ -306,6 +310,13 @@ enum Operation {
         epoch: Option<removal::Epoch>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         admission: Option<removal::Epoch>,
+    },
+    /// A non-owner asks the vault owner to remove `device` from `vaults`.
+    /// Nothing is removed until the owner records its own decision (#3079).
+    RequestRemoval {
+        id: Uuid,
+        device: String,
+        vaults: std::collections::BTreeSet<String>,
     },
     Redeem {
         request: Request,
@@ -426,6 +437,7 @@ impl Controller {
                 local_removed: false,
                 revoked_peers: BTreeMap::new(),
                 removals: vec![],
+                removal_requests: vec![],
                 admissions: BTreeMap::new(),
                 transfers: vec![],
                 share_grants: vec![],
@@ -868,7 +880,6 @@ impl Controller {
         self.serve_pinned()?;
         self.refresh_pairing()?;
         self.reconcile_removals()?;
-        self.compensate_removals()?;
         if self.shared.db.lock().unwrap().local_removed {
             return self.snapshot();
         }
@@ -1009,8 +1020,10 @@ impl Controller {
             endpoint: invitation.offer.endpoint,
             allowed: db.attached.iter().map(|v| v.folder_id.clone()).collect(),
         };
-        // Approving a removed computer again readmits it (#3079).
+        // Approving a removed computer again readmits it, and only the vault
+        // owner may do that (#3079).
         if let Some(device) = paired.syncthing_device.clone() {
+            removal::ensure_may_readmit(&db, &device)?;
             removal::readmit_with_vaults(
                 &mut db,
                 &device,
@@ -1241,6 +1254,10 @@ impl Controller {
                     },
                 )
             }
+            Operation::RequestRemoval { id, device, vaults } => {
+                drop(db);
+                self.accept_removal_request(scope, id, device, vaults)
+            }
             #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             Operation::Inspect { request } => {
                 drop(db);
@@ -1336,6 +1353,9 @@ impl Controller {
             }
             Operation::RemoveComputer { .. } => {
                 anyhow::bail!("removal requires serialized lock-free dispatch")
+            }
+            Operation::RequestRemoval { .. } => {
+                anyhow::bail!("removal request requires serialized lock-free dispatch")
             }
             Operation::Redeem { request } => {
                 request.validate(&signer)?;
@@ -1513,7 +1533,10 @@ impl Operation {
     fn removal_only(&self) -> bool {
         matches!(
             self,
-            Self::RemoveComputer { .. } | Self::PollRemovals {} | Self::AcknowledgeRemoval { .. }
+            Self::RemoveComputer { .. }
+                | Self::RequestRemoval { .. }
+                | Self::PollRemovals {}
+                | Self::AcknowledgeRemoval { .. }
         )
     }
     fn read_only(&self) -> bool {
