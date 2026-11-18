@@ -2850,12 +2850,10 @@ mod tests {
                 None,
             )?;
             assert!(!db.local_removed);
-            if applied_before_upgrade {
-                assert!(db.revoked_peers.contains_key(&original.peer.id));
-            } else {
-                // Never revoked here: its other side re-establishes its own.
-                assert!(db.peers.contains_key(&original.peer.id));
-            }
+            assert!(
+                db.revoked_peers.contains_key(&original.peer.id),
+                "the owner's readmission retires the pairing that only carried the removed vault (applied before upgrade: {applied_before_upgrade})"
+            );
             assert!(
                 released_by_readmission(&db, &own, original.peer.id, "vault"),
                 "original membership not released (applied before upgrade: {applied_before_upgrade})"
@@ -3220,7 +3218,7 @@ mod tests {
             &mut db,
             &own,
             inviter.peer.id,
-            &inviter.public,
+            &original.public,
             &closing(&[id]),
             None,
         )?;
