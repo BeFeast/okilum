@@ -360,6 +360,9 @@ fn admit_for(db: &mut Database, device: &str, admission: &Epoch, scope: &BTreeSe
         let counter = per.entry(vault.clone()).or_insert(0);
         *counter = (*counter).max(admission.counter);
     }
+    if *admission > admitted(db, device) {
+        db.admissions.insert(device.to_owned(), admission.clone());
+    }
 }
 /// Deliver these closed removals to every peer that shares one of their
 /// vaults, the original sender included, so each computer that applied the
@@ -706,6 +709,14 @@ pub(super) fn readmit_with_vaults(
     owned.extend(shared.iter().cloned());
     if !owned.is_empty() {
         admit_for(db, device, &epoch, &owned);
+    } else if db.removals.iter().all(|removal| {
+        removal.device != device
+            || removal.superseded()
+            || removal
+                .vaults
+                .iter()
+                .all(|vault| foreign_owner(db, vault).is_none())
+    }) {
         db.admissions.insert(device.to_owned(), epoch);
     }
     rebroadcast(db, &closed);
