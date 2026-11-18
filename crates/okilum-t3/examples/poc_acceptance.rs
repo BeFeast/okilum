@@ -595,7 +595,7 @@ fn withheld_summary(status: u16, body: &[u8]) -> Value {
     let json_text = text
         .lines()
         .filter_map(|line| line.strip_prefix("data:"))
-        .last()
+        .next_back()
         .map(str::trim)
         .unwrap_or(text.trim());
     let reply: Value = serde_json::from_str(json_text).unwrap_or(Value::Null);
