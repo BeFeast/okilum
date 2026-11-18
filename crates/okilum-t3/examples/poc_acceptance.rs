@@ -310,11 +310,15 @@ fn executors(gateway: &McpGateway, area: &Path, binding: &AreaBinding) -> Result
             })
         })
         .collect();
+    // Every registered row is listed with a readable question count, and the
+    // tree has nothing it cannot place (no unregistered executor threads).
     let pass = !rows.is_empty()
-        && snapshot
-            .registered
-            .iter()
-            .all(|row| row.thread.is_some() && row.pending_questions.is_some());
+        && snapshot.unregistered.is_empty()
+        && snapshot.registered.iter().all(|row| {
+            row.thread.as_ref().is_some_and(|t| !t.status.is_empty())
+                && row.pending_questions.is_some()
+                && row.question_error.is_none()
+        });
     emit(
         "executors.tree",
         pass,
@@ -364,7 +368,7 @@ fn launch(
     let receipt = gateway.send_message(&message)?;
     emit(
         "launch.request",
-        true,
+        !receipt.message_id.is_empty() && receipt.thread_id == manager,
         json!({
             "request_id": request.request_id,
             "client_request_id": message.client_request_id,
@@ -460,6 +464,8 @@ struct DroppingProxy {
     port: u16,
     drop_marker: Arc<Mutex<Option<String>>>,
     dropped: Arc<AtomicBool>,
+    /// What T3 answered to the request whose reply was withheld.
+    withheld: Arc<Mutex<Option<Value>>>,
 }
 
 impl DroppingProxy {
@@ -468,17 +474,23 @@ impl DroppingProxy {
         let port = listener.local_addr()?.port();
         let drop_marker = Arc::new(Mutex::new(None::<String>));
         let dropped = Arc::new(AtomicBool::new(false));
+        let withheld = Arc::new(Mutex::new(None::<Value>));
         let client = reqwest::blocking::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(60))
             .build()?;
-        let (marker, flag) = (drop_marker.clone(), dropped.clone());
+        let (marker, flag, kept) = (drop_marker.clone(), dropped.clone(), withheld.clone());
         thread::spawn(move || {
             for socket in listener.incoming().map_while(Result::ok) {
-                let (client, origin, marker, flag) =
-                    (client.clone(), origin.clone(), marker.clone(), flag.clone());
+                let (client, origin, marker, flag, kept) = (
+                    client.clone(),
+                    origin.clone(),
+                    marker.clone(),
+                    flag.clone(),
+                    kept.clone(),
+                );
                 thread::spawn(move || {
-                    if let Err(error) = forward(socket, &client, &origin, &marker, &flag) {
+                    if let Err(error) = forward(socket, &client, &origin, &marker, &flag, &kept) {
                         eprintln!("proxy: {error:#}");
                     }
                 });
@@ -488,6 +500,7 @@ impl DroppingProxy {
             port,
             drop_marker,
             dropped,
+            withheld,
         })
     }
 }
@@ -498,6 +511,7 @@ fn forward(
     origin: &str,
     marker: &Mutex<Option<String>>,
     dropped: &AtomicBool,
+    withheld: &Mutex<Option<Value>>,
 ) -> Result<()> {
     let mut reader = BufReader::new(socket.try_clone()?);
     let mut line = String::new();
@@ -543,7 +557,9 @@ fn forward(
         .is_some_and(|m| String::from_utf8_lossy(&body).contains(m.as_str()));
     let mut socket = socket;
     if drop_this && !dropped.swap(true, Ordering::SeqCst) {
-        // T3 has answered; Okilum never sees it.
+        // T3 has answered; Okilum never sees it. Keep what T3 said (never
+        // headers, so no credential) to prove it accepted the message.
+        *withheld.lock().unwrap() = Some(withheld_summary(status.as_u16(), &response_body));
         socket.shutdown(Shutdown::Both)?;
         return Ok(());
     }
@@ -571,6 +587,47 @@ fn forward(
     )?;
     socket.write_all(&response_body)?;
     Ok(())
+}
+
+/// The JSON-RPC reply of the withheld `t3_thread_send`, JSON or SSE framed.
+fn withheld_summary(status: u16, body: &[u8]) -> Value {
+    let text = String::from_utf8_lossy(body);
+    let json_text = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .last()
+        .map(str::trim)
+        .unwrap_or(text.trim());
+    let reply: Value = serde_json::from_str(json_text).unwrap_or(Value::Null);
+    let result = &reply["result"];
+    let content = result
+        .get("structuredContent")
+        .cloned()
+        .or_else(|| {
+            result["content"][0]["text"]
+                .as_str()
+                .and_then(|t| serde_json::from_str(t).ok())
+        })
+        .unwrap_or(Value::Null);
+    json!({
+        "http_status": status,
+        "jsonrpc_error": reply.get("error").cloned(),
+        "is_error": result.get("isError").cloned(),
+        "message_id": content.get("messageId").cloned(),
+        "delivery": content.get("delivery").cloned(),
+    })
+}
+
+/// T3 processed and accepted the send whose reply was withheld.
+fn accepted(withheld: &Value) -> bool {
+    withheld["http_status"]
+        .as_u64()
+        .is_some_and(|s| (200..300).contains(&s))
+        && withheld["jsonrpc_error"].is_null()
+        && withheld["is_error"] != Value::Bool(true)
+        && withheld["message_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
 }
 
 fn user_copies(gateway: &McpGateway, thread_id: &str, text: &str) -> Result<usize> {
@@ -619,7 +676,13 @@ fn drop_resend(env: &Environment, token: &StoredToken, binding: &AreaBinding) ->
     );
     *proxy.drop_marker.lock().unwrap() = Some(message.client_request_id.clone());
     let first = proxied.send_message(&message);
-    let first_lost = first.is_err() && proxy.dropped.load(Ordering::SeqCst);
+    let withheld = proxy
+        .withheld
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or(Value::Null);
+    let first_lost = first.is_err() && proxy.dropped.load(Ordering::SeqCst) && accepted(&withheld);
     emit(
         "drop.first_send",
         first_lost,
@@ -627,6 +690,7 @@ fn drop_resend(env: &Environment, token: &StoredToken, binding: &AreaBinding) ->
             "client_request_id": message.client_request_id,
             "result": match &first { Ok(r) => json!({ "receipt": r }), Err(e) => json!({ "error": e.to_string() }) },
             "proxy_dropped_after_server_reply": proxy.dropped.load(Ordering::SeqCst),
+            "withheld_server_reply": withheld,
             "status_after_drop": format!("{:?}", proxied.status()),
         }),
     );
@@ -637,6 +701,7 @@ fn drop_resend(env: &Environment, token: &StoredToken, binding: &AreaBinding) ->
     let copies = user_copies(&direct, &manager, &message.text)?;
     let threads_after = direct.list_threads(&project)?.len();
     let pass = first_lost
+        && withheld["message_id"].as_str() == Some(resent.message_id.as_str())
         && resent.message_id == again.message_id
         && copies == 1
         && threads_after == threads_before;
@@ -678,10 +743,8 @@ fn revoked(gateway: &McpGateway, script: &Path) -> Result<bool> {
     let result = gateway.list_projects();
     let elapsed = revoked_at.elapsed().as_millis();
     let status = gateway.status();
-    let refused = matches!(
-        result,
-        Err(GatewayError::Revoked | GatewayError::InvalidCredential)
-    );
+    // Only T3's explicit `invalid_mcp_credential` 401 counts, not any 401.
+    let refused = matches!(result, Err(GatewayError::InvalidCredential));
     let pass = refused && status == GatewayStatus::Revoked;
     emit(
         "revoke.after",
@@ -690,7 +753,7 @@ fn revoked(gateway: &McpGateway, script: &Path) -> Result<bool> {
             "first_request_error": result.err().map(|e| e.to_string()),
             "status": format!("{status:?}"),
             "ms_after_revoke": elapsed,
-            "ui_text": "Your T3 connection was revoked. Reconnect to continue. (okilum-shell project.rs status_note)",
+            "revoke_script_stdout": String::from_utf8_lossy(&output.stdout).trim(),
         }),
     );
     Ok(pass)
