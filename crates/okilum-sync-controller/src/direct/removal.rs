@@ -1080,7 +1080,6 @@ impl Controller {
         };
         let configs = self.configuration_paths()?;
         let mut vaults = BTreeSet::new();
-        let mut removed_self = false;
         for vault in attached {
             // A decision made here covers only the vaults this call named.
             // An empty set keeps the previous "every vault that has the
@@ -1105,7 +1104,6 @@ impl Controller {
                 || authorized.contains(&fresh.folder_id)
                 || sender.is_none() && requested.contains(&fresh.folder_id)
             {
-                removed_self |= fresh.daemon.device_id == device;
                 vaults.insert(fresh.folder_id);
             }
         }
@@ -1133,15 +1131,19 @@ impl Controller {
             );
             return Ok(());
         }
-        let pending = db
-            .peers
-            .iter()
-            .filter(|(peer, _)| {
-                (removed_self || Some(**peer) != sender)
-                    && vaults.iter().any(|v| knows(&db, **peer, v))
-            })
-            .map(|(id, peer)| (*id, peer.clone()))
-            .collect();
+        // Only the computer that decided the removal delivers it. A receiver,
+        // including the removed computer, applies the decision and does not
+        // send RemoveComputer onward: peers reject that, and a leaf would
+        // wait forever for an acknowledgement before pausing (#2042, #3079).
+        let pending = if sender.is_some() {
+            BTreeMap::new()
+        } else {
+            db.peers
+                .iter()
+                .filter(|(peer, _)| vaults.iter().any(|v| knows(&db, **peer, v)))
+                .map(|(id, peer)| (*id, peer.clone()))
+                .collect()
+        };
         // A removal decided here takes an epoch above everything known here,
         // so a concurrent readmission elsewhere can never close it (#3079).
         let current = admitted(&db, device);
