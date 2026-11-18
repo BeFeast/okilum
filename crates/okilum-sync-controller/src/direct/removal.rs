@@ -1067,7 +1067,12 @@ impl Controller {
             // Syncthing may deliver an introduction removal before this
             // authenticated application operation. Record/ack that shared
             // scope even when its transport member is already absent.
-            if fresh.peers.iter().any(|p| p == device) || authorized.contains(&fresh.folder_id) {
+            // A request names the vaults even when Syncthing already dropped
+            // the member; the owner's decision still covers that scope.
+            if fresh.peers.iter().any(|p| p == device)
+                || authorized.contains(&fresh.folder_id)
+                || sender.is_none() && requested.contains(&fresh.folder_id)
+            {
                 removed_self |= fresh.daemon.device_id == device;
                 vaults.insert(fresh.folder_id);
             }
@@ -1717,6 +1722,9 @@ impl Controller {
                     vaults: request.vaults.clone(),
                 },
             );
+            if let Ok(Reply::Error { message }) = &reply {
+                anyhow::bail!("{message}");
+            }
             if matches!(reply, Ok(Reply::RemovalRecorded { .. })) {
                 let mut db = self.shared.db.lock().unwrap();
                 if let Some(saved) = db
@@ -1733,7 +1741,6 @@ impl Controller {
     }
     pub(super) fn reconcile_removals(&self) -> Result<()> {
         self.check()?;
-        self.deliver_removal_requests()?;
         // Pairing pins the inviter's listener on both ends. Joiners therefore
         // pull pending operations through that authenticated channel; attempting
         // to push to an inviter-owned endpoint would call ourselves.
@@ -1860,7 +1867,10 @@ impl Controller {
                 }
             }
         }
-        Ok(())
+        // After this round's pull, so a request the owner just accepted is
+        // not acknowledged until the next refresh. The handoff snapshot
+        // still shows every receiver pending (#2042).
+        self.deliver_removal_requests()
     }
 }
 fn capture_mesh(
