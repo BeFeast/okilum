@@ -222,7 +222,10 @@ pub(super) fn admitted(db: &Database, device: &str) -> Epoch {
 /// older than any known admission, and than any closed removal of `device`.
 fn stale(db: &Database, device: &str, epoch: Option<&Epoch>, horizon: &Epoch) -> bool {
     match epoch {
-        Some(epoch) => epoch < horizon,
+        // Only a strictly newer admission counter closes a removal: a removal
+        // and a readmission minted concurrently with the same counter are
+        // unordered, and the removal, a later explicit decision, stands.
+        Some(epoch) => epoch.counter < horizon.counter,
         None => {
             *horizon > Epoch::default()
                 || db
@@ -246,7 +249,9 @@ fn admit(db: &mut Database, device: &str, admission: &Epoch) {
         .filter(|r| {
             r.device == device
                 && !r.superseded()
-                && r.epoch.as_ref().is_none_or(|epoch| epoch < admission)
+                && r.epoch
+                    .as_ref()
+                    .is_none_or(|epoch| epoch.counter < admission.counter)
         })
         .map(|r| r.id)
         .collect();
@@ -320,6 +325,22 @@ const MAX_EPOCH: u64 = 1_000_000;
 impl Epoch {
     fn valid(&self) -> bool {
         self.counter < MAX_EPOCH && (self.by.is_empty() || valid(&self.by))
+    }
+}
+/// Queue the closed version of removal `id` to the computer `scope` that just
+/// delivered it open, so that computer learns of the close (#3079).
+fn queue_closed_to(db: &mut Database, id: Uuid, scope: Uuid, vaults: &BTreeSet<String>) {
+    let Some(paired) = db
+        .peers
+        .get(&scope)
+        .or_else(|| db.revoked_peers.get(&scope))
+        .cloned()
+    else {
+        return;
+    };
+    if let Some(removal) = db.removals.iter_mut().find(|r| r.id == id) {
+        removal.vaults.extend(vaults.iter().cloned());
+        removal.pending.insert(scope, paired);
     }
 }
 /// This computer's own device: the daemon of its associated vaults.
@@ -461,8 +482,15 @@ pub(super) fn readmit(
         removal.close(pairing);
         closed.push(removal.id);
     }
+    // A removal the returning computer applied but this computer never saw:
+    // close it for the vaults shared here and deliver that closed version to
+    // their peers, which may still hold it open (#3079).
+    let shared: BTreeSet<String> = db.attached.iter().map(|v| v.folder_id.clone()).collect();
     for id in new {
-        db.removals.push(Removal::tombstone(id, device, pairing));
+        let mut tombstone = Removal::tombstone(id, device, pairing);
+        tombstone.vaults = shared.clone();
+        db.removals.push(tombstone);
+        closed.push(id);
     }
     db.admissions.insert(device.to_owned(), epoch);
     rebroadcast(db, &closed);
@@ -949,7 +977,13 @@ impl Controller {
                     "Removal identity conflicts with its durable request"
                 );
                 if known.superseded() && !learn {
-                    // Already closed here: a replay changes nothing.
+                    // Already closed here: a replay changes nothing. An open
+                    // delivery means the sender still holds it open, so the
+                    // closed version is queued to it before acknowledging.
+                    if !version.superseded {
+                        queue_closed_to(&mut db, id, scope, &vaults);
+                        self.save(&db)?;
+                    }
                     return Ok(Reply::RemovalRecorded { id });
                 }
             }
@@ -994,8 +1028,12 @@ impl Controller {
                         );
                         let mut tombstone = Removal::tombstone(id, &device, scope);
                         tombstone.epoch = version.epoch.clone();
+                        tombstone.vaults = vaults.clone();
                         db.removals.push(tombstone);
                     }
+                }
+                if !version.superseded {
+                    queue_closed_to(&mut db, id, scope, &vaults);
                 }
                 self.save(&db)?;
                 return Ok(Reply::RemovalRecorded { id });
@@ -1361,7 +1399,7 @@ impl Controller {
             return Ok(());
         }
         let configs = self.configuration_paths()?;
-        for (id, device, undo) in pending {
+        for (id, device, mut undo) in pending {
             let _serial = self.shared.transfer_lock.lock().unwrap();
             {
                 let _effects = self.shared.removal_effects.lock().unwrap();
@@ -1370,22 +1408,44 @@ impl Controller {
                 // decides now: once applied, the readmission it followed no
                 // longer stands here, so nothing is re-established; while it
                 // is still being applied, wait, so a later close of it can.
-                let newer = db
+                let newer: Vec<&Removal> = db
                     .removals
                     .iter()
                     .filter(|r| r.id != id && r.device == device && !r.superseded())
-                    .map(|r| r.local_applied)
-                    .reduce(|a, b| a || b);
-                match newer {
-                    Some(true) => {
-                        if let Some(saved) = db.removals.iter_mut().find(|r| r.id == id) {
-                            saved.undo = None;
-                        }
-                        self.save(&db)?;
+                    .collect();
+                if newer.iter().any(|r| !r.local_applied) {
+                    continue;
+                }
+                if !newer.is_empty() {
+                    // Only what a newer applied removal covers stays removed:
+                    // its vaults' members and grants, and the pairings it
+                    // revoked. Everything else is still re-established.
+                    let vaults: BTreeSet<String> = newer
+                        .iter()
+                        .flat_map(|r| r.vaults.iter().cloned())
+                        .collect();
+                    let revoked: BTreeSet<Uuid> = newer
+                        .iter()
+                        .filter_map(|r| r.undo.as_ref())
+                        .flat_map(|u| u.pairings.keys().copied())
+                        .collect();
+                    undo.members
+                        .retain(|m| !vaults.contains(&m.vault.folder_id));
+                    undo.grants.retain(|g| !vaults.contains(&g.vault));
+                    undo.pairings.retain(|peer, paired| {
+                        !revoked.contains(peer)
+                            && paired.syncthing_device.as_deref() != Some(device.as_str())
+                    });
+                    let empty = undo.members.is_empty()
+                        && undo.grants.is_empty()
+                        && undo.pairings.is_empty();
+                    if let Some(saved) = db.removals.iter_mut().find(|r| r.id == id) {
+                        saved.undo = (!empty).then(|| undo.clone());
+                    }
+                    self.save(&db)?;
+                    if empty {
                         continue;
                     }
-                    Some(false) => continue,
-                    None => {}
                 }
                 for (peer, paired) in &undo.pairings {
                     if !db.peers.contains_key(peer) && db.peers.len() < MAX_PEERS {
@@ -2887,15 +2947,27 @@ mod tests {
         let controller = Controller::open(root.path().join("epochs"), vec![])?;
         let device = ["DDDDDDD"; 8].join("-");
         let mut db = controller.shared.db.lock().unwrap();
-        let mut from_a = removal(Uuid::new_v4(), &device);
-        from_a.epoch = Some(epoch(1, "AAAA"));
-        let id = from_a.id;
-        db.removals.push(from_a);
+        // A removal from the previous admission closes on the new one; a
+        // removal minted concurrently with the same counter does not.
+        let mut older = removal(Uuid::new_v4(), &device);
+        older.epoch = Some(Epoch::default());
+        let id = older.id;
+        db.removals.push(older);
+        let mut concurrent = removal(Uuid::new_v4(), &device);
+        concurrent.epoch = Some(epoch(1, "AAAA"));
+        let concurrent_id = concurrent.id;
+        db.removals.push(concurrent);
         admit(&mut db, &device, &epoch(1, "CCCC"));
         assert!(db
             .removals
             .iter()
             .find(|r| r.id == id)
+            .unwrap()
+            .superseded());
+        assert!(!db
+            .removals
+            .iter()
+            .find(|r| r.id == concurrent_id)
             .unwrap()
             .superseded());
         admit(&mut db, &device, &epoch(1, "AAAA"));
@@ -3181,9 +3253,9 @@ mod tests {
         {
             let mut db = alice.shared.db.lock().unwrap();
             db.peers.insert(returning.peer.id, returning.clone());
-            // Alice readmitted Bob at (1, Alice).
-            db.admissions.insert(bob.clone(), epoch(1, "AAAA"));
         }
+        // Alice removes Bob; Carol readmits him concurrently. Both mint
+        // counter 1, and Carol's device sorts after Alice's (empty here).
         let id = Uuid::new_v4();
         alice.queue_removal(id, &bob, BTreeSet::new(), None, None)?;
         let mut db = alice.shared.db.lock().unwrap();
@@ -3195,12 +3267,12 @@ mod tests {
             .epoch
             .clone()
             .unwrap();
+        let carol = epoch(1, "CCCC");
         assert!(
-            mine > epoch(1, "CCCC"),
-            "a new removal reused a readmission epoch"
+            mine.counter == carol.counter && mine < carol,
+            "control: the same-counter pair with the readmitter sorting higher"
         );
-        // Carol's concurrent readmission arrives afterwards.
-        admit(&mut db, &bob, &epoch(1, "CCCC"));
+        admit(&mut db, &bob, &carol);
         assert!(
             !db.removals
                 .iter()
@@ -3434,6 +3506,134 @@ mod tests {
             .queue_removal(Uuid::new_v4(), &removed, BTreeSet::new(), None, None)
             .is_err());
         assert!(third.shared.db.lock().unwrap().removals.is_empty());
+        third.shutdown();
+        Ok(())
+    }
+
+    /// Round 7: a removal the returning computer reports that the approver
+    /// never saw is closed for the vaults shared here and delivered to their
+    /// peers; an open delivery of it later is answered by queueing the closed
+    /// version back to its sender.
+    #[test]
+    fn issue3079_unseen_removal_closed_at_approval_reaches_its_originator() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let approver = Controller::open(root.path().join("approver"), vec![])?;
+        let bob = ["BBBBBBB"; 8].join("-");
+        let originator = pairing(&["AAAAAAA"; 8].join("-"), wire::public(&wire::random()?)?)?;
+        let unseen = Uuid::new_v4();
+        let mut db = approver.shared.db.lock().unwrap();
+        db.attached
+            .push(existing_vault(&["CCCCCCC"; 8].join("-"), "vault")?);
+        db.peers.insert(originator.peer.id, originator.clone());
+        readmit(&mut db, &bob, Uuid::new_v4(), &[unseen])?;
+        let record = db.removals.iter().find(|r| r.id == unseen).unwrap();
+        assert!(record.superseded() && record.vaults.contains("vault"));
+        assert!(
+            record.pending.contains_key(&originator.peer.id),
+            "the closed version reaches nobody"
+        );
+        // The originator delivered it, then acknowledged the closed version
+        // was not yet sent: simulate it still pending elsewhere.
+        db.removals
+            .iter_mut()
+            .find(|r| r.id == unseen)
+            .unwrap()
+            .pending
+            .clear();
+        drop(db);
+        let reply = approver.receive_removal(
+            originator.peer.id,
+            unseen,
+            bob.clone(),
+            BTreeSet::from(["vault".into()]),
+            None,
+            Version {
+                superseded: false,
+                epoch: Some(Epoch::default()),
+                admission: Some(Epoch::default()),
+            },
+        )?;
+        assert!(matches!(reply, Reply::RemovalRecorded { id } if id == unseen));
+        let db = approver.shared.db.lock().unwrap();
+        let record = db.removals.iter().find(|r| r.id == unseen).unwrap();
+        assert!(
+            record.pending.contains_key(&originator.peer.id),
+            "an open delivery of a closed removal was acknowledged without sending the close back"
+        );
+        let back = requests(&db, originator.peer.id);
+        assert!(back
+            .iter()
+            .any(|r| r.superseded && r.vaults.contains("vault")));
+        drop(db);
+        approver.shutdown();
+        Ok(())
+    }
+    /// Round 7: removed from two vaults, readmitted, then removed again from
+    /// one of them by a peer. Compensation restores the other vault and keeps
+    /// only what the newer removal covers removed.
+    #[test]
+    fn issue3079_compensation_keeps_vaults_a_newer_removal_does_not_cover() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let third = Controller::open(root.path().join("third"), vec![])?;
+        let removed = ["BBBBBBB"; 8].join("-");
+        let own = ["CCCCCCC"; 8].join("-");
+        let returning = pairing(&removed, wire::public(&wire::random()?)?)?;
+        let v1 = existing_vault(&own, "v1")?;
+        let v2 = existing_vault(&own, "v2")?;
+        let (older, newer) = (Uuid::new_v4(), Uuid::new_v4());
+        {
+            let mut db = third.shared.db.lock().unwrap();
+            db.revoked_peers
+                .insert(returning.peer.id, returning.clone());
+            let mut first = removal(older, &removed);
+            first.vaults = BTreeSet::from(["v1".into(), "v2".into()]);
+            first.readmitted = Some(Uuid::nil());
+            first.undo = Some(Undo {
+                pairings: BTreeMap::from([(returning.peer.id, returning.clone())]),
+                grants: vec![
+                    transfer::ShareGrant::new(returning.peer.id, &v1, &removed),
+                    transfer::ShareGrant::new(returning.peer.id, &v2, &removed),
+                ],
+                members: vec![
+                    RemovedMember {
+                        vault: v1.clone(),
+                        member: json!({"deviceID": removed}),
+                    },
+                    RemovedMember {
+                        vault: v2.clone(),
+                        member: json!({"deviceID": removed}),
+                    },
+                ],
+                pending: true,
+            });
+            db.removals.push(first);
+            let mut second = removal(newer, &removed);
+            second.vaults = BTreeSet::from(["v1".into()]);
+            second.epoch = Some(epoch(2, "AAAA"));
+            db.removals.push(second);
+        }
+        third.compensate_removals()?;
+        let db = third.shared.db.lock().unwrap();
+        assert!(
+            db.share_grants.iter().any(|g| g.vault == "v2"),
+            "the vault the newer removal does not cover was not restored"
+        );
+        assert!(!db.share_grants.iter().any(|g| g.vault == "v1"));
+        assert!(
+            !db.peers.contains_key(&returning.peer.id),
+            "the pairing the newer removal revoked came back"
+        );
+        let undo = db
+            .removals
+            .iter()
+            .find(|r| r.id == older)
+            .unwrap()
+            .undo
+            .clone()
+            .expect("the v2 membership stays pending while its runtime is unreachable");
+        assert_eq!(undo.members.len(), 1);
+        assert_eq!(undo.members[0].vault.folder_id, "v2");
+        drop(db);
         third.shutdown();
         Ok(())
     }
