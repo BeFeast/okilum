@@ -2413,7 +2413,10 @@ fn issue2582_launcher_killed_after_fencing_keeps_the_original_marker() -> Result
     );
     let record: Value =
         serde_json::from_slice(&fs::read(f.launch_dir().join("fenced-folders.json"))?)?;
-    assert_eq!(record["gone"], ".stfolder", "original recorded first");
+    assert_eq!(
+        record["gone"]["marker"], ".stfolder",
+        "original recorded first"
+    );
     f.kill_launcher()?;
     // systemd starts the command again.
     f.services.launch()?;
@@ -2427,6 +2430,78 @@ fn issue2582_launcher_killed_after_fencing_keeps_the_original_marker() -> Result
     })?;
     fs::write(f.origin("gone").join("after-restart.md"), b"syncs again")?;
     f.transfers("gone", "after-restart.md")?;
+    f.runtime.disable()?;
+    Ok(())
+}
+
+/// #2582 review: supervision watches every managed folder for the whole run.
+/// A root lost while the runtime runs (again after an unfence, too) is fenced
+/// again, so a foreign Syncthing directory at its path never exchanges a byte.
+/// A folder without index history is also paused, so its root is never
+/// recreated; the unfence undoes exactly that pause.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_root_lost_while_running_is_fenced_again_every_time() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept", "gone"], &[])?;
+    f.enroll("fresh", false)?;
+    for round in 1..=2 {
+        fs::rename(f.vault("gone"), f.away("gone"))?;
+        wait("fenced again while running", || {
+            Ok(f.marker("gone")?.starts_with(".okilum-missing-root-"))
+        })?;
+        let api = f.identity.connect()?;
+        assert_eq!(
+            api.folder("gone")?["paused"],
+            false,
+            "indexed: never paused"
+        );
+        // A foreign Syncthing folder takes the path while the runtime runs.
+        fs::create_dir_all(f.vault("gone").join(".stfolder"))?;
+        let foreign = format!("foreign-{round}.md");
+        let ours = format!("vault-{round}.md");
+        fs::write(f.vault("gone").join(&foreign), b"foreign vault data")?;
+        fs::write(f.origin("gone").join(&ours), b"must stay in the vault")?;
+        let progress = format!("progress-{round}.md");
+        fs::write(f.origin("kept").join(&progress), b"other vault runs")?;
+        f.transfers("kept", &progress)?;
+        for _ in 0..4 {
+            f.source.api.scan("gone")?;
+            thread::sleep(Duration::from_secs(2));
+        }
+        assert!(f.marker("gone")?.starts_with(".okilum-missing-root-"));
+        assert!(
+            !f.origin("gone").join(&foreign).exists(),
+            "foreign data reached the vault's peer (round {round})"
+        );
+        assert!(
+            !f.vault("gone").join(&ours).exists(),
+            "vault data reached the foreign directory (round {round})"
+        );
+        // The foreign directory goes and the saved root returns.
+        fs::remove_dir_all(f.vault("gone"))?;
+        fs::rename(f.away("gone"), f.vault("gone"))?;
+        wait("returned root unfenced", || {
+            Ok(f.marker("gone")? == ".stfolder")
+        })?;
+        f.transfers("gone", &ours)?;
+    }
+    // A folder that never indexed anything loses its root while running.
+    fs::rename(f.vault("fresh"), f.away("fresh"))?;
+    wait("history-free folder fenced and paused", || {
+        Ok(f.marker("fresh")?.starts_with(".okilum-missing-root-")
+            && f.identity.connect()?.folder("fresh")?["paused"] == true)
+    })?;
+    for _ in 0..3 {
+        thread::sleep(Duration::from_secs(2));
+        assert!(!f.vault("fresh").exists(), "history-free root recreated");
+    }
+    fs::rename(f.away("fresh"), f.vault("fresh"))?;
+    wait("history-free folder unfenced and resumed", || {
+        Ok(f.marker("fresh")? == ".stfolder"
+            && f.identity.connect()?.folder("fresh")?["paused"] == false)
+    })?;
+    fs::write(f.origin("fresh").join("first.md"), b"first file")?;
+    f.transfers("fresh", "first.md")?;
     f.runtime.disable()?;
     Ok(())
 }
