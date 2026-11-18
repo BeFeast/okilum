@@ -588,13 +588,14 @@ pub(super) fn accept_readmission(
     // Closed IDs beyond the tombstone room are not recorded here; the
     // admission epoch alone still closes those removals if they arrive.
     for closed in readmitted {
+        let room = db.removals.len() < MAX_TOMBSTONES;
         match db.removals.iter_mut().find(|r| r.id == closed.id) {
             Some(removal) if removal.device == own => {
                 removal.close(pairing);
                 removal.vaults.extend(closed.vaults.iter().cloned());
             }
             Some(_) => {}
-            None if !closed.id.is_nil() && db.removals.len() < MAX_TOMBSTONES => {
+            None if !closed.id.is_nil() && room => {
                 let mut tombstone = Removal::tombstone(closed.id, own, pairing);
                 tombstone.vaults = closed.vaults.clone();
                 db.removals.push(tombstone);
@@ -1057,6 +1058,7 @@ impl Controller {
                 // A current removal: it applies below, under the learned epoch.
                 self.save(&db)?;
             } else {
+                let room = db.removals.len() < MAX_TOMBSTONES;
                 match db.removals.iter_mut().find(|r| r.id == id) {
                     Some(removal) => {
                         ensure!(
@@ -1070,7 +1072,7 @@ impl Controller {
                     }
                     // An unknown closed removal is remembered while there is
                     // tombstone room; the learned epoch closes it regardless.
-                    None if db.removals.len() < MAX_TOMBSTONES => {
+                    None if room => {
                         let mut tombstone = Removal::tombstone(id, &device, scope);
                         tombstone.epoch = version.epoch.clone();
                         tombstone.vaults = vaults.clone();
