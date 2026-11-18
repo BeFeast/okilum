@@ -1451,6 +1451,7 @@ impl Controller {
         }
         let configs = self.configuration_paths()?;
         for (id, device, mut undo) in pending {
+            let mut deferred = Undo::default();
             let _serial = self.shared.transfer_lock.lock().unwrap();
             {
                 let _effects = self.shared.removal_effects.lock().unwrap();
@@ -1467,36 +1468,57 @@ impl Controller {
                 if newer.iter().any(|r| !r.local_applied) {
                     continue;
                 }
+                // While a newer removal of the device stands, what it covers
+                // stays removed. An entry the newer removal recorded itself
+                // is its to restore, so it is dropped here. An entry it could
+                // not record, because this removal had already taken it, is
+                // kept pending and restored once the newer removal closes.
                 if !newer.is_empty() {
-                    // Only what a newer applied removal covers stays removed:
-                    // its vaults' members and grants, and the pairings it
-                    // revoked. Everything else is still re-established.
                     let vaults: BTreeSet<String> = newer
                         .iter()
                         .flat_map(|r| r.vaults.iter().cloned())
                         .collect();
-                    let revoked: BTreeSet<Uuid> = newer
-                        .iter()
-                        .filter_map(|r| r.undo.as_ref())
-                        .flat_map(|u| u.pairings.keys().copied())
-                        .collect();
-                    undo.members
-                        .retain(|m| !vaults.contains(&m.vault.folder_id));
-                    undo.grants.retain(|g| !vaults.contains(&g.vault));
-                    undo.pairings.retain(|peer, paired| {
-                        !revoked.contains(peer)
-                            && paired.syncthing_device.as_deref() != Some(device.as_str())
-                    });
-                    let empty = undo.members.is_empty()
-                        && undo.grants.is_empty()
-                        && undo.pairings.is_empty();
-                    if let Some(saved) = db.removals.iter_mut().find(|r| r.id == id) {
-                        saved.undo = (!empty).then(|| undo.clone());
+                    let owned: Vec<&Undo> = newer.iter().filter_map(|r| r.undo.as_ref()).collect();
+                    let owned_pairing =
+                        |peer: &Uuid| owned.iter().any(|u| u.pairings.contains_key(peer));
+                    let owned_grant = |grant: &transfer::ShareGrant| {
+                        owned.iter().any(|u| {
+                            u.grants
+                                .iter()
+                                .any(|g| g.peer == grant.peer && g.vault == grant.vault)
+                        })
+                    };
+                    let owned_member = |vault: &str| {
+                        owned
+                            .iter()
+                            .any(|u| u.members.iter().any(|m| m.vault.folder_id == vault))
+                    };
+                    let mut restore = Undo::default();
+                    for (peer, paired) in std::mem::take(&mut undo.pairings) {
+                        if owned_pairing(&peer) {
+                        } else if paired.syncthing_device.as_deref() == Some(device.as_str()) {
+                            deferred.pairings.insert(peer, paired);
+                        } else {
+                            restore.pairings.insert(peer, paired);
+                        }
                     }
-                    self.save(&db)?;
-                    if empty {
-                        continue;
+                    for grant in std::mem::take(&mut undo.grants) {
+                        if owned_grant(&grant) {
+                        } else if vaults.contains(&grant.vault) {
+                            deferred.grants.push(grant);
+                        } else {
+                            restore.grants.push(grant);
+                        }
                     }
+                    for member in std::mem::take(&mut undo.members) {
+                        if owned_member(&member.vault.folder_id) {
+                        } else if vaults.contains(&member.vault.folder_id) {
+                            deferred.members.push(member);
+                        } else {
+                            restore.members.push(member);
+                        }
+                    }
+                    undo = restore;
                 }
                 for (peer, paired) in &undo.pairings {
                     if !db.peers.contains_key(peer) && db.peers.len() < MAX_PEERS {
@@ -1533,10 +1555,12 @@ impl Controller {
             }
             let mut db = self.shared.db.lock().unwrap();
             if let Some(saved) = db.removals.iter_mut().find(|r| r.id == id) {
-                match (&mut saved.undo, retry.is_empty()) {
-                    (Some(undo), false) => undo.members = retry,
-                    _ => saved.undo = None,
-                }
+                deferred.members.extend(retry);
+                let empty = deferred.pairings.is_empty()
+                    && deferred.grants.is_empty()
+                    && deferred.members.is_empty();
+                deferred.pending = true;
+                saved.undo = (!empty).then_some(deferred);
             }
             self.save(&db)?;
         }
@@ -3461,15 +3485,17 @@ mod tests {
             let db = third.shared.db.lock().unwrap();
             assert!(
                 !db.peers.contains_key(&returning.peer.id),
-                "compensation restored a pairing a newer removal revoked"
+                "compensation restored a pairing a newer removal covers"
             );
+            // Kept for when the newer removal closes; nothing restored now.
             assert!(db
                 .removals
                 .iter()
                 .find(|r| r.id == older)
                 .unwrap()
                 .undo
-                .is_none());
+                .as_ref()
+                .is_some_and(|u| u.pending && u.pairings.contains_key(&returning.peer.id)));
         }
         // A newer removal still being applied: compensation waits.
         {
@@ -3672,7 +3698,7 @@ mod tests {
         assert!(!db.share_grants.iter().any(|g| g.vault == "v1"));
         assert!(
             !db.peers.contains_key(&returning.peer.id),
-            "the pairing the newer removal revoked came back"
+            "the pairing the newer removal covers came back"
         );
         let undo = db
             .removals
@@ -3681,9 +3707,21 @@ mod tests {
             .unwrap()
             .undo
             .clone()
-            .expect("the v2 membership stays pending while its runtime is unreachable");
-        assert_eq!(undo.members.len(), 1);
-        assert_eq!(undo.members[0].vault.folder_id, "v2");
+            .expect("covered entries and the unreachable v2 member stay pending");
+        assert!(undo.pending);
+        let mut vaults: Vec<_> = undo
+            .members
+            .iter()
+            .map(|m| m.vault.folder_id.clone())
+            .collect();
+        vaults.sort();
+        assert_eq!(
+            vaults,
+            ["v1", "v2"],
+            "v1 deferred until the newer removal closes; v2 retried"
+        );
+        assert!(undo.grants.iter().any(|g| g.vault == "v1"));
+        assert!(undo.pairings.contains_key(&returning.peer.id));
         drop(db);
         third.shutdown();
         Ok(())
@@ -3848,5 +3886,78 @@ mod tests {
     }
     fn applied_ids(db: &Database, device: &str) -> Vec<Uuid> {
         applied(db, device)
+    }
+
+    /// Grok round 8: what an older removal took and a newer applied removal
+    /// covers stays with the older undo while the newer stands, and comes
+    /// back once that newer removal is closed by the next readmission.
+    #[test]
+    fn issue3079_covered_entries_return_when_the_newer_removal_closes() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let third = Controller::open(root.path().join("third"), vec![])?;
+        let removed = ["BBBBBBB"; 8].join("-");
+        let returning = pairing(&removed, wire::public(&wire::random()?)?)?;
+        let v1 = existing_vault(&["CCCCCCC"; 8].join("-"), "vault")?;
+        let (older, newer) = (Uuid::new_v4(), Uuid::new_v4());
+        {
+            let mut db = third.shared.db.lock().unwrap();
+            db.revoked_peers
+                .insert(returning.peer.id, returning.clone());
+            let mut first = removal(older, &removed);
+            first.readmitted = Some(Uuid::nil());
+            first.undo = Some(Undo {
+                pairings: BTreeMap::from([(returning.peer.id, returning.clone())]),
+                grants: vec![transfer::ShareGrant::new(returning.peer.id, &v1, &removed)],
+                members: vec![],
+                pending: true,
+            });
+            db.removals.push(first);
+            // The newer removal found everything already taken: empty undo.
+            let mut second = removal(newer, &removed);
+            second.epoch = Some(epoch(2, "AAAA"));
+            db.removals.push(second);
+        }
+        third.compensate_removals()?;
+        {
+            let db = third.shared.db.lock().unwrap();
+            assert!(!db.peers.contains_key(&returning.peer.id));
+            assert!(db.share_grants.is_empty());
+            let undo = db
+                .removals
+                .iter()
+                .find(|r| r.id == older)
+                .unwrap()
+                .undo
+                .clone();
+            assert!(undo.is_some_and(|u| u.pending && !u.grants.is_empty()));
+        }
+        // The next readmission closes the newer removal.
+        {
+            let mut db = third.shared.db.lock().unwrap();
+            admit(&mut db, &removed, &epoch(3, "CCCC"));
+            assert!(db
+                .removals
+                .iter()
+                .find(|r| r.id == newer)
+                .unwrap()
+                .superseded());
+        }
+        third.compensate_removals()?;
+        let db = third.shared.db.lock().unwrap();
+        assert!(
+            db.peers.contains_key(&returning.peer.id),
+            "the next readmission restored nothing"
+        );
+        assert_eq!(db.share_grants.len(), 1);
+        assert!(db
+            .removals
+            .iter()
+            .find(|r| r.id == older)
+            .unwrap()
+            .undo
+            .is_none());
+        drop(db);
+        third.shutdown();
+        Ok(())
     }
 }
