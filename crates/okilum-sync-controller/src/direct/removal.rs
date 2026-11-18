@@ -336,7 +336,7 @@ fn next_epoch_above(db: &Database, device: &str, floor: u64) -> Result<Epoch> {
         .max()
         .unwrap_or(0)
         .checked_add(1)
-        .filter(|counter| *counter <= MAX_EPOCH)
+        .filter(|counter| *counter < MAX_EPOCH)
         .context("Removal history of this computer is exhausted; no folder was changed")?;
     Ok(Epoch {
         counter,
@@ -346,6 +346,9 @@ fn next_epoch_above(db: &Database, device: &str, floor: u64) -> Result<Epoch> {
 /// Admission counters accepted from other computers: a counter that leaves
 /// no room to grow could close every later removal here (#3079).
 pub(super) const MAX_EPOCH: u64 = 1_000_000;
+/// Closed records learned from other computers stop here, keeping room for
+/// open removals decided or received (256) below `MAX_REMOVALS` (#3079).
+const MAX_TOMBSTONES: usize = MAX_REMOVALS - 256;
 impl Epoch {
     fn valid(&self) -> bool {
         self.counter < MAX_EPOCH && (self.by.is_empty() || valid(&self.by))
@@ -472,8 +475,10 @@ pub(super) fn readmit(
     known: &[Uuid],
     high_water: u64,
 ) -> Result<()> {
+    // The returning computer may know a few cycles this one missed, not an
+    // arbitrary jump that would exhaust the epoch range (#3079).
     ensure!(
-        high_water < MAX_EPOCH,
+        high_water < MAX_EPOCH && high_water <= self::high_water(db, device).saturating_add(64),
         "Invalid removal history in pairing request"
     );
     ensure!(
@@ -488,7 +493,7 @@ pub(super) fn readmit(
         .copied()
         .collect();
     ensure!(
-        db.removals.len() + new.len() <= MAX_REMOVALS,
+        db.removals.len() + new.len() <= MAX_TOMBSTONES || new.is_empty(),
         "Removal history limit reached; existing records were kept"
     );
     // Only open removals: a later ordinary invitation between the same two
@@ -580,15 +585,8 @@ pub(super) fn accept_readmission(
         }
         return Ok(());
     }
-    let new: BTreeSet<Uuid> = readmitted
-        .iter()
-        .map(|closed| closed.id)
-        .filter(|id| !id.is_nil() && !db.removals.iter().any(|r| r.id == *id))
-        .collect();
-    ensure!(
-        db.removals.len() + new.len() <= MAX_REMOVALS,
-        "Removal history limit reached; existing records were kept"
-    );
+    // Closed IDs beyond the tombstone room are not recorded here; the
+    // admission epoch alone still closes those removals if they arrive.
     for closed in readmitted {
         match db.removals.iter_mut().find(|r| r.id == closed.id) {
             Some(removal) if removal.device == own => {
@@ -596,7 +594,7 @@ pub(super) fn accept_readmission(
                 removal.vaults.extend(closed.vaults.iter().cloned());
             }
             Some(_) => {}
-            None if !closed.id.is_nil() => {
+            None if !closed.id.is_nil() && db.removals.len() < MAX_TOMBSTONES => {
                 let mut tombstone = Removal::tombstone(closed.id, own, pairing);
                 tombstone.vaults = closed.vaults.clone();
                 db.removals.push(tombstone);
@@ -997,15 +995,13 @@ impl Controller {
         // own removal or assert a newer admission of itself: that needs a
         // fresh approval from a computer that still syncs the vault (#3079).
         // Neither can an unidentified, since-revoked pairing.
+        // A since-revoked pairing (any device's) only replays what it is
+        // recorded for: closing and admission changes need a live pairing.
         let from_removed = {
             let db = self.shared.db.lock().unwrap();
             match db.peers.get(&scope) {
                 Some(peer) => peer.syncthing_device.as_deref() == Some(device.as_str()),
-                None => db.revoked_peers.get(&scope).is_none_or(|peer| {
-                    peer.syncthing_device
-                        .as_deref()
-                        .is_none_or(|sender| sender == device)
-                }),
+                None => true,
             }
         };
         let (learn, stale) = {
@@ -1072,16 +1068,15 @@ impl Controller {
                             rebroadcast(&mut db, &[id]);
                         }
                     }
-                    None => {
-                        ensure!(
-                            db.removals.len() < MAX_REMOVALS,
-                            "Removal history limit reached; existing records were kept"
-                        );
+                    // An unknown closed removal is remembered while there is
+                    // tombstone room; the learned epoch closes it regardless.
+                    None if db.removals.len() < MAX_TOMBSTONES => {
                         let mut tombstone = Removal::tombstone(id, &device, scope);
                         tombstone.epoch = version.epoch.clone();
                         tombstone.vaults = vaults.clone();
                         db.removals.push(tombstone);
                     }
+                    None => {}
                 }
                 if !version.superseded {
                     queue_closed_to(&mut db, id, scope, &vaults);
@@ -3957,6 +3952,167 @@ mod tests {
             .undo
             .is_none());
         drop(db);
+        third.shutdown();
+        Ok(())
+    }
+
+    /// Review 83138: a since-revoked pairing of another computer cannot close
+    /// someone else's removal or raise its admission; the removal stays open
+    /// and the removed computer's pairing is not restored.
+    #[test]
+    fn issue3079_revoked_pairing_cannot_close_another_computers_removal() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let first = Controller::open(root.path().join("first"), vec![])?;
+        let second = Controller::open(root.path().join("second"), vec![])?;
+        let url = first
+            .begin_pairing_at("First", "127.0.0.1:0".parse()?, "127.0.0.1".parse()?)?
+            .offer_url
+            .unwrap();
+        second.redeem(&url, "Second")?;
+        first.approve(first.snapshot()?.pending.unwrap().request_id)?;
+        second.refresh_pairing()?;
+        let peer = second
+            .shared
+            .db
+            .lock()
+            .unwrap()
+            .peers
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        let removed = ["BBBBBBB"; 8].join("-");
+        let removed_pairing = pairing(&removed, wire::public(&wire::random()?)?)?;
+        let id = Uuid::new_v4();
+        {
+            let mut db = first.shared.db.lock().unwrap();
+            // Second's own pairing was revoked for an unrelated reason; it is
+            // a different device than the one removed.
+            let mut sender = db.peers.remove(&peer.peer.id).unwrap();
+            sender.syncthing_device = Some(["EEEEEEE"; 8].join("-"));
+            sender.allowed = vec!["vault".into()];
+            db.revoked_peers.insert(peer.peer.id, sender);
+            db.revoked_peers
+                .insert(removed_pairing.peer.id, removed_pairing.clone());
+            let mut applied = removal(id, &removed);
+            applied.undo = Some(Undo {
+                pairings: BTreeMap::from([(removed_pairing.peer.id, removed_pairing.clone())]),
+                ..Undo::default()
+            });
+            db.removals.push(applied);
+            first.save(&db)?;
+        }
+        for version in [(true, None), (false, Some(epoch(9, "EEEE")))] {
+            let _ = second.call(
+                peer.endpoint,
+                peer.peer.id,
+                &peer.key,
+                &peer.public,
+                Operation::RemoveComputer {
+                    id,
+                    device: removed.clone(),
+                    vaults: BTreeSet::from(["vault".into()]),
+                    superseded: version.0,
+                    epoch: None,
+                    admission: version.1,
+                },
+            );
+        }
+        first.compensate_removals()?;
+        let db = first.shared.db.lock().unwrap();
+        let record = db.removals.iter().find(|r| r.id == id).unwrap();
+        assert!(
+            !record.superseded(),
+            "a revoked pairing closed another computer's removal"
+        );
+        assert!(record.undo.as_ref().is_some_and(|u| !u.pending));
+        assert_eq!(
+            admitted(&db, &removed),
+            Epoch::default(),
+            "a revoked pairing raised the admission"
+        );
+        assert!(!db.peers.contains_key(&removed_pairing.peer.id));
+        drop(db);
+        first.shutdown();
+        second.shutdown();
+        Ok(())
+    }
+    /// Review 83138: a pairing request cannot push the epoch range to its end:
+    /// a high-water mark far above this computer's is refused, and a minted
+    /// counter is always one other computers accept.
+    #[test]
+    fn issue3079_high_water_cannot_exhaust_the_epoch_range() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let carol = Controller::open(root.path().join("carol"), vec![])?;
+        let bob = ["BBBBBBB"; 8].join("-");
+        let mut db = carol.shared.db.lock().unwrap();
+        let known = vec![Uuid::new_v4()];
+        assert!(readmit(&mut db, &bob, Uuid::new_v4(), &known, MAX_EPOCH - 2).is_err());
+        assert!(readmit(&mut db, &bob, Uuid::new_v4(), &known, 65).is_err());
+        assert!(
+            db.removals.is_empty() && db.admissions.is_empty(),
+            "a refused request changed state"
+        );
+        readmit(&mut db, &bob, Uuid::new_v4(), &known, 64)?;
+        assert_eq!(admitted(&db, &bob).counter, 65);
+        db.admissions.insert(bob.clone(), epoch(MAX_EPOCH - 1, ""));
+        assert!(
+            next_epoch(&db, &bob).is_err(),
+            "a minted counter would be refused by peers"
+        );
+        db.admissions.insert(bob.clone(), epoch(MAX_EPOCH - 2, ""));
+        assert!(next_epoch(&db, &bob)?.valid());
+        drop(db);
+        carol.shutdown();
+        Ok(())
+    }
+    /// Review 83138: tombstones of unknown closed removals stop well below the
+    /// journal limit, so a real removal still fits.
+    #[test]
+    fn issue3079_unknown_tombstones_leave_room_for_real_removals() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let third = Controller::open(root.path().join("third"), vec![])?;
+        let removed = ["BBBBBBB"; 8].join("-");
+        let sender = pairing(&["AAAAAAA"; 8].join("-"), wire::public(&wire::random()?)?)?;
+        {
+            let mut db = third.shared.db.lock().unwrap();
+            db.peers.insert(sender.peer.id, sender.clone());
+            for _ in 0..MAX_TOMBSTONES {
+                let mut closed = removal(Uuid::new_v4(), &["CCCCCCC"; 8].join("-"));
+                closed.readmitted = Some(Uuid::nil());
+                db.removals.push(closed);
+            }
+        }
+        let unknown = Uuid::new_v4();
+        third.receive_removal(
+            sender.peer.id,
+            unknown,
+            removed.clone(),
+            BTreeSet::from(["vault".into()]),
+            None,
+            Version {
+                superseded: true,
+                ..Version::default()
+            },
+        )?;
+        {
+            let mut db = third.shared.db.lock().unwrap();
+            assert_eq!(
+                db.removals.len(),
+                MAX_TOMBSTONES,
+                "an unknown tombstone was stored past the line"
+            );
+            assert!(
+                readmit(&mut db, &removed, Uuid::new_v4(), &[Uuid::new_v4()], 0).is_err(),
+                "an approval would cross the tombstone line"
+            );
+        }
+        // An open removal decided here still fits.
+        third.queue_removal(Uuid::new_v4(), &removed, BTreeSet::new(), None, None)?;
+        assert_eq!(
+            third.shared.db.lock().unwrap().removals.len(),
+            MAX_TOMBSTONES + 1
+        );
         third.shutdown();
         Ok(())
     }
