@@ -2237,10 +2237,17 @@ fn issue2582_missing_root_never_stops_the_runtime_across_launches() -> Result<()
 fn issue2582_folder_added_after_launch_gains_evidence_without_restart() -> Result<()> {
     let f = MissingRootFixture::new(&["kept"], &[])?;
     f.enroll("late", true)?;
+    // Evidence never needs the launch gate: hold it for the whole wait, the
+    // way a first-Sync review holds it, and the evidence still appears.
+    let gate = fs::File::open(f.launch_dir().join("gate.lock"))?;
+    gate.try_lock()
+        .map_err(|e| anyhow::anyhow!("fixture could not hold the gate: {e:?}"))?;
     f.transfers("late", "control.md")?;
-    wait("live evidence for the late folder", || {
-        Ok(f.ids("indexed-folders.json")?.contains(&"late".into()))
-    })?;
+    wait(
+        "live evidence for the late folder under a held gate",
+        || Ok(f.ids("indexed-folders.json")?.contains(&"late".into())),
+    )?;
+    drop(gate);
     f.services.crash_runtime()?;
     fs::rename(f.vault("late"), f.away("late"))?;
     f.services.launch()?;

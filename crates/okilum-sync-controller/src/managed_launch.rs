@@ -358,11 +358,20 @@ pub(crate) fn folder_instance_changing(daemon: &DaemonIdentity, folder: &str) ->
     }
     revoke_index_evidence(&existing(home)?, folder)
 }
+/// Index evidence has its own short lock, never the launch gate: supervision
+/// must not make a first-Sync or configuration operation, which refuses a busy
+/// gate instead of waiting, fail just because evidence was being recorded.
+/// Held only for local file work and bounded REST reads; never while waiting
+/// for the gate (the gate holder may wait for it, never the reverse).
+fn evidence_lock(r: &Reference) -> Result<LockFile> {
+    lock_file(&r.directory.join("indexed.lock"), true, true)
+}
 fn revoke_index_evidence(r: &Reference, folder: &str) -> Result<()> {
     let path = r.directory.join(INDEXED);
     if !path.try_exists()? {
         return Ok(());
     }
+    let _evidence = evidence_lock(r)?;
     let mut indexed: Vec<String> = serde_json::from_slice(&private::read(&path)?)?;
     let before = indexed.len();
     indexed.retain(|id| id != folder);
@@ -1173,6 +1182,7 @@ pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
                         .iter()
                         .filter_map(|folder| folder["id"].as_str().map(str::to_owned))
                         .collect();
+                    let _evidence = evidence_lock(r)?;
                     let mut indexed: Vec<String> = read_ids(r, INDEXED)?
                         .into_iter()
                         .filter(|id| configured.contains(id))
@@ -1300,25 +1310,30 @@ fn supervise(r: &Reference, daemon: &DaemonIdentity) -> Result<()> {
                 .get(&f.id)
                 .is_some_and(|saved| intact(&f.path, saved))
     });
-    if !fresh && !lost && !returned {
+    if fresh {
+        // Evidence never takes the launch gate (see `evidence_lock`). Re-read
+        // under the evidence lock: creating an instance revokes under it too.
+        let _evidence = evidence_lock(r)?;
+        let mut indexed = read_ids(r, INDEXED)?;
+        let before = indexed.len();
+        for f in &live(&api)? {
+            if !indexed.contains(&f.id) && history(&api, &f.id) {
+                indexed.push(f.id.clone());
+            }
+        }
+        if indexed.len() != before {
+            private::write(&r.directory.join(INDEXED), &serde_json::to_vec(&indexed)?)?;
+        }
+    }
+    if !lost && !returned {
         return Ok(());
     }
+    // Fence transitions alone take the gate: a root went missing or came back.
     let Ok(_gate) = r.gate() else {
         return Ok(()); // a configuration operation owns the gate; retry later
     };
     let b = r.load()?;
     let folders = live(&api)?;
-    let mut indexed = read_ids(r, INDEXED)?;
-    let before = indexed.len();
-    for f in &folders {
-        // Re-read under the gate: the instance may have been replaced meanwhile.
-        if !indexed.contains(&f.id) && history(&api, &f.id) {
-            indexed.push(f.id.clone());
-        }
-    }
-    if indexed.len() != before {
-        private::write(&r.directory.join(INDEXED), &serde_json::to_vec(&indexed)?)?;
-    }
     let mut fenced = read_fenced(r)?;
     for f in &folders {
         let Some(saved) = b.folders.get(&f.id) else {

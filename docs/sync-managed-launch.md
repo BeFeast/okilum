@@ -240,9 +240,12 @@ The record notes that pause, so the unfence undoes exactly it; a user's or the
 hold fence's pause is never recorded and never undone. If an unfence restored
 the marker but could not drop its record, the next supervision round drops the
 stale record without touching pause. A launch undoes a fence pause only while
-the folder still carries a fence marker. Supervision takes the launch gate only
-for an actual transition, because configuration admission refuses a busy gate;
-the root marker, not supervision, is what keeps a replaced root from syncing.
+the folder still carries a fence marker. Index evidence has its own short lock (`indexed.lock`, shared by
+readiness, supervision and instance revocation), so recording it never holds
+the launch gate: first-Sync and configuration operations refuse a busy gate
+instead of waiting. Supervision takes the gate only for an actual fence or
+unfence; the root marker, not supervision, is what keeps a replaced root from
+syncing.
 
 Every other missing root (paused, without index history, with an unfinished or
 unreadable hold, or unbound) keeps the launch fail-closed, as before. The runtime
@@ -320,7 +323,8 @@ Pinned-runtime controls:
   without creating it. Once that destination appears with its own hold, the
   launch is still refused and nothing is published into it.
 - `issue2582_folder_added_after_launch_gains_evidence_without_restart`: a
-  folder enrolled after launch gets evidence from the live runtime. After an
+  folder enrolled after launch gets evidence from the live runtime while the
+  test holds the launch gate the whole time. After an
   unmount, the next launch starts and fences it while the other vault transfers.
 - `issue2582_readded_folder_id_never_inherits_index_evidence`: a removal whose
   REST call fails keeps the evidence. Re-adding the same ID from an empty share
