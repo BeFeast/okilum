@@ -154,6 +154,7 @@ pub(super) fn remember(peer: &mut Paired, transport: &Transport) -> Result<()> {
         public: peer.public.clone(),
         syncthing_device: Some(transport.device.clone()),
         removals: vec![],
+        high_water: 0,
     }
     .validate(&peer.public)?;
     peer.syncthing_device = Some(transport.device.clone());

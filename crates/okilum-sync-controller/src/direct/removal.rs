@@ -272,7 +272,16 @@ fn admit(db: &mut Database, device: &str, admission: &Epoch) {
 /// vaults, the original sender included, so each computer that applied the
 /// open version learns of the readmission (#3079).
 fn rebroadcast(db: &mut Database, ids: &[Uuid]) {
+    // Closing this computer's own removal is not this computer's to announce.
+    let own = own_device(db);
     for id in ids {
+        if db
+            .removals
+            .iter()
+            .any(|r| r.id == *id && !own.is_empty() && r.device == own)
+        {
+            continue;
+        }
         let Some(vaults) = db
             .removals
             .iter()
@@ -303,12 +312,27 @@ fn rebroadcast(db: &mut Database, ids: &[Uuid]) {
 /// An epoch above every admission and removal of `device` known here, minted
 /// by this computer.
 fn next_epoch(db: &Database, device: &str) -> Result<Epoch> {
+    next_epoch_above(db, device, 0)
+}
+/// The highest admission or removal counter of `device` known here. A
+/// returning computer sends its own, so its approval is minted above it.
+pub(super) fn high_water(db: &Database, device: &str) -> u64 {
+    db.removals
+        .iter()
+        .filter(|r| r.device == device)
+        .filter_map(|r| r.epoch.as_ref().map(|e| e.counter))
+        .chain([admitted(db, device).counter])
+        .max()
+        .unwrap_or(0)
+}
+/// Like `next_epoch`, also strictly above `floor`.
+fn next_epoch_above(db: &Database, device: &str, floor: u64) -> Result<Epoch> {
     let counter = db
         .removals
         .iter()
         .filter(|r| r.device == device)
         .filter_map(|r| r.epoch.as_ref().map(|e| e.counter))
-        .chain([admitted(db, device).counter])
+        .chain([admitted(db, device).counter, floor])
         .max()
         .unwrap_or(0)
         .checked_add(1)
@@ -321,7 +345,7 @@ fn next_epoch(db: &Database, device: &str) -> Result<Epoch> {
 }
 /// Admission counters accepted from other computers: a counter that leaves
 /// no room to grow could close every later removal here (#3079).
-const MAX_EPOCH: u64 = 1_000_000;
+pub(super) const MAX_EPOCH: u64 = 1_000_000;
 impl Epoch {
     fn valid(&self) -> bool {
         self.counter < MAX_EPOCH && (self.by.is_empty() || valid(&self.by))
@@ -338,7 +362,12 @@ fn queue_closed_to(db: &mut Database, id: Uuid, scope: Uuid, vaults: &BTreeSet<S
     else {
         return;
     };
-    if let Some(removal) = db.removals.iter_mut().find(|r| r.id == id) {
+    let own = own_device(db);
+    if let Some(removal) = db
+        .removals
+        .iter_mut()
+        .find(|r| r.id == id && (own.is_empty() || r.device != own))
+    {
         removal.vaults.extend(vaults.iter().cloned());
         removal.pending.insert(scope, paired);
     }
@@ -441,7 +470,12 @@ pub(super) fn readmit(
     device: &str,
     pairing: Uuid,
     known: &[Uuid],
+    high_water: u64,
 ) -> Result<()> {
+    ensure!(
+        high_water < MAX_EPOCH,
+        "Invalid removal history in pairing request"
+    );
     ensure!(
         !db.removals
             .iter()
@@ -469,7 +503,9 @@ pub(super) fn readmit(
     }
     // The new admission epoch is above every removal of this device known
     // here, so each of them, delivered late anywhere, is closed (#3079).
-    let epoch = next_epoch(db, device)?;
+    // Above both computers' history: the returning computer may have been
+    // readmitted elsewhere more often than this computer knows (#3079).
+    let epoch = next_epoch_above(db, device, high_water)?;
     let mut closed = vec![];
     for removal in db
         .removals
@@ -957,6 +993,21 @@ impl Controller {
                 && version.epoch.as_ref().is_none_or(Epoch::valid),
             "Invalid removal epoch"
         );
+        // The removed computer, through any pairing it kept, cannot close its
+        // own removal or assert a newer admission of itself: that needs a
+        // fresh approval from a computer that still syncs the vault (#3079).
+        // Neither can an unidentified, since-revoked pairing.
+        let from_removed = {
+            let db = self.shared.db.lock().unwrap();
+            match db.peers.get(&scope) {
+                Some(peer) => peer.syncthing_device.as_deref() == Some(device.as_str()),
+                None => db.revoked_peers.get(&scope).is_none_or(|peer| {
+                    peer.syncthing_device
+                        .as_deref()
+                        .is_none_or(|sender| sender == device)
+                }),
+            }
+        };
         let (learn, stale) = {
             let db = self.shared.db.lock().unwrap();
             let current = admitted(&db, &device);
@@ -967,7 +1018,7 @@ impl Controller {
                 version.superseded || stale(&db, &device, version.epoch.as_ref(), &horizon),
             )
         };
-        if learn || stale {
+        if (learn || stale) && !from_removed {
             let _effects = self.shared.removal_effects.lock().unwrap();
             let mut db = self.shared.db.lock().unwrap();
             ensure!(valid(&device) && !id.is_nil(), "Invalid removal identity");
@@ -2067,11 +2118,11 @@ mod tests {
         open.local_applied = false;
         db.removals.push(open);
         assert!(
-            readmit(&mut db, &device, id, &[]).is_err(),
+            readmit(&mut db, &device, id, &[], 0).is_err(),
             "an unfinished removal must finish before approval"
         );
         db.removals.pop();
-        readmit(&mut db, &device, id, &[unseen])?;
+        readmit(&mut db, &device, id, &[unseen], 0)?;
         assert!(
             peer_is_live(&db, &returning),
             "readmitted device gets addresses again"
@@ -2094,7 +2145,7 @@ mod tests {
             .pending
             .contains_key(&id));
         // A later ordinary invitation readmits nothing.
-        readmit(&mut db, &device, Uuid::new_v4(), &[])?;
+        readmit(&mut db, &device, Uuid::new_v4(), &[], 0)?;
         assert_eq!(readmitted_by(&db, id).len(), 2);
         // A removal recorded after the approval stays open and blocks again.
         db.removals.push(removal(Uuid::new_v4(), &device));
@@ -2516,7 +2567,7 @@ mod tests {
             // What approve() does on readmission, after the round's snapshot.
             let _effects = joiner.shared.removal_effects.lock().unwrap();
             let mut db = joiner.shared.db.lock().unwrap();
-            readmit(&mut db, &removed, Uuid::new_v4(), &[])?;
+            readmit(&mut db, &removed, Uuid::new_v4(), &[], 0)?;
             joiner.save(&db)?;
         }
         resume.send(())?;
@@ -2551,7 +2602,7 @@ mod tests {
             !requests(&db, receiver.peer.id)[0].superseded,
             "served open"
         );
-        readmit(&mut db, &removed, Uuid::new_v4(), &[])?;
+        readmit(&mut db, &removed, Uuid::new_v4(), &[], 0)?;
         acknowledge(&mut db, receiver.peer.id, id, false)?;
         let onward = requests(&db, receiver.peer.id);
         assert_eq!(
@@ -2756,14 +2807,14 @@ mod tests {
             db.removals.push(removal(*id, &device));
         }
         let known: Vec<Uuid> = ids.iter().take(600).copied().collect();
-        readmit(&mut db, &device, Uuid::new_v4(), &known)?;
+        readmit(&mut db, &device, Uuid::new_v4(), &known, 0)?;
         assert_eq!(db.removals.len(), 1000);
         let pairing_id = Uuid::new_v4();
         accept_readmission(&mut db, &device, pairing_id, &[], &closing(&known), None)?;
         assert_eq!(db.removals.len(), 1000);
         let fresh: Vec<Uuid> = (0..25).map(|_| Uuid::new_v4()).collect();
         assert!(
-            readmit(&mut db, &device, Uuid::new_v4(), &fresh).is_err(),
+            readmit(&mut db, &device, Uuid::new_v4(), &fresh, 0).is_err(),
             "positive control: 25 new IDs exceed the limit"
         );
         drop(db);
@@ -2875,7 +2926,7 @@ mod tests {
         db.removals.push(open);
         acknowledge(&mut db, receiver.peer.id, id, false)?;
         assert!(requests(&db, receiver.peer.id).is_empty());
-        readmit(&mut db, &removed, Uuid::new_v4(), &[])?;
+        readmit(&mut db, &removed, Uuid::new_v4(), &[], 0)?;
         let again = requests(&db, receiver.peer.id);
         assert_eq!(again.len(), 1, "the closed version was not delivered again");
         assert!(
@@ -3525,7 +3576,7 @@ mod tests {
         db.attached
             .push(existing_vault(&["CCCCCCC"; 8].join("-"), "vault")?);
         db.peers.insert(originator.peer.id, originator.clone());
-        readmit(&mut db, &bob, Uuid::new_v4(), &[unseen])?;
+        readmit(&mut db, &bob, Uuid::new_v4(), &[unseen], 0)?;
         let record = db.removals.iter().find(|r| r.id == unseen).unwrap();
         assert!(record.superseded() && record.vaults.contains("vault"));
         assert!(
@@ -3636,5 +3687,166 @@ mod tests {
         drop(db);
         third.shutdown();
         Ok(())
+    }
+
+    /// Review 83043: over the signed paired channel, a removed computer that
+    /// replays its own removal as closed with its revoked credentials closes
+    /// nothing: the removal stays open, catalog access stays denied, and
+    /// refresh restores no pairing.
+    #[test]
+    fn issue3079_removed_computer_cannot_close_its_own_removal_with_revoked_credentials(
+    ) -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let first = Controller::open(root.path().join("first"), vec![])?;
+        let second = Controller::open(root.path().join("second"), vec![])?;
+        let url = first
+            .begin_pairing_at("First", "127.0.0.1:0".parse()?, "127.0.0.1".parse()?)?
+            .offer_url
+            .unwrap();
+        second.redeem(&url, "Second")?;
+        first.approve(first.snapshot()?.pending.unwrap().request_id)?;
+        second.refresh_pairing()?;
+        let peer = second
+            .shared
+            .db
+            .lock()
+            .unwrap()
+            .peers
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        assert!(
+            second.catalog(peer.peer.id).is_ok(),
+            "positive channel control"
+        );
+        let removed = ["BBBBBBB"; 8].join("-");
+        let id = Uuid::new_v4();
+        {
+            // First removed Second (its Syncthing device `removed`) from "vault".
+            let mut db = first.shared.db.lock().unwrap();
+            let mut paired = db.peers.remove(&peer.peer.id).unwrap();
+            paired.syncthing_device = Some(removed.clone());
+            paired.allowed = vec!["vault".into()];
+            db.revoked_peers.insert(peer.peer.id, paired.clone());
+            let mut applied = removal(id, &removed);
+            applied.undo = Some(Undo {
+                pairings: BTreeMap::from([(peer.peer.id, paired)]),
+                ..Undo::default()
+            });
+            db.removals.push(applied);
+            first.save(&db)?;
+        }
+        let reply = second.call(
+            peer.endpoint,
+            peer.peer.id,
+            &peer.key,
+            &peer.public,
+            Operation::RemoveComputer {
+                id,
+                device: removed.clone(),
+                vaults: BTreeSet::from(["vault".into()]),
+                superseded: true,
+                epoch: None,
+                admission: None,
+            },
+        );
+        // Answered or refused, nothing may close.
+        let _ = reply;
+        first.compensate_removals()?;
+        {
+            let db = first.shared.db.lock().unwrap();
+            let record = db.removals.iter().find(|r| r.id == id).unwrap();
+            assert!(
+                !record.superseded(),
+                "the removed computer closed its own removal"
+            );
+            assert!(record.undo.as_ref().is_some_and(|u| !u.pending));
+            assert!(
+                !db.peers.contains_key(&peer.peer.id),
+                "the removed computer restored its own pairing"
+            );
+        }
+        assert!(
+            second.catalog(peer.peer.id).is_err(),
+            "catalog access came back"
+        );
+        first.shutdown();
+        second.shutdown();
+        Ok(())
+    }
+    /// Review 83043: after repeated rejoin cycles, a readmission through an
+    /// inviter that missed them is minted above the returning computer's own
+    /// history, so a later fresh removal there applies, also after restart.
+    #[test]
+    fn issue3079_readmission_through_an_inviter_that_missed_earlier_cycles() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let bob_state = root.path().join("bob");
+        let bob = Controller::open(bob_state.clone(), vec![])?;
+        let carol = Controller::open(root.path().join("carol"), vec![])?;
+        let bob_device = ["BBBBBBB"; 8].join("-");
+        let carol_public = wire::public(&wire::random()?)?;
+        let earlier = Uuid::new_v4();
+        let (known, high) = {
+            let mut db = bob.shared.db.lock().unwrap();
+            // Two earlier cycles elsewhere: admission 4, then removed at 5.
+            db.admissions.insert(bob_device.clone(), epoch(4, "AAAA"));
+            let mut applied = removal(earlier, &bob_device);
+            applied.epoch = Some(epoch(5, "AAAA"));
+            db.removals.push(applied);
+            (applied_ids(&db, &bob_device), high_water(&db, &bob_device))
+        };
+        assert_eq!(high, 5);
+        let pairing_id = Uuid::new_v4();
+        let approved = {
+            let mut db = carol.shared.db.lock().unwrap();
+            readmit(&mut db, &bob_device, pairing_id, &known, high)?;
+            admitted(&db, &bob_device)
+        };
+        assert!(
+            approved.counter > 5,
+            "the approval was minted below the returning history"
+        );
+        {
+            let mut db = bob.shared.db.lock().unwrap();
+            let new = pairing(&["CCCCCCC"; 8].join("-"), carol_public.clone())?;
+            db.peers.insert(pairing_id, new);
+            let closed = known
+                .iter()
+                .map(|id| Closed {
+                    id: *id,
+                    vaults: BTreeSet::from(["vault".into()]),
+                })
+                .collect::<Vec<_>>();
+            accept_readmission(
+                &mut db,
+                &bob_device,
+                pairing_id,
+                &carol_public,
+                &closed,
+                Some(approved.clone()),
+            )?;
+            bob.save(&db)?;
+        }
+        // Carol removes Bob again before learning any older history.
+        let fresh = {
+            let db = carol.shared.db.lock().unwrap();
+            next_epoch(&db, &bob_device)?
+        };
+        drop(bob);
+        let bob = Controller::open(bob_state, vec![])?;
+        let db = bob.shared.db.lock().unwrap();
+        assert_eq!(admitted(&db, &bob_device), approved);
+        assert!(
+            !stale(&db, &bob_device, Some(&fresh), &admitted(&db, &bob_device)),
+            "a removal decided after the approval was treated as stale"
+        );
+        drop(db);
+        bob.shutdown();
+        carol.shutdown();
+        Ok(())
+    }
+    fn applied_ids(db: &Database, device: &str) -> Vec<Uuid> {
+        applied(db, device)
     }
 }

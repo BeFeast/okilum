@@ -115,6 +115,13 @@ struct Request {
     /// removals the inviter has not received yet (#3079).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     removals: Vec<Uuid>,
+    /// The highest admission/removal counter of itself this computer knows,
+    /// so its approval is minted above it (#3079).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    high_water: u64,
+}
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 impl Request {
     fn validate(&self, signer: &[u8]) -> Result<()> {
@@ -125,6 +132,7 @@ impl Request {
         );
         ensure!(
             self.removals.len() <= 1024
+                && self.high_water < removal::MAX_EPOCH
                 && (self.removals.is_empty() || self.syncthing_device.is_some()),
             "invalid removal history in pairing request"
         );
@@ -824,6 +832,9 @@ impl Controller {
                 .as_deref()
                 .map(|device| removal::applied(&db, device))
                 .unwrap_or_default(),
+            high_water: syncthing_device
+                .as_deref()
+                .map_or(0, |device| removal::high_water(&db, device)),
             syncthing_device,
         };
         db.name = name.to_owned();
@@ -975,7 +986,7 @@ impl Controller {
         };
         // Approving a removed computer again readmits it (#3079).
         if let Some(device) = paired.syncthing_device.clone() {
-            removal::readmit(&mut db, &device, id, &request.removals)?;
+            removal::readmit(&mut db, &device, id, &request.removals, request.high_water)?;
         }
         db.peers.insert(id, paired);
         db.invitation.as_mut().unwrap().approved = Some(id);
@@ -1748,6 +1759,7 @@ mod tests {
             public: signer.clone(),
             syncthing_device: Some(["AAAAAAA"; 8].join("-")),
             removals: vec![],
+            high_water: 0,
         };
         valid.validate(&signer)?;
         let restored: Request = serde_json::from_slice(&serde_json::to_vec(&valid)?)?;
