@@ -225,7 +225,7 @@ impl Reader {
             return;
         }
         let block = self.reader_block_at(window.mouse_position(), cx);
-        let rendered = self.note_source.clone();
+        let rendered = self.pane.note_source.clone();
         self.toggle_source(window, cx);
         let Some(input) = self.source_input() else {
             return;
@@ -1662,7 +1662,7 @@ mod reader_drop_tests {
         let (reader, visual, temp) = reader_on_note(cx);
         let next = reader.update(visual, |r, cx| {
             let bounds = r.content.read(cx).list_state().bounds_for_item(2).unwrap();
-            r.note_source = "# Only one block\n".to_string();
+            r.pane.note_source = "# Only one block\n".to_string();
             bounds
         });
         drop_at(
