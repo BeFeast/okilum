@@ -468,6 +468,8 @@ pub(super) fn applied(db: &Database, device: &str) -> Vec<Uuid> {
 /// removal of it recorded so far, and every removal the returning computer
 /// says it applied, closes; their later deliveries become no-ops. A removal
 /// recorded after this approval is a new decision and applies normally.
+/// Readmission without per-removal vaults, as from an older joiner.
+#[cfg(test)]
 pub(super) fn readmit(
     db: &mut Database,
     device: &str,
