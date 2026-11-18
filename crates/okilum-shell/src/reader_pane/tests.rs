@@ -728,3 +728,91 @@ fn pane773_a_pane_loading_in_the_background_publishes_on_activation(cx: &mut gpu
         assert_eq!(other_rel(r), "A.md");
     });
 }
+
+#[gpui::test]
+fn pane773_window_close_refuses_while_the_inactive_pane_cannot_save(cx: &mut gpui::TestAppContext) {
+    let (reader, visual, _dir) = fixture(cx);
+    let a = note_path(&reader, visual, "A.md");
+    start_editing(&reader, visual, "mine ");
+    reader.update_in(visual, |r, window, cx| {
+        r.open_beside("B.md", None, window, cx)
+    });
+    settle(visual);
+    // A, now inactive, conflicts with the disk; B (active) is clean.
+    std::fs::write(&a, "external\n").unwrap();
+    reader.update_in(visual, |r, window, cx| {
+        assert!(
+            !r.prepare_window_close(window, cx),
+            "the window stays open while the inactive pane's edit is unsaved"
+        );
+        let editing = r
+            .split
+            .as_ref()
+            .unwrap()
+            .other
+            .editing
+            .as_ref()
+            .expect("A keeps its editor");
+        assert!(editing
+            .input()
+            .read(cx)
+            .value()
+            .to_string()
+            .starts_with("mine "));
+        assert_eq!(
+            r.pane.current_rel, "B.md",
+            "pane order restored after the visit"
+        );
+    });
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), "external\n");
+}
+
+#[gpui::test]
+fn pane773_window_close_saves_both_clean_panes(cx: &mut gpui::TestAppContext) {
+    let (reader, visual, _dir) = fixture(cx);
+    reader.update_in(visual, |r, window, cx| {
+        r.open_beside("B.md", None, window, cx)
+    });
+    settle(visual);
+    reader.update_in(visual, |r, window, cx| {
+        assert!(
+            r.prepare_window_close(window, cx),
+            "positive control: nothing to refuse"
+        );
+    });
+}
+
+#[gpui::test]
+fn pane773_unsplit_leaves_no_window_state_from_the_closed_pane(cx: &mut gpui::TestAppContext) {
+    let (reader, visual, dir) = fixture(cx);
+    std::fs::write(
+        dir.path().join("notes/B.md"),
+        "# B\n\n## One\n\nText.\n\n## Two\n\nText.\n\n## Three\n\nText.\n",
+    )
+    .unwrap();
+    reader.update_in(visual, |r, window, cx| {
+        r.open_beside("B.md", None, window, cx)
+    });
+    settle(visual);
+    start_editing(&reader, visual, "edit ");
+    reader.update_in(visual, |r, window, cx| {
+        assert!(
+            r.pane.outline.len() > 1,
+            "positive control: B has several headings"
+        );
+        r.focus_other_pane(window, cx);
+        assert_eq!(r.pane.current_rel, "A.md");
+        r.ui_state.live_preview = true;
+        assert_eq!(r.unsplit(window, cx), Ok(()), "B's clean edit leaves");
+        assert!(r.split.is_none());
+        assert_eq!(
+            r.outline_list.item_count(),
+            r.pane.outline.len(),
+            "«On this page» rows are A's, not the closed pane's"
+        );
+        assert!(
+            r.ui_state.live_preview,
+            "the closed pane's editor did not change it"
+        );
+    });
+}
