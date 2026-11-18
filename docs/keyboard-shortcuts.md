@@ -68,10 +68,12 @@ says so instead of the action doing nothing.
 
 ## Open in terminal
 
-**Open in terminal (#2837):** Option+Command+T on macOS, Alt+Super+T on Linux
-and Alt+Win+T on Windows (next to Reveal, Option+Command+R) opens the system
-terminal in the folder of the open file, or of the sidebar item under the tree
-cursor; a folder opens itself. The same item is in the sidebar row menu, the
+**Open in terminal (#2837, #3134):** Option+Command+T on macOS, Alt+Super+T on
+Linux (next to Reveal, Option+Command+R) and Ctrl+Shift+U on Windows opens the
+system terminal in the folder of the open file, or of the sidebar item under the
+tree cursor; a folder opens itself. Windows does not get Win+Alt+T: the Xbox
+Game Bar shows or hides its recording timer on it and the key never reaches
+Okilum. The same item is in the sidebar row menu, the
 file header's Open with menu, note Document actions and the palette
 (type «terminal»); menus show the live key. The action is
 `project_terminal::OpenInTerminal` in the Reader context and can be rebound

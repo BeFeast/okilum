@@ -953,6 +953,71 @@ mod tests {
         assert!(altgr_conflict(true, &windows.modifiers, &windows.key).is_none());
     }
 
+    /// The Win+Alt chords Windows 11 keeps for itself (Xbox Game Bar and the
+    /// shell); a default on one of them is a dead key there.
+    fn windows_reserved(m: &gpui::Modifiers, key: &str) -> bool {
+        m.platform
+            && m.alt
+            && !m.control
+            && !m.shift
+            && ["b", "d", "g", "k", "m", "r", "t", "printscreen"].contains(&key)
+    }
+
+    #[gpui::test]
+    fn terminal3134_windows_open_in_terminal_key_reaches_okilum(cx: &mut TestAppContext) {
+        // Win+Alt+T shows or hides the Game Bar recording timer; Windows takes
+        // it before any app sees it, so the file menu advertised a dead key
+        // (#3134), as Win+Alt+R did for Reveal (#3110).
+        let keymap = reader_keymap(cx);
+        let strokes: Vec<String> = keymap
+            .bindings()
+            .filter(|binding| {
+                binding.action().name() == project_terminal::OpenInTerminal::name_for_type()
+            })
+            .flat_map(|binding| binding.keystrokes().iter())
+            .map(|stroke| {
+                let m = stroke.modifiers();
+                format!(
+                    "{}{}{}{}{}",
+                    if m.control { "ctrl-" } else { "" },
+                    if m.alt { "alt-" } else { "" },
+                    if m.shift { "shift-" } else { "" },
+                    if m.platform { "win-" } else { "" },
+                    stroke.key()
+                )
+            })
+            .collect();
+        // Positive control: the action has a default on every OS.
+        assert!(!strokes.is_empty(), "OpenInTerminal lost its default");
+        if cfg!(windows) {
+            assert_eq!(strokes, ["ctrl-shift-u"]);
+        } else if cfg!(target_os = "macos") {
+            assert_eq!(strokes, ["alt-win-t"]);
+        }
+        let windows = gpui::Keystroke::parse("ctrl-shift-u").unwrap();
+        assert!(altgr_conflict(true, &windows.modifiers, &windows.key).is_none());
+        assert!(!windows_reserved(&windows.modifiers, &windows.key));
+        // Negative controls: the old Windows defaults are reserved chords.
+        for old in ["alt-cmd-t", "alt-cmd-r"] {
+            let stroke = gpui::Keystroke::parse(old).unwrap();
+            assert!(windows_reserved(&stroke.modifiers, &stroke.key), "{old}");
+        }
+        // No Windows default sits on a reserved chord.
+        if cfg!(windows) {
+            let offenders: Vec<_> = keymap
+                .bindings()
+                .filter(|binding| {
+                    binding
+                        .keystrokes()
+                        .iter()
+                        .any(|stroke| windows_reserved(stroke.modifiers(), stroke.key()))
+                })
+                .map(|binding| binding.action().name())
+                .collect();
+            assert!(offenders.is_empty(), "Win+Alt system chords: {offenders:?}");
+        }
+    }
+
     #[gpui::test]
     fn file_menu_actions_are_catalogued_without_unsolicited_shortcuts(cx: &mut TestAppContext) {
         let keymap = reader_keymap(cx);

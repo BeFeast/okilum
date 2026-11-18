@@ -508,6 +508,10 @@ pub(crate) const REPAIR_CODE_KEY: &str = windows_key("alt-shift-r", "ctrl-shift-
 /// Show in Finder/folder/Explorer. Not Win+Alt+R on Windows: the Xbox Game
 /// Bar records the screen there and the key never reaches Okilum (#3110).
 pub(crate) const REVEAL_FILE_KEY: &str = windows_key("alt-cmd-r", "ctrl-shift-s");
+/// Open in terminal (#2837). Not Win+Alt+T on Windows: the Xbox Game Bar
+/// shows or hides its recording timer there and the key never reaches Okilum
+/// (#3134).
+pub(crate) const OPEN_IN_TERMINAL_KEY: &str = windows_key("alt-cmd-t", "ctrl-shift-u");
 
 /// ⌥⌘W / Ctrl+Alt+W (Ctrl+Shift+W on Windows): normal (reading width) or
 /// full note width. Free in every Reader context; W for width.
