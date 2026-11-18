@@ -297,7 +297,7 @@ fn rebroadcast(db: &mut Database, ids: &[Uuid]) {
 }
 /// An epoch above every admission and removal of `device` known here, minted
 /// by this computer.
-fn next_epoch(db: &Database, device: &str) -> Epoch {
+fn next_epoch(db: &Database, device: &str) -> Result<Epoch> {
     let counter = db
         .removals
         .iter()
@@ -306,10 +306,20 @@ fn next_epoch(db: &Database, device: &str) -> Epoch {
         .chain([admitted(db, device).counter])
         .max()
         .unwrap_or(0)
-        + 1;
-    Epoch {
+        .checked_add(1)
+        .filter(|counter| *counter <= MAX_EPOCH)
+        .context("Removal history of this computer is exhausted; no folder was changed")?;
+    Ok(Epoch {
         counter,
         by: own_device(db),
+    })
+}
+/// Admission counters accepted from other computers: a counter that leaves
+/// no room to grow could close every later removal here (#3079).
+const MAX_EPOCH: u64 = 1_000_000;
+impl Epoch {
+    fn valid(&self) -> bool {
+        self.counter < MAX_EPOCH && (self.by.is_empty() || valid(&self.by))
     }
 }
 /// This computer's own device: the daemon of its associated vaults.
@@ -438,7 +448,7 @@ pub(super) fn readmit(
     }
     // The new admission epoch is above every removal of this device known
     // here, so each of them, delivered late anywhere, is closed (#3079).
-    let epoch = next_epoch(db, device);
+    let epoch = next_epoch(db, device)?;
     let mut closed = vec![];
     for removal in db
         .removals
@@ -495,6 +505,10 @@ pub(super) fn accept_readmission(
     readmitted: &[Closed],
     admission: Option<Epoch>,
 ) -> Result<()> {
+    ensure!(
+        admission.as_ref().is_none_or(Epoch::valid),
+        "Invalid admission epoch in approval"
+    );
     if readmitted.is_empty() {
         // Nothing readmitted by this approval; still learn the epoch.
         if let Some(admission) = &admission {
@@ -871,7 +885,7 @@ impl Controller {
         // so a concurrent readmission elsewhere can never close it (#3079).
         let current = admitted(&db, device);
         let epoch = if sender.is_none() {
-            Some(next_epoch(&db, device))
+            Some(next_epoch(&db, device)?)
         } else {
             epoch
         };
@@ -910,6 +924,11 @@ impl Controller {
         // first. A removal from an older epoch is closed, whether unseen or
         // journalled (also mid-application), and never enters its effects.
         // Waiting for the effect in flight means none starts after this close.
+        ensure!(
+            version.admission.as_ref().is_none_or(Epoch::valid)
+                && version.epoch.as_ref().is_none_or(Epoch::valid),
+            "Invalid removal epoch"
+        );
         let (learn, stale) = {
             let db = self.shared.db.lock().unwrap();
             let current = admitted(&db, &device);
@@ -1347,6 +1366,27 @@ impl Controller {
             {
                 let _effects = self.shared.removal_effects.lock().unwrap();
                 let mut db = self.shared.db.lock().unwrap();
+                // A later removal of the same device that is still open
+                // decides now: once applied, the readmission it followed no
+                // longer stands here, so nothing is re-established; while it
+                // is still being applied, wait, so a later close of it can.
+                let newer = db
+                    .removals
+                    .iter()
+                    .filter(|r| r.id != id && r.device == device && !r.superseded())
+                    .map(|r| r.local_applied)
+                    .reduce(|a, b| a || b);
+                match newer {
+                    Some(true) => {
+                        if let Some(saved) = db.removals.iter_mut().find(|r| r.id == id) {
+                            saved.undo = None;
+                        }
+                        self.save(&db)?;
+                        continue;
+                    }
+                    Some(false) => continue,
+                    None => {}
+                }
                 for (peer, paired) in &undo.pairings {
                     if !db.peers.contains_key(peer) && db.peers.len() < MAX_PEERS {
                         db.revoked_peers.remove(peer);
@@ -3254,6 +3294,138 @@ mod tests {
             "an unreachable membership restore was dropped instead of retried"
         );
         drop(db);
+        third.shutdown();
+        Ok(())
+    }
+
+    /// Round 7: remove, readmit, remove again. A computer that missed the
+    /// readmission learns it from the second removal and applies that one.
+    /// Compensation of the first must then not re-establish anything.
+    #[test]
+    fn issue3079_compensation_yields_to_a_newer_applied_removal() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let third = Controller::open(root.path().join("third"), vec![])?;
+        let removed = ["BBBBBBB"; 8].join("-");
+        let returning = pairing(&removed, wire::public(&wire::random()?)?)?;
+        let member = RemovedMember {
+            vault: existing_vault(&["CCCCCCC"; 8].join("-"), "vault")?,
+            member: json!({"deviceID": removed}),
+        };
+        let (older, newer, waiting) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        {
+            let mut db = third.shared.db.lock().unwrap();
+            db.revoked_peers
+                .insert(returning.peer.id, returning.clone());
+            let mut first = removal(older, &removed);
+            first.readmitted = Some(Uuid::nil());
+            first.undo = Some(Undo {
+                pairings: BTreeMap::from([(returning.peer.id, returning.clone())]),
+                grants: vec![],
+                members: vec![member.clone()],
+                pending: true,
+            });
+            db.removals.push(first);
+            let mut second = removal(newer, &removed);
+            second.epoch = Some(epoch(2, "AAAA"));
+            db.removals.push(second);
+        }
+        third.compensate_removals()?;
+        {
+            let db = third.shared.db.lock().unwrap();
+            assert!(
+                !db.peers.contains_key(&returning.peer.id),
+                "compensation restored a pairing a newer removal revoked"
+            );
+            assert!(db
+                .removals
+                .iter()
+                .find(|r| r.id == older)
+                .unwrap()
+                .undo
+                .is_none());
+        }
+        // A newer removal still being applied: compensation waits.
+        {
+            let mut db = third.shared.db.lock().unwrap();
+            db.removals.retain(|r| r.id != newer);
+            let first = db.removals.iter_mut().find(|r| r.id == older).unwrap();
+            first.undo = Some(Undo {
+                pairings: BTreeMap::from([(returning.peer.id, returning.clone())]),
+                grants: vec![],
+                members: vec![member],
+                pending: true,
+            });
+            let mut open = removal(waiting, &removed);
+            open.local_applied = false;
+            open.folders = None;
+            db.removals.push(open);
+        }
+        third.compensate_removals()?;
+        let db = third.shared.db.lock().unwrap();
+        assert!(!db.peers.contains_key(&returning.peer.id));
+        assert!(
+            db.removals
+                .iter()
+                .find(|r| r.id == older)
+                .unwrap()
+                .undo
+                .as_ref()
+                .is_some_and(|u| u.pending),
+            "compensation must stay pending while a newer removal applies"
+        );
+        drop(db);
+        third.shutdown();
+        Ok(())
+    }
+    /// Round 7: epochs from other computers are bounded, and a counter that
+    /// cannot grow fails a new removal in the open instead of closing it.
+    #[test]
+    fn issue3079_epochs_are_bounded_and_never_wrap() -> Result<()> {
+        assert!(epoch(MAX_EPOCH - 1, "").valid());
+        assert!(!epoch(MAX_EPOCH, "").valid());
+        assert!(!epoch(u64::MAX, "").valid());
+        assert!(epoch(1, &["AAAAAAA"; 8].join("-")).valid());
+        assert!(!epoch(1, "not-a-device").valid());
+        let root = tempfile::tempdir()?;
+        let third = Controller::open(root.path().join("third"), vec![])?;
+        let removed = ["BBBBBBB"; 8].join("-");
+        let sender = pairing(&["AAAAAAA"; 8].join("-"), wire::public(&wire::random()?)?)?;
+        third
+            .shared
+            .db
+            .lock()
+            .unwrap()
+            .peers
+            .insert(sender.peer.id, sender.clone());
+        assert!(third
+            .receive_removal(
+                sender.peer.id,
+                Uuid::new_v4(),
+                removed.clone(),
+                BTreeSet::from(["vault".into()]),
+                None,
+                Version {
+                    superseded: true,
+                    epoch: None,
+                    admission: Some(epoch(u64::MAX, "")),
+                },
+            )
+            .is_err());
+        assert_eq!(
+            admitted(&third.shared.db.lock().unwrap(), &removed),
+            Epoch::default()
+        );
+        {
+            // Even if a counter at the limit is already stored, a new removal
+            // refuses instead of wrapping and closing itself.
+            let mut db = third.shared.db.lock().unwrap();
+            db.admissions.insert(removed.clone(), epoch(MAX_EPOCH, ""));
+            assert!(next_epoch(&db, &removed).is_err());
+        }
+        assert!(third
+            .queue_removal(Uuid::new_v4(), &removed, BTreeSet::new(), None, None)
+            .is_err());
+        assert!(third.shared.db.lock().unwrap().removals.is_empty());
         third.shutdown();
         Ok(())
     }
