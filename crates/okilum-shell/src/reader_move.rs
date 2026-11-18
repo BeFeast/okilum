@@ -177,7 +177,7 @@ impl Reader {
         let path = self
             .renaming
             .as_ref()
-            .map_or(self.current_rel.as_str(), |r| r.path.as_str());
+            .map_or(self.pane.current_rel.as_str(), |r| r.path.as_str());
         self.trace_file_operation(operation, "failed", path, Some(&message), cx);
         let message =
             if let Some(notice) = reader_diagnostics::cloud_file_operation_notice(&message) {
@@ -321,7 +321,7 @@ impl Reader {
         if self.pane.file_preview.is_some() {
             self.file_operation_blocked(
                 "rename",
-                &self.current_rel.clone(),
+                &self.pane.current_rel.clone(),
                 "Select a note or folder to rename.",
                 cx,
             );
@@ -352,7 +352,7 @@ impl Reader {
     }
 
     pub(super) fn rename_note_title(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.begin_rename_at(self.current_rel.clone(), true, window, cx);
+        self.begin_rename_at(self.pane.current_rel.clone(), true, window, cx);
     }
 
     fn begin_rename_at(
@@ -460,7 +460,7 @@ impl Reader {
         if self.note_move_pending {
             self.file_operation_blocked(
                 "rename",
-                &self.current_rel.clone(),
+                &self.pane.current_rel.clone(),
                 "Finish the current file operation first.",
                 cx,
             );
@@ -483,7 +483,7 @@ impl Reader {
         if self.note_move_pending {
             self.file_operation_blocked(
                 "rename",
-                &self.current_rel.clone(),
+                &self.pane.current_rel.clone(),
                 "Finish the current file operation first.",
                 cx,
             );
@@ -573,13 +573,13 @@ impl Reader {
         );
         self.check_move_editors(&[from.to_owned()], cx)?;
         let directory = std::fs::symlink_metadata(self.vault_root.join(from))?.is_dir();
-        let other_source_editor = from == self.current_rel && self.source_has_other_editor(cx);
+        let other_source_editor = from == self.pane.current_rel && self.source_has_other_editor(cx);
         let state = self
             .session_directory
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No recovery storage is available"))?;
         let guard = if !directory
-            && (from != self.current_rel || self.editing.is_none())
+            && (from != self.pane.current_rel || self.editing.is_none())
             && !other_source_editor
         {
             let editor =
@@ -610,7 +610,7 @@ impl Reader {
             FileEditor::reserve_destination(&path, &state.join("editor-drafts"))?;
         let root = self.vault_root.clone();
         let from = from.to_owned();
-        let current = self.current_rel.clone();
+        let current = self.pane.current_rel.clone();
         let was_editing = self.editing.is_some();
         let index = self.move_index.clone();
         let state = self.session_directory.clone();
@@ -672,7 +672,7 @@ impl Reader {
                     let result = result.and_then(|links| {
                         anyhow::ensure!(
                             this.vault_root == root
-                                && this.current_rel == current
+                                && this.pane.current_rel == current
                                 && this.editing.is_some() == was_editing,
                             "The open note changed; preview again"
                         );
@@ -857,7 +857,7 @@ impl Reader {
         let result = (|| -> anyhow::Result<_> {
             anyhow::ensure!(
                 self.vault_root == pending.root
-                    && self.current_rel == pending.current
+                    && self.pane.current_rel == pending.current
                     && self.editing.is_some() == pending.was_editing,
                 "The open note changed. Nothing was moved; preview again"
             );
@@ -973,7 +973,7 @@ impl Reader {
                 }
                 self.remap_move_sidebar(&pending.from, &pending.to, cx);
                 let next_current = okilum_core::link_rewrite::moved_path(
-                    &self.current_rel,
+                    &self.pane.current_rel,
                     &pending.from,
                     &pending.to,
                 );
@@ -989,10 +989,10 @@ impl Reader {
                     }
                 }
                 if showing_file {
-                    self.current_rel = next_current.clone();
-                    self.current_title = self.vault.note_title(&next_current);
+                    self.pane.current_rel = next_current.clone();
+                    self.pane.current_title = self.vault.note_title(&next_current);
                 }
-                if showing_file || next_current == self.current_rel {
+                if showing_file || next_current == self.pane.current_rel {
                     self.sync_move_input(window, cx);
                     if let Some(warning) = moved.warning {
                         self.link_notice = Some(warning.into());
@@ -1022,8 +1022,8 @@ impl Reader {
                     .map(|d| d.into());
                 // Even a concurrent deletion/read failure must not leave the UI
                 // pointing at the old path after a successful rename.
-                self.current_rel = next_current.clone();
-                self.current_title = self.vault.note_title(&next_current);
+                self.pane.current_rel = next_current.clone();
+                self.pane.current_title = self.vault.note_title(&next_current);
                 self.accept_prepared_document(
                     prepared_links::DocumentRequest {
                         rel: next_current,
@@ -1328,7 +1328,7 @@ mod tests {
         for rename in [false, true] {
             reader.update_in(visual, |r, window, cx| {
                 if rename {
-                    r.begin_rename(r.current_rel.clone(), window, cx);
+                    r.begin_rename(r.pane.current_rel.clone(), window, cx);
                 } else {
                     r.new_note(Some(""), window, cx);
                 }
@@ -1345,7 +1345,7 @@ mod tests {
                 assert_eq!(input.read(cx).value().as_ref(), "two word");
                 assert!(!r.note_move_pending);
                 assert!(!r.trash_pending);
-                assert_eq!(r.current_rel, "start.md");
+                assert_eq!(r.pane.current_rel, "start.md");
             });
             visual.simulate_keystrokes("escape");
         }
@@ -1359,7 +1359,7 @@ mod tests {
             assert!(!r.note_move_pending);
             assert!(r.link_notice.is_none());
             assert!(r.tree_focus.is_focused(window));
-            r.begin_rename(r.current_rel.clone(), window, cx);
+            r.begin_rename(r.pane.current_rel.clone(), window, cx);
         });
         visual.run_until_parked();
         visual.simulate_input("start");
@@ -1410,7 +1410,7 @@ mod tests {
                 visual.run_until_parked();
                 reader.update_in(visual, |r, window, cx| {
                     assert_eq!(
-                        r.current_rel, "start.md",
+                        r.pane.current_rel, "start.md",
                         "width={width}, key={key}, row={row:?}, cursor={:?}, notice={:?}",
                         r.tree.cursor, r.link_notice
                     );
@@ -1678,9 +1678,9 @@ mod tests {
             "[[Новое 🧠]]"
         );
         reader.read_with(visual, |reader, _| {
-            assert_eq!(reader.current_rel, "Folder/Новое 🧠.md");
-            assert_eq!(reader.current_title, "Новое 🧠");
-            assert!(reader.note_source.contains("durable draft"));
+            assert_eq!(reader.pane.current_rel, "Folder/Новое 🧠.md");
+            assert_eq!(reader.pane.current_title, "Новое 🧠");
+            assert!(reader.pane.note_source.contains("durable draft"));
             assert!(reader.editing.is_some());
         });
         std::fs::write(root.join("target.md"), "[[Folder/Новое 🧠#Heading|alias]]").unwrap();
@@ -1715,7 +1715,7 @@ mod tests {
             "[[Folder/Final#Heading|alias]]"
         );
         reader.read_with(visual, |reader, _| {
-            assert_eq!(reader.current_rel, "Folder/Final.md");
+            assert_eq!(reader.pane.current_rel, "Folder/Final.md");
             assert!(reader.editing.is_some());
         });
         // Missing index uses cancellable background fallback, without another dialog.
@@ -1733,7 +1733,7 @@ mod tests {
             assert!(
                 root.join("Folder/Fallback.md").exists(),
                 "current={} pending={} rename={:?} notice={:?}",
-                r.current_rel,
+                r.pane.current_rel,
                 r.note_move_pending,
                 r.renaming
                     .as_ref()
@@ -1807,7 +1807,7 @@ mod tests {
             reference_before
         );
         reader.read_with(visual, |reader, _| {
-            assert_eq!(reader.current_rel, "Folder/Final.md");
+            assert_eq!(reader.pane.current_rel, "Folder/Final.md");
             assert!(reader.editing.is_some());
         });
         // Large changes require the compact sheet; cancellation writes nothing.
@@ -2115,7 +2115,7 @@ mod tests {
         );
         reader.read_with(visual, |r, _| {
             assert!(!r.note_move_pending, "{:?}", r.link_notice);
-            assert_eq!(r.current_rel, "Новое 🧠/a.md", "{:?}", r.link_notice);
+            assert_eq!(r.pane.current_rel, "Новое 🧠/a.md", "{:?}", r.link_notice);
         });
         assert!(!root.join("Folder").exists());
         assert!(root.join("Новое 🧠/sub").is_dir());

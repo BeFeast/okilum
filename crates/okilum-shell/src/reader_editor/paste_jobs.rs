@@ -1119,7 +1119,7 @@ mod attachment_refresh_tests {
                 rendered.contains("file://")
                     && !okilum_core::render::has_unavailable_images(&rendered)
             );
-            assert_eq!(reader.current_rel, "note.md");
+            assert_eq!(reader.pane.current_rel, "note.md");
         });
         drop(held_watcher);
     }

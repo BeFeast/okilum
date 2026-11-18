@@ -440,7 +440,7 @@ mod tests {
         );
         reader.read_with(visual, |reader, _| {
             assert_eq!(reader.vault_root, current.canonicalize().unwrap());
-            assert_eq!(reader.current_rel, "note.md");
+            assert_eq!(reader.pane.current_rel, "note.md");
         });
         assert_eq!(
             reader_history::ReadingHistory::known_vault_roots(&state).unwrap(),
@@ -498,7 +498,7 @@ mod tests {
             assert_eq!(view.reader_window, window);
             assert_eq!(view.vault_root, roots[1]);
             assert_eq!(
-                view.current_rel, "two.md",
+                view.pane.current_rel, "two.md",
                 "old vault note is not carried across"
             );
             assert!(view.document_ready());
@@ -521,7 +521,7 @@ mod tests {
                 .into_iter()
                 .find(|reader| reader.read(cx).vault_root == roots[2])
                 .unwrap();
-            assert_eq!(other.read(cx).current_rel, "three.md");
+            assert_eq!(other.read(cx).pane.current_rel, "three.md");
             // An already-open vault focuses it instead of creating another Reader.
             open(&reader, &roots[2], cx);
         });
