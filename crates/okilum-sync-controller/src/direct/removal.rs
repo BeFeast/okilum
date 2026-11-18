@@ -4079,6 +4079,9 @@ mod tests {
         {
             let mut db = third.shared.db.lock().unwrap();
             db.peers.insert(sender.peer.id, sender.clone());
+            // A paired device, so a removal of it can be decided here.
+            let target = pairing(&removed, wire::public(&wire::random()?)?)?;
+            db.peers.insert(target.peer.id, target);
             for _ in 0..MAX_TOMBSTONES {
                 let mut closed = removal(Uuid::new_v4(), &["CCCCCCC"; 8].join("-"));
                 closed.readmitted = Some(Uuid::nil());
