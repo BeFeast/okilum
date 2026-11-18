@@ -354,7 +354,17 @@ fn admit_for(db: &mut Database, device: &str, admission: &Epoch, scope: &BTreeSe
     for removal in db.removals.iter_mut().filter(|r| older.contains(&r.id)) {
         removal.close_learned(Uuid::nil());
     }
-    rebroadcast(db, &older);
+    // Already-closed removals of these vaults carry the newer admission
+    // onward. Removals of any other vault are not announced.
+    let pass_on: Vec<Uuid> = db
+        .removals
+        .iter()
+        .filter(|removal| {
+            removal.device == device && removal.superseded() && removal_in_scope(removal, scope)
+        })
+        .map(|removal| removal.id)
+        .collect();
+    rebroadcast(db, &pass_on);
     let per = db.admission_vaults.entry(device.to_owned()).or_default();
     for vault in scope {
         let counter = per.entry(vault.clone()).or_insert(0);
