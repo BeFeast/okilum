@@ -3710,7 +3710,8 @@ mod tests {
         );
         readmit(&mut db, &bob, Uuid::new_v4(), &known, 64)?;
         assert_eq!(
-            admitted(&db, &bob).counter, 1,
+            admitted(&db, &bob).counter,
+            1,
             "the returning computer's mark does not raise the owner's counter"
         );
         db.admissions.insert(bob.clone(), epoch(MAX_EPOCH - 1, ""));
