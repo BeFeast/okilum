@@ -1173,6 +1173,9 @@ fn issue3079_removed_computer_rejoins_and_a_stale_removal_cannot_remove_it_again
 struct ThreeComputers {
     fixture: FirstSyncFixture,
     third_runtime: Runtime<Services>,
+    /// Kept so the third computer's runtime stays identifiable. Tests that
+    /// only drive its controller do not read the daemon identity.
+    #[allow(dead_code)]
     third: DaemonIdentity,
     third_services: Services,
     other: Controller,
@@ -1307,7 +1310,7 @@ fn issue3079_rejoin_through_another_computer_reuses_the_kept_copy() -> Result<()
         third: _,
         third_services,
         other,
-        elsewhere: _,
+        elsewhere,
     } = three_computers(root.path())?;
     let vault = &vault;
     let a = source.connect()?;
@@ -1407,6 +1410,11 @@ fn issue3079_rejoin_through_another_computer_reuses_the_kept_copy() -> Result<()
         Some(&b"edited on the removed computer"[..])
     );
     assert!(merged.contains_key("third.md"));
+    assert_eq!(
+        fs::read(elsewhere.join("third.md")).ok().as_deref(),
+        Some(&b"only on the third computer"[..]),
+        "the third computer's own file was rewritten"
+    );
     for bytes in kept.values() {
         assert!(
             merged.values().any(|value| value == bytes),
