@@ -4348,21 +4348,6 @@ mod tests {
         Ok(())
     }
 
-    fn received(peer: Uuid, vault: &str) -> Result<transfer::Transfer> {
-        Ok(serde_json::from_value(serde_json::json!({
-            "peer": peer,
-            "vault": vault,
-            "path": "/fixture",
-            "daemon": {
-                "config_file": "/fixture/config.xml",
-                "device_id": "fixture",
-                "certificate_hash": "fixture"
-            },
-            "connection": null,
-            "active": true
-        }))?)
-    }
-
     /// Two owners, two counters. A's new removal of X still applies after C's
     /// higher admission of Y, and the wire names X's own counter.
     #[test]
@@ -4439,7 +4424,7 @@ mod tests {
         let a_public = wire::public(&wire::random()?)?;
         let c = pairing(&["CCCCCCC"; 8].join("-"), c_public)?;
         db.peers.insert(c.peer.id, c.clone());
-        db.transfers.push(received(c.peer.id, "y")?);
+        db.transfers.push(received(c.peer.id, "y", &bob, true)?);
         accept_readmission(
             &mut db,
             &bob,
@@ -4480,7 +4465,7 @@ mod tests {
             peer.peer.id = id;
             db.peers.insert(id, peer);
         }
-        db.transfers.push(received(remote_id, "x")?);
+        db.transfers.push(received(remote_id, "x", &device, true)?);
         assert_eq!(foreign_owner(&db, "x"), Some(remote_id));
         drop(db);
         computer.shutdown();
