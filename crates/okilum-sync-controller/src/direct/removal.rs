@@ -17,15 +17,6 @@ use serde_json::json;
 use std::collections::BTreeSet;
 
 const HANDOFF_REFUSAL: &str = "This introducer still serves plain Syncthing computers. Their surviving relationships need an explicit handoff before removing this computer; no folder was changed";
-/// The folder a membership was removed from is gone or changed identity.
-#[derive(Debug)]
-struct FolderGone;
-impl std::fmt::Display for FolderGone {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("folder gone or changed identity")
-    }
-}
-impl std::error::Error for FolderGone {}
 #[derive(Debug)]
 struct NeedsHandoff;
 impl std::fmt::Display for NeedsHandoff {
