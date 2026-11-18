@@ -161,9 +161,11 @@ fn code2809_invalid_paged_json_keeps_error_and_navigates_above_auto_threshold(
             p.availability(View::Formatted),
             Availability::Disabled(_)
         ));
+        // An 8 MiB JSON is under the 64 MiB JSON editing limit (#2804): no
+        // size lock, so the warning takes the state slot by the name.
         let chrome = p.chrome(preview.clone(), cx);
-        assert_eq!(chrome.state.as_ref().unwrap().id, "code-readonly");
-        assert_eq!(chrome.badges[0].id, "code-invalid");
+        assert_eq!(chrome.state.as_ref().unwrap().id, "code-invalid");
+        assert!(chrome.badges.is_empty());
         let status = p.status(preview.clone(), cx);
         assert_eq!(status.label.as_ref(), "Not valid JSON.");
         assert!(status.text.contains("key must be a string"));
@@ -788,7 +790,8 @@ fn code2809_table_keeps_its_own_status_without_a_second_code_line(cx: &mut TestA
     let (preview, visual, _temp) = fixture(cx, "rows.json", "[{\"a\":1}]");
     preview.update(visual, |p, cx| {
         assert_eq!(p.view, View::Table);
-        p.source_bytes = Some(5_200_000);
+        // JSON has no 4 MiB size lock (#2804); use a real read-only reason.
+        p.mark_folder_unwritable_for_test(cx);
         cx.notify();
     });
     visual.run_until_parked();

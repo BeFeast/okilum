@@ -341,11 +341,6 @@ pub(crate) fn check_edit_location(path: &Path) -> anyhow::Result<()> {
 
 impl CodePreview {
     #[cfg(test)]
-    pub(crate) fn source_bytes_for_layout_test(&mut self, bytes: usize) {
-        self.source_bytes = Some(bytes);
-    }
-
-    #[cfg(test)]
     pub(crate) fn active_view(&self) -> View {
         self.view
     }
