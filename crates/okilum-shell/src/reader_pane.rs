@@ -121,6 +121,10 @@ pub(super) struct Surface {
     /// ticket, so a result that went stale meanwhile still changes nothing.
     pub deferred: Vec<Deferred>,
 
+    /// The Find field's subscription for a surface made after startup; the
+    /// first surface's lives with the Reader's own subscriptions.
+    pub _find_sub: Option<Subscription>,
+
     /// Test-only: holds the next document preparation before it publishes.
     #[cfg(test)]
     pub preparation_hold: Option<async_channel::Receiver<()>>,
@@ -180,6 +184,7 @@ impl Surface {
             usable_document: false,
             last_recorded_document: None,
             deferred: Vec::new(),
+            _find_sub: None,
             #[cfg(test)]
             preparation_hold: None,
             #[cfg(test)]
@@ -249,7 +254,13 @@ impl Surface {
 impl Reader {
     /// The surface with this id, active or not; `None` once it was closed.
     pub(super) fn surface_mut(&mut self, pane: PaneId) -> Option<&mut Surface> {
-        (self.pane.id == pane).then_some(&mut self.pane)
+        if self.pane.id == pane {
+            return Some(&mut self.pane);
+        }
+        self.split
+            .as_mut()
+            .map(|split| &mut split.other)
+            .filter(|other| other.id == pane)
     }
 
     pub(super) fn is_active_pane(&self, pane: PaneId) -> bool {
@@ -308,15 +319,17 @@ impl Reader {
         cx: &mut Context<Self>,
         mut f: impl FnMut(&mut Self, &mut Context<Self>) -> R,
     ) -> Vec<R> {
-        vec![f(self, cx)]
+        let mut results = vec![f(self, cx)];
+        if self.split.is_some() {
+            self.swap_panes();
+            results.push(f(self, cx));
+            self.swap_panes();
+        }
+        results
     }
 
     /// Replays what the now-active pane finished while it was inactive, then
     /// publishes its pending first document.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "#773 stage 4 calls this from its pane switch")
-    )]
     pub(super) fn resume_active_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         for work in std::mem::take(&mut self.pane.deferred) {
             work(self, window, cx);
@@ -347,7 +360,7 @@ pub(super) enum PaneExit {
 impl Reader {
     /// Every document surface of this window: one until the second pane exists.
     pub(super) fn surfaces(&self) -> impl Iterator<Item = &Surface> {
-        std::iter::once(&self.pane)
+        std::iter::once(&self.pane).chain(self.split.as_ref().map(|split| &split.other))
     }
 
     /// The pane whose editor owns `path`, if any.
@@ -374,10 +387,26 @@ impl Reader {
         pane: PaneId,
         cx: &mut Context<Self>,
     ) -> Result<(), PaneExit> {
-        if pane != self.pane.id() {
+        if pane == self.pane.id() {
+            return if self.leave_source(cx) {
+                Ok(())
+            } else {
+                Err(PaneExit::Refused)
+            };
+        }
+        if self
+            .split
+            .as_ref()
+            .is_none_or(|split| split.other.id != pane)
+        {
             return Err(PaneExit::Missing);
         }
-        if self.leave_source(cx) {
+        // The guard runs on the active surface: swap the inactive pane in for
+        // the call only, then put it back whatever the outcome.
+        self.swap_panes();
+        let left = self.leave_source(cx);
+        self.swap_panes();
+        if left {
             Ok(())
         } else {
             Err(PaneExit::Refused)
@@ -386,13 +415,10 @@ impl Reader {
 
     /// Closes `pane` after its exit guard. The last pane is refused before the
     /// guard runs, so its editor and draft are never touched.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "#773 stage 4 adds the second pane")
-    )]
     pub(super) fn close_pane(
         &mut self,
         pane: PaneId,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), PaneExit> {
         if !self.surfaces().any(|surface| surface.id() == pane) {
@@ -401,20 +427,333 @@ impl Reader {
         if self.surfaces().count() == 1 {
             return Err(PaneExit::LastPane);
         }
-        self.guard_pane_exit(pane, cx)
+        self.guard_pane_exit(pane, cx)?;
+        // Only now, after the guard, is the layout collapsed.
+        if pane == self.pane.id() {
+            self.swap_panes();
+            self.split = None;
+            self.pane_activated(window, cx);
+        } else {
+            self.split = None;
+        }
+        cx.notify();
+        Ok(())
     }
 
     /// Keeps the active pane and closes the other one through `close_pane`.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "#773 stage 4 adds the second pane")
-    )]
-    pub(super) fn unsplit(&mut self, cx: &mut Context<Self>) -> Result<(), PaneExit> {
+    pub(super) fn unsplit(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), PaneExit> {
         let active = self.pane.id();
         let Some(other) = self.surfaces().map(Surface::id).find(|id| *id != active) else {
             return Err(PaneExit::LastPane);
         };
-        self.close_pane(other, cx)
+        self.close_pane(other, window, cx)
+    }
+}
+
+/// The second pane (#773, stage 4): the inactive surface beside the active
+/// one. `Reader::pane` always holds the active surface, so every call site
+/// keeps working on "the" document; focus swaps the two.
+pub(super) struct Split {
+    pub other: Surface,
+    /// The active pane is drawn on the left.
+    pub active_left: bool,
+}
+
+/// Where a modified click on a resolved local note opens it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Destination {
+    /// The pane the link is in: an ordinary click.
+    Here,
+    /// The other pane, creating it when the window has one: Cmd/Ctrl+click.
+    Beside,
+    /// A new window through the existing New Window path: Cmd/Ctrl+Shift+click.
+    NewWindow,
+}
+
+impl Destination {
+    pub(super) fn of_click(modifiers: gpui::Modifiers) -> Self {
+        match (modifiers.secondary(), modifiers.shift) {
+            (true, true) => Self::NewWindow,
+            (true, false) => Self::Beside,
+            _ => Self::Here,
+        }
+    }
+}
+
+/// The second pane's host: create, focus, swap and draw (#773, stage 4).
+impl Reader {
+    /// A fresh document surface with its own TextView state and Find field,
+    /// configured like the first one.
+    pub(super) fn new_surface(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Surface {
+        let use_html = self.pane.use_html;
+        let sel_format = self.sel_format;
+        let find_input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in note…"));
+        let content = cx.new(|cx| {
+            if use_html {
+                TextViewState::html("", cx)
+                    .retain_selection_on_layout(true)
+                    .scrollable(true)
+                    .selectable(true)
+            } else {
+                TextViewState::markdown("", cx)
+                    .retain_selection_on_layout(true)
+                    .scrollable(true)
+                    .selectable(true)
+                    .selection_format(sel_format)
+            }
+        });
+        let content_sub = cx.observe(&content, |this, _, cx| this.content_changed(cx));
+        let mut surface = Surface::new(content, content_sub, find_input.clone(), use_html, false);
+        surface.properties_open = self.pane.properties_open;
+        surface.show_hidden_properties = self.pane.show_hidden_properties;
+        surface._find_sub = Some(cx.subscribe_in(
+            &find_input,
+            window,
+            |this: &mut Reader, _, e: &InputEvent, window, cx| match e {
+                InputEvent::Change => this.run_find(window, cx),
+                InputEvent::PressEnter { shift: true, .. } => this.find_step(-1, cx),
+                InputEvent::PressEnter { .. } => this.find_step(1, cx),
+                _ => {}
+            },
+        ));
+        surface
+    }
+
+    /// Runs `f` with the pane whose editor owns `input` as the active surface,
+    /// swapping it in for the call when it is the inactive one. Nothing runs
+    /// when no pane edits with that input any more.
+    pub(super) fn with_pane_of_input(
+        &mut self,
+        input: EntityId,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut Self, &mut Context<Self>),
+    ) {
+        let owns = |surface: &Surface| {
+            surface
+                .editing
+                .as_ref()
+                .is_some_and(|editing| editing.input().entity_id() == input)
+        };
+        if owns(&self.pane) {
+            f(self, cx);
+        } else if self.split.as_ref().is_some_and(|split| owns(&split.other)) {
+            self.swap_panes();
+            f(self, cx);
+            self.swap_panes();
+        }
+    }
+
+    /// Exchanges the active and inactive surfaces without any other effect.
+    /// Every caller restores the order or follows with `pane_activated`.
+    pub(super) fn swap_panes(&mut self) {
+        if let Some(split) = &mut self.split {
+            std::mem::swap(&mut self.pane, &mut split.other);
+            split.active_left = !split.active_left;
+        }
+    }
+
+    /// Makes `pane` the active pane. Focus alone never saves, drops an editor
+    /// or resets history, caret or scroll; the pane that loses focus keeps
+    /// everything, including an editor and its draft.
+    pub(super) fn focus_pane(&mut self, pane: PaneId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_active_pane(pane)
+            || self
+                .split
+                .as_ref()
+                .is_none_or(|split| split.other.id != pane)
+        {
+            return;
+        }
+        self.swap_panes();
+        self.pane_activated(window, cx);
+    }
+
+    pub(super) fn focus_other_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(other) = self.split.as_ref().map(|split| split.other.id) {
+            self.focus_pane(other, window, cx);
+        }
+    }
+
+    /// The window-level views that follow the active pane: Contents and
+    /// Linked from, the window title, the session record and the document
+    /// itself, re-read in case the source changed while the pane was inactive.
+    pub(super) fn pane_activated(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.outline_list
+            .reset_with_uniform_height(self.pane.outline.len(), px(OUTLINE_ROW_HEIGHT));
+        if !self.pane.current_rel.is_empty() {
+            let rel = self.pane.current_rel.clone();
+            self.set_backlinks(self.vault.backlinks(&rel), true);
+            self.show_window_title(Some(self.pane.current_title.clone()), window, cx);
+        }
+        self.resume_active_pane(window, cx);
+        self.record_usable_document(cx);
+        if self.pane.usable_document && !self.pane.current_rel.is_empty() {
+            self.reconcile_published_document(window, cx);
+        }
+        let focus = match &self.pane.editing {
+            Some(editing) => editing.input().focus_handle(cx),
+            None => self.pane.content.read(cx).focus_handle().clone(),
+        };
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    /// Cmd/Ctrl+\: split the window, showing the current note in a new pane
+    /// on the right (Read mode; only one pane may edit a note), or unsplit,
+    /// keeping the active pane after the other one's exit guard succeeds.
+    pub(super) fn toggle_split(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.split.is_some() {
+            if self.unsplit(window, cx).is_err() {
+                // The guard already reported the conflict or save failure.
+                cx.notify();
+            }
+            return;
+        }
+        let rel = self.pane.current_rel.clone();
+        self.open_beside(&rel, None, window, cx);
+    }
+
+    /// Opens a note in the other pane, creating it when the window has one,
+    /// and makes that pane active. The pane the link was in keeps its note,
+    /// editor, history and scroll.
+    pub(super) fn open_beside(
+        &mut self,
+        rel: &str,
+        heading: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.split.is_none() {
+            let other = self.new_surface(window, cx);
+            self.split = Some(Split {
+                other,
+                active_left: true,
+            });
+        }
+        self.focus_other_pane(window, cx);
+        if !rel.is_empty() {
+            self.open_note_at(rel, None, heading, window, cx);
+        }
+    }
+
+    /// The inactive pane: its note title and its rendered document, read-only.
+    /// A layer above it takes the first click and only focuses the pane, so a
+    /// click never acts on the active pane's state through this drawing.
+    pub(super) fn render_inactive_pane(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let split = self.split.as_ref()?;
+        let other = &split.other;
+        let pane = other.id;
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let title = if other.current_title.is_empty() {
+            other.current_rel.clone()
+        } else {
+            other.current_title.clone()
+        };
+        let mut style = reader_text_zoom::document_style(cx);
+        style.heading_base_font_size = px(reader_ui_state::font_size(cx));
+        let editing = other.editing.is_some();
+        Some(
+            v_flex()
+                .id("reader-inactive-pane")
+                .debug_selector(|| "reader-inactive-pane".into())
+                .size_full()
+                .min_w(px(0.))
+                .overflow_hidden()
+                .relative()
+                .child(
+                    h_flex()
+                        .px_4()
+                        .py_2()
+                        .gap_2()
+                        .text_sm()
+                        .text_color(muted)
+                        .child(div().truncate().child(title))
+                        .when(editing, |row| row.child("· Editing")),
+                )
+                .child(
+                    div().flex_1().min_h_0().w_full().child(
+                        TextView::new(&other.content)
+                            .font_family(reader_fonts::note(cx))
+                            .scrollable(true)
+                            .selectable(false)
+                            .selection_format(self.sel_format)
+                            .style(style)
+                            .text_size(px(reader_ui_state::font_size(cx)))
+                            .pl(note_gutter(window))
+                            .pr(px(READER_SIDE_PADDING))
+                            .w_full()
+                            .h_full(),
+                    ),
+                )
+                .child(
+                    div()
+                        .id("reader-inactive-pane-focus")
+                        .debug_selector(|| "reader-inactive-pane-focus".into())
+                        .absolute()
+                        .inset_0()
+                        .cursor_pointer()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                                cx.stop_propagation();
+                                this.focus_pane(pane, window, cx);
+                            }),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The active pane's surface beside the inactive one, in their order.
+    pub(super) fn render_split(
+        &self,
+        active: AnyElement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(inactive) = self.render_inactive_pane(window, cx) else {
+            return active;
+        };
+        let active_left = self.split.as_ref().is_some_and(|split| split.active_left);
+        let border = cx.theme().border;
+        let active = div()
+            .id("reader-active-pane")
+            .debug_selector(|| "reader-active-pane".into())
+            .flex_1()
+            .flex_basis(px(0.))
+            .min_w(px(0.))
+            .h_full()
+            .child(active)
+            .into_any_element();
+        let inactive = div()
+            .flex_1()
+            .flex_basis(px(0.))
+            .min_w(px(0.))
+            .h_full()
+            .child(inactive)
+            .into_any_element();
+        let divider = div().w(px(1.)).h_full().bg(border).into_any_element();
+        let (left, right) = if active_left {
+            (active, inactive)
+        } else {
+            (inactive, active)
+        };
+        h_flex()
+            .id("reader-split")
+            .size_full()
+            .child(left)
+            .child(divider)
+            .child(right)
+            .into_any_element()
     }
 }
 

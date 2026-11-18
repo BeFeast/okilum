@@ -441,6 +441,8 @@ actions!(
         ScrollTop,
         ScrollBottom,
         ToggleNotes,
+        ToggleSplit,
+        FocusOtherPane,
         ToggleBacklinks,
         MaximizeNote,
         ToggleProject,
@@ -555,6 +557,8 @@ pub(crate) fn view_menu(cx: &App) -> Menu {
             MenuItem::action("Actual Size", reader_text_zoom::Reset),
             MenuItem::separator(),
             MenuItem::action("Now / Tree", ToggleLeftMode),
+            MenuItem::action("Split View", ToggleSplit),
+            MenuItem::action("Focus Other Pane", FocusOtherPane),
             MenuItem::action("Reveal in Tree", FocusCurrentFolder),
             MenuItem::action("Maximize Note", MaximizeNote),
             MenuItem::action("Full Note Width", ToggleNoteWidth)
@@ -854,7 +858,9 @@ fn bind_keys(cx: &mut App) {
             FocusCurrentFolder,
             Some("Reader > Input"),
         ),
-        // ⌘\\ / Ctrl+\\ stays unbound: it is reserved for split view (#773).
+        // Split view (Oleg, 2026-11-17, #773); the Notes toggle moved to NOTES_KEY.
+        KeyBinding::new("secondary-\\", ToggleSplit, ctx),
+        KeyBinding::new("secondary-\\", ToggleSplit, Some("Reader > Input")),
         KeyBinding::new(NOTES_KEY, ToggleNotes, ctx),
         // Layouts that report Shift+backslash as the bar itself.
         #[cfg(not(target_os = "macos"))]
@@ -1485,7 +1491,10 @@ fn reader_plugins_at(
                     this.file_link_menu(url, event.position(), window, cx)
                 });
             } else {
-                handle_link(&entity, url, window, cx);
+                // Cmd/Ctrl+click opens a resolved note beside, +Shift in a
+                // new window (#773); every other link keeps its own route.
+                let destination = reader_pane::Destination::of_click(event.modifiers());
+                reader_link_navigation::handle_link_to(&entity, url, destination, window, cx);
             }
         }),
         Arc::new(move |url| {
@@ -2101,6 +2110,8 @@ struct Reader {
     /// drawing the focused element, the focus-lost listener moves focus to
     /// the document (#2957).
     refocus_if_lost: bool,
+    /// The second pane, when the window is split (#773).
+    split: Option<reader_pane::Split>,
     _subs: Vec<Subscription>,
 }
 
@@ -2422,6 +2433,7 @@ impl Reader {
             body_viewport_width: window.viewport_size().width,
             resizing_panel: None,
             refocus_if_lost: false,
+            split: None,
             _subs: vec![find_sub],
         };
         let weak = cx.weak_entity();
@@ -8864,6 +8876,14 @@ impl Reader {
             .on_action(cx.listener(|this, _: &ToggleNotes, window, cx| {
                 this.toggle_panel(reader_layout::Panel::Notes, window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &ToggleSplit, window, cx| this.toggle_split(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &FocusOtherPane, window, cx| {
+                    this.focus_other_pane(window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &ToggleBacklinks, window, cx| {
                 this.toggle_panel(reader_layout::Panel::Backlinks, window, cx)
             }))
@@ -12735,15 +12755,25 @@ mod document_link_landing_tests {
             visual.run_until_parked();
             view.read_with(visual, |v, _| assert!(v.panels.visible(side, 800.)));
             if side == reader_layout::Panel::Notes {
-                // #773: the old chord is free for split view and no longer
-                // toggles the sidebar.
-                visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+                // #773: the old chord now splits the view and no longer
+                // toggles the sidebar; pressing it again unsplits.
+                let split_key = if cfg!(target_os = "macos") {
                     "cmd-\\"
                 } else {
                     "ctrl-\\"
-                });
+                };
+                visual.simulate_keystrokes(split_key);
                 visual.run_until_parked();
-                view.read_with(visual, |v, _| assert!(v.panels.visible(side, 800.)));
+                view.read_with(visual, |v, _| {
+                    assert!(v.panels.visible(side, 800.));
+                    assert!(
+                        v.split.is_some(),
+                        "positive control: the chord split the view"
+                    );
+                });
+                visual.simulate_keystrokes(split_key);
+                visual.run_until_parked();
+                view.read_with(visual, |v, _| assert!(v.split.is_none()));
             }
             visual.simulate_keystrokes(if side == reader_layout::Panel::Notes {
                 NOTES_KEY

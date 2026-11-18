@@ -1448,11 +1448,16 @@ impl Reader {
                 cx.notify();
             },
         );
-        let blur = cx.on_blur(&input.focus_handle(cx), window, |this, window, cx| {
+        let blurred = input.entity_id();
+        let blur = cx.on_blur(&input.focus_handle(cx), window, move |this, window, cx| {
             // History is a read-only detour; preserve a dirty live buffer.
-            if this.active_timeline().is_none() {
-                this.save_source_in_background(window, cx);
-            }
+            // Focus moving to the other pane swaps first: save the pane whose
+            // editor lost focus, not the one that gained it (#773).
+            this.with_pane_of_input(blurred, cx, |this, cx| {
+                if this.active_timeline().is_none() {
+                    this.save_source_in_background(window, cx);
+                }
+            });
         });
         if store.has_pending_revision() {
             reader_toast::transient("Unsaved changes restored", window, cx);
