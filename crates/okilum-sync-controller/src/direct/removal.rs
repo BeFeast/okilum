@@ -475,6 +475,28 @@ pub(super) fn readmit(
     known: &[Uuid],
     high_water: u64,
 ) -> Result<()> {
+    readmit_with_vaults(db, device, pairing, known, &BTreeMap::new(), high_water)
+}
+/// The vaults each removal the returning computer applied covered there,
+/// sent with its pairing request (#3079).
+pub(super) fn applied_vaults(db: &Database, device: &str) -> BTreeMap<Uuid, BTreeSet<String>> {
+    db.removals
+        .iter()
+        .filter(|r| {
+            r.device == device && !r.superseded() && (r.local_applied || r.folders.is_some())
+        })
+        .map(|r| (r.id, r.vaults.clone()))
+        .take(MAX_REMOVALS)
+        .collect()
+}
+pub(super) fn readmit_with_vaults(
+    db: &mut Database,
+    device: &str,
+    pairing: Uuid,
+    known: &[Uuid],
+    known_vaults: &BTreeMap<Uuid, BTreeSet<String>>,
+    high_water: u64,
+) -> Result<()> {
     // The returning computer may know a few cycles this one missed, not an
     // arbitrary jump that would exhaust the epoch range (#3079).
     ensure!(
@@ -526,10 +548,14 @@ pub(super) fn readmit(
     // A removal the returning computer applied but this computer never saw:
     // close it for the vaults shared here and deliver that closed version to
     // their peers, which may still hold it open (#3079).
+    // Only the vaults that removal covered, and only those shared here.
     let shared: BTreeSet<String> = db.attached.iter().map(|v| v.folder_id.clone()).collect();
     for id in new {
         let mut tombstone = Removal::tombstone(id, device, pairing);
-        tombstone.vaults = shared.clone();
+        tombstone.vaults = known_vaults
+            .get(&id)
+            .map(|vaults| vaults.intersection(&shared).cloned().collect())
+            .unwrap_or_default();
         db.removals.push(tombstone);
         closed.push(id);
     }
@@ -590,10 +616,9 @@ pub(super) fn accept_readmission(
     for closed in readmitted {
         let room = db.removals.len() < MAX_TOMBSTONES;
         match db.removals.iter_mut().find(|r| r.id == closed.id) {
-            Some(removal) if removal.device == own => {
-                removal.close(pairing);
-                removal.vaults.extend(closed.vaults.iter().cloned());
-            }
+            // The vaults this computer recorded for its own removal stand;
+            // the approver's view never widens them.
+            Some(removal) if removal.device == own => removal.close(pairing),
             Some(_) => {}
             None if !closed.id.is_nil() && room => {
                 let mut tombstone = Removal::tombstone(closed.id, own, pairing);
@@ -992,6 +1017,17 @@ impl Controller {
                 && version.epoch.as_ref().is_none_or(Epoch::valid),
             "Invalid removal epoch"
         );
+        if let Some(admission) = &version.admission {
+            // A learned admission can be a few cycles ahead, not an arbitrary
+            // jump that would leave the device unremovable; refuse it so the
+            // sender retries with a real one (#3079).
+            let db = self.shared.db.lock().unwrap();
+            ensure!(
+                admission.counter <= high_water(&db, &device).saturating_add(64)
+                    && admission.counter.saturating_add(1) < MAX_EPOCH,
+                "Invalid removal epoch"
+            );
+        }
         // The removed computer, through any pairing it kept, cannot close its
         // own removal or assert a newer admission of itself: that needs a
         // fresh approval from a computer that still syncs the vault (#3079).
@@ -1493,7 +1529,9 @@ impl Controller {
                     let mut restore = Undo::default();
                     for (peer, paired) in std::mem::take(&mut undo.pairings) {
                         if owned_pairing(&peer) {
-                        } else if paired.syncthing_device.as_deref() == Some(device.as_str()) {
+                        } else if paired.syncthing_device.as_deref() == Some(device.as_str())
+                            || carries(&db, peer, &paired, &vaults)
+                        {
                             deferred.pairings.insert(peer, paired);
                         } else {
                             restore.pairings.insert(peer, paired);
@@ -3599,7 +3637,14 @@ mod tests {
         db.attached
             .push(existing_vault(&["CCCCCCC"; 8].join("-"), "vault")?);
         db.peers.insert(originator.peer.id, originator.clone());
-        readmit(&mut db, &bob, Uuid::new_v4(), &[unseen], 0)?;
+        readmit_with_vaults(
+            &mut db,
+            &bob,
+            Uuid::new_v4(),
+            &[unseen],
+            &BTreeMap::from([(unseen, BTreeSet::from(["vault".into()]))]),
+            0,
+        )?;
         let record = db.removals.iter().find(|r| r.id == unseen).unwrap();
         assert!(record.superseded() && record.vaults.contains("vault"));
         assert!(
@@ -4117,6 +4162,188 @@ mod tests {
         assert_eq!(
             third.shared.db.lock().unwrap().removals.len(),
             MAX_TOMBSTONES + 1
+        );
+        third.shutdown();
+        Ok(())
+    }
+
+    /// Review 83236: an unseen removal is tombstoned only for the vaults the
+    /// returning computer says it covered and this computer shares, and the
+    /// returning computer keeps the vaults it recorded itself.
+    #[test]
+    fn issue3079_unseen_removal_vaults_are_never_widened() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let approver = Controller::open(root.path().join("approver"), vec![])?;
+        let own = ["CCCCCCC"; 8].join("-");
+        let bob = ["BBBBBBB"; 8].join("-");
+        let unseen = Uuid::new_v4();
+        let pairing_id = Uuid::new_v4();
+        {
+            let mut db = approver.shared.db.lock().unwrap();
+            db.attached.push(existing_vault(&own, "v1")?);
+            db.attached.push(existing_vault(&own, "v2")?);
+            readmit_with_vaults(
+                &mut db,
+                &bob,
+                pairing_id,
+                &[unseen],
+                &BTreeMap::from([(unseen, BTreeSet::from(["v1".into(), "v9".into()]))]),
+                0,
+            )?;
+            let record = db.removals.iter().find(|r| r.id == unseen).unwrap();
+            assert_eq!(
+                record.vaults,
+                BTreeSet::from(["v1".into()]),
+                "tombstone vaults widened"
+            );
+            // An older joiner sent no vaults: nothing is assumed.
+            let other = Uuid::new_v4();
+            readmit(&mut db, &bob, Uuid::new_v4(), &[other], 0)?;
+            assert!(db
+                .removals
+                .iter()
+                .find(|r| r.id == other)
+                .unwrap()
+                .vaults
+                .is_empty());
+        }
+        approver.shutdown();
+        let returning = Controller::open(root.path().join("returning"), vec![])?;
+        let mut db = returning.shared.db.lock().unwrap();
+        let mut own_removal = removal(unseen, &bob);
+        own_removal.vaults = BTreeSet::from(["v1".into()]);
+        db.removals.push(own_removal);
+        let inviter = pairing(&own, wire::public(&wire::random()?)?)?;
+        db.peers.insert(pairing_id, inviter.clone());
+        accept_readmission(
+            &mut db,
+            &bob,
+            pairing_id,
+            &inviter.public,
+            &[Closed {
+                id: unseen,
+                vaults: BTreeSet::from(["v1".into(), "v2".into()]),
+            }],
+            Some(epoch(1, "CCCC")),
+        )?;
+        assert_eq!(
+            db.removals.iter().find(|r| r.id == unseen).unwrap().vaults,
+            BTreeSet::from(["v1".into()]),
+            "the approval widened the returning computer's own removal"
+        );
+        assert!(!released_by_readmission(&db, &bob, Uuid::new_v4(), "v2"));
+        drop(db);
+        returning.shutdown();
+        Ok(())
+    }
+    /// Review 83236: while a newer removal stands, a pairing the older removal
+    /// revoked stays revoked if it carries a vault the newer one covers; one
+    /// that carries only other vaults comes back.
+    #[test]
+    fn issue3079_compensation_defers_pairings_carrying_covered_vaults() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let third = Controller::open(root.path().join("third"), vec![])?;
+        let removed = ["BBBBBBB"; 8].join("-");
+        let mut covered = pairing(&["EEEEEEE"; 8].join("-"), wire::public(&wire::random()?)?)?;
+        covered.allowed = vec!["v1".into()];
+        let mut unrelated = pairing(&["FFFFFFF"; 8].join("-"), wire::public(&wire::random()?)?)?;
+        unrelated.allowed = vec!["v9".into()];
+        let (older, newer) = (Uuid::new_v4(), Uuid::new_v4());
+        {
+            let mut db = third.shared.db.lock().unwrap();
+            db.revoked_peers.insert(covered.peer.id, covered.clone());
+            db.revoked_peers
+                .insert(unrelated.peer.id, unrelated.clone());
+            let mut first = removal(older, &removed);
+            first.readmitted = Some(Uuid::nil());
+            first.undo = Some(Undo {
+                pairings: BTreeMap::from([
+                    (covered.peer.id, covered.clone()),
+                    (unrelated.peer.id, unrelated.clone()),
+                ]),
+                pending: true,
+                ..Undo::default()
+            });
+            db.removals.push(first);
+            let mut second = removal(newer, &removed);
+            second.vaults = BTreeSet::from(["v1".into()]);
+            second.epoch = Some(epoch(2, "AAAA"));
+            db.removals.push(second);
+        }
+        third.compensate_removals()?;
+        let db = third.shared.db.lock().unwrap();
+        assert!(
+            !db.peers.contains_key(&covered.peer.id),
+            "a pairing carrying a covered vault came back while the newer removal stands"
+        );
+        assert!(db.peers.contains_key(&unrelated.peer.id));
+        let undo = db
+            .removals
+            .iter()
+            .find(|r| r.id == older)
+            .unwrap()
+            .undo
+            .clone();
+        assert!(undo.is_some_and(|u| u.pending && u.pairings.contains_key(&covered.peer.id)));
+        drop(db);
+        third.shutdown();
+        Ok(())
+    }
+    /// Review 83236: a delivered admission far ahead of this computer's history
+    /// or at the end of the range is refused before anything closes.
+    #[test]
+    fn issue3079_learned_admission_is_bounded() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let third = Controller::open(root.path().join("third"), vec![])?;
+        let removed = ["BBBBBBB"; 8].join("-");
+        let sender = pairing(&["AAAAAAA"; 8].join("-"), wire::public(&wire::random()?)?)?;
+        let id = Uuid::new_v4();
+        {
+            let mut db = third.shared.db.lock().unwrap();
+            db.peers.insert(sender.peer.id, sender.clone());
+            db.removals.push(removal(id, &removed));
+        }
+        for counter in [65, MAX_EPOCH - 1] {
+            assert!(third
+                .receive_removal(
+                    sender.peer.id,
+                    id,
+                    removed.clone(),
+                    BTreeSet::from(["vault".into()]),
+                    None,
+                    Version {
+                        superseded: true,
+                        epoch: Some(Epoch::default()),
+                        admission: Some(epoch(counter, "AAAA")),
+                    },
+                )
+                .is_err());
+        }
+        {
+            let db = third.shared.db.lock().unwrap();
+            assert_eq!(admitted(&db, &removed), Epoch::default());
+            assert!(!db
+                .removals
+                .iter()
+                .find(|r| r.id == id)
+                .unwrap()
+                .superseded());
+        }
+        third.receive_removal(
+            sender.peer.id,
+            id,
+            removed.clone(),
+            BTreeSet::from(["vault".into()]),
+            None,
+            Version {
+                superseded: true,
+                epoch: Some(Epoch::default()),
+                admission: Some(epoch(64, "AAAA")),
+            },
+        )?;
+        assert_eq!(
+            admitted(&third.shared.db.lock().unwrap(), &removed).counter,
+            64
         );
         third.shutdown();
         Ok(())

@@ -155,6 +155,7 @@ pub(super) fn remember(peer: &mut Paired, transport: &Transport) -> Result<()> {
         syncthing_device: Some(transport.device.clone()),
         removals: vec![],
         high_water: 0,
+        removal_vaults: BTreeMap::new(),
     }
     .validate(&peer.public)?;
     peer.syncthing_device = Some(transport.device.clone());

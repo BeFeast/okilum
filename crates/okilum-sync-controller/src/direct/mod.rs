@@ -119,6 +119,9 @@ struct Request {
     /// so its approval is minted above it (#3079).
     #[serde(default, skip_serializing_if = "is_zero")]
     high_water: u64,
+    /// The vaults each of `removals` covered on this computer (#3079).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    removal_vaults: BTreeMap<Uuid, std::collections::BTreeSet<String>>,
 }
 fn is_zero(value: &u64) -> bool {
     *value == 0
@@ -133,6 +136,15 @@ impl Request {
         ensure!(
             self.removals.len() <= 1024
                 && self.high_water < removal::MAX_EPOCH
+                && self.removal_vaults.len() <= 1024
+                && self
+                    .removal_vaults
+                    .keys()
+                    .all(|id| self.removals.contains(id))
+                && self
+                    .removal_vaults
+                    .values()
+                    .all(|vaults| vaults.len() <= 256 && vaults.iter().all(|v| v.len() <= 128))
                 && (self.removals.is_empty() || self.syncthing_device.is_some()),
             "invalid removal history in pairing request"
         );
@@ -835,6 +847,10 @@ impl Controller {
             high_water: syncthing_device
                 .as_deref()
                 .map_or(0, |device| removal::high_water(&db, device)),
+            removal_vaults: syncthing_device
+                .as_deref()
+                .map(|device| removal::applied_vaults(&db, device))
+                .unwrap_or_default(),
             syncthing_device,
         };
         db.name = name.to_owned();
@@ -986,7 +1002,14 @@ impl Controller {
         };
         // Approving a removed computer again readmits it (#3079).
         if let Some(device) = paired.syncthing_device.clone() {
-            removal::readmit(&mut db, &device, id, &request.removals, request.high_water)?;
+            removal::readmit_with_vaults(
+                &mut db,
+                &device,
+                id,
+                &request.removals,
+                &request.removal_vaults,
+                request.high_water,
+            )?;
         }
         db.peers.insert(id, paired);
         db.invitation.as_mut().unwrap().approved = Some(id);
@@ -1760,6 +1783,7 @@ mod tests {
             syncthing_device: Some(["AAAAAAA"; 8].join("-")),
             removals: vec![],
             high_water: 0,
+            removal_vaults: BTreeMap::new(),
         };
         valid.validate(&signer)?;
         let restored: Request = serde_json::from_slice(&serde_json::to_vec(&valid)?)?;
