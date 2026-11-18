@@ -944,13 +944,15 @@ mod tests {
         // Positive control: the action has a default on every OS.
         assert!(!strokes.is_empty(), "RevealFile lost its default");
         if cfg!(windows) {
-            assert_eq!(strokes, ["ctrl-shift-s"]);
+            assert_eq!(strokes, ["ctrl-shift-u"]);
         } else if cfg!(target_os = "macos") {
             assert_eq!(strokes, ["alt-win-r"]);
         }
-        // The Windows chord obeys the AltGr / language-switch rule too.
-        let windows = gpui::Keystroke::parse("ctrl-shift-s").unwrap();
+        // The Windows chord obeys the AltGr / language-switch rule too, and
+        // is not Ctrl+Shift+S, which Windows apps use for Save All (#3133).
+        let windows = gpui::Keystroke::parse(REVEAL_FILE_KEY_WINDOWS).unwrap();
         assert!(altgr_conflict(true, &windows.modifiers, &windows.key).is_none());
+        assert_ne!(REVEAL_FILE_KEY_WINDOWS, "ctrl-shift-s");
     }
 
     #[gpui::test]

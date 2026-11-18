@@ -59,12 +59,14 @@ double-click, modified selection and disclosure behavior remain the same.
 
 ## Show in Finder / folder / Explorer
 
-**Reveal (#612, #3110):** Option+Command+R on macOS, Alt+Super+R on Linux and
-Ctrl+Shift+S on Windows shows the open file, or the sidebar item under the tree
-cursor, selected in the system file manager. Windows does not get Win+Alt+R:
-the Xbox Game Bar starts a screen recording on it and the key never reaches
-Okilum. When Explorer can neither select the item nor open its folder, a toast
-says so instead of the action doing nothing.
+**Reveal (#612, #3110, #3133):** Option+Command+R on macOS, Alt+Super+R on
+Linux and Ctrl+Shift+U on Windows shows the open file, or the sidebar item under
+the tree cursor, selected in the system file manager. Windows does not get
+Win+Alt+R: the Xbox Game Bar starts a screen recording on it and the key never
+reaches Okilum. It does not get Ctrl+Shift+S either, which Windows apps use for
+Save All; Ctrl+Shift+E, the mnemonic choice, is Live Preview. When Explorer can
+neither select the item nor open its folder, a toast says so instead of the
+action doing nothing.
 
 ## Open in terminal
 

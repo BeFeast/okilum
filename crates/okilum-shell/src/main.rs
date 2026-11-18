@@ -507,7 +507,10 @@ pub(crate) const VALIDATE_CODE_KEY: &str = windows_key("alt-shift-v", "ctrl-shif
 pub(crate) const REPAIR_CODE_KEY: &str = windows_key("alt-shift-r", "ctrl-shift-r");
 /// Show in Finder/folder/Explorer. Not Win+Alt+R on Windows: the Xbox Game
 /// Bar records the screen there and the key never reaches Okilum (#3110).
-pub(crate) const REVEAL_FILE_KEY: &str = windows_key("alt-cmd-r", "ctrl-shift-s");
+/// Not Ctrl+Shift+S either: that is Save All in Windows apps (#3133), and
+/// Ctrl+Shift+E is Live Preview. U is free in every Okilum context.
+pub(crate) const REVEAL_FILE_KEY_WINDOWS: &str = "ctrl-shift-u";
+pub(crate) const REVEAL_FILE_KEY: &str = windows_key("alt-cmd-r", REVEAL_FILE_KEY_WINDOWS);
 
 /// ⌥⌘W / Ctrl+Alt+W (Ctrl+Shift+W on Windows): normal (reading width) or
 /// full note width. Free in every Reader context; W for width.
