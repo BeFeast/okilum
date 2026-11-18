@@ -189,7 +189,7 @@ pub(super) fn requests(db: &Database, scope: Uuid) -> Vec<Request> {
                 device: r.device.clone(),
                 superseded: r.readmitted.is_some(),
                 epoch: r.epoch.clone(),
-                admission: known_admission(db, &r.device),
+                admission: known_admission_for(db, &r.device, &vaults),
                 mesh: r.mesh.as_ref().map(|mesh| {
                     mesh.iter()
                         .filter(|(v, _)| vaults.contains(*v))
@@ -237,6 +237,30 @@ pub(super) fn admitted(db: &Database, device: &str) -> Epoch {
 pub(super) fn known_admission(db: &Database, device: &str) -> Option<Epoch> {
     Some(admitted(db, device)).filter(|epoch| epoch.counter != 0)
 }
+/// The admission asserted for these vaults, not the highest counter stored
+/// for any other vault of the same device (#3079).
+fn known_admission_for(db: &Database, device: &str, vaults: &BTreeSet<String>) -> Option<Epoch> {
+    if let Some(per) = db.admission_vaults.get(device) {
+        if !vaults.is_empty() && vaults.iter().any(|vault| per.contains_key(vault)) {
+            let counter = vaults
+                .iter()
+                .map(|vault| per.get(vault).copied().unwrap_or(0))
+                .min()
+                .unwrap_or(0);
+            if counter == 0 {
+                return None;
+            }
+            let by = db
+                .admissions
+                .get(device)
+                .filter(|epoch| epoch.counter == counter)
+                .map(|epoch| epoch.by.clone())
+                .unwrap_or_default();
+            return Some(Epoch { counter, by });
+        }
+    }
+    known_admission(db, device)
+}
 /// Whether a removal of `device` from `epoch` is older than what this
 /// computer knows. A removal without an epoch (older software or journal) is
 /// older than any known admission, and than any closed removal of `device`.
@@ -262,6 +286,8 @@ fn stale_for(
                         .and_then(|per| per.get(vault))
                         .copied()
                         .unwrap_or(0);
+                    // `horizon` is the admission this message's owner asserted
+                    // for these vaults. It is not the device-wide maximum.
                     let effective = if message {
                         stored.max(horizon.counter)
                     } else {
@@ -706,11 +732,15 @@ pub(super) fn readmit_with_vaults(
         .map(|v| v.folder_id.clone())
         .collect();
     for id in new {
+        // An empty or partial scope grants nothing: the approver must own
+        // every vault the returning computer names (#3079).
+        let Some(reported) = known_vaults.get(&id).filter(|vaults| {
+            !vaults.is_empty() && vaults.iter().all(|vault| positively_owns(db, vault))
+        }) else {
+            continue;
+        };
         let mut tombstone = Removal::tombstone(id, device, pairing);
-        tombstone.vaults = known_vaults
-            .get(&id)
-            .map(|vaults| vaults.intersection(&shared).cloned().collect())
-            .unwrap_or_default();
+        tombstone.vaults = reported.clone();
         db.removals.push(tombstone);
         closed.push(id);
     }
@@ -783,11 +813,17 @@ pub(super) fn accept_readmission(
     for closed in readmitted {
         let room = db.removals.len() < MAX_TOMBSTONES;
         match db.removals.iter_mut().find(|r| r.id == closed.id) {
-            // The vaults this computer recorded for its own removal stand;
-            // the approver's view never widens them.
-            Some(removal) if removal.device == own => removal.close(pairing),
+            // The vaults this computer recorded stand. Close them only when
+            // every one was received from this approver; another owner's
+            // removal stays open (#3079).
+            Some(removal) if removal.device == own && approver_owns(db, inviter, removal) => {
+                removal.close(pairing);
+            }
             Some(_) => {}
-            None if !closed.id.is_nil() && room => {
+            None if !closed.id.is_nil()
+                && room
+                && approver_owns_vaults(db, inviter, &closed.vaults) =>
+            {
                 let mut tombstone = Removal::tombstone(closed.id, own, pairing);
                 tombstone.vaults = closed.vaults.clone();
                 db.removals.push(tombstone);
@@ -981,12 +1017,56 @@ pub(super) fn foreign_owner(db: &Database, vault: &str) -> Option<Uuid> {
     let Some(device) = device_of(db, recorded) else {
         return Some(recorded);
     };
+    // Keep the pairing the vault was actually received through while it is
+    // still live. Another pairing with the same device, including one whose
+    // UUID sorts first and whose listener is local, is not the owner route.
+    if db.peers.contains_key(&recorded) {
+        return Some(recorded);
+    }
     db.peers
         .iter()
         .find_map(|(id, peer)| {
             (peer.syncthing_device.as_deref() == Some(device.as_str())).then_some(*id)
         })
         .or(Some(recorded))
+}
+/// This computer enrolled `vault`. Absence of a transfer is not ownership.
+fn positively_owns(db: &Database, vault: &str) -> bool {
+    db.sources.iter().any(|source| source.owns(vault))
+        || db
+            .attached
+            .iter()
+            .any(|attached| attached.folder_id == vault)
+            && db
+                .transfers
+                .iter()
+                .all(|transfer| transfer.vault() != vault)
+}
+fn pairing_public(db: &Database, peer: Uuid) -> Option<&[u8]> {
+    db.peers
+        .get(&peer)
+        .or_else(|| db.revoked_peers.get(&peer))
+        .map(|paired| paired.public.as_slice())
+}
+/// Every vault of this removal was received from the approving computer.
+/// No recorded owner (unit journals) keeps the previous close.
+fn approver_owns(db: &Database, inviter: &[u8], removal: &Removal) -> bool {
+    approver_owns_vaults(db, inviter, &removal.vaults)
+}
+fn approver_owns_vaults(db: &Database, inviter: &[u8], vaults: &BTreeSet<String>) -> bool {
+    if vaults.is_empty() {
+        return false;
+    }
+    let owners: Vec<Option<Uuid>> = vaults
+        .iter()
+        .map(|vault| foreign_owner(db, vault))
+        .collect();
+    if owners.iter().all(Option::is_none) {
+        return true;
+    }
+    owners.iter().all(|owner| {
+        owner.is_some_and(|peer| pairing_public(db, peer).is_some_and(|public| public == inviter))
+    })
 }
 /// A removal is the vault owner's decision when every vault was received
 /// from `sender`'s computer. Empty, or any vault this computer itself
@@ -1340,17 +1420,28 @@ impl Controller {
         };
         let (learn, stale) = {
             let db = self.shared.db.lock().unwrap();
-            let current = admitted(&db, &device);
-            let admission = version.admission.clone().unwrap_or_default();
-            let horizon = current.clone().max(admission.clone());
+            let stored_behind = version.admission.as_ref().is_some_and(|admission| {
+                vaults.iter().any(|vault| {
+                    db.admission_vaults
+                        .get(&device)
+                        .and_then(|per| per.get(vault))
+                        .copied()
+                        .unwrap_or(0)
+                        < admission.counter
+                })
+            });
+            // The horizon is only the admission the sender asserted for the
+            // vaults in this message. The device-wide maximum belongs to
+            // other owners and must not make this removal stale (#3079).
+            let asserted = version.admission.clone().unwrap_or_default();
             (
-                admission > current,
+                stored_behind,
                 version.superseded
                     || stale_for(
                         &db,
                         &device,
                         version.epoch.as_ref(),
-                        &horizon,
+                        &asserted,
                         Some(&vaults),
                         version.admission.is_some(),
                     ),
@@ -1997,7 +2088,7 @@ impl Controller {
                                 r.local_applied,
                                 r.folders.is_some(),
                                 r.epoch.clone(),
-                                known_admission(&db, &r.device),
+                                known_admission_for(&db, &r.device, &r.vaults),
                             )
                         })
                 }) else {
@@ -2145,18 +2236,35 @@ fn deny(db: &mut Database, removal: &Removal, removed_self: bool) {
     // A removed computer stops only the memberships its removal covers. A
     // pairing that carries none of those vaults, or also carries another vault,
     // keeps its authority; unrelated vaults keep syncing (#3079).
-    let revoked: BTreeSet<_> = db
+    // The removed device loses only the vaults this removal names. A pairing
+    // or grant that also carries another vault keeps that authority (#3079).
+    let affected: Vec<Uuid> = db
         .peers
         .iter()
-        .filter(|(id, p)| {
-            if removed_self {
-                carries(&*db, **id, p, &removal.vaults)
-                    && !carries_other(&*db, **id, p, &removal.vaults)
-            } else {
-                p.syncthing_device.as_deref() == Some(removal.device.as_str())
-            }
+        .filter(|(id, peer)| {
+            let named =
+                !removed_self && peer.syncthing_device.as_deref() == Some(removal.device.as_str());
+            let departing = removed_self && carries(db, **id, peer, &removal.vaults);
+            named || departing
         })
         .map(|(id, _)| *id)
+        .collect();
+    for id in &affected {
+        if let Some(peer) = db.peers.get_mut(id) {
+            peer.allowed.retain(|vault| !removal.vaults.contains(vault));
+        }
+    }
+    db.share_grants
+        .retain(|grant| !(affected.contains(&grant.peer) && removal.vaults.contains(&grant.vault)));
+    let revoked: BTreeSet<_> = affected
+        .iter()
+        .copied()
+        .filter(|id| {
+            db.peers.get(id).is_some_and(|peer| {
+                !carries(db, *id, peer, &removal.vaults)
+                    && !carries_other(db, *id, peer, &removal.vaults)
+            })
+        })
         .collect();
     // Keep what is taken away, to re-establish it if a readmission is learned.
     let pairings: BTreeMap<Uuid, Paired> = revoked
@@ -2198,7 +2306,7 @@ fn deny(db: &mut Database, removal: &Removal, removed_self: bool) {
         for transfer in db
             .transfers
             .iter_mut()
-            .filter(|t| removal.vaults.contains(t.vault()) || revoked.contains(&t.peer()))
+            .filter(|t| removal.vaults.contains(t.vault()))
         {
             transfer.deactivate();
         }
@@ -2219,15 +2327,14 @@ pub(super) fn peer_is_live(db: &Database, peer: &Paired) -> bool {
             .iter()
             .filter(|r| !r.superseded())
             .any(|removal| {
-                peer.syncthing_device.as_deref() == Some(removal.device.as_str())
-                    // This computer's own removal blocks only pairings of the
-                    // vaults it covers (#3079).
+                let named = peer.syncthing_device.as_deref() == Some(removal.device.as_str())
                     || db
                         .attached
                         .iter()
-                        .any(|vault| vault.daemon.device_id == removal.device)
-                        && carries(db, peer.peer.id, peer, &removal.vaults)
-                        && !carries_other(db, peer.peer.id, peer, &removal.vaults)
+                        .any(|vault| vault.daemon.device_id == removal.device);
+                named
+                    && carries(db, peer.peer.id, peer, &removal.vaults)
+                    && !carries_other(db, peer.peer.id, peer, &removal.vaults)
             })
 }
 
@@ -2459,9 +2566,12 @@ mod tests {
         );
         let mut closed: Vec<_> = readmitted_by(&db, id).into_iter().map(|c| c.id).collect();
         closed.sort();
-        let mut expected = vec![old, unseen];
+        let mut expected = vec![old];
         expected.sort();
-        assert_eq!(closed, expected);
+        assert_eq!(
+            closed, expected,
+            "an unseen id with no owned scope is not closed"
+        );
         assert!(db
             .removals
             .iter()
@@ -2476,7 +2586,7 @@ mod tests {
             .contains_key(&id));
         // A later ordinary invitation readmits nothing.
         readmit(&mut db, &device, Uuid::new_v4(), &[], 0)?;
-        assert_eq!(readmitted_by(&db, id).len(), 2);
+        assert_eq!(readmitted_by(&db, id).len(), 1);
         // A removal recorded after the approval stays open and blocks again.
         db.removals.push(removal(Uuid::new_v4(), &device));
         assert!(!peer_is_live(&db, &returning));
@@ -3978,22 +4088,26 @@ mod tests {
                 &BTreeMap::from([(unseen, BTreeSet::from(["v1".into(), "v9".into()]))]),
                 0,
             )?;
-            let record = db.removals.iter().find(|r| r.id == unseen).unwrap();
-            assert_eq!(
-                record.vaults,
-                BTreeSet::from(["v1".into()]),
-                "tombstone vaults widened"
+            assert!(
+                db.removals.iter().all(|r| r.id != unseen),
+                "a scope this computer does not fully own is not closed"
             );
-            // An older joiner sent no vaults: nothing is assumed.
+            readmit_with_vaults(
+                &mut db,
+                &bob,
+                pairing_id,
+                &[unseen],
+                &BTreeMap::from([(unseen, BTreeSet::from(["v1".into()]))]),
+                0,
+            )?;
+            let record = db.removals.iter().find(|r| r.id == unseen).unwrap();
+            assert_eq!(record.vaults, BTreeSet::from(["v1".into()]));
             let other = Uuid::new_v4();
             readmit(&mut db, &bob, Uuid::new_v4(), &[other], 0)?;
-            assert!(db
-                .removals
-                .iter()
-                .find(|r| r.id == other)
-                .unwrap()
-                .vaults
-                .is_empty());
+            assert!(
+                db.removals.iter().all(|r| r.id != other),
+                "an unknown scope grants nothing"
+            );
         }
         approver.shutdown();
         let returning = Controller::open(root.path().join("returning"), vec![])?;
@@ -4231,6 +4345,179 @@ mod tests {
         assert_eq!(known_admission(&db, &device), Some(epoch(1, "CCCC")));
         drop(db);
         controller.shutdown();
+        Ok(())
+    }
+
+    fn received(peer: Uuid, vault: &str) -> Result<transfer::Transfer> {
+        Ok(serde_json::from_value(serde_json::json!({
+            "peer": peer,
+            "vault": vault,
+            "path": "/fixture",
+            "daemon": {
+                "config_file": "/fixture/config.xml",
+                "device_id": "fixture",
+                "certificate_hash": "fixture"
+            },
+            "connection": null,
+            "active": true
+        }))?)
+    }
+
+    /// Two owners, two counters. A's new removal of X still applies after C's
+    /// higher admission of Y, and the wire names X's own counter.
+    #[test]
+    fn issue3079_new_removal_of_x_survives_a_higher_admission_of_y() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let computer = Controller::open(root.path().join("b"), vec![])?;
+        let bob = ["BBBBBBB"; 8].join("-");
+        let mut db = computer.shared.db.lock().unwrap();
+        db.admissions.insert(bob.clone(), epoch(4, "CCCC"));
+        db.admission_vaults.insert(
+            bob.clone(),
+            BTreeMap::from([("x".into(), 2u64), ("y".into(), 4)]),
+        );
+        let x = BTreeSet::from(["x".into()]);
+        assert!(
+            !stale_for(
+                &db,
+                &bob,
+                Some(&epoch(3, "AAAA")),
+                &epoch(2, "AAAA"),
+                Some(&x),
+                true
+            ),
+            "Y's admission suppressed a new removal of X"
+        );
+        assert_eq!(
+            known_admission_for(&db, &bob, &x).map(|epoch| epoch.counter),
+            Some(2)
+        );
+        assert_eq!(
+            known_admission_for(&db, &bob, &BTreeSet::from(["y".into()]))
+                .map(|epoch| epoch.counter),
+            Some(4)
+        );
+        drop(db);
+        computer.shutdown();
+        Ok(())
+    }
+
+    /// Readmission into X does not close or advertise Y's removal.
+    #[test]
+    fn issue3079_readmission_into_x_leaves_ys_removal_open() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let approver = Controller::open(root.path().join("a"), vec![])?;
+        let bob = ["BBBBBBB"; 8].join("-");
+        let (x_id, y_id) = (Uuid::new_v4(), Uuid::new_v4());
+        let pairing_id = Uuid::new_v4();
+        {
+            let mut db = approver.shared.db.lock().unwrap();
+            db.attached
+                .push(existing_vault(&["AAAAAAA"; 8].join("-"), "x")?);
+            readmit_with_vaults(
+                &mut db,
+                &bob,
+                pairing_id,
+                &[x_id, y_id],
+                &BTreeMap::from([
+                    (x_id, BTreeSet::from(["x".into()])),
+                    (y_id, BTreeSet::from(["y".into()])),
+                ]),
+                0,
+            )?;
+            assert!(db.removals.iter().any(|r| r.id == x_id && r.superseded()));
+            assert!(db.removals.iter().all(|r| r.id != y_id));
+            assert!(readmitted_by(&db, pairing_id).iter().all(|c| c.id != y_id));
+        }
+        approver.shutdown();
+        let returning = Controller::open(root.path().join("b"), vec![])?;
+        let mut db = returning.shared.db.lock().unwrap();
+        let mut y_removal = removal(y_id, &bob);
+        y_removal.vaults = BTreeSet::from(["y".into()]);
+        db.removals.push(y_removal);
+        let c_public = wire::public(&wire::random()?)?;
+        let a_public = wire::public(&wire::random()?)?;
+        let c = pairing(&["CCCCCCC"; 8].join("-"), c_public)?;
+        db.peers.insert(c.peer.id, c.clone());
+        db.transfers.push(received(c.peer.id, "y")?);
+        accept_readmission(
+            &mut db,
+            &bob,
+            pairing_id,
+            &a_public,
+            &[Closed {
+                id: y_id,
+                vaults: BTreeSet::from(["y".into()]),
+            }],
+            Some(epoch(1, "AAAA")),
+        )?;
+        assert!(
+            !db.removals
+                .iter()
+                .find(|r| r.id == y_id)
+                .unwrap()
+                .superseded(),
+            "A's approval closed C's removal of Y"
+        );
+        drop(db);
+        returning.shutdown();
+        Ok(())
+    }
+
+    /// The vault's recorded pairing wins over another live pairing whose id
+    /// sorts first.
+    #[test]
+    fn issue3079_foreign_owner_keeps_the_transfer_pairing() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let computer = Controller::open(root.path().join("receiver"), vec![])?;
+        let device = ["AAAAAAA"; 8].join("-");
+        let local_id = Uuid::from_u128(1);
+        let remote_id = Uuid::from_u128(2);
+        let mut db = computer.shared.db.lock().unwrap();
+        for id in [local_id, remote_id] {
+            let public = wire::public(&wire::random()?)?;
+            let mut peer = pairing(&device, public)?;
+            peer.peer.id = id;
+            db.peers.insert(id, peer);
+        }
+        db.transfers.push(received(remote_id, "x")?);
+        assert_eq!(foreign_owner(&db, "x"), Some(remote_id));
+        drop(db);
+        computer.shutdown();
+        Ok(())
+    }
+
+    /// Removing B from X leaves C's pairing and grant for Y in place.
+    #[test]
+    fn issue3079_removal_of_x_keeps_ys_authority() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let computer = Controller::open(root.path().join("c"), vec![])?;
+        let bob = ["BBBBBBB"; 8].join("-");
+        let public = wire::public(&wire::random()?)?;
+        let mut peer = pairing(&bob, public)?;
+        peer.allowed = vec!["x".into(), "y".into()];
+        let id = peer.peer.id;
+        let mut db = computer.shared.db.lock().unwrap();
+        db.peers.insert(id, peer);
+        db.share_grants.push(transfer::ShareGrant::new(
+            id,
+            &existing_vault(&["CCCCCCC"; 8].join("-"), "y")?,
+            "bob",
+        ));
+        let mut removal = removal(Uuid::new_v4(), &bob);
+        removal.vaults = BTreeSet::from(["x".into()]);
+        db.removals.push(removal.clone());
+        deny(&mut db, &removal, false);
+        assert!(db.peers.contains_key(&id), "the Y pairing was revoked");
+        assert!(db
+            .share_grants
+            .iter()
+            .any(|grant| grant.for_peer(id) && grant.vault == "y"));
+        assert!(!db.peers[&id].allowed.iter().any(|vault| vault == "x"));
+        assert!(db.peers[&id].allowed.iter().any(|vault| vault == "y"));
+        assert!(peer_is_live(&db, &db.peers[&id]));
+        drop(db);
+        computer.shutdown();
         Ok(())
     }
 }
