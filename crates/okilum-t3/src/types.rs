@@ -211,6 +211,9 @@ pub struct ThreadQuery {
     pub text_offset: Option<u64>,
     pub limit: Option<u32>,
     pub max_chars_per_item: Option<u32>,
+    /// Read from the first timeline item: T3's signed `afterPosition=-1`.
+    /// Without a cursor, a thread-scoped T3 session reads newest first.
+    pub from_start: bool,
 }
 
 impl ThreadQuery {
@@ -219,6 +222,13 @@ impl ThreadQuery {
             thread_id: thread_id.into(),
             ..Self::default()
         }
+    }
+
+    /// Oldest first, from the thread's first item.
+    pub fn from_start(mut self) -> Self {
+        self.from_start = true;
+        self.after_position = None;
+        self
     }
 
     pub fn after(mut self, position: u64) -> Self {
@@ -236,7 +246,12 @@ impl ThreadQuery {
     pub(crate) fn arguments(&self) -> Value {
         let mut args = json!({ "threadId": self.thread_id, "view": "messages" });
         let fields = [
-            ("afterPosition", self.after_position.map(Value::from)),
+            (
+                "afterPosition",
+                self.after_position
+                    .map(Value::from)
+                    .or(self.from_start.then(|| Value::from(-1i64))),
+            ),
             ("itemId", self.item_id.clone().map(Value::from)),
             ("textOffset", self.text_offset.map(Value::from)),
             ("limit", self.limit.map(Value::from)),
@@ -438,6 +453,11 @@ mod tests {
         assert_eq!(
             args,
             json!({ "threadId": "t", "view": "messages", "afterPosition": 7 })
+        );
+        let args = ThreadQuery::messages("t").from_start().arguments();
+        assert_eq!(
+            args,
+            json!({ "threadId": "t", "view": "messages", "afterPosition": -1 })
         );
         let args = ThreadQuery::messages("t").item("i", Some(8000)).arguments();
         assert_eq!(args["itemId"], "i");

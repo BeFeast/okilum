@@ -1,5 +1,8 @@
 use super::*;
-use okilum_t3::launch::{Draft, LaunchContext, Request};
+use okilum_t3::launch::{
+    progress::{Observation, Tracker},
+    Draft, LaunchContext, Request,
+};
 
 pub(super) struct Form {
     pub(super) open: bool,
@@ -10,6 +13,15 @@ pub(super) struct Form {
     context: Option<LaunchContext>,
     model: Option<okilum_t3::ModelSelection>,
     requested: Option<String>,
+    /// Progress of the delivered request named by `requested`, read from T3.
+    tracker: Option<Tracker>,
+    /// Owner of the running status loop: request and connection generation.
+    /// A reconnect or a newer request makes any other loop stale.
+    pub(super) polling: Option<(String, u64)>,
+    /// A request is being prepared or sent. It survives reconnects: the send
+    /// may still be delivered, so no second request may start meanwhile.
+    sending: bool,
+    status_error: Option<String>,
     error: Option<String>,
     _inputs: Vec<Subscription>,
 }
@@ -36,6 +48,10 @@ impl Form {
             context: None,
             model: None,
             requested: None,
+            tracker: None,
+            polling: None,
+            sending: false,
+            status_error: None,
             error: None,
             _inputs: subscriptions,
         }
@@ -67,6 +83,7 @@ impl ProjectView {
         };
         self.launch.open = true;
         self.launch.error = None;
+        self.poll_launch(window, cx);
         self.busy = true;
         let generation = self.generation;
         cx.spawn_in(window, async move |this, cx| {
@@ -98,6 +115,7 @@ impl ProjectView {
     fn submit_launch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy
             || self.model_busy
+            || self.launch.sending
             || !self.can_send()
             || self.unresolved_launch()
             || self.launch.requested.is_some()
@@ -129,6 +147,7 @@ impl ProjectView {
             model_override: self.launch.model.clone(),
         };
         self.busy = true;
+        self.launch.sending = true;
         self.launch.error = None;
         let generation = self.generation;
         cx.spawn_in(window, async move |this, cx| {
@@ -141,19 +160,40 @@ impl ProjectView {
                         // this intent; a stale open form must not change its target.
                         let context = LaunchContext::load(gateway.as_ref(), &binding)?;
                         let request = Request::prepare(&area, &binding, &context, &draft)?;
+                        // Threads that already exist are never candidates for this
+                        // launch. Without the listing, new threads are inspected.
+                        let baseline = gateway.list_threads(&request.executor_project_id).ok();
                         let record = journal.prepare(&request.message()?)?;
-                        retained = Some(record.message.client_request_id.clone());
+                        retained = Some(Tracker::new(
+                            &request,
+                            record.message.client_request_id.clone(),
+                            record.message.thread_id.clone(),
+                            baseline.as_deref(),
+                        ));
                         journal.send(gateway.as_ref(), &record)?;
                         Ok::<_, anyhow::Error>(())
                     })();
                     (result, journal.records(), retained)
                 })
                 .await;
-            let _ = this.update_in(cx, |this, _, cx| {
-                this.busy = false;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.launch.sending = false;
+                // A reconnect during the send changes the generation, but the
+                // request may still have been delivered to the same manager:
+                // keep its tracker and journal state, and resume tracking.
+                let same_manager = retained.as_ref().is_some_and(|tracker| {
+                    this.chat.as_ref().map(|chat| chat.thread_id.as_str())
+                        == Some(tracker.manager_thread_id())
+                });
                 if this.generation == generation {
-                    if retained.is_some() {
-                        this.launch.requested = retained;
+                    this.busy = false;
+                }
+                if this.generation == generation || same_manager {
+                    if let Some(tracker) = retained {
+                        this.launch.requested = Some(tracker.client_request_id.clone());
+                        this.launch.tracker = Some(tracker);
+                        this.launch.status_error = None;
+                        this.poll_launch(window, cx);
                     }
                     match records {
                         Ok(records) => this.records = records,
@@ -171,9 +211,141 @@ impl ProjectView {
         cx.notify();
     }
 
+    /// Follows the delivered request in T3 until its final outcome. Reads run
+    /// on the background executor. The loop belongs to one request on one
+    /// connection generation; a result of any other owner, request or older
+    /// tracker revision never replaces the current state.
+    pub(super) fn poll_launch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tracker) = self.launch.tracker.as_ref() else {
+            return;
+        };
+        let owner = (tracker.request_id.clone(), self.generation);
+        if tracker.progress.finished()
+            || self.gateway.is_none()
+            || self.chat.as_ref().map(|chat| chat.thread_id.as_str())
+                != Some(tracker.manager_thread_id())
+            || self.launch.polling.as_ref() == Some(&owner)
+        {
+            return;
+        }
+        // Any older loop sees another owner and ends at its next turn.
+        self.launch.polling = Some(owner.clone());
+        cx.spawn_in(window, async move |this, cx| loop {
+            let job = this
+                .update_in(cx, |this, window, _| {
+                    let own = this.launch_owner(&owner);
+                    let job = this
+                        .launch
+                        .tracker
+                        .as_ref()
+                        .filter(|tracker| {
+                            own && !tracker.progress.finished()
+                                && this.chat.as_ref().map(|chat| chat.thread_id.as_str())
+                                    == Some(tracker.manager_thread_id())
+                        })
+                        .and_then(|tracker| {
+                            Some((
+                                tracker.clone(),
+                                this.gateway.clone()?,
+                                this.journal()?,
+                                window.is_window_active(),
+                            ))
+                        });
+                    if job.is_none() && own {
+                        this.launch.polling = None;
+                    }
+                    job
+                })
+                .ok()
+                .flatten();
+            let Some((tracker, gateway, journal, focused)) = job else {
+                break;
+            };
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let receipt = journal
+                        .records()?
+                        .into_iter()
+                        .find(|r| r.message.client_request_id == tracker.client_request_id)
+                        .and_then(|r| r.receipt);
+                    let observation = tracker.observe(gateway.as_ref(), receipt.as_ref())?;
+                    Ok::<_, anyhow::Error>((receipt, observation))
+                })
+                .await;
+            let delay = this
+                .update_in(cx, |this, _, cx| {
+                    this.apply_launch_result(&owner, result, focused, cx)
+                })
+                .ok()
+                .flatten();
+            if let Some(delay) = delay {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(delay))
+                    .await;
+            }
+        })
+        .detach();
+    }
+
+    fn launch_owner(&self, owner: &(String, u64)) -> bool {
+        self.generation == owner.1 && self.launch.polling.as_ref() == Some(owner)
+    }
+
+    /// Applies one loop's T3 read only while that loop still owns the launch:
+    /// the same request on the same connection generation. Returns the delay
+    /// before its next read, or `None` when the result was stale.
+    fn apply_launch_result(
+        &mut self,
+        owner: &(String, u64),
+        result: anyhow::Result<(Option<okilum_t3::SendReceipt>, Option<Observation>)>,
+        focused: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<u64> {
+        if !self.launch_owner(owner) {
+            return None;
+        }
+        let current = self
+            .launch
+            .tracker
+            .as_mut()
+            .filter(|tracker| tracker.request_id == owner.0)?;
+        let mut changed = false;
+        let delay = match result {
+            Ok((receipt, observation)) => {
+                if let Some(receipt) = &receipt {
+                    changed |= current.record_receipt(receipt);
+                }
+                if let Some(observation) = observation {
+                    changed |= current.apply(observation);
+                }
+                changed |= self.launch.status_error.take().is_some();
+                if focused {
+                    2_000
+                } else {
+                    10_000
+                }
+            }
+            Err(error) => {
+                let error = Some(format!("{error:#}"));
+                changed |= self.launch.status_error != error;
+                self.launch.status_error = error;
+                15_000
+            }
+        };
+        if changed {
+            cx.notify();
+        }
+        Some(delay)
+    }
+
     pub(super) fn render_launch(&self, cx: &mut Context<Self>) -> AnyElement {
         let unresolved = self.unresolved_launch();
-        let locked = self.busy || self.model_busy || self.launch.requested.is_some() || unresolved;
+        let locked = self.busy
+            || self.model_busy
+            || self.launch.sending
+            || self.launch.requested.is_some()
+            || unresolved;
         let mut panel = v_flex()
             .id("project-launch-panel")
             .debug_selector(|| "project-launch-panel".into())
@@ -259,9 +431,16 @@ impl ProjectView {
         }
         if unresolved {
             panel = panel.child("Launch delivery is unconfirmed. Use Retry for the retained request in Manager; do not request another executor.");
+        } else if let Some(tracker) = self
+            .launch
+            .tracker
+            .as_ref()
+            .filter(|t| self.launch.requested.as_ref() == Some(&t.client_request_id))
+        {
+            panel = panel.child(self.render_launch_status(tracker, cx));
         } else if self.launch.requested.is_some() {
             panel = panel.child(div().debug_selector(|| "project-launch-requested".into()).child(
-                "Launch requested: message delivered to the manager conversation. Manager acceptance and T3 launch are not confirmed. Follow the manager chat and registered executor list."));
+                "Launch requested: message delivered to the manager conversation. Follow the manager chat and registered executor list."));
         }
         panel
             .child(
@@ -280,11 +459,70 @@ impl ProjectView {
                         .disabled(self.busy || unresolved)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.launch.requested = None;
+                            this.launch.tracker = None;
+                            this.launch.status_error = None;
                             cx.notify();
                         })),
                 )
             })
             .into_any_element()
+    }
+
+    fn render_launch_status(&self, tracker: &Tracker, cx: &mut Context<Self>) -> AnyElement {
+        let progress = &tracker.progress;
+        let mut status = v_flex()
+            .gap_1()
+            .debug_selector(|| "project-launch-status".into())
+            .child(
+                div()
+                    .debug_selector(|| "project-launch-status-line".into())
+                    .child(format!("Launch status: {}", progress.line())),
+            );
+        if let Some(executor) = &progress.executor {
+            let mut row =
+                h_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_color(brand::palette(cx).text_muted)
+                            .child(format!(
+                                "Executor: {} · T3 status {} · {}",
+                                executor.title, executor.status, executor.thread_id
+                            )),
+                    );
+            if let Some(identity) = &self.identity {
+                let url = identity.thread_url(&executor.thread_id);
+                row = row.child(
+                    Button::new("project-launch-open-t3")
+                        .ghost()
+                        .small()
+                        .label("Open in T3")
+                        .icon(IconName::ExternalLink)
+                        .on_click(move |_, _, cx| cx.open_url(&url)),
+                );
+            }
+            status = status.child(row);
+        } else if !progress.finished() {
+            status = status.child(
+                div()
+                    .text_color(brand::palette(cx).text_muted)
+                    .child("Steps come from T3's manager run and the executor thread that carries this request. Do not request another executor while it is in progress."),
+            );
+        }
+        if let Some(note) = &progress.note {
+            status = status.child(
+                div()
+                    .debug_selector(|| "project-launch-status-note".into())
+                    .text_color(cx.theme().warning)
+                    .child(note.clone()),
+            );
+        }
+        if let Some(error) = &self.launch.status_error {
+            status = status.child(div().text_color(cx.theme().danger).child(format!(
+                "Cannot read launch status; the last confirmed step is kept. {error}"
+            )));
+        }
+        status.into_any_element()
     }
 }
 
@@ -410,5 +648,406 @@ mod tests {
             sends[0], sends[1],
             "retry preserves both operation payload and clientRequestId"
         );
+    }
+
+    const LAUNCH_FIXTURE: &str =
+        include_str!("../../../okilum-t3/tests/fixtures/t3-launch-progress-2026-11-17.json");
+
+    /// One recorded T3 frame, with `request_id` in the executor's first line.
+    fn launch_frame(gateway: &fixture::Fake, request_id: &str, index: usize) {
+        let recorded: serde_json::Value =
+            serde_json::from_str(&LAUNCH_FIXTURE.replace("{{REQUEST_ID}}", request_id)).unwrap();
+        *gateway.launch_t3.lock().unwrap() = Some(serde_json::json!({
+            "frame": recorded["frames"][index],
+            "timelines": recorded["timelines"],
+            "receipt": recorded["receipt"],
+        }));
+    }
+
+    fn status_line(view: &Entity<ProjectView>, visual: &mut VisualTestContext) -> String {
+        view.read_with(visual, |v, _| {
+            v.launch.tracker.as_ref().unwrap().progress.line()
+        })
+    }
+
+    /// Lets the launch loop take its next T3 observation.
+    fn next_poll(visual: &mut VisualTestContext) {
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_secs(16));
+        visual.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn issue1420_launch_status_follows_recorded_t3_status_and_ignores_an_older_launch(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        let files = tempfile::tempdir().unwrap();
+        let area = files.path().join("area");
+        std::fs::create_dir_all(area.join("ops")).unwrap();
+        std::fs::write(area.join("brief.md"), "# UI brief\nFixture request\n").unwrap();
+        let gateway = Arc::new(fixture::Fake::default());
+        launch_frame(&gateway, "not-yet-requested", 0);
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                let mut view =
+                    fixture::view(files.path().join("state"), gateway.clone(), window, cx);
+                view.area = Some(area.clone());
+                std::fs::write(
+                    area.join("ops/project.yaml"),
+                    serde_yaml::to_string(&serde_json::json!({"t3":view.binding})).unwrap(),
+                )
+                .unwrap();
+                for (input, value) in [
+                    (&view.launch.role, "UI"),
+                    (&view.launch.brief, "brief.md"),
+                    (&view.launch.worktree, "/server/worktrees/ui"),
+                    (&view.launch.branch, "feature/ui"),
+                ] {
+                    input.update(cx, |input, cx| input.set_value(value, window, cx));
+                }
+                view
+            });
+            entity = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view = entity.unwrap();
+        visual.run_until_parked();
+        visual.update(|window, cx| view.update(cx, |v, cx| v.open_launch(window, cx)));
+        visual.run_until_parked();
+        visual.update(|window, cx| view.update(cx, |v, cx| v.submit_launch(window, cx)));
+        visual.run_until_parked();
+        let first = view.read_with(visual, |v, _| {
+            assert!(v.records[0].receipt.is_some());
+            Request::from_message(&v.records[0].message.text)
+                .unwrap()
+                .unwrap()
+                .request_id
+        });
+        assert_eq!(
+            status_line(&view, visual),
+            "[requested] → accepted → preparing → running → completed"
+        );
+        assert!(
+            visual.debug_bounds("project-launch-status-line").is_some(),
+            "the status line replaces the dead-end requested text"
+        );
+        assert!(visual.debug_bounds("project-launch-requested").is_none());
+
+        let steps = [
+            "[requested] → accepted → preparing → running → completed",
+            "requested → [accepted] → preparing → running → completed",
+            "requested → accepted → [preparing] → running → completed",
+            "requested → accepted → preparing → [running] → completed",
+        ];
+        for (index, expected) in steps.iter().enumerate() {
+            launch_frame(&gateway, &first, index);
+            next_poll(visual);
+            assert_eq!(&status_line(&view, visual), expected, "frame {index}");
+        }
+        view.read_with(visual, |v, _| {
+            let executor = v.launch.tracker.as_ref().unwrap().progress.executor.clone();
+            assert_eq!(executor.unwrap().thread_id, "mcp:fixture-executor-new");
+            assert_eq!(
+                v.launch.polling.as_ref().map(|(id, _)| id.as_str()),
+                Some(first.as_str())
+            );
+        });
+        let reads = gateway.launch_reads.lock().unwrap().clone();
+        assert!(
+            !reads.iter().any(|id| id == "mcp:fixture-executor-old"),
+            "a thread from before the request is never inspected: {reads:?}"
+        );
+
+        // A separate request replaces the first. The recorded frame now shows
+        // the first launch completed; that must not reach the second request.
+        visual.update(|window, cx| {
+            view.update(cx, |v, cx| {
+                v.launch.requested = None;
+                v.launch.tracker = None;
+                v.submit_launch(window, cx);
+            })
+        });
+        visual.run_until_parked();
+        let second = view.read_with(visual, |v, _| {
+            let tracker = v.launch.tracker.as_ref().unwrap();
+            assert_ne!(tracker.request_id, first);
+            tracker.request_id.clone()
+        });
+        launch_frame(&gateway, &first, 4);
+        for _ in 0..3 {
+            next_poll(visual);
+        }
+        view.read_with(visual, |v, _| {
+            let tracker = v.launch.tracker.as_ref().unwrap();
+            assert_eq!(tracker.request_id, second);
+            assert_eq!(
+                tracker.progress.line(),
+                "[requested] → accepted → preparing → running → completed",
+                "the older launch's completed thread never reaches the newer request"
+            );
+            assert!(tracker.progress.executor.is_none());
+            assert_eq!(
+                v.launch.polling.as_ref().map(|(id, _)| id.as_str()),
+                Some(second.as_str())
+            );
+        });
+        assert_eq!(gateway.sends.lock().unwrap().len(), 2);
+
+        // The second request's own thread reports a final outcome; polling ends.
+        let mut recorded: serde_json::Value =
+            serde_json::from_str(&LAUNCH_FIXTURE.replace("{{REQUEST_ID}}", &second)).unwrap();
+        let mut frame = recorded["frames"][4].clone();
+        let mut thread = recorded["outcomes"]["failed"].clone();
+        thread["threadId"] = "mcp:fixture-executor-second".into();
+        thread["updatedAt"] = "2026-11-17T11:00:00.000Z".into();
+        frame["executors"].as_array_mut().unwrap().push(thread);
+        recorded["timelines"]["mcp:fixture-executor-second"] =
+            recorded["timelines"]["mcp:fixture-executor-new"].clone();
+        *gateway.launch_t3.lock().unwrap() = Some(serde_json::json!({
+            "frame": frame, "timelines": recorded["timelines"], "receipt": recorded["receipt"],
+        }));
+        next_poll(visual);
+        assert_eq!(
+            status_line(&view, visual),
+            "requested → accepted → [failed]",
+            "only steps T3 confirmed for the second launch precede its outcome"
+        );
+        view.read_with(visual, |v, _| {
+            let executor = v.launch.tracker.as_ref().unwrap().progress.executor.clone();
+            assert_eq!(executor.unwrap().thread_id, "mcp:fixture-executor-second");
+        });
+        assert!(visual.debug_bounds("project-launch-status-line").is_some());
+        next_poll(visual);
+        view.read_with(visual, |v, _| {
+            assert!(v.launch.polling.is_none(), "a final outcome ends polling")
+        });
+        assert_eq!(gateway.sends.lock().unwrap().len(), 2, "status never sends");
+    }
+
+    #[gpui::test]
+    fn review_reconnect_resumes_the_retained_launch_and_drops_an_old_connection_result(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        let files = tempfile::tempdir().unwrap();
+        let area = files.path().join("area");
+        std::fs::create_dir_all(area.join("ops")).unwrap();
+        std::fs::write(area.join("brief.md"), "# UI brief\nFixture request\n").unwrap();
+        let gateway = Arc::new(fixture::Fake::default());
+        launch_frame(&gateway, "not-yet-requested", 0);
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                let mut view =
+                    fixture::view(files.path().join("state"), gateway.clone(), window, cx);
+                view.area = Some(area.clone());
+                std::fs::write(
+                    area.join("ops/project.yaml"),
+                    serde_yaml::to_string(&serde_json::json!({"t3":view.binding})).unwrap(),
+                )
+                .unwrap();
+                for (input, value) in [
+                    (&view.launch.role, "UI"),
+                    (&view.launch.brief, "brief.md"),
+                    (&view.launch.worktree, "/server/worktrees/ui"),
+                    (&view.launch.branch, "feature/ui"),
+                ] {
+                    input.update(cx, |input, cx| input.set_value(value, window, cx));
+                }
+                view
+            });
+            entity = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view = entity.unwrap();
+        visual.run_until_parked();
+        visual.update(|window, cx| view.update(cx, |v, cx| v.open_launch(window, cx)));
+        visual.run_until_parked();
+        visual.update(|window, cx| view.update(cx, |v, cx| v.submit_launch(window, cx)));
+        visual.run_until_parked();
+        let request = view.read_with(visual, |v, _| {
+            v.launch.tracker.as_ref().unwrap().request_id.clone()
+        });
+        for index in 0..4 {
+            launch_frame(&gateway, &request, index);
+            next_poll(visual);
+        }
+        assert_eq!(
+            status_line(&view, visual),
+            "requested → accepted → preparing → [running] → completed"
+        );
+
+        // Disconnect and reconnect to the same manager with the panel open.
+        let old_owner = view.read_with(visual, |v, _| v.launch.polling.clone().unwrap());
+        view.update_in(visual, |v, window, cx| {
+            let environment = v.environment.clone().unwrap();
+            v.clear_connection(cx);
+            assert!(
+                v.launch.polling.is_none(),
+                "a disconnect ends the old loop's ownership"
+            );
+            assert!(v.launch.tracker.is_some() && v.launch.open);
+            let restored: Arc<dyn ManagerGateway> = gateway.clone();
+            v.finish_connection(Ok((environment, restored)), window, cx);
+            let owner = v
+                .launch
+                .polling
+                .clone()
+                .expect("tracking resumes on reconnect");
+            assert_eq!(owner.0, request);
+            assert_ne!(owner.1, old_owner.1);
+        });
+
+        // A delayed result of the old connection's loop, taken at the current
+        // tracker revision and reporting a failure, must not be applied.
+        let recorded: serde_json::Value =
+            serde_json::from_str(&LAUNCH_FIXTURE.replace("{{REQUEST_ID}}", &request)).unwrap();
+        let mut frame = recorded["frames"][3].clone();
+        frame["executors"][2] = recorded["outcomes"]["failed"].clone();
+        *gateway.launch_t3.lock().unwrap() = Some(serde_json::json!({
+            "frame": frame, "timelines": recorded["timelines"], "receipt": recorded["receipt"],
+        }));
+        view.update_in(visual, |v, _, cx| {
+            let tracker = v.launch.tracker.clone().unwrap();
+            let receipt = v.records[0].receipt.clone();
+            let observation = tracker.observe(gateway.as_ref(), receipt.as_ref()).unwrap();
+            assert!(
+                v.apply_launch_result(&old_owner, Ok((receipt, observation)), true, cx)
+                    .is_none(),
+                "an old connection's result is stale"
+            );
+            assert!(!v.launch.tracker.as_ref().unwrap().progress.finished());
+        });
+        assert_eq!(
+            status_line(&view, visual),
+            "requested → accepted → preparing → [running] → completed"
+        );
+
+        // The executor completes; the existing request reaches completed on
+        // the new connection without reopening the panel or resending.
+        launch_frame(&gateway, &request, 4);
+        visual.run_until_parked();
+        next_poll(visual);
+        assert_eq!(
+            status_line(&view, visual),
+            "requested → accepted → preparing → running → [completed]"
+        );
+        assert!(visual.debug_bounds("project-launch-status-line").is_some());
+        next_poll(visual);
+        view.read_with(visual, |v, _| {
+            assert!(v.launch.polling.is_none(), "a final outcome ends polling");
+            assert_eq!(v.records.len(), 1);
+        });
+        assert_eq!(gateway.sends.lock().unwrap().len(), 1, "nothing is resent");
+    }
+
+    #[gpui::test]
+    fn review_reconnect_during_the_send_keeps_the_delivered_request_and_blocks_a_second(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        let files = tempfile::tempdir().unwrap();
+        let area = files.path().join("area");
+        std::fs::create_dir_all(area.join("ops")).unwrap();
+        std::fs::write(area.join("brief.md"), "# UI brief\nFixture request\n").unwrap();
+        let gateway = Arc::new(fixture::Fake::default());
+        launch_frame(&gateway, "not-yet-requested", 0);
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                let mut view =
+                    fixture::view(files.path().join("state"), gateway.clone(), window, cx);
+                view.area = Some(area.clone());
+                std::fs::write(
+                    area.join("ops/project.yaml"),
+                    serde_yaml::to_string(&serde_json::json!({"t3":view.binding})).unwrap(),
+                )
+                .unwrap();
+                for (input, value) in [
+                    (&view.launch.role, "UI"),
+                    (&view.launch.brief, "brief.md"),
+                    (&view.launch.worktree, "/server/worktrees/ui"),
+                    (&view.launch.branch, "feature/ui"),
+                ] {
+                    input.update(cx, |input, cx| input.set_value(value, window, cx));
+                }
+                view
+            });
+            entity = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let view = entity.unwrap();
+        visual.run_until_parked();
+        visual.update(|window, cx| view.update(cx, |v, cx| v.open_launch(window, cx)));
+        visual.run_until_parked();
+
+        // The send is still in flight (its background work has not run) when
+        // the connection to the same manager is replaced.
+        view.update_in(visual, |v, window, cx| {
+            v.submit_launch(window, cx);
+            assert!(v.launch.sending);
+            let environment = v.environment.clone().unwrap();
+            v.clear_connection(cx);
+            let restored: Arc<dyn ManagerGateway> = gateway.clone();
+            v.finish_connection(Ok((environment, restored)), window, cx);
+            assert!(!v.busy, "the reconnect cleared the busy state");
+            // The form stays locked: the first request may still be delivered.
+            v.submit_launch(window, cx);
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            gateway.sends.lock().unwrap().len(),
+            1,
+            "no second request while the first is in flight"
+        );
+        let request = view.read_with(visual, |v, _| {
+            assert!(!v.launch.sending);
+            assert_eq!(v.records.len(), 1);
+            assert!(
+                v.records[0].receipt.is_some(),
+                "the delayed send was delivered"
+            );
+            let tracker = v
+                .launch
+                .tracker
+                .as_ref()
+                .expect("the delivered request keeps its tracker across the reconnect");
+            assert_eq!(
+                v.launch.requested.as_ref(),
+                Some(&tracker.client_request_id)
+            );
+            assert_eq!(
+                v.launch
+                    .polling
+                    .as_ref()
+                    .map(|(id, generation)| (id, *generation)),
+                Some((&tracker.request_id, v.generation)),
+                "tracking runs on the new connection"
+            );
+            tracker.request_id.clone()
+        });
+        view.update_in(visual, |v, window, cx| v.submit_launch(window, cx));
+        visual.run_until_parked();
+        assert_eq!(gateway.sends.lock().unwrap().len(), 1);
+
+        for (index, expected) in [
+            (
+                1,
+                "requested → [accepted] → preparing → running → completed",
+            ),
+            (
+                2,
+                "requested → accepted → [preparing] → running → completed",
+            ),
+            (4, "requested → accepted → preparing → [completed]"),
+        ] {
+            launch_frame(&gateway, &request, index);
+            next_poll(visual);
+            assert_eq!(status_line(&view, visual), expected, "frame {index}");
+        }
+        assert!(visual.debug_bounds("project-launch-status-line").is_some());
     }
 }

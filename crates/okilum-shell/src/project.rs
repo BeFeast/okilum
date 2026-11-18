@@ -1116,6 +1116,8 @@ impl ProjectView {
                 self.error = None;
                 self.generation += 1;
                 self.start_polling(window, cx);
+                // A retained launch of this manager resumes on the new connection.
+                self.poll_launch(window, cx);
                 #[cfg(native_manager)]
                 if self.threads.enabled {
                     self.native_restore(false, window, cx);
@@ -1140,6 +1142,8 @@ impl ProjectView {
         }
         self.generation = self.generation.wrapping_add(1);
         self.polling = false;
+        // The launch tracker is kept; its loop belongs to the old connection.
+        self.launch.polling = None;
         self.busy = false;
         self.gateway = None;
         self.identity = None;
