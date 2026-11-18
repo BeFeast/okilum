@@ -251,9 +251,16 @@ impl CodePreview {
         {
             return Some(reason.clone());
         }
+        let limit = self.edit_limit()?;
         self.source_bytes
-            .filter(|bytes| *bytes > EDIT_BYTES && !reader_delimited::eligible(&self.rel))
-            .map(|bytes| format!("{} is over the 4 MB editing limit", view::size(bytes)))
+            .filter(|bytes| *bytes > limit)
+            .map(|bytes| {
+                format!(
+                    "{} is over the {} MB editing limit",
+                    view::size(bytes),
+                    limit / (1024 * 1024)
+                )
+            })
     }
     pub(super) fn status(&self, entity: Entity<Self>, cx: &App) -> reader_status_line::StatusLine {
         use reader_status_line::{StatusLine, Tone};
@@ -369,7 +376,9 @@ impl CodePreview {
         } else if let Some(reason) = self.readonly_reason().filter(|_| {
             self.storage_reason.is_some()
                 || self.encoding_reason.is_some()
-                || self.source_bytes.is_some_and(|bytes| bytes > EDIT_BYTES)
+                || self
+                    .source_bytes
+                    .is_some_and(|bytes| self.over_edit_limit(bytes))
         }) {
             status.icon = Some(Icon::default().path("icons/lock.svg"));
             status.label = "Read-only.".into();
