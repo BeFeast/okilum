@@ -1,4 +1,5 @@
 """Offline fake-apt regression contracts; run only in the normal hosted gate."""
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -25,11 +26,14 @@ record = {'args': args, 'sources': sources, 'mirrors': mirrors,
 with open(os.environ['CALLS'], 'a') as log:
     log.write(json.dumps(record) + '\n')
 primary = 'https://azure.archive.ubuntu.com' in sources + ''.join(mirrors)
+rewritten = any(h in sources + ''.join(mirrors) for h in (
+    'https://azure.archive.ubuntu.com', 'https://archive.ubuntu.com', 'https://mirrors.edge.kernel.org'))
 if '--download-only' in args:
     (cache / 'verified.deb').write_text('fixture standing in for a verified download')
 if os.environ['MODE'] == 'both_fail' or (
     os.environ['MODE'] == 'fallback' and primary and '--download-only' in args) or (
-    os.environ['MODE'] == 'ubuntu_dns_fail' and 'https://mirrors.edge.kernel.org' not in sources):
+    os.environ['MODE'] == 'ubuntu_dns_fail' and 'https://mirrors.edge.kernel.org' not in sources) or (
+    os.environ['MODE'] == 'https_fail' and rewritten):
     sys.exit(124)
 '''
 
@@ -42,7 +46,11 @@ class HostedUbuntuAptTests(unittest.TestCase):
             parts = source / 'sources.list.d'
             parts.mkdir(parents=True)
             mirror = root / 'ubuntu.list'
-            mirror.write_text('# GitHub mirror selection\nhttp://azure.archive.ubuntu.com/ubuntu/\tpriority:1\nhttps://third.example/ubuntu/\tpriority:2\n')
+            # Hosted image since 2026-11: an AWS-region archive host first (run 44244922674).
+            mirror.write_text('# GitHub mirror selection\n'
+                              'http://us-east-2.ec2.archive.ubuntu.com/ubuntu/\tpriority:1\n'
+                              'http://azure.archive.ubuntu.com/ubuntu/\tpriority:2\n'
+                              'https://third.example/ubuntu/\tpriority:3\n')
             (source / 'sources.list').write_text(
                 f'deb [arch=amd64 signed-by=/keys/ubuntu.gpg] mirror+file:{mirror} jammy main universe\n'
                 'deb [signed-by=/keys/vendor.gpg] https://vendor.example/repo stable main\n')
@@ -79,11 +87,18 @@ class HostedUbuntuAptTests(unittest.TestCase):
                 self.assertIn('jammy main universe', record['sources'])
                 self.assertIn('https://vendor.example/repo stable main', record['sources'])
                 self.assertIn(originals[parts / 'vendor.sources'].decode(), record['sources'])
-                self.assertIn('https://third.example/ubuntu/\tpriority:2\n', record['mirrors'][0])
+                self.assertIn('https://third.example/ubuntu/\tpriority:3\n', record['mirrors'][0])
                 self.assertIn('# GitHub mirror selection\n', record['mirrors'][0])
                 self.assertIn('Acquire::https::Verify-Peer=true', record['args'])
                 self.assertIn('Acquire::https::Verify-Host=true', record['args'])
-                self.assertNotIn('http://', record['sources'] + ''.join(record['mirrors']))
+                record['original'] = f'Dir::Etc::sourcelist={source / "sources.list"}' in record['args']
+                if record['original']:
+                    # Last route: the runner's own files, read in place and unchanged.
+                    self.assertIn(f'Dir::Etc::sourceparts={parts}', record['args'])
+                    self.assertIn(f'mirror+file:{mirror}', record['sources'])
+                    self.assertEqual(record['mirrors'][0], originals[mirror].decode())
+                else:
+                    self.assertNotIn('http://', record['sources'] + ''.join(record['mirrors']))
             return result, records
 
     def test_primary_positive_control(self):
@@ -99,6 +114,8 @@ class HostedUbuntuAptTests(unittest.TestCase):
         self.assertEqual(len(calls), 5)
         self.assertIn('https://archive.ubuntu.com/ubuntu', calls[2]['sources'])
         self.assertIn('https://archive.ubuntu.com/ubuntu/\tpriority:1', calls[2]['mirrors'][0])
+        self.assertIn('https://archive.ubuntu.com/ubuntu/\tpriority:2', calls[2]['mirrors'][0])
+        self.assertFalse(any(c['original'] for c in calls))
         self.assertTrue(calls[2]['cached'])
         self.assertEqual(len({c['cache'] for c in calls}), 1)
         self.assertIn('--no-download', calls[-1]['args'])
@@ -107,8 +124,36 @@ class HostedUbuntuAptTests(unittest.TestCase):
     def test_exhaustion_never_installs(self):
         result, calls = self.invoke('both_fail')
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 4)
         self.assertTrue(all(c['args'][-1] == 'update' for c in calls))
+        self.assertEqual([c['original'] for c in calls], [False, False, False, True])
+        self.assertIn('every route failed', result.stderr)
+
+    def test_https_failure_falls_back_to_runner_original_sources(self):
+        result, calls = self.invoke('https_fail')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(calls), 6)
+        self.assertTrue(all(c['args'][-1] == 'update' and not c['original'] for c in calls[:3]))
+        self.assertTrue(all(c['original'] for c in calls[3:]))
+        self.assertIn('http://us-east-2.ec2.archive.ubuntu.com/ubuntu/', calls[3]['mirrors'][0])
+        self.assertIn('http://archive.ubuntu.com/ubuntu', calls[3]['sources'])
+        self.assertIn('--download-only', calls[4]['args'])
+        self.assertIn('--no-download', calls[-1]['args'])
+        self.assertTrue(calls[-1]['cached'])
+        self.assertEqual(len({c['cache'] for c in calls}), 1)
+        self.assertIn('all HTTPS Ubuntu routes failed', result.stderr)
+
+    def test_official_pattern_covers_regional_hosts_only(self):
+        spec = importlib.util.spec_from_file_location('hosted_apt', ROOT / 'hosted-ubuntu-apt.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        for host in ('archive', 'azure.archive', 'us.archive', 'us-east-2.ec2.archive',
+                     'eu-west-1.ec2.archive', 'security'):
+            self.assertTrue(module.OFFICIAL.search(f'http://{host}.ubuntu.com/ubuntu/ x'), host)
+        for url in ('http://archive.ubuntu.com.evil.example/ubuntu', 'http://ports.ubuntu.com/ubuntu',
+                    'https://esm.ubuntu.com/apps/ubuntu', 'http://archive.ubuntu.com/ubuntu-ports',
+                    'http://ppa.launchpadcontent.net/ubuntu'):
+            self.assertIsNone(module.OFFICIAL.search(url), url)
 
     def test_ubuntu_dns_failure_uses_independent_signed_mirror(self):
         result, calls = self.invoke('ubuntu_dns_fail')
