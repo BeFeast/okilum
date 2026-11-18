@@ -23,6 +23,19 @@ pub(super) fn handle_link(
     window: &mut Window,
     cx: &mut App,
 ) {
+    handle_link_to(entity, url, reader_pane::Destination::Here, window, cx);
+}
+
+/// `handle_link` with a destination for a resolved local note (#773): the
+/// shared prepared-link model decides what the link is first, so ambiguity,
+/// unresolved targets, attachments and external URLs keep their routes.
+pub(super) fn handle_link_to(
+    entity: &WeakEntity<Reader>,
+    url: &str,
+    destination: reader_pane::Destination,
+    window: &mut Window,
+    cx: &mut App,
+) {
     // Remote Markdown never enters local prepared-link navigation, writer state
     // or history. Rewritten links use captured source identity, not diagnostics.
     let remote = entity.upgrade().map_or_else(
@@ -127,7 +140,18 @@ pub(super) fn handle_link(
                 } else {
                     rel
                 };
-                this.open_note_at(&rel, None, heading.as_deref(), window, cx);
+                match destination {
+                    reader_pane::Destination::Here => {
+                        this.open_note_at(&rel, None, heading.as_deref(), window, cx)
+                    }
+                    reader_pane::Destination::Beside => {
+                        this.open_beside(&rel, heading.as_deref(), window, cx)
+                    }
+                    reader_pane::Destination::NewWindow => {
+                        reader_open::duplicate_window(cx.entity().downgrade(), Some(rel), cx)
+                            .detach();
+                    }
+                }
             });
         }
     } else if let Some((rest, wiki)) = url
