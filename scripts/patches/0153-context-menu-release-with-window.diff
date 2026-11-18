@@ -71,7 +71,7 @@ diff --git a/crates/component/src/menu/context_menu.rs b/crates/component/src/me
 +        });
 +        cx.run_until_parked();
 +        cx.update(|window, cx| {
-+            _ = window.draw(cx);
++            window.draw(cx).clear(cx);
 +        });
 +        assert_eq!(menus.borrow().len(), 1, "the right click must build one menu");
 +        assert!(menus.borrow()[0].upgrade().is_some());
