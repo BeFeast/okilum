@@ -836,6 +836,10 @@ fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
         // The saved root is back (identity verified above): restore a fence
         // marker left by an earlier missing-root launch. A hold still closes
         // the folder below; its later explicit resume needs the real marker.
+        // Only a folder that still carries a fence marker may have its fence
+        // pause undone; a stale record (its unfence already restored the marker)
+        // must never resume a folder the user paused since.
+        let still_fenced = marker_of(e).is_some_and(|m| m.starts_with(FENCE_PREFIX));
         if let Some(fence) = fenced.get(&id) {
             set_marker(e, &fence.marker);
         }
@@ -845,7 +849,7 @@ fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
         match a.admit() {
             Ok(lease) => {
                 // Undo only a pause the fence itself added (never a user's).
-                if fenced.get(&id).is_some_and(|fence| fence.paused) {
+                if still_fenced && fenced.get(&id).is_some_and(|fence| fence.paused) {
                     set_unpaused(e);
                 }
                 leases.push(lease);
@@ -1209,7 +1213,13 @@ fn supervise(r: &Reference, daemon: &DaemonIdentity) -> Result<()> {
             api.patch_folder(&f.id, &change)?;
             fenced.remove(&f.id);
             write_fenced(r, &fenced)?;
-        } else if !intact(&f.path, saved) {
+        } else if intact(&f.path, saved) {
+            // Unfenced earlier, but that round failed to drop the record: drop it
+            // now and never touch the pause state (the user may have paused it).
+            if fenced.remove(&f.id).is_some() {
+                write_fenced(r, &fenced)?;
+            }
+        } else {
             // Lost while running (unplugged, moved, replaced): fence it again.
             let pause = !f.paused && !history(&api, &f.id);
             fenced.insert(

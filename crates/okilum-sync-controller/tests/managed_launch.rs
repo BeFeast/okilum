@@ -2506,6 +2506,90 @@ fn issue2582_root_lost_while_running_is_fenced_again_every_time() -> Result<()> 
     Ok(())
 }
 
+/// #2582 review: a fence record that outlives its unfence (the record write
+/// failed after the marker was restored) never resumes a folder the user paused
+/// since. Supervision drops such a stale record without touching pause, and the
+/// next launch undoes a fence pause only while the fence marker is still there.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_stale_fence_record_never_resumes_a_user_pause() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept"], &[])?;
+    f.enroll("fresh", false)?;
+    let state = f.launch_dir();
+    let record = state.join("fenced-folders.json");
+    let lock_state = |read_only: bool| -> Result<()> {
+        fs::set_permissions(
+            &state,
+            fs::Permissions::from_mode(if read_only { 0o500 } else { 0o700 }),
+        )?;
+        if read_only {
+            ensure!(
+                fs::write(state.join("probe"), b"x").is_err(),
+                "fixture must run unprivileged: a read-only directory must refuse writes"
+            );
+        }
+        Ok(())
+    };
+    let record_paused = || -> Result<bool> {
+        let value: Value = serde_json::from_slice(&fs::read(&record)?)?;
+        Ok(value["fresh"]["paused"] == true)
+    };
+    let api = || f.identity.connect();
+    for cycle in 1..=2 {
+        // The history-free folder loses its root while running: fenced + paused.
+        fs::rename(f.vault("fresh"), f.away("fresh"))?;
+        wait("history-free folder fenced and paused", || {
+            Ok(f.marker("fresh")?.starts_with(".okilum-missing-root-")
+                && api()?.folder("fresh")?["paused"] == true)
+        })?;
+        assert!(record_paused()?, "the fence records its own pause");
+        // The root returns, but the round cannot drop the record.
+        lock_state(true)?;
+        fs::rename(f.away("fresh"), f.vault("fresh"))?;
+        wait(
+            "unfenced and resumed despite the failed record write",
+            || Ok(f.marker("fresh")? == ".stfolder" && api()?.folder("fresh")?["paused"] == false),
+        )?;
+        assert!(
+            record_paused()?,
+            "the stale record survived the failed write"
+        );
+        if cycle == 1 {
+            // Writes work again: supervision drops the stale record and leaves
+            // the folder exactly as it is.
+            lock_state(false)?;
+            wait("stale record dropped", || {
+                Ok(!record.exists() || !f.fenced()?.contains(&"fresh".into()))
+            })?;
+            assert_eq!(api()?.folder("fresh")?["paused"], false);
+            continue;
+        }
+        // The user pauses the folder; the runtime then restarts with the
+        // stale record still on disk.
+        FolderController::new(f.state("fresh")).pause(true)?;
+        assert_eq!(api()?.folder("fresh")?["paused"], true);
+        f.services.crash_runtime()?;
+        lock_state(false)?;
+        assert!(record_paused()?, "the stale record reaches the next launch");
+        f.services.launch()?;
+        f.services.remember_pid(f.home())?;
+        assert_eq!(f.marker("fresh")?, ".stfolder");
+        assert_eq!(
+            api()?.folder("fresh")?["paused"],
+            true,
+            "a stale fence record must not resume the user's pause"
+        );
+        for _ in 0..3 {
+            thread::sleep(Duration::from_secs(2));
+            assert_eq!(api()?.folder("fresh")?["paused"], true);
+        }
+    }
+    fs::write(f.origin("kept").join("progress.md"), b"other vault runs")?;
+    f.transfers("kept", "progress.md")?;
+    f.runtime.disable()?;
+    Ok(())
+}
+
 /// #2582 review: a missing configured path must name exactly the saved root.
 /// An indexed, Open folder ID redirected to another path is refused, and
 /// nothing is ever published into the redirected destination.

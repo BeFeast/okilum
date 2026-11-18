@@ -220,7 +220,10 @@ history is also paused at runtime, because changing its marker restarts it and
 pinned v2.1.6 `newFolder` would recreate a sequence-zero root, while
 `restartFolder` into a pause never does. The record notes that pause, so the
 unfence undoes exactly it; a user's or the hold fence's pause is never
-recorded and never undone. Remaining window: up to one 2-second round between
+recorded and never undone. If an unfence restored the marker but could not
+drop its record, the next supervision round drops the stale record without
+touching pause. A launch undoes a fence pause only while the folder still
+carries a fence marker. Remaining window: up to one 2-second round between
 a root disappearing and its fence. Supervision takes the launch gate only for
 an actual transition, because configuration admission refuses a busy gate.
 
@@ -257,6 +260,12 @@ Pinned-runtime controls:
   root returns it is unfenced and syncs. A folder with no index history that
   loses its root is fenced and paused, its root is not recreated, and on return
   it is unfenced, resumed, and syncs its first file.
+- `issue2582_stale_fence_record_never_resumes_a_user_pause`: the launcher's
+  state directory is read-only while a history-free folder is unfenced, so the
+  record write fails. Once writes work again, supervision drops the stale
+  record and leaves the folder as it is. In a second round, the user pauses the
+  folder and the runtime restarts with the stale record on disk; the folder
+  stays paused.
 - `issue2582_root_swapped_before_start_never_syncs`: a foreign Syncthing
   directory takes the missing path between the launch decision and child start
   (fixture-only launch pause). No byte moves in either direction while the

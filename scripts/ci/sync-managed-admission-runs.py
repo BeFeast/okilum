@@ -28,6 +28,7 @@ TESTS = {
     'issue2582_root_swapped_before_start_never_syncs',
     'issue2582_launcher_killed_after_fencing_keeps_the_original_marker',
     'issue2582_root_lost_while_running_is_fenced_again_every_time',
+    'issue2582_stale_fence_record_never_resumes_a_user_pause',
     'issue2582_linux_bootstrap_and_replaced_bindings_fail_closed',
     'issue2043_scoped_hold_blocks_real_transfer_and_recovers_across_restart',
     'issue2504_reader_writers_and_pinned_transport_share_one_restart_safe_hold',
