@@ -241,6 +241,49 @@ pub(super) fn known_admission(db: &Database, device: &str) -> Option<Epoch> {
 /// computer knows. A removal without an epoch (older software or journal) is
 /// older than any known admission, and than any closed removal of `device`.
 fn stale(db: &Database, device: &str, epoch: Option<&Epoch>, horizon: &Epoch) -> bool {
+    stale_for(db, device, epoch, horizon, None, false)
+}
+/// `vaults` limits which admission can close this removal. A counter learned
+/// for vault A does not make a removal of vault B stale. `message` means
+/// `horizon` was just received for exactly these vaults (#3079).
+fn stale_for(
+    db: &Database,
+    device: &str,
+    epoch: Option<&Epoch>,
+    horizon: &Epoch,
+    vaults: Option<&BTreeSet<String>>,
+    message: bool,
+) -> bool {
+    if let Some(vaults) = vaults {
+        if db.admission_vaults.contains_key(device) || message {
+            let epoch_counter = epoch.map(|epoch| epoch.counter).unwrap_or(0);
+            let by_counter = !vaults.is_empty()
+                && vaults.iter().all(|vault| {
+                    let stored = db
+                        .admission_vaults
+                        .get(device)
+                        .and_then(|per| per.get(vault))
+                        .copied()
+                        .unwrap_or(0);
+                    let effective = if message {
+                        stored.max(horizon.counter)
+                    } else {
+                        stored
+                    };
+                    epoch_counter < effective
+                });
+            if epoch.is_some() {
+                return by_counter;
+            }
+            return by_counter
+                || db.removals.iter().any(|removal| {
+                    removal.device == device
+                        && removal.superseded()
+                        && !removal.vaults.is_empty()
+                        && removal.vaults.is_subset(vaults)
+                });
+        }
+    }
     match epoch {
         // Only a strictly newer admission counter closes a removal: a removal
         // and a readmission minted concurrently with the same counter are
@@ -255,9 +298,11 @@ fn stale(db: &Database, device: &str, epoch: Option<&Epoch>, horizon: &Epoch) ->
         }
     }
 }
-/// Raise `device`'s admission epoch; every removal of it from an older epoch
-/// closes here without effects, those that took effect are re-established on
-/// refresh, and the closed versions go to every peer of their vaults.
+fn removal_in_scope(removal: &Removal, scope: &BTreeSet<String>) -> bool {
+    !removal.vaults.is_empty() && removal.vaults.is_subset(scope)
+}
+/// Raise `device`'s admission for every vault. Used when this computer is the
+/// only decider in the fixture; a learned admission uses `admit_for`.
 fn admit(db: &mut Database, device: &str, admission: &Epoch) {
     if *admission <= admitted(db, device) {
         return;
@@ -278,8 +323,6 @@ fn admit(db: &mut Database, device: &str, admission: &Epoch) {
     for removal in db.removals.iter_mut().filter(|r| older.contains(&r.id)) {
         removal.close_learned(Uuid::nil());
     }
-    // Every closed removal of the device carries the newer admission onward,
-    // also those closed here before, so peers behind this one learn it too.
     let closed: Vec<Uuid> = db
         .removals
         .iter()
@@ -287,6 +330,36 @@ fn admit(db: &mut Database, device: &str, admission: &Epoch) {
         .map(|r| r.id)
         .collect();
     rebroadcast(db, &closed);
+}
+/// Record `admission` for `scope` only. Removals that name any other vault
+/// stay open, and the device-wide counter does not cover them (#3079).
+fn admit_for(db: &mut Database, device: &str, admission: &Epoch, scope: &BTreeSet<String>) {
+    if scope.is_empty() {
+        return;
+    }
+    let older: Vec<Uuid> = db
+        .removals
+        .iter()
+        .filter(|removal| {
+            removal.device == device
+                && !removal.superseded()
+                && removal_in_scope(removal, scope)
+                && removal
+                    .epoch
+                    .as_ref()
+                    .is_none_or(|epoch| epoch.counter < admission.counter)
+        })
+        .map(|removal| removal.id)
+        .collect();
+    for removal in db.removals.iter_mut().filter(|r| older.contains(&r.id)) {
+        removal.close_learned(Uuid::nil());
+    }
+    rebroadcast(db, &older);
+    let per = db.admission_vaults.entry(device.to_owned()).or_default();
+    for vault in scope {
+        let counter = per.entry(vault.clone()).or_insert(0);
+        *counter = (*counter).max(admission.counter);
+    }
 }
 /// Deliver these closed removals to every peer that shares one of their
 /// vaults, the original sender included, so each computer that applied the
@@ -582,13 +655,29 @@ pub(super) fn readmit_with_vaults(
     // computer's counter is not a second writer (#3079).
     let epoch = next_epoch(db, device)?;
     let mut closed = vec![];
+    // Only vaults this computer decides. A removal of someone else's vault
+    // stays open (#3079).
+    let close_ids: Vec<Uuid> = db
+        .removals
+        .iter()
+        .filter(|removal| {
+            removal.device == device
+                && !removal.superseded()
+                && !removal.vaults.is_empty()
+                && removal
+                    .vaults
+                    .iter()
+                    .all(|vault| foreign_owner(db, vault).is_none())
+        })
+        .map(|removal| removal.id)
+        .collect();
+    let mut owned = BTreeSet::new();
     for removal in db
         .removals
         .iter_mut()
-        .filter(|r| r.device == device && !r.superseded())
+        .filter(|removal| close_ids.contains(&removal.id))
     {
-        // This approval replaces the old pairing and membership with new
-        // ones, so nothing is re-established here.
+        owned.extend(removal.vaults.iter().cloned());
         removal.undo = None;
         removal.close(pairing);
         closed.push(removal.id);
@@ -614,7 +703,11 @@ pub(super) fn readmit_with_vaults(
         db.removals.push(tombstone);
         closed.push(id);
     }
-    db.admissions.insert(device.to_owned(), epoch);
+    owned.extend(shared.iter().cloned());
+    if !owned.is_empty() {
+        admit_for(db, device, &epoch, &owned);
+        db.admissions.insert(device.to_owned(), epoch);
+    }
     rebroadcast(db, &closed);
     Ok(())
 }
@@ -656,14 +749,8 @@ pub(super) fn accept_readmission(
     admission: Option<Epoch>,
 ) -> Result<()> {
     if readmitted.is_empty() {
-        // Nothing readmitted by this approval; still learn the epoch, but
-        // never one out of range.
-        if let Some(admission) = admission
-            .as_ref()
-            .filter(|a| admission_in_range(db, own, a))
-        {
-            admit(db, own, admission);
-        }
+        // No vault was named, so this approval cannot raise a device-wide
+        // admission or close another owner's removal (#3079).
         return Ok(());
     }
     ensure!(
@@ -690,7 +777,11 @@ pub(super) fn accept_readmission(
         }
     }
     if let Some(admission) = &admission {
-        admit(db, own, admission);
+        let scope: BTreeSet<String> = readmitted
+            .iter()
+            .flat_map(|closed| closed.vaults.iter().cloned())
+            .collect();
+        admit_for(db, own, admission, &scope);
     }
     // Frozen now: only pairings that existed before this approval. A journal
     // written before `released` existed computes it here as well.
@@ -823,7 +914,15 @@ fn closed(db: &Database, id: Uuid) -> bool {
     db.removals.iter().any(|r| {
         r.id == id
             && (r.superseded()
-                || r.epoch.is_none() && stale(db, &r.device, None, &admitted(db, &r.device)))
+                || r.epoch.is_none()
+                    && stale_for(
+                        db,
+                        &r.device,
+                        None,
+                        &admitted(db, &r.device),
+                        Some(&r.vaults),
+                        false,
+                    ))
     })
 }
 fn valid(device: &str) -> bool {
@@ -1152,7 +1251,7 @@ impl Controller {
         } else {
             epoch
         };
-        let older = stale(&db, device, epoch.as_ref(), &current);
+        let older = stale_for(&db, device, epoch.as_ref(), &current, Some(&vaults), false);
         db.removals.push(Removal {
             id,
             device: device.to_owned(),
@@ -1227,7 +1326,15 @@ impl Controller {
             let horizon = current.clone().max(admission.clone());
             (
                 admission > current,
-                version.superseded || stale(&db, &device, version.epoch.as_ref(), &horizon),
+                version.superseded
+                    || stale_for(
+                        &db,
+                        &device,
+                        version.epoch.as_ref(),
+                        &horizon,
+                        Some(&vaults),
+                        version.admission.is_some(),
+                    ),
             )
         };
         if (learn || stale) && !from_removed {
@@ -1271,9 +1378,10 @@ impl Controller {
                         .any(|t| t.peer() == scope && vaults.contains(t.vault())),
                 "Removal sender has no shared vault authority"
             );
-            // Persist the newer epoch before any effect (#3079).
+            // Persist the newer epoch for these vaults only, before any
+            // effect. Another owner's vault is not closed (#3079).
             if let Some(admission) = &version.admission {
-                admit(&mut db, &device, admission);
+                admit_for(&mut db, &device, admission, &vaults);
             }
             if !stale {
                 // A current removal: it applies below, under the learned epoch.

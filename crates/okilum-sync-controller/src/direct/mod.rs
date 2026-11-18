@@ -200,6 +200,10 @@ struct Database {
     /// readmission (#3079); removals from an older epoch never take effect.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     admissions: BTreeMap<String, removal::Epoch>,
+    /// Per vault, the admission counter that may close a removal of that
+    /// vault. An owner of vault A does not cover vault B (#3079).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    admission_vaults: BTreeMap<String, BTreeMap<String, u64>>,
     seed: [u8; 32],
     name: String,
     endpoint: Option<SocketAddr>,
@@ -439,6 +443,7 @@ impl Controller {
                 removals: vec![],
                 removal_requests: vec![],
                 admissions: BTreeMap::new(),
+                admission_vaults: BTreeMap::new(),
                 transfers: vec![],
                 share_grants: vec![],
                 sources: vec![],
