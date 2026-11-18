@@ -3693,9 +3693,8 @@ mod tests {
         second.shutdown();
         Ok(())
     }
-    /// Review 83138: a pairing request cannot push the epoch range to its end:
-    /// a high-water mark far above this computer's is refused, and a minted
-    /// counter is always one other computers accept.
+    /// A pairing request cannot claim a history far above this computer's.
+    /// The mark does not raise the owner's counter (#3079).
     #[test]
     fn issue3079_high_water_cannot_exhaust_the_epoch_range() -> Result<()> {
         let root = tempfile::tempdir()?;
@@ -3710,7 +3709,10 @@ mod tests {
             "a refused request changed state"
         );
         readmit(&mut db, &bob, Uuid::new_v4(), &known, 64)?;
-        assert_eq!(admitted(&db, &bob).counter, 65);
+        assert_eq!(
+            admitted(&db, &bob).counter, 1,
+            "the returning computer's mark does not raise the owner's counter"
+        );
         db.admissions.insert(bob.clone(), epoch(MAX_EPOCH - 1, ""));
         assert!(
             next_epoch(&db, &bob).is_err(),
