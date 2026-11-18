@@ -1954,7 +1954,7 @@ mod tests {
     fn epoch(counter: u64, by: &str) -> Epoch {
         let by = match by.chars().next() {
             Some(letter) if by.len() < 63 && by.chars().all(|c| c == letter) => {
-                [letter.to_string().repeat(7); 8].join("-")
+                vec![letter.to_string().repeat(7); 8].join("-")
             }
             _ => by.into(),
         };
