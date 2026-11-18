@@ -4523,7 +4523,7 @@ mod tests {
         legacy.pending.insert(receiver.peer.id, receiver.clone());
         db.removals.push(legacy);
         assert_eq!(known_admission(&db, &device), None);
-        let pulled = serde_json::to_value(&requests(&db, receiver.peer.id))?;
+        let pulled = serde_json::to_value(requests(&db, receiver.peer.id))?;
         assert!(pulled[0].get("admission").is_none() && pulled[0].get("epoch").is_none());
         let pushed = serde_json::to_value(Operation::RemoveComputer {
             id: Uuid::new_v4(),
