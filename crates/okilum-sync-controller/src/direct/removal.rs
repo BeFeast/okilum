@@ -836,6 +836,7 @@ pub(super) fn accept_readmission(
     if let Some(admission) = &admission {
         let scope: BTreeSet<String> = readmitted
             .iter()
+            .filter(|closed| approver_owns_vaults(db, inviter, &closed.vaults))
             .flat_map(|closed| closed.vaults.iter().cloned())
             .collect();
         admit_for(db, own, admission, &scope);
@@ -2251,6 +2252,18 @@ fn deny(db: &mut Database, removal: &Removal, removed_self: bool) {
         })
         .map(|(id, _)| *id)
         .collect();
+    // A pairing that carries only the removed vault is revoked. One that also
+    // carries another vault keeps that authority. Decide before stripping.
+    let revoked: BTreeSet<_> = affected
+        .iter()
+        .copied()
+        .filter(|id| {
+            db.peers.get(id).is_some_and(|peer| {
+                carries(db, *id, peer, &removal.vaults)
+                    && !carries_other(db, *id, peer, &removal.vaults)
+            })
+        })
+        .collect();
     for id in &affected {
         if let Some(peer) = db.peers.get_mut(id) {
             peer.allowed.retain(|vault| !removal.vaults.contains(vault));
@@ -2258,16 +2271,6 @@ fn deny(db: &mut Database, removal: &Removal, removed_self: bool) {
     }
     db.share_grants
         .retain(|grant| !(affected.contains(&grant.peer) && removal.vaults.contains(&grant.vault)));
-    let revoked: BTreeSet<_> = affected
-        .iter()
-        .copied()
-        .filter(|id| {
-            db.peers.get(id).is_some_and(|peer| {
-                !carries(db, *id, peer, &removal.vaults)
-                    && !carries_other(db, *id, peer, &removal.vaults)
-            })
-        })
-        .collect();
     // Keep what is taken away, to re-establish it if a readmission is learned.
     let pairings: BTreeMap<Uuid, Paired> = revoked
         .iter()
@@ -2842,7 +2845,7 @@ mod tests {
                 &mut db,
                 &own,
                 inviter.peer.id,
-                &inviter.public,
+                &original.public,
                 &closing(&[id]),
                 None,
             )?;
@@ -3138,7 +3141,7 @@ mod tests {
             &mut db,
             &own,
             inviter.peer.id,
-            &inviter.public,
+            &original.public,
             &closing(&[id]),
             None,
         )?;
