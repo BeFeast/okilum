@@ -740,7 +740,7 @@ fn preview_plugins(
                 || url.starts_with("http://")
                 || url.starts_with("data:")
             {
-                Some(MarkdownImage::Source(ImageSource::from(url)))
+                Some(MarkdownImage::Source(crate::note_upload::image_source(url)))
             } else {
                 None
             }
