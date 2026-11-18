@@ -204,8 +204,11 @@ jobs:
     if: >-
       github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: bridge
-    # Must exceed github-linux.py queue_timeout + run_timeout (15 + 90 min).
-    timeout-minutes: 110
+    # The primary bridge runner stops every job at 60 min (runner.timeout: 1h), and
+    # both baldr runners share this label. github-linux.py gives push, queue and run
+    # one 53 min deadline (#3045); the step adds poll/cancel/cleanup headroom and the
+    # job stays within the runner ceiling, as for the github-pr.py lanes.
+    timeout-minutes: 60
     outputs:
       result: ${{ steps.remote.outputs.result }}
     steps:
@@ -232,6 +235,7 @@ jobs:
           OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
           PR_NUMBER: ${{ github.event.pull_request.number || github.run_number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        timeout-minutes: 56
         run: python3 scripts/ci/github-linux.py
 
   # A red main is reported to its suspects and to the "main is red" issue; a green
