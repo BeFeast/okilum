@@ -393,16 +393,16 @@ pub(crate) fn confirm_deleted_for_quit(retry: fn(&mut App), cx: &mut App) -> boo
         let asking = owner
             .update(cx, |_, window, cx| {
                 editor.update(cx, |reader, cx| {
-                    if !reader.leaving_deleted_note(None, cx) {
-                        return false;
-                    }
-                    window.activate_window();
-                    reader.ask_leaving_deleted_note(
+                    // Every pane of the window, the inactive one too (#773).
+                    let asking = reader.ask_for_deleted_pane(
                         Box::new(move |_, _, cx| cx.defer(retry)),
                         window,
                         cx,
                     );
-                    true
+                    if asking {
+                        window.activate_window();
+                    }
+                    asking
                 })
             })
             .is_ok_and(|result| result.unwrap_or(false));
@@ -1849,7 +1849,7 @@ impl Reader {
                 let retained_cleared = this.deleted_current().is_none();
                 let editing = this.pane.editing.as_mut().unwrap();
                 if held {
-                    if this.deleted_note.as_ref().is_some_and(|note| note.disk == reader_deleted_note::Disk::Different) {
+                    if this.pane.deleted_note.as_ref().is_some_and(|note| note.disk == reader_deleted_note::Disk::Different) {
                         editing.conflict_detected = true;
                         editing.conflict = reviewed;
                     } else {
@@ -1944,6 +1944,7 @@ impl Reader {
             // A retained returned version also blocks autosave until an explicit
             // Reload/Keep mine decision. The banner itself is never modal.
             if self
+                .pane
                 .deleted_note
                 .as_ref()
                 .is_some_and(|deleted| deleted.disk == reader_deleted_note::Disk::Different)
@@ -2139,7 +2140,13 @@ impl Reader {
 
     pub(super) fn save_source_for_close(&mut self, cx: &mut Context<Self>) -> bool {
         let (saved, protected) = self.save_source_outcome(cx);
-        saved || (protected && self.pane.editing.as_ref().is_some_and(|e| e.save_failed))
+        // A durable recovery draft excuses an access failure, but not a note
+        // deleted from disk: that pane closes only after the person chose
+        // Save As or Don't Save, which clears its deleted record (#773).
+        saved
+            || (protected
+                && self.deleted_current().is_none()
+                && self.pane.editing.as_ref().is_some_and(|e| e.save_failed))
     }
 
     pub(super) fn save_source(&mut self, cx: &mut Context<Self>) -> bool {
@@ -2155,7 +2162,7 @@ impl Reader {
         let (saved, protected) = self.save_source_outcome(cx);
         if !saved
             && protected
-            && self.deleted_note.is_none()
+            && self.pane.deleted_note.is_none()
             && self
                 .pane
                 .editing
@@ -2221,7 +2228,7 @@ impl Reader {
         let rules_revision = protected
             .then(|| pending_agents_revision(&editing.store, editing.store.dirty(), rules_scope))
             .flatten();
-        let retained = self.deleted_note.is_some();
+        let retained = self.pane.deleted_note.is_some();
         let result = draft.and_then(|_| {
             if retained {
                 Ok(Save::Conflict)
@@ -2908,7 +2915,7 @@ impl Reader {
         }
         self.pane.editing = Some(editing);
         if changed_rules_saved {
-            self.deleted_note = None;
+            self.pane.deleted_note = None;
             if let Some((absolute_path, saved_revision)) = rules_revision {
                 self.agents_rules_saved(&absolute_path, &saved_revision, cx);
             }
@@ -3337,7 +3344,7 @@ impl Reader {
                                         },
                                     )),
                                 )
-                                .when(self.deleted_note.is_none(), |row| {
+                                .when(self.pane.deleted_note.is_none(), |row| {
                                     row.child(
                                         reader_icon_button(
                                             "source-keep-both",

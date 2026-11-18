@@ -147,7 +147,7 @@ pub(super) fn save_new_copy(path: &Path, contents: &str) -> anyhow::Result<()> {
 impl Reader {
     /// The deleted-note state for the note on screen, if any.
     pub(super) fn deleted_current(&self) -> Option<&DeletedNote> {
-        self.deleted_note.as_ref().filter(|deleted| {
+        self.pane.deleted_note.as_ref().filter(|deleted| {
             deleted.root == self.vault_root
                 && deleted.rel == self.pane.current_rel
                 && self.pane.file_preview.is_none()
@@ -173,8 +173,8 @@ impl Reader {
         sources: &std::collections::HashMap<String, String>,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.deleted_note.is_some() && self.deleted_current().is_none() {
-            self.deleted_note = None;
+        if self.pane.deleted_note.is_some() && self.deleted_current().is_none() {
+            self.pane.deleted_note = None;
         }
         if self.pane.current_rel.is_empty()
             || self.pane.file_preview.is_some()
@@ -216,7 +216,7 @@ impl Reader {
         let editing = self.pane.editing.is_some();
         let retained = self.source_text(cx);
         let mut returned = false;
-        let held = match (on_disk, self.deleted_note.as_mut()) {
+        let held = match (on_disk, self.pane.deleted_note.as_mut()) {
             (None, Some(deleted)) => {
                 deleted.disk = Disk::Missing;
                 true
@@ -229,7 +229,7 @@ impl Reader {
                         .map(str::to_owned)
                         .unwrap_or_else(|| self.pane.note_source.clone())
                 });
-                self.deleted_note = Some(DeletedNote {
+                self.pane.deleted_note = Some(DeletedNote {
                     root: self.vault_root.clone(),
                     rel: self.pane.current_rel.clone(),
                     contents,
@@ -239,7 +239,7 @@ impl Reader {
             }
             (Some(text), Some(deleted)) => {
                 if text == retained.as_deref().unwrap_or(&deleted.contents) {
-                    self.deleted_note = None;
+                    self.pane.deleted_note = None;
                     returned = true;
                     false
                 } else {
@@ -474,7 +474,7 @@ impl Reader {
                     reader_toast::error("The copy was restored, but the editor could not reconnect. Your buffer is still open; use Save As… to keep another copy.", window, cx);
                     return;
                 }
-                self.deleted_note = None;
+                self.pane.deleted_note = None;
                 reader_toast::transient("Note restored", window, cx);
             }
             Err(_) if std::fs::symlink_metadata(&path).is_ok() => {
@@ -516,7 +516,7 @@ impl Reader {
         let path = self.vault_root.join(&self.pane.current_rel);
         match std::fs::read_to_string(&path) {
             Ok(raw) => {
-                self.deleted_note = None;
+                self.pane.deleted_note = None;
                 self.reconcile_document_source(Some(raw.into()), window, cx);
             }
             Err(error) => {
@@ -592,7 +592,7 @@ impl Reader {
                 }
                 let same = this.vault_root == root && this.pane.current_rel == rel;
                 if same {
-                    this.deleted_note = None;
+                    this.pane.deleted_note = None;
                     // Its contents are saved: the editor of the deleted file
                     // has nothing left to protect.
                     this.source_saved_elsewhere(cx);
@@ -891,7 +891,7 @@ mod tests {
         settle(visual, &reader, "navigation continued", |r| {
             r.pane.current_rel == "Other.md" && r.pane.note_source.contains("otherword")
         });
-        reader.read_with(visual, |r, _| assert!(r.deleted_note.is_none()));
+        reader.read_with(visual, |r, _| assert!(r.pane.deleted_note.is_none()));
     }
 
     #[gpui::test]
@@ -926,7 +926,7 @@ mod tests {
             r.pane.current_rel == "Other.md"
         });
         assert!(!root.join("Start.md").exists(), "nothing written");
-        reader.read_with(visual, |r, _| assert!(r.deleted_note.is_none()));
+        reader.read_with(visual, |r, _| assert!(r.pane.deleted_note.is_none()));
     }
 
     fn restore_editor_buffer(cx: &mut TestAppContext, live: bool) {

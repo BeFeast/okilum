@@ -121,6 +121,14 @@ pub(super) struct Surface {
     /// ticket, so a result that went stale meanwhile still changes nothing.
     pub deferred: Vec<Deferred>,
 
+    /// This pane's note was deleted outside Okilum (#1986): its contents now
+    /// exist only here. Per pane, so a deleted note in the inactive pane
+    /// keeps its record and its Save As / Don't Save choice (#773).
+    pub deleted_note: Option<reader_deleted_note::DeletedNote>,
+    /// The person chose Don't Save / Save As for exactly this document and
+    /// navigation generation; leaving it no longer asks.
+    pub deleted_note_leaving: Option<(PathBuf, String, u64)>,
+
     /// The Find field's subscription for a surface made after startup; the
     /// first surface's lives with the Reader's own subscriptions.
     pub _find_sub: Option<Subscription>,
@@ -184,6 +192,8 @@ impl Surface {
             usable_document: false,
             last_recorded_document: None,
             deferred: Vec::new(),
+            deleted_note: None,
+            deleted_note_leaving: None,
             _find_sub: None,
             #[cfg(test)]
             preparation_hold: None,
@@ -597,6 +607,8 @@ impl Reader {
             self.show_window_title(Some(self.pane.current_title.clone()), window, cx);
         }
         self.resume_active_pane(window, cx);
+        // The deleted-note notice describes the active pane's note.
+        self.sync_deleted_notice(window, cx);
         self.record_usable_document(cx);
         if self.pane.usable_document && !self.pane.current_rel.is_empty() {
             self.reconcile_published_document(window, cx);

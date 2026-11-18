@@ -1992,13 +1992,10 @@ struct Reader {
     /// Transient "− 110% + Reset" overlay after a note text zoom (#1652).
     zoom_hud: reader_text_zoom::Hud,
     link_notice: Option<reader_toast::Notice>,
-    /// The note on screen was deleted outside Okilum (#1986).
-    deleted_note: Option<reader_deleted_note::DeletedNote>,
     displayed_deleted_notice: Option<(String, reader_deleted_note::Disk)>,
     deleted_notice_generation: u64,
     /// «Save the deleted note?» is open; a second navigation does not stack another.
     deleted_note_asking: bool,
-    deleted_note_leaving: Option<(PathBuf, String, u64)>,
     displayed_notice: Option<reader_toast::Notice>,
     displayed_choices: Vec<(String, Option<String>)>,
     displayed_recovery: Option<(String, u64)>,
@@ -2337,11 +2334,9 @@ impl Reader {
             #[cfg(any(unix, windows))]
             move_index: None,
             link_notice: None,
-            deleted_note: None,
             displayed_deleted_notice: None,
             deleted_notice_generation: 0,
             deleted_note_asking: false,
-            deleted_note_leaving: None,
             displayed_notice: None,
             displayed_choices: Vec::new(),
             displayed_recovery: None,
