@@ -356,7 +356,7 @@ impl Epoch {
 }
 /// Queue the closed version of removal `id` to the computer `scope` that just
 /// delivered it open, so that computer learns of the close (#3079).
-fn queue_closed_to(db: &mut Database, id: Uuid, scope: Uuid, vaults: &BTreeSet<String>) {
+fn queue_closed_to(db: &mut Database, id: Uuid, scope: Uuid) {
     let Some(paired) = db
         .peers
         .get(&scope)
@@ -371,9 +371,37 @@ fn queue_closed_to(db: &mut Database, id: Uuid, scope: Uuid, vaults: &BTreeSet<S
         .iter_mut()
         .find(|r| r.id == id && (own.is_empty() || r.device != own))
     {
-        removal.vaults.extend(vaults.iter().cloned());
+        // A closed record's vaults are fixed: a delivery never widens them.
         removal.pending.insert(scope, paired);
     }
+}
+/// The vaults of a delivery that are associated here and that its sender
+/// is authorized for: the only vaults a new tombstone records (#3079).
+fn authorized_vaults(db: &Database, scope: Uuid, vaults: &BTreeSet<String>) -> BTreeSet<String> {
+    let sender = db
+        .peers
+        .get(&scope)
+        .or_else(|| db.revoked_peers.get(&scope));
+    vaults
+        .iter()
+        .filter(|v| db.attached.iter().any(|a| a.folder_id == **v))
+        .filter(|v| {
+            sender.is_some_and(|peer| peer.allowed.contains(v))
+                || knows(db, scope, v)
+                || db
+                    .transfers
+                    .iter()
+                    .any(|t| t.peer() == scope && t.vault() == v.as_str())
+        })
+        .cloned()
+        .collect()
+}
+/// Whether an approval's admission for this computer (`own`) is one it can
+/// take: a few cycles ahead at most, with room to grow below the limit.
+pub(super) fn admission_in_range(db: &Database, own: &str, admission: &Epoch) -> bool {
+    admission.valid()
+        && admission.counter <= high_water(db, own).saturating_add(64)
+        && admission.counter.saturating_add(1) < MAX_EPOCH
 }
 /// This computer's own device: the daemon of its associated vaults.
 fn own_device(db: &Database) -> String {
@@ -602,17 +630,23 @@ pub(super) fn accept_readmission(
     readmitted: &[Closed],
     admission: Option<Epoch>,
 ) -> Result<()> {
-    ensure!(
-        admission.as_ref().is_none_or(Epoch::valid),
-        "Invalid admission epoch in approval"
-    );
     if readmitted.is_empty() {
-        // Nothing readmitted by this approval; still learn the epoch.
-        if let Some(admission) = &admission {
+        // Nothing readmitted by this approval; still learn the epoch, but
+        // never one out of range.
+        if let Some(admission) = admission
+            .as_ref()
+            .filter(|a| admission_in_range(db, own, a))
+        {
             admit(db, own, admission);
         }
         return Ok(());
     }
+    ensure!(
+        admission
+            .as_ref()
+            .is_none_or(|a| admission_in_range(db, own, a)),
+        "Invalid admission epoch in approval"
+    );
     // Closed IDs beyond the tombstone room are not recorded here; the
     // admission epoch alone still closes those removals if they arrive.
     for closed in readmitted {
@@ -1067,7 +1101,7 @@ impl Controller {
                     // delivery means the sender still holds it open, so the
                     // closed version is queued to it before acknowledging.
                     if !version.superseded {
-                        queue_closed_to(&mut db, id, scope, &vaults);
+                        queue_closed_to(&mut db, id, scope);
                         self.save(&db)?;
                     }
                     return Ok(Reply::RemovalRecorded { id });
@@ -1113,13 +1147,13 @@ impl Controller {
                     None if room => {
                         let mut tombstone = Removal::tombstone(id, &device, scope);
                         tombstone.epoch = version.epoch.clone();
-                        tombstone.vaults = vaults.clone();
+                        tombstone.vaults = authorized_vaults(&db, scope, &vaults);
                         db.removals.push(tombstone);
                     }
                     None => {}
                 }
                 if !version.superseded {
-                    queue_closed_to(&mut db, id, scope, &vaults);
+                    queue_closed_to(&mut db, id, scope);
                 }
                 self.save(&db)?;
                 return Ok(Reply::RemovalRecorded { id });
@@ -4348,6 +4382,123 @@ mod tests {
             64
         );
         third.shutdown();
+        Ok(())
+    }
+
+    /// Review 83320: a live peer's open delivery of a closed removal with an
+    /// extra vault leaves its vaults unchanged, and a new tombstone records
+    /// only vaults associated here that the sender is authorized for.
+    #[test]
+    fn issue3079_deliveries_never_widen_removal_vaults() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let third = Controller::open(root.path().join("third"), vec![])?;
+        let own = ["CCCCCCC"; 8].join("-");
+        let removed = ["BBBBBBB"; 8].join("-");
+        let mut sender = pairing(&["AAAAAAA"; 8].join("-"), wire::public(&wire::random()?)?)?;
+        sender.allowed = vec!["v1".into()];
+        let (closed, unknown) = (Uuid::new_v4(), Uuid::new_v4());
+        {
+            let mut db = third.shared.db.lock().unwrap();
+            db.attached.push(existing_vault(&own, "v1")?);
+            db.attached.push(existing_vault(&own, "v2")?);
+            db.peers.insert(sender.peer.id, sender.clone());
+            let mut record = removal(closed, &removed);
+            record.vaults = BTreeSet::from(["v1".into()]);
+            record.readmitted = Some(Uuid::nil());
+            db.removals.push(record);
+        }
+        let widened = BTreeSet::from(["v1".into(), "v2".into(), "v9".into()]);
+        third.receive_removal(
+            sender.peer.id,
+            closed,
+            removed.clone(),
+            widened.clone(),
+            None,
+            Version::default(),
+        )?;
+        third.receive_removal(
+            sender.peer.id,
+            unknown,
+            removed.clone(),
+            widened,
+            None,
+            Version {
+                superseded: true,
+                ..Version::default()
+            },
+        )?;
+        let db = third.shared.db.lock().unwrap();
+        let record = db.removals.iter().find(|r| r.id == closed).unwrap();
+        assert_eq!(
+            record.vaults,
+            BTreeSet::from(["v1".into()]),
+            "a delivery widened a closed removal"
+        );
+        assert!(record.pending.contains_key(&sender.peer.id));
+        let tombstone = db.removals.iter().find(|r| r.id == unknown).unwrap();
+        assert_eq!(
+            tombstone.vaults,
+            BTreeSet::from(["v1".into()]),
+            "a tombstone recorded vaults the sender is not authorized for or that are not here"
+        );
+        drop(db);
+        third.shutdown();
+        Ok(())
+    }
+    /// Review 83320: an approval's admission far ahead of this computer's
+    /// history is refused before anything changes; one within 64 readmits.
+    #[test]
+    fn issue3079_approval_admission_is_bounded() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let returning = Controller::open(root.path().join("returning"), vec![])?;
+        let own = ["BBBBBBB"; 8].join("-");
+        let inviter = pairing(&["CCCCCCC"; 8].join("-"), wire::public(&wire::random()?)?)?;
+        let id = Uuid::new_v4();
+        let mut db = returning.shared.db.lock().unwrap();
+        db.removals.push(removal(id, &own));
+        db.local_removed = true;
+        db.peers.insert(inviter.peer.id, inviter.clone());
+        for counter in [65, MAX_EPOCH - 1] {
+            assert!(accept_readmission(
+                &mut db,
+                &own,
+                inviter.peer.id,
+                &inviter.public,
+                &closing(&[id]),
+                Some(epoch(counter, "CCCC")),
+            )
+            .is_err());
+            assert!(db.local_removed);
+            assert!(!db
+                .removals
+                .iter()
+                .find(|r| r.id == id)
+                .unwrap()
+                .superseded());
+            assert_eq!(admitted(&db, &own), Epoch::default());
+        }
+        assert!(!admission_in_range(&db, &own, &epoch(65, "CCCC")));
+        // A plain pairing with an out-of-range admission learns nothing.
+        accept_readmission(
+            &mut db,
+            &own,
+            inviter.peer.id,
+            &inviter.public,
+            &[],
+            Some(epoch(500, "CCCC")),
+        )?;
+        assert_eq!(admitted(&db, &own), Epoch::default());
+        accept_readmission(
+            &mut db,
+            &own,
+            inviter.peer.id,
+            &inviter.public,
+            &closing(&[id]),
+            Some(epoch(64, "CCCC")),
+        )?;
+        assert!(!db.local_removed, "an approval within range must readmit");
+        drop(db);
+        returning.shutdown();
         Ok(())
     }
 }

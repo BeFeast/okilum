@@ -942,6 +942,15 @@ impl Controller {
                         readmitted.is_empty() || own_device.is_some(),
                         "readmission without a Syncthing identity"
                     );
+                    // Checked before anything changes here (#3079).
+                    if let (Some(own), false) = (&own_device, readmitted.is_empty()) {
+                        ensure!(
+                            admission
+                                .as_ref()
+                                .is_none_or(|a| removal::admission_in_range(&db, own, a)),
+                            "Invalid admission epoch in approval"
+                        );
+                    }
                     db.catalog = catalog;
                     db.catalog_peer = Some(paired.peer.id);
                     let (id, public) = (paired.peer.id, paired.public.clone());
