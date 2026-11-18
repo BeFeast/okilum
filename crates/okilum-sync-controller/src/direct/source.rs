@@ -33,6 +33,15 @@ pub(super) struct Source {
     witness: Option<Value>,
     pub(super) active: bool,
 }
+impl Source {
+    pub(super) fn vault(&self) -> &str {
+        &self.id
+    }
+    /// This computer shared `folder` and still decides who is in it (#3079).
+    pub(super) fn owns(&self, folder: &str) -> bool {
+        self.active && self.id == folder
+    }
+}
 impl Controller {
     /// User consent to share this ordinary vault with this computer's approved
     /// peers, including computers paired before enrollment. `prepared` is the

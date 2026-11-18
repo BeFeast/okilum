@@ -681,6 +681,9 @@ impl Transfer {
         self.owner.is_none() || self.destination_identity.is_none() || self.phase == Phase::Legacy
     }
     /// The paired computer this vault is received from.
+    pub(super) fn vault(&self) -> &str {
+        &self.vault
+    }
     pub(super) fn peer(&self) -> Uuid {
         self.peer
     }
@@ -709,6 +712,21 @@ impl std::fmt::Display for MembershipChanged {
 }
 impl std::error::Error for MembershipChanged {}
 
+/// The configured folder is still this transfer's own folder at its own root.
+/// Membership and pause state may differ: removal changed them.
+fn retirable(transfer: &Transfer, folder: &Value) -> Result<bool> {
+    Ok(
+        transfer.destination_identity.as_ref() == Some(&DirectoryIdentity::read(&transfer.path)?)
+            && Path::new(folder["path"].as_str().context("folder path missing")?).canonicalize()?
+                == transfer.path
+            && folder["id"] == transfer.vault
+            && (folder["label"] == expected_label(transfer)?
+                || transfer
+                    .label
+                    .as_ref()
+                    .is_some_and(|label| folder["label"] == *label)),
+    )
+}
 fn validate_owned(transfer: &Transfer, folder: &Value) -> Result<()> {
     ensure!(
         !transfer.legacy_hold(),
@@ -1194,6 +1212,66 @@ impl Controller {
                 Err(error) if offline(&error) => {}
                 Err(error) => return Err(error),
             }
+        }
+        Ok(())
+    }
+    /// #3079: after this computer is readmitted, release every Okilum-owned
+    /// copy it received through a pairing that its removal revoked. The folder
+    /// leaves this Syncthing runtime and its files stay; the copy joins again
+    /// only through the reviewed lossless first merge (#2043), never by
+    /// resuming the old membership.
+    pub(super) fn retire_readmitted_copies(&self) -> Result<()> {
+        self.check()?;
+        let _guard = self.shared.transfer_lock.lock().unwrap();
+        let retired: Vec<Transfer> = {
+            let db = self.shared.db.lock().unwrap();
+            db.transfers
+                .iter()
+                .filter(|t| {
+                    !t.active
+                        && !t.legacy_hold()
+                        && t.owner.is_some()
+                        && removal::released_by_readmission(
+                            &db,
+                            &t.daemon.device_id,
+                            t.peer,
+                            &t.vault,
+                        )
+                })
+                .cloned()
+                .collect()
+        };
+        for transfer in retired {
+            self.check()?;
+            let api = transfer.daemon.connect()?;
+            let config = api.config()?;
+            if let Some(folder) = config["folders"]
+                .as_array()
+                .context("folder inventory missing")?
+                .iter()
+                .find(|f| f["id"] == transfer.vault)
+            {
+                ensure!(
+                    retirable(&transfer, folder)?,
+                    "The kept copy of this vault changed outside Okilum; no folder was changed"
+                );
+                let _admission = crate::admission::configuration(
+                    &transfer.daemon,
+                    &transfer.vault,
+                    &transfer.path,
+                )?;
+                self.check()?;
+                api.remove_folder(&transfer.vault)?;
+            }
+            let mut db = self.shared.db.lock().unwrap();
+            db.transfers
+                .retain(|t| !(t.peer == transfer.peer && t.vault == transfer.vault));
+            db.attached.retain(|a| {
+                !(a.folder_id == transfer.vault
+                    && a.path == transfer.path
+                    && a.daemon == transfer.daemon)
+            });
+            self.save(&db)?;
         }
         Ok(())
     }

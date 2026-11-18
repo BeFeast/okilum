@@ -36,6 +36,9 @@ TESTS = {
     'issue2508_scoped_receipt_refuses_unproven_states_and_recovers_each_boundary',
     CRASH_TEST,
     'issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_handoff',
+    'issue3079_removed_computer_rejoins_and_a_stale_removal_cannot_remove_it_again',
+    'issue3079_rejoin_through_another_computer_reuses_the_kept_copy',
+    'issue3079_offline_removal_then_rejoin_through_another_computer',
 }
 # #3080: these fill a private tmpfs; scripts/ci/sync-disk-full.sh mounts and runs them.
 DISK_FULL = {
@@ -58,6 +61,8 @@ def main():
     listing = subprocess.run([executable, '--list'], check=True, text=True, stdout=subprocess.PIPE).stdout
     discovered = {line.removesuffix(': test') for line in listing.splitlines() if line.endswith(': test')}
     assert discovered == TESTS | DISK_FULL | {'issue2582_child'}, discovered
+    # The #3079 rejoin controls run inside 'remaining': a further parallel
+    # process of multi-runtime fixtures made port reuse hit other tests.
     groups = [
         ('crash-even', CHECKPOINTS[::2]),
         ('crash-odd', CHECKPOINTS[1::2]),
