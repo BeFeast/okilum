@@ -223,7 +223,7 @@ fn chat(gateway: &McpGateway, binding: &AreaBinding) -> Result<bool> {
     let message = OutgoingMessage::queue(
         &manager,
         "Okilum #1422 acceptance (long growing reply): without using any tools, reply with \
-         the numbers 1 to 120, one per line, each followed by one short English word. \
+         the numbers 1 to 600, one per line, each followed by one short English word. \
          Nothing else.",
     );
     let receipt = gateway.send_message(&message)?;
@@ -263,7 +263,7 @@ fn chat(gateway: &McpGateway, binding: &AreaBinding) -> Result<bool> {
             settled = Some(started.elapsed().as_millis());
             break;
         }
-        thread::sleep(Duration::from_millis(400));
+        thread::sleep(Duration::from_millis(200));
     }
     let (grown, growth) = lengths
         .iter()
