@@ -601,7 +601,7 @@ impl Reader {
                                 // The confirmed move has a successful Trash
                                 // receipt. Authorize only this document's close;
                                 // its contents are recoverable through Undo.
-                                this.deleted_note = None;
+                                this.pane.deleted_note = None;
                                 this.continue_deleted_navigation(
                                     Box::new(|this, window, cx| this.show_empty_vault(window, cx)),
                                     window,

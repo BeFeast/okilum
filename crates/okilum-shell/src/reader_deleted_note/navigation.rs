@@ -9,19 +9,44 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.leaving_deleted_note(None, cx) {
-            self.ask_leaving_deleted_note(
-                Box::new(|this, window, cx| {
-                    if this.finish_window_close(cx) {
-                        window.remove_window();
-                    }
-                }),
-                window,
-                cx,
-            );
+        // After each choice the close is attempted again, so every pane with
+        // a deleted note is asked in turn before the window goes (#773).
+        if self.ask_for_deleted_pane(
+            Box::new(|this, window, cx| {
+                if this.prepare_window_close(window, cx) {
+                    window.remove_window();
+                }
+            }),
+            window,
+            cx,
+        ) {
             return false;
         }
         self.finish_window_close(cx)
+    }
+
+    /// The first pane of this window whose deleted note would be left
+    /// behind, asked about through the ordinary Save As / Don't Save dialog.
+    /// An inactive pane is focused first, so the dialog is about the note on
+    /// screen. Returns whether a dialog is now open (or already was).
+    pub(crate) fn ask_for_deleted_pane(
+        &mut self,
+        retry: Continue,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.deleted_note_asking {
+            return true;
+        }
+        let needs = self.for_each_pane(cx, |this, cx| {
+            this.leaving_deleted_note(None, cx).then(|| this.pane.id())
+        });
+        let Some(pane) = needs.into_iter().flatten().next() else {
+            return false;
+        };
+        self.focus_pane(pane, window, cx);
+        self.ask_leaving_deleted_note(retry, window, cx);
+        true
     }
 
     fn finish_window_close(&mut self, cx: &mut Context<Self>) -> bool {
@@ -45,6 +70,7 @@ impl Reader {
         cx: &mut Context<Self>,
     ) -> bool {
         if self
+            .pane
             .deleted_note_leaving
             .as_ref()
             .is_some_and(|(root, rel, generation)| {
@@ -57,10 +83,10 @@ impl Reader {
         }
         // Navigation can beat the debounced watcher notification.
         self.track_deleted_note(&Default::default(), cx);
-        if self.deleted_note.is_some() && self.deleted_current().is_none() {
-            self.deleted_note = None;
+        if self.pane.deleted_note.is_some() && self.deleted_current().is_none() {
+            self.pane.deleted_note = None;
         }
-        self.deleted_note.is_some() && target != Some(self.pane.current_rel.as_str())
+        self.pane.deleted_note.is_some() && target != Some(self.pane.current_rel.as_str())
     }
 
     /// Ask before a deleted note's contents are left behind; `retry` runs the
@@ -102,10 +128,10 @@ impl Reader {
                         if had_editor {
                             reader_toast::transient("Draft kept in recovery. Use More → Recover notes… to save it later.", window, cx);
                         }
-                        this.deleted_note = None;
+                        this.pane.deleted_note = None;
                         this.continue_deleted_navigation(retry, window, cx);
                     }
-                    Leave::SaveAs if current && this.deleted_note.is_some() => {
+                    Leave::SaveAs if current && this.pane.deleted_note.is_some() => {
                         this.save_deleted_note_as(Some(retry), window, cx);
                     }
                     Leave::SaveAs => {}
@@ -124,7 +150,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.deleted_note_leaving = Some((
+        self.pane.deleted_note_leaving = Some((
             self.vault_root.clone(),
             self.pane.current_rel.clone(),
             self.pane.navigation.generation,

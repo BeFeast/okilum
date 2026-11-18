@@ -215,7 +215,7 @@ mod tests {
         // silently select the new name or a similarly named sibling.
         std::fs::rename(root.join("start.md"), root.join("moved.md")).unwrap();
         settle(visual, &reader, |r, _| {
-            r.deleted_note.is_some() && listed(r, "moved.md")
+            r.pane.deleted_note.is_some() && listed(r, "moved.md")
         });
         reader.read_with(visual, |r, _| {
             assert_eq!(r.pane.current_rel, "start.md");
@@ -307,7 +307,7 @@ mod tests {
         });
         std::fs::remove_dir_all(root.join("child")).unwrap();
         settle(visual, &reader, |r, _| {
-            !listed(r, "child") && r.deleted_note.is_some()
+            !listed(r, "child") && r.pane.deleted_note.is_some()
         });
         reader.read_with(visual, |r, _| {
             assert_eq!(r.pane.current_rel, "child/external.md");
@@ -354,7 +354,7 @@ mod tests {
         });
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "# Other editor\n");
         std::fs::remove_file(&path).unwrap();
-        settle(visual, &reader, |r, _| r.deleted_note.is_some());
+        settle(visual, &reader, |r, _| r.pane.deleted_note.is_some());
         reader.read_with(visual, |r, cx| {
             assert_eq!(r.pane.current_rel, "start.md");
             assert_eq!(
@@ -397,7 +397,7 @@ mod tests {
             let mut stale = current.clone();
             stale.refresh = stale.refresh.wrapping_sub(1);
             r.publish_single_folder_document(stale, Some("# Older refresh".into()), window, cx);
-            assert!(r.deleted_note.is_none());
+            assert!(r.pane.deleted_note.is_none());
             assert!(r.pane.note_source.contains("Original"));
             r.publish_single_folder_document(
                 current,
@@ -454,7 +454,7 @@ mod tests {
             assert_eq!(r.pane.current_rel, "start.md");
             assert!(r.pane.note_source.contains("New root"));
             assert!(!listed(r, "old-only.md"));
-            assert!(r.deleted_note.is_none());
+            assert!(r.pane.deleted_note.is_none());
             assert!(r.single_file && r.searcher.is_none() && r.index_dir.is_none());
         });
     }
@@ -475,7 +475,7 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         std::os::unix::fs::symlink(&outside, &path).unwrap();
         settle(visual, &reader, |r, _| {
-            r.deleted_note.is_some() || r.link_notice.is_some()
+            r.pane.deleted_note.is_some() || r.link_notice.is_some()
         });
         reader.read_with(visual, |r, _| {
             assert!(!r.pane.note_source.contains("Private outside"))
