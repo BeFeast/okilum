@@ -1950,11 +1950,15 @@ mod tests {
             stable_root_identity: None,
         })
     }
+    /// A short tag (`"AAAA"`) stands for that letter's 63-character device.
     fn epoch(counter: u64, by: &str) -> Epoch {
-        Epoch {
-            counter,
-            by: by.into(),
-        }
+        let by = match by.chars().next() {
+            Some(letter) if by.len() < 63 && by.chars().all(|c| c == letter) => {
+                [letter.to_string().repeat(7); 8].join("-")
+            }
+            _ => by.into(),
+        };
+        Epoch { counter, by }
     }
     fn closing(ids: &[Uuid]) -> Vec<Closed> {
         ids.iter()
@@ -3385,7 +3389,11 @@ mod tests {
         assert!(!epoch(MAX_EPOCH, "").valid());
         assert!(!epoch(u64::MAX, "").valid());
         assert!(epoch(1, &["AAAAAAA"; 8].join("-")).valid());
-        assert!(!epoch(1, "not-a-device").valid());
+        assert!(!Epoch {
+            counter: 1,
+            by: "not-a-device".into()
+        }
+        .valid());
         let root = tempfile::tempdir()?;
         let third = Controller::open(root.path().join("third"), vec![])?;
         let removed = ["BBBBBBB"; 8].join("-");
