@@ -240,9 +240,6 @@ pub(super) fn known_admission(db: &Database, device: &str) -> Option<Epoch> {
 /// Whether a removal of `device` from `epoch` is older than what this
 /// computer knows. A removal without an epoch (older software or journal) is
 /// older than any known admission, and than any closed removal of `device`.
-fn stale(db: &Database, device: &str, epoch: Option<&Epoch>, horizon: &Epoch) -> bool {
-    stale_for(db, device, epoch, horizon, None, false)
-}
 /// `vaults` limits which admission can close this removal. A counter learned
 /// for vault A does not make a removal of vault B stale. `message` means
 /// `horizon` was just received for exactly these vaults (#3079).
@@ -301,8 +298,9 @@ fn stale_for(
 fn removal_in_scope(removal: &Removal, scope: &BTreeSet<String>) -> bool {
     !removal.vaults.is_empty() && removal.vaults.is_subset(scope)
 }
-/// Raise `device`'s admission for every vault. Used when this computer is the
-/// only decider in the fixture; a learned admission uses `admit_for`.
+/// Raise `device`'s admission for every vault. Fixture tests use this when one
+/// computer is the only decider; a learned admission uses `admit_for`.
+#[cfg(test)]
 fn admit(db: &mut Database, device: &str, admission: &Epoch) {
     if *admission <= admitted(db, device) {
         return;
