@@ -183,9 +183,10 @@ phase is shortened so that 150 seconds stay reserved for the runner-sources rout
 and 90 seconds for the final `--no-download` install (about 20 seconds in run
 `44255520770`). A phase whose window would drop below 15 seconds is skipped and
 logged. Fast failures (DNS) keep every route at its nominal bounds, and after a
-successful download the install keeps its full four minutes. Worst case, where
-every update succeeds and every download times out: azure 60 + 150, archive
-60 + 15, kernel.org skipped, runner sources 60 + 90, a total of 435 seconds.
+successful download the install keeps its full four minutes. While a later
+route is still protected, the clip also subtracts apt-bounded.sh's 15-second
+kill grace, so a SIGKILL cannot eat that reserve. The fallback download keeps
+its promised 90 seconds beside the 90-second install reserve.
 Fake-clock tests cover this timeline, fallback success after HTTPS timeouts,
 fast failures and the unchanged HTTPS-success bounds.
 

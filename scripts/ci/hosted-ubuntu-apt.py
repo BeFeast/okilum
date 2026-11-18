@@ -22,6 +22,9 @@ MIRROR_FILE = re.compile(r'mirror\+file:(/{1,3}[^\s#]+)')
 OUTER_DEADLINE = 540
 BUDGET = OUTER_DEADLINE - 15
 UPDATE, DOWNLOAD, INSTALL = 60, 150, 240  # nominal bound of each apt phase
+# apt-bounded.sh waits this long after TERM before SIGKILL. A timed-out phase
+# can occupy its grant plus this grace, so the clip below subtracts it up front.
+KILL_GRACE = 15
 # HTTPS phases are shortened so that the runner-sources route always keeps a
 # full index update plus 90 s of download (the shared cache keeps earlier
 # progress), and every route keeps time for the final --no-download install
@@ -78,8 +81,12 @@ def provision(packages, source_root=Path('/etc/apt'), clock=time.monotonic, run=
                   '-o', 'Acquire::https::Verify-Host=true']
 
         def apt(options, nominal, reserve, *args):
-            # Never let one phase eat the time reserved for the routes after it.
-            seconds = int(min(nominal, deadline - clock() - reserve))
+            # A timed-out apt occupies its grant plus KILL_GRACE. Charge that
+            # grace while a later route's reserve is still being protected.
+            # Charging it again on the fallback download would shrink the
+            # promised 90 s window (INSTALL_RESERVE stays held beside it).
+            grace = KILL_GRACE if reserve > INSTALL_RESERVE else 0
+            seconds = int(min(nominal, deadline - clock() - reserve - grace))
             if seconds < MIN_PHASE:
                 print(f'Hosted Ubuntu provisioning: skipping apt-get {args[0]}: '
                       f'{seconds}s left before the reserved time', file=sys.stderr, flush=True)
