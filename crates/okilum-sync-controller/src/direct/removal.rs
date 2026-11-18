@@ -812,23 +812,25 @@ pub(super) fn accept_readmission(
     // admission epoch alone still closes those removals if they arrive.
     for closed in readmitted {
         let room = db.removals.len() < MAX_TOMBSTONES;
-        match db.removals.iter_mut().find(|r| r.id == closed.id) {
-            // The vaults this computer recorded stand. Close them only when
-            // every one was received from this approver; another owner's
-            // removal stays open (#3079).
-            Some(removal) if removal.device == own && approver_owns(db, inviter, removal) => {
+        let close_existing = db.removals.iter().any(|removal| {
+            removal.id == closed.id && removal.device == own && approver_owns(db, inviter, removal)
+        });
+        let record_new = !db.removals.iter().any(|removal| removal.id == closed.id)
+            && !closed.id.is_nil()
+            && room
+            && approver_owns_vaults(db, inviter, &closed.vaults);
+        if close_existing {
+            if let Some(removal) = db
+                .removals
+                .iter_mut()
+                .find(|removal| removal.id == closed.id)
+            {
                 removal.close(pairing);
             }
-            Some(_) => {}
-            None if !closed.id.is_nil()
-                && room
-                && approver_owns_vaults(db, inviter, &closed.vaults) =>
-            {
-                let mut tombstone = Removal::tombstone(closed.id, own, pairing);
-                tombstone.vaults = closed.vaults.clone();
-                db.removals.push(tombstone);
-            }
-            None => {}
+        } else if record_new {
+            let mut tombstone = Removal::tombstone(closed.id, own, pairing);
+            tombstone.vaults = closed.vaults.clone();
+            db.removals.push(tombstone);
         }
     }
     if let Some(admission) = &admission {
