@@ -371,6 +371,7 @@ Reader tokens (new `reader-tokens.json`, loaded the same way):
 | Token | Light | Dark | Use |
 | --- | --- | --- | --- |
 | `text-faint` | `#8d929a` | `#7c818a` | section labels, counts, kbd hints |
+| `heading` | `#5034a8` | `#b9a9f5` | heading text in Reader and Live Preview (#3147); links inside keep `link` |
 | `link-underline` | `#0969e8` @ 28 % | `#71acff` @ 30 % | resting underline |
 | `missing-link` | `#9a5b00` | `#e2b25c` | unresolved wikilink text, dashed underline @ 50 % |
 | `code-bg` | `#f6f7f8` | `#26292e` | inline code, code blocks |
@@ -419,11 +420,13 @@ too. Status colors may fall back to the brand tokens; no other role inherits.
 
 Token files live in `crates/okilum-shell/assets/themes/<key>.json`
 (`okilum-theme/v1`). A unit test checks every theme in both variants: `text`
-and `text-muted` on `surface`, `canvas` and `sidebar`; `link` and `missing-link`
-on `surface` and `canvas`; `text` on `code-bg`, `surface-raised`, `selected` and
+and `text-muted` on `surface`, `canvas` and `sidebar`; `link`, `missing-link` and
+`heading` on `surface` and `canvas`; `text` on `code-bg`, `surface-raised`, `selected` and
 `hover`; status colors on `surface` and `on-status` on them — WCAG AA (4.5:1),
 AAA (7:1) for High contrast. `on-accent` on `accent` is 4.5:1 and `text-faint`
 3:1 (4.5:1 for High contrast). A new theme that fails is fixed, not exempted.
+Each theme's `heading` is a hue at least 25° from its `link`, so a heading
+never reads as clickable.
 
 **Theme picker** (`theme_picker.rs`): a self-contained row of compact swatch
 cards (120 px). Each card previews the theme's sidebar, surface, text, muted

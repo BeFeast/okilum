@@ -1051,8 +1051,9 @@ fn reader_text_style(theme: &Theme) -> TextViewStyle {
         ..Default::default()
     })
     .paragraph_gap(rems(0.75))
-    // One scale for Reader and Live Preview (#1076).
+    // One scale and one colour for Reader and Live Preview (#1076, #3147).
     .heading_font_size(|level, base| base * source_presentation::heading_scale(level))
+    .heading_color(tokens.heading)
 }
 
 #[cfg(test)]
