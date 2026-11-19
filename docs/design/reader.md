@@ -417,6 +417,7 @@ too. Status colors may fall back to the brand tokens; no other role inherits.
 | Paper | `paper` | warm off-white, ink-blue links, rust accent; sepia dark |
 | High contrast | `high-contrast` | black/white surfaces, AAA (7:1) reading text |
 | Nord | `nord` | cool arctic blues after the Nord palette |
+| Obsidianite | `obsidianite` | after Obsidianite (MIT): near-black violet canvas, cyan accent and headings, periwinkle links; derived light variant |
 
 Token files live in `crates/okilum-shell/assets/themes/<key>.json`
 (`okilum-theme/v1`). A unit test checks every theme in both variants: `text`

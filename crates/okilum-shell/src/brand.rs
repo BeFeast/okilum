@@ -310,15 +310,18 @@ pub enum ThemeId {
     Paper,
     HighContrast,
     Nord,
+    /// After Obsidianite for Obsidian (#3152), colours only.
+    Obsidianite,
 }
 
 impl ThemeId {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Okilum,
         Self::Graphite,
         Self::Paper,
         Self::HighContrast,
         Self::Nord,
+        Self::Obsidianite,
     ];
 
     /// Stable key for app config and token files.
@@ -329,6 +332,7 @@ impl ThemeId {
             Self::Paper => "paper",
             Self::HighContrast => "high-contrast",
             Self::Nord => "nord",
+            Self::Obsidianite => "obsidianite",
         }
     }
 
@@ -339,6 +343,7 @@ impl ThemeId {
             Self::Paper => "Paper",
             Self::HighContrast => "High contrast",
             Self::Nord => "Nord",
+            Self::Obsidianite => "Obsidianite",
         }
     }
 
@@ -353,6 +358,7 @@ impl ThemeId {
             Self::Paper => Some(include_str!("../assets/themes/paper.json")),
             Self::HighContrast => Some(include_str!("../assets/themes/high-contrast.json")),
             Self::Nord => Some(include_str!("../assets/themes/nord.json")),
+            Self::Obsidianite => Some(include_str!("../assets/themes/obsidianite.json")),
         }
     }
 
@@ -1528,6 +1534,37 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn issue3152_obsidianite_dark_keeps_the_source_theme_colours() {
+        // Obsidianite's `.theme-dark`: --background-primary, --text-normal,
+        // --text-accent and --text-title-h1 (= accent), --background-secondary.
+        let theme = ThemeId::from_key("obsidianite").expect("built-in theme");
+        assert_eq!(theme.name(), "Obsidianite");
+        let (dark, reader) = tokens(theme, true);
+        assert_eq!(dark.canvas, rgb(0x100e17).into());
+        assert_eq!(dark.surface, rgb(0x100e17).into());
+        assert_eq!(dark.text, rgb(0xbebebe).into());
+        assert_eq!(dark.accent, rgb(0x0fb6d6).into());
+        assert_eq!(reader.heading, dark.accent);
+        assert_eq!(dark.sidebar, rgb(0x191621).into());
+        assert_eq!(css_color(reader.highlight), "#f4569d40");
+        // The derived light variant keeps the accent and heading hues.
+        let (light, light_reader) = tokens(theme, false);
+        for (what, a, b) in [
+            ("accent", light.accent, dark.accent),
+            ("heading", light_reader.heading, reader.heading),
+        ] {
+            let gap = (a.h - b.h).abs() * 360.;
+            assert!(gap.min(360. - gap) < 6., "{what} hue moved {gap:.1}°");
+        }
+        assert!(light.surface != dark.surface);
+        let file: serde_json::Value = serde_json::from_str(theme.tokens().unwrap()).unwrap();
+        assert!(
+            file["basis"].as_str().unwrap().contains("MIT"),
+            "Obsidianite is credited"
+        );
     }
 
     #[test]
