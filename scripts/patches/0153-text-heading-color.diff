@@ -85,18 +85,26 @@ index 4315fb62..e1d29dfc 100644
      fn inline_code_falls_back_to_the_code_background() {
          let style = TextViewStyle::default()
 diff --git a/crates/component/src/text/compat.rs b/crates/component/src/text/compat.rs
-index 9207c96c..40c6269d 100644
+index 9207c96c..51126526 100644
 --- a/crates/component/src/text/compat.rs
 +++ b/crates/component/src/text/compat.rs
-@@ -366,6 +366,7 @@ pub(super) fn resolve_component_style(
+@@ -360,12 +360,15 @@ pub(super) fn resolve_component_style(
+         .inline_code_font_family
+         .or_else(|| themed.inline_code_font_family().cloned());
+ 
++    let heading_color = legacy.heading_color.or(themed.heading_color());
++
+     let mut style = themed
+         .with_paragraph_gap(legacy.paragraph_gap)
+         .with_root_list_indent(legacy.root_list_indent)
          .with_top_padding(legacy.top_padding)
          .with_bottom_padding(legacy.bottom_padding)
          .with_heading_base_font_size(legacy.heading_base_font_size)
-+        .with_heading_color(legacy.heading_color.or(themed.heading_color()))
++        .with_heading_color(heading_color)
          .with_code_block(code_block)
          .with_table(table)
          .with_table_head(table_head)
-@@ -510,6 +511,23 @@ mod tests {
+@@ -510,6 +513,23 @@ mod tests {
          }
      }
  
