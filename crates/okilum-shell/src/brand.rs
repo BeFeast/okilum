@@ -407,6 +407,9 @@ pub struct ReaderPalette {
     /// Quiet warning status-line surface; text uses the theme's AA/AAA text.
     pub warning_tint: Hsla,
     pub text_faint: Hsla,
+    /// Heading text in Reader and Live Preview (#3147); a hue apart from
+    /// `link` so a heading never reads as clickable.
+    pub heading: Hsla,
     pub hover: Hsla,
     pub missing_link: Hsla,
     pub code_bg: Hsla,
@@ -509,6 +512,7 @@ fn resolve(theme: ThemeId) -> ThemeTokens {
             ReaderPalette {
                 warning_tint: color("warningTint"),
                 text_faint: color("textFaint"),
+                heading: color("heading"),
                 hover: color("hover"),
                 missing_link: color("missingLink"),
                 code_bg: color("codeBg"),
@@ -1436,6 +1440,7 @@ mod tests {
                 }
                 for (name, bg) in [("surface", p.surface), ("canvas", p.canvas)] {
                     check(&format!("link on {name}"), p.link, bg, reading);
+                    check(&format!("heading on {name}"), r.heading, bg, reading);
                     check(
                         &format!("missing-link on {name}"),
                         r.missing_link,
@@ -1475,6 +1480,33 @@ mod tests {
     }
 
     #[test]
+    fn issue3147_every_theme_colours_headings_apart_from_text_and_links() {
+        // Hue on the colour wheel, in degrees, for colours with visible chroma.
+        let hue_gap = |a: Hsla, b: Hsla| {
+            let gap = (a.h - b.h).abs() * 360.;
+            gap.min(360. - gap)
+        };
+        let mut failures = Vec::new();
+        for theme in ThemeId::ALL {
+            for dark in [false, true] {
+                let (p, r) = tokens(theme, dark);
+                let mode = if dark { "dark" } else { "light" };
+                if r.heading == p.text || r.heading.s < 0.15 {
+                    failures.push(format!("{} {mode}: heading is not coloured", theme.key()));
+                }
+                let gap = hue_gap(r.heading, p.link);
+                if gap < 25. {
+                    failures.push(format!(
+                        "{} {mode}: heading hue {gap:.0}° from link",
+                        theme.key()
+                    ));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
     fn themes_are_distinct_token_sets_with_stable_keys() {
         for theme in ThemeId::ALL {
             assert_eq!(ThemeId::from_key(theme.key()), Some(theme));
@@ -1506,6 +1538,7 @@ mod tests {
         assert_eq!(light.text, rgb(0x24262b).into());
         assert_eq!(light.link, rgb(0x0969e8).into());
         assert_eq!(reader.missing_link, rgb(0x9a5b00).into());
+        assert_eq!(reader.heading, rgb(0x5034a8).into());
         assert_eq!(
             theme_palette(ThemeId::Okilum, true).surface,
             rgb(0x202226).into()
@@ -1529,6 +1562,10 @@ mod tests {
                     assert_eq!(t.background, expected.canvas);
                     assert_eq!(t.tokens.button_primary.color, expected.accent);
                     assert_eq!(t.danger_foreground, expected.on_status);
+                    // #3147: Reader headings follow the theme's heading colour.
+                    let heading = tokens(theme, mode == ThemeMode::Dark).1.heading;
+                    assert_ne!(heading, expected.text);
+                    assert_eq!(crate::reader_text_style(t).heading_color, Some(heading));
                 }
             }
         });

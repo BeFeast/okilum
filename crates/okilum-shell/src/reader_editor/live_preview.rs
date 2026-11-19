@@ -192,7 +192,8 @@ impl LivePreview {
 fn projection_colors(cx: &App) -> ProjectionColors {
     let palette = brand::palette(cx);
     ProjectionColors {
-        heading: palette.text,
+        // Same heading colour as the Reader (#3147).
+        heading: brand::reader_palette(cx).heading,
         link: palette.link,
         muted: palette.text_muted,
     }
@@ -899,6 +900,23 @@ impl Reader {
 
 #[cfg(test)]
 mod tests {
+    #[gpui::test]
+    fn issue3147_live_preview_headings_use_the_reader_heading_colour(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::test_init(cx);
+            for mode in [
+                gpui_component::ThemeMode::Light,
+                gpui_component::ThemeMode::Dark,
+            ] {
+                Theme::change(mode, None, cx);
+                brand::apply_theme(cx);
+                let heading = brand::reader_palette(cx).heading;
+                assert_ne!(heading, brand::palette(cx).text, "headings are coloured");
+                assert_eq!(projection_colors(cx).heading, heading);
+            }
+        });
+    }
+
     #[test]
     fn latency_fence_fixture_forces_raw_tail_after_local_remap_refuses() {
         use okilum_core::{
