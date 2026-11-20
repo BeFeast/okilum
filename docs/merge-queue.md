@@ -25,7 +25,8 @@ the oldest PASS goes first. Up to four clean pulls are merged into one tip.
 1. If the only selected head already contains `main`, fast-forward `main` to
    that head. The green full run is the exact tree.
 2. Otherwise create merge commits of `main` plus the selected heads, run
-   `scripts/ci/pool-linux-gate.sh` on that tip through `build-slot`, and
+   `scripts/ci/pool-linux-gate.sh` on that tip through `build-slot` on baldr
+   (the suite builds an AppImage runtime image, and only baldr has Docker), and
    fast-forward `main` to the tip only when the suite exits 0 and `main` is
    still the tested base.
 3. A non-zero suite ejects the last pull request in the batch, comments the

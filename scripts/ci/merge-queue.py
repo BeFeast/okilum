@@ -273,6 +273,7 @@ class Queue:
             "build-slot", "run", "--project", "okilum", "--label", label, "--owner", "merge-queue",
             "--timeout-minutes", "40", "--mem", "7",
             "--source-git", str(self.root), "--source-rev", sha,
+            "--require-host", "baldr",
             "--ship", str(ship), "--env", f"OKILUM_POOL_RECEIPT={receipt}",
             "--", "bash", "scripts/ci/pool-linux-gate.sh",
         ]

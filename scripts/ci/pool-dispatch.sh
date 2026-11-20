@@ -23,6 +23,11 @@ args=(
     --ship "$ship"
     --env "OKILUM_POOL_RECEIPT=$receipt"
 )
+# The full gate builds the per-user AppImage runtime with Docker. Only baldr
+# has Docker; pre-merge does not, and can land on any pool host.
+if [[ $mode == linux-full ]]; then
+    args+=(--require-host baldr)
+fi
 if [[ ${GITHUB_REF:-} == refs/heads/agent-checks-benchmark/* ]]; then
     args+=(--env OKILUM_POOL_BENCHMARK=1)
 fi
