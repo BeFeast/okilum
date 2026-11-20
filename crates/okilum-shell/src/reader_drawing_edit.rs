@@ -493,7 +493,7 @@ impl Bridge {
                         *at = Instant::now();
                     }
                     open.fetch_add(1, Ordering::SeqCst);
-                    let (session, sender, stop, open) = (
+                    let (session, sender, stop, slot) = (
                         session.clone(),
                         sender.clone(),
                         accept_stop.clone(),
@@ -503,7 +503,7 @@ impl Bridge {
                         .name("drawing-edit-request".into())
                         .spawn(move || {
                             serve(stream, &session, &sender, &stop, address);
-                            open.fetch_sub(1, Ordering::SeqCst);
+                            slot.fetch_sub(1, Ordering::SeqCst);
                         });
                     if spawned.is_err() {
                         open.fetch_sub(1, Ordering::SeqCst);

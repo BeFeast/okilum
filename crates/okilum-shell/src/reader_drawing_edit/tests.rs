@@ -2,6 +2,7 @@
 //! every guard, the Apply/Undo/conflict choices, and the real loopback socket.
 //! The scene rules themselves are tested in okilum-core.
 use super::*;
+use ::core::prelude::v1::test;
 use serde_json::{json, Value};
 use sha2::Digest as _;
 use std::io::{Read, Write};
