@@ -38,6 +38,8 @@ suite direct-tests 180 cargo test --locked -p okilum-sync-controller --lib direc
 suite sync-cli 180 cargo test --locked -p okilum-shell --bin okilum issue2589_ -- --nocapture
 # #2049: explicit non-empty UI and compatibility verdicts before the full shell.
 suite web-sync 60 node --test web/inbox/tests/retired-sync.test.js web/inbox/tests/sync-pairing.test.js
+# #478: the offline drawing editor page's session client (no npm install needed).
+suite web-drawing-editor 60 node --test web/excalidraw-editor/test/session.test.mjs web/excalidraw-editor/test/tracker.test.mjs web/excalidraw-editor/test/controller.test.mjs
 suite issue2049 120 cargo test --locked -p okilum-shell --bin okilum issue2049_ -- --nocapture
 # Process fixtures fork with live descriptors. Isolate their lock lifecycle:
 # a sibling test's child can retain another fixture's flock until exec.
@@ -110,6 +112,8 @@ suite sidecar-supervisor-process-group 120 cargo test --locked -p okilum-sync-co
 suite enrollment 120 cargo test --locked -p okilum-sync-controller --lib enrollment:: --no-fail-fast
 suite enrollment-storage 120 cargo test --locked -p okilum-sync-controller --test enrollment_storage --no-fail-fast
 suite sidecar-store-tests-launch-authority 120 cargo test --locked -p okilum-sync-controller --lib sidecar::store::tests::launch_authority:: --no-fail-fast
+# #3069: helper re-stage ordering, crash replay and the helper start window.
+suite sidecar-store-restage 120 cargo test --locked -p okilum-sync-controller --lib sidecar::store::restage:: --no-fail-fast
 suite sidecar-macos-recovery 120 cargo test --locked -p okilum-sync-controller --lib sidecar::macos::recovery:: --no-fail-fast
 suite sidecar-macos-registration 120 cargo test --locked -p okilum-sync-controller --lib sidecar::macos::registration:: --no-fail-fast
 suite sidecar-macos-connect 120 cargo test --locked -p okilum-sync-controller --lib sidecar::macos::connect:: --no-fail-fast

@@ -34,6 +34,24 @@ has every heading, scrolling moved, each jump put its heading's block on top, th
 opened. Budgets are for the median of the runs on a 4–6 vCPU Linux host under Xvfb; compare
 numbers only from one machine in one session. Tighten, never loosen, without review.
 
+## Theme A/B on code blocks (#3156)
+
+`Code.md` (written next to `Large.md`, pinned too) has 10,000 lines: 434 fenced
+code blocks in Rust, Python, JavaScript and JSON under 435 headings. Compare a
+theme with its own syntax palette against one on the toolkit palette, with
+the same binary in one session, alternating:
+
+```sh
+for theme in graphite obsidianite obsidianite graphite; do
+  python3 scripts/perf/large-note/bench.py target/release/okilum --note code \
+    --theme $theme --appearance dark --runs 3 --no-budget --json $theme-$RANDOM.json
+done
+```
+
+Each launch starts with that theme and mode in its `reader-ui.json`; the probe
+reports the theme, mode and syntax palette it drew with, and a run in another
+one is rejected.
+
 ## Before and after (okilum-dev, 6 vCPU, one session, 17.11.2026)
 
 Main `59c1fe26` against this change (vendor patch 0149), built in one build-queue slot,

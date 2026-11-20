@@ -50,7 +50,7 @@ impl HoverProvider for SourceHover {
             })));
         }
         let vault = state.vault.clone();
-        let note = state.current_rel.clone();
+        let note = state.pane.current_rel.clone();
         let generation = state.navigation.preparation_generation;
         let root = state.vault_root.clone();
         let source = text.clone();
@@ -293,7 +293,7 @@ mod tests {
             let reference = okilum_core::render::image_reference::references(
                 source,
                 &reader.vault,
-                &reader.current_rel,
+                &reader.pane.current_rel,
             )
             .into_iter()
             .find(|image| image.target == "attachments/manual.pdf")

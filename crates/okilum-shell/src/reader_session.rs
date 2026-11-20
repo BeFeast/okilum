@@ -142,7 +142,7 @@ impl Reader {
         self.open_note(&note, None, window, cx);
         // Markdown restores after asynchronous publication; previews/empty views
         // are ready synchronously. The store restore is idempotent per root.
-        if note.is_empty() || self.file_preview.is_some() {
+        if note.is_empty() || self.pane.file_preview.is_some() {
             self.restore_ui_state(window, cx);
         }
     }
@@ -217,12 +217,12 @@ impl Reader {
         reader_drawing::invalidate(&self.vault_root, cx);
         self.invalidate_links();
         self.refresh_quick_open(cx);
-        let source = published.sources.get(&self.current_rel);
+        let source = published.sources.get(&self.pane.current_rel);
         let source_changed =
             published.reconciled || source.is_some_and(|source| source.version > previous_version);
-        if !self.current_rel.is_empty() && (source_changed || graph_changed) {
+        if !self.pane.current_rel.is_empty() && (source_changed || graph_changed) {
             self.reconcile_source_publication(
-                published.sources.get(&self.current_rel),
+                published.sources.get(&self.pane.current_rel),
                 graph_changed,
                 window,
                 cx,

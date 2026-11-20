@@ -146,10 +146,22 @@ what goes and which vaults stay, then:
    configuration and journal in `~/Library/Application Support/Okilum/Sync/`
    stay, and the hub is not told. If Sync cannot be stopped (helper not
    answering, unconfirmed registration, unfinished update or another pending
-   operation), the uninstall stops here and **nothing** is removed;
+   operation), the uninstall stops here and **nothing** is removed. Before the
+   stop, the purge is planned: the kept Sync paths and every root are resolved
+   canonically (symlinked HOME/XDG folders, case-insensitive names), and a
+   path that cannot be resolved also refuses the uninstall. No other Sync
+   action of the app runs from here to the quit: Sync admission is closed
+   (Settings, background serving, forwarded `okilum sync` commands and the
+   post-update helper restart refuse, even when already queued), background
+   Sync is suspended and the Sync action lock is held across the stop and
+   step 1. A refused uninstall reopens admission;
 1. exports unsaved drafts to `~/Documents/Okilum unsaved drafts/` and removes the
    roots: `~/Library/Application Support/com.befeast.okilum/` (state),
-   `~/Library/Application Support/okilum/` (config), `~/Library/Caches/okilum/`
+   `~/Library/Application Support/okilum/` (config, except `Sync/` and
+   `SyncDirect/`: on the default case-insensitive volume this is the same
+   folder as `Application Support/Okilum`, which holds Sync's retained
+   identity; a symlinked root that leads there is never followed and stays as
+   it is), `~/Library/Caches/okilum/`
    (search index), `~/.config/okilum/` (Brain), `$TMPDIR/okilum-search-session-*`;
 2. quits, and a detached cleanup waits for the process to exit, then removes:
    - preferences with `defaults delete <bundle id>` (cfprefsd caches them, so the

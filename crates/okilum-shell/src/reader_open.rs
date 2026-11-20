@@ -420,6 +420,18 @@ pub(crate) fn parse_args(
                         });
                     continue;
                 }
+                Some("--restore-quick-window") => {
+                    let root = PathBuf::from(value()?);
+                    let note = value()?
+                        .into_string()
+                        .map_err(|_| anyhow::anyhow!("Note path must be UTF-8"))?;
+                    opts.restart_windows
+                        .push(super::reader_update_restart::Window::Quick {
+                            root,
+                            note: Some(note).filter(|note| !note.is_empty()),
+                        });
+                    continue;
+                }
                 Some("--restore-file-window") => {
                     opts.restart_windows
                         .push(super::reader_update_restart::Window::File {
@@ -849,7 +861,8 @@ fn new_vault(cx: &mut App) {
             .spawn(async move { create_vault_folder(&path).map(|()| path) })
             .await;
         cx.update(|cx| match created {
-            Ok(path) => dispatch_path(&path, cx),
+            // The folder was made to be a vault, never a folder view (#3098).
+            Ok(path) => dispatch_vault(&path, cx),
             Err(error) => show_error(error, cx),
         });
     })
@@ -911,6 +924,13 @@ pub(crate) fn dispatch_urls(urls: Vec<String>, cx: &mut App) {
     for url in urls {
         if has_scheme(&url, "okilum:") {
             open_deep_link(&url, cx);
+            continue;
+        }
+        if let Some(url) = url.strip_prefix(VAULT_URL_PREFIX) {
+            match file_url_path(url) {
+                Ok(path) => dispatch_vault(&path, cx),
+                Err(error) => show_error(error, cx),
+            }
             continue;
         }
         match file_url_path(&url) {
@@ -1069,6 +1089,8 @@ fn open_remote_logs(
     }
 }
 
+/// A file or folder the user opened (picker, Finder/Explorer, drop, command
+/// line). A folder that is not yet a vault opens as a folder view (#3098).
 fn dispatch_path(path: &Path, cx: &mut App) {
     super::reader_startup::supersede(cx);
     let opts = super::Opts {
@@ -1079,6 +1101,39 @@ fn dispatch_path(path: &Path, cx: &mut App) {
     if let Err(error) = open_window(opts, cx) {
         show_error(error, cx);
     }
+}
+
+/// An explicit request to open `root` as a vault: New Vault and the
+/// «Open in Okilum as Vault» Finder Service (#2066). A plain folder open goes
+/// through [`dispatch_path`] and becomes a folder view instead (#3098).
+pub(crate) fn dispatch_vault(root: &Path, cx: &mut App) {
+    super::reader_startup::supersede(cx);
+    let opts = super::Opts {
+        vault: Some(root.to_path_buf()),
+        reusable_roots: reusable_roots(cx),
+        ..Default::default()
+    };
+    if let Err(error) = open_window(opts, cx) {
+        show_error(error, cx);
+    }
+}
+
+/// Prefix the Finder Service puts on its folder URL so the shared open queue
+/// can tell «Open in Okilum as Vault» from an ordinary folder open (#3098).
+/// No OS route delivers this scheme; at most it opens a folder as a vault,
+/// which the user can always do.
+pub(crate) const VAULT_URL_PREFIX: &str = "okilum-open-as-vault+";
+
+/// Vaults the user already has: open vault windows and full vaults in the
+/// reading history (quick-viewer folders are not vaults). Opening one of these
+/// folders opens the vault again instead of a folder view (#3098).
+fn is_known_vault(folder: &Path, open_vaults: &[PathBuf], state: Option<&Path>) -> bool {
+    let same =
+        |root: &PathBuf| root == folder || root.canonicalize().ok().as_deref() == Some(folder);
+    open_vaults.iter().any(same)
+        || state
+            .and_then(|state| super::reader_history::ReadingHistory::known_vault_roots(state).ok())
+            .is_some_and(|roots| roots.iter().any(same))
 }
 
 /// Resolve aliases away from the UI thread, then choose or reserve the window
@@ -1100,6 +1155,13 @@ pub(crate) fn resolve(mut opts: super::Opts, cx: &mut App) -> gpui::Task<Result<
     if opts.reusable_roots.is_empty() {
         opts.reusable_roots = reusable_roots(cx);
     }
+    // Where known vaults are listed, as the Reader itself resolves it.
+    let state = opts.session_directory.clone();
+    #[cfg(test)]
+    let state = state.or_else(|| {
+        cx.try_global::<super::reader_history::TestSessionDirectory>()
+            .map(|directory| directory.0.clone())
+    });
     cx.background_executor().spawn(async move {
         let path = opts
             .open_path
@@ -1112,6 +1174,7 @@ pub(crate) fn resolve(mut opts: super::Opts, cx: &mut App) -> gpui::Task<Result<
                 })
             })
             .context("No file or vault was requested")?;
+        let plain_open = opts.open_path.is_some() && opts.vault.is_none();
         let path = if opts.open_path.is_some() {
             let (path, created) = resolve_explicit_path(&path, opts.vault.as_deref())?;
             opts.created_note |= created;
@@ -1120,17 +1183,34 @@ pub(crate) fn resolve(mut opts: super::Opts, cx: &mut App) -> gpui::Task<Result<
             okilum_core::vault::canonical_root(&path)
                 .context("This file or folder couldn’t be opened.")?
         };
+        // #3098: a folder opened like a file is a folder view, with
+        // «Open folder as vault» to convert it, unless it already is a vault.
+        // A folder view restored after a restart arrives as a single-file
+        // request whose path is the folder itself.
+        let folder_view = path.is_dir()
+            && (opts.single_file
+                || (plain_open && {
+                    #[cfg(not(test))]
+                    let state = state.or_else(|| super::reader_history::state_directory().ok());
+                    !is_known_vault(&path, &opts.reusable_roots, state.as_deref())
+                }));
         let intent = OpenIntent::validate_cached(
             &path,
-            opts.vault.as_deref(),
+            if folder_view {
+                None
+            } else {
+                opts.vault.as_deref()
+            },
             opts.reusable_roots
                 .iter()
                 .find(|root| path.starts_with(root))
                 .map(PathBuf::as_path),
         )?;
         opts.vault = Some(intent.root.clone());
-        opts.single_file |= intent.single_file;
-        if intent.note.is_some() {
+        opts.single_file |= intent.single_file || folder_view;
+        if folder_view {
+            opts.note = None;
+        } else if intent.note.is_some() {
             opts.note = intent.note;
         }
         opts.open_path = None;
@@ -1252,23 +1332,68 @@ struct VaultDestination {
     focus: FocusHandle,
 }
 
+/// The prompt's opening width: the checkbox and the three buttons on one
+/// row with room to spare; its height follows its content (#3144).
+const DESTINATION_WIDTH: Pixels = px(620.);
+/// Narrower windows move the buttons under the checkbox; this keeps the
+/// three buttons (one non-shrinking group) and the padding inside.
+const DESTINATION_MIN_WIDTH: Pixels = px(440.);
+/// A first guess at the content height; the first frame corrects it.
+const DESTINATION_HEIGHT: Pixels = px(160.);
+/// Matches the prompt's `p_4` padding below the button row.
+const DESTINATION_PADDING: Pixels = px(16.);
+
+/// gpui-kit's client-side frame border (`window_border::BORDER_SIZE`).
+const FRAME_BORDER: Pixels = px(1.);
+
+/// The viewport height that ends one padding below the last control inside
+/// the visible frame. With client-side decorations (Linux CSD) the viewport
+/// also holds gpui-kit's bottom shadow (`shadow`, from `window_paddings`)
+/// and the frame's 1 px border, both absent on a tiled bottom edge; the
+/// frame clips anything below them (#3144).
+fn fitted_height(content_bottom: Pixels, shadow: Pixels, decorations: gpui::Decorations) -> Pixels {
+    let frame = match decorations {
+        gpui::Decorations::Client { tiling } if !tiling.bottom => shadow + FRAME_BORDER,
+        _ => px(0.),
+    };
+    (content_bottom + DESTINATION_PADDING + frame).ceil()
+}
+
+/// Buttons of the vault-destination prompt, left to right.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Destination {
+    Current,
+    New,
+    Cancel,
+}
+
+/// Windows puts Cancel after the commit buttons; macOS and GNOME put it
+/// before them (#3144).
+fn destination_order(cancel_last: bool) -> [Destination; 3] {
+    use Destination::*;
+    if cancel_last {
+        [Current, New, Cancel]
+    } else {
+        [Cancel, Current, New]
+    }
+}
+
 fn ask_vault_destination(source: WeakEntity<super::Reader>, opts: super::Opts, cx: &mut App) {
     let result = cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(super::window_state::default_bounds(
-                size(px(580.), px(250.)),
+                size(DESTINATION_WIDTH, DESTINATION_HEIGHT),
                 cx,
             ))),
+            // Not the Reader's 600×400 minimum: the prompt is as tall as its
+            // controls (#3144).
+            window_min_size: Some(size(DESTINATION_MIN_WIDTH, px(120.))),
+            is_minimizable: false,
             ..window_options(cx)
         },
         |window, cx| {
             window.set_window_title("Okilum — Open another vault");
-            let view = cx.new(|cx| VaultDestination {
-                source,
-                opts,
-                remember: false,
-                focus: cx.focus_handle(),
-            });
+            let view = cx.new(|cx| VaultDestination::new(source, opts, cx));
             view.read(cx).focus.clone().focus(window, cx);
             cx.new(|cx| Root::new(view, window, cx))
         },
@@ -1279,6 +1404,15 @@ fn ask_vault_destination(source: WeakEntity<super::Reader>, opts: super::Opts, c
 }
 
 impl VaultDestination {
+    fn new(source: WeakEntity<super::Reader>, opts: super::Opts, cx: &mut Context<Self>) -> Self {
+        Self {
+            source,
+            opts,
+            remember: false,
+            focus: cx.focus_handle(),
+        }
+    }
+
     fn source_is_open(&self, cx: &App) -> bool {
         self.source
             .upgrade()
@@ -1306,8 +1440,23 @@ impl VaultDestination {
 impl Render for VaultDestination {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let source_is_open = self.source_is_open(cx);
+        let buttons = destination_order(cfg!(windows)).map(|choice| match choice {
+            Destination::Cancel => Button::new("vault-destination-cancel")
+                .debug_selector(|| "vault-destination-cancel".into())
+                .label("Cancel")
+                .on_click(|_, window, _| window.remove_window()),
+            Destination::Current => Button::new("vault-destination-current")
+                .debug_selector(|| "vault-destination-current".into())
+                .label("In this window")
+                .disabled(!source_is_open)
+                .on_click(cx.listener(|this, _, window, cx| this.answer(true, window, cx))),
+            Destination::New => Button::new("vault-destination-new")
+                .debug_selector(|| "vault-destination-new".into())
+                .label("In a new window")
+                .on_click(cx.listener(|this, _, window, cx| this.answer(false, window, cx))),
+        });
         v_flex()
-            .p_4()
+            .p(DESTINATION_PADDING)
             .gap_3()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|_, event: &KeyDownEvent, window, _| {
@@ -1315,52 +1464,76 @@ impl Render for VaultDestination {
                     window.remove_window();
                 }
             }))
+            // The window is as tall as its controls (#3144): a closed source
+            // window adds a line, a long vault name may wrap.
+            .on_children_prepainted(move |children, window, _| {
+                let Some(bottom) = children.iter().map(|child| child.bottom()).max() else {
+                    return;
+                };
+                let height = fitted_height(
+                    bottom,
+                    gpui_component::window_paddings(window).bottom,
+                    window.window_decorations(),
+                );
+                let viewport = window.viewport_size();
+                if window.is_maximized()
+                    || window.is_fullscreen()
+                    || (height - viewport.height).abs() < px(1.)
+                {
+                    return;
+                }
+                // Asynchronous on Windows; the next frame sees the new size.
+                window.resize(size(viewport.width, height));
+            })
             .child(TitleBar::new().child("Open another vault"))
             .when(!source_is_open, |view| {
                 view.child(
                     "The original window was closed. Open this vault in a new window, or cancel.",
                 )
             })
-            .child(format!(
-                "Where should {} open?",
-                self.opts
-                    .vault
-                    .as_deref()
-                    .map(|root| super::vault_name::shown(root, cx))
-                    .unwrap_or_default()
-            ))
             .child(
-                gpui_component::checkbox::Checkbox::new("remember-vault-destination")
-                    .label("Remember my choice")
-                    .checked(self.remember)
-                    .on_click(cx.listener(|this, value: &bool, _, cx| {
-                        this.remember = *value;
-                        cx.notify();
-                    })),
+                div()
+                    .debug_selector(|| "vault-destination-question".into())
+                    .child(format!(
+                        "Where should {} open?",
+                        self.opts
+                            .vault
+                            .as_deref()
+                            .map(|root| super::vault_name::shown(root, cx))
+                            .unwrap_or_default()
+                    )),
             )
             .child(
+                // The checkbox shares the button row, on the left as in
+                // Windows' «Don't ask again» prompts (#3144). A narrow window
+                // wraps the buttons, still right-aligned, under it.
                 h_flex()
+                    .flex_wrap()
                     .gap_2()
-                    .justify_end()
+                    .items_center()
                     .child(
-                        Button::new("vault-destination-cancel")
-                            .label("Cancel")
-                            .on_click(|_, window, _| window.remove_window()),
-                    )
-                    .child(
-                        Button::new("vault-destination-current")
-                            .label("In this window")
-                            .disabled(!source_is_open)
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.answer(true, window, cx)),
+                        div()
+                            .debug_selector(|| "vault-destination-remember".into())
+                            .child(
+                                gpui_component::checkbox::Checkbox::new(
+                                    "remember-vault-destination",
+                                )
+                                .label("Remember my choice")
+                                .checked(self.remember)
+                                .on_click(cx.listener(
+                                    |this, value: &bool, _, cx| {
+                                        this.remember = *value;
+                                        cx.notify();
+                                    },
+                                )),
                             ),
                     )
                     .child(
-                        Button::new("vault-destination-new")
-                            .label("In a new window")
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.answer(false, window, cx)),
-                            ),
+                        h_flex()
+                            .flex_grow(1.)
+                            .justify_end()
+                            .gap_2()
+                            .children(buttons),
                     ),
             )
     }
@@ -1534,9 +1707,12 @@ pub(crate) fn duplicate_window(
             reader.record_ui_state(true, cx);
             let opts = super::Opts {
                 vault: Some(reader.vault_root.clone()),
-                note: Some(note.clone().unwrap_or_else(|| reader.current_rel.clone())),
+                note: Some(
+                    note.clone()
+                        .unwrap_or_else(|| reader.pane.current_rel.clone()),
+                ),
                 session_directory: reader.session_directory.clone(),
-                use_html: reader.use_html,
+                use_html: reader.pane.use_html,
                 defer_loading: true,
                 ..Default::default()
             };
@@ -2116,6 +2292,14 @@ mod entry_tests {
                 root.canonicalize().unwrap()
             })
             .collect();
+        // Dock deliveries below open folders that already are vaults; a folder
+        // that is not yet one opens as a folder view without the prompt (#3098).
+        for root in &roots {
+            super::super::reader_history::ReadingHistory::record_usable_document(
+                &state, root, "note.md",
+            )
+            .unwrap();
+        }
         let opts = |index: usize| Opts {
             vault: Some(roots[index].clone()),
             session_directory: Some(state.clone()),
@@ -2355,7 +2539,7 @@ mod entry_tests {
             let readers = &cx.global::<Readers>().0;
             assert_eq!(readers.len(), 1);
             let reader = readers[0].0.upgrade().unwrap();
-            assert_eq!(reader.read(cx).current_rel, "last.md");
+            assert_eq!(reader.read(cx).pane.current_rel, "last.md");
             assert_eq!(reader.read(cx).vault_root, root);
             assert!(reader.read(cx).document_ready());
         });
@@ -2465,7 +2649,7 @@ mod entry_tests {
             let reader = readers[0].0.upgrade().unwrap();
             assert!(reader.read(cx).single_file);
             assert!(reader.read(cx).document_ready());
-            assert_eq!(reader.read(cx).current_rel, "last.md");
+            assert_eq!(reader.read(cx).pane.current_rel, "last.md");
         });
         assert!(!cache.exists());
         std::fs::remove_dir_all(fixture).unwrap();
@@ -2525,7 +2709,7 @@ mod entry_tests {
             assert_eq!(readers.len(), 1);
             let reader = readers[0].0.upgrade().unwrap();
             assert_eq!(
-                reader.read(cx).current_rel,
+                reader.read(cx).pane.current_rel,
                 "explicit.md",
                 "positive delivery control"
             );
@@ -2614,7 +2798,7 @@ mod entry_tests {
                 .find_map(|(r, _)| r.upgrade())
                 .expect("a Reader was opened");
             assert_eq!(reader.read(cx).vault_root, root);
-            assert_eq!(reader.read(cx).current_rel, "Plan.md");
+            assert_eq!(reader.read(cx).pane.current_rel, "Plan.md");
         });
         // Positive control: a reopen while a window exists opens nothing new.
         cx.update(reader_startup::reopen);
@@ -2680,7 +2864,7 @@ mod entry_tests {
                     .map(|r| {
                         (
                             r.read(cx).vault_root.clone(),
-                            r.read(cx).current_rel.clone(),
+                            r.read(cx).pane.current_rel.clone(),
                         )
                     })
                     .collect();
@@ -2929,8 +3113,8 @@ mod entry_tests {
                         .unwrap()
                 })
             };
-            // As the gate did: each vault from the picker, and New Window on
-            // the first two before the next vault opens.
+            // As the gate did: each vault opened, and New Window on the first
+            // two before the next vault opens.
             for (i, root) in roots.iter().enumerate() {
                 if i > 0 {
                     let previous = window_of(cx, &roots[i - 1]);
@@ -2940,7 +3124,7 @@ mod entry_tests {
                     });
                     cx.run_until_parked();
                 }
-                cx.update(|cx| dispatch_path(root, cx));
+                cx.update(|cx| dispatch_vault(root, cx));
                 cx.run_until_parked();
             }
             assert_eq!(cx.windows().len(), 5, "three vaults and two duplicates");
@@ -3525,7 +3709,7 @@ mod entry_tests {
             }
         };
         // Amber, a second Amber window (New Window), then Bravo.
-        cx.update(|cx| dispatch_path(&roots[0], cx));
+        cx.update(|cx| dispatch_vault(&roots[0], cx));
         settle(cx);
         let amber = cx.update(|cx| cx.windows()[0]);
         cx.update(|cx| {
@@ -3533,7 +3717,7 @@ mod entry_tests {
             new_window(cx);
         });
         settle(cx);
-        cx.update(|cx| dispatch_path(&roots[1], cx));
+        cx.update(|cx| dispatch_vault(&roots[1], cx));
         settle(cx);
         let count = |cx: &mut TestAppContext| {
             cx.update(|cx| {
@@ -3659,11 +3843,269 @@ mod entry_tests {
                 other.searcher.as_ref().unwrap(),
                 &searcher
             ));
-            assert_eq!(other.current_rel, "note.md");
+            assert_eq!(other.pane.current_rel, "note.md");
             let saved = reader_open_windows::load_session_windows(&state);
             assert_eq!(saved.len(), 2);
             assert_eq!(saved.iter().filter(|(_, quick)| *quick).count(), 1);
         });
+    }
+
+    /// #3098: a folder opened like a file (picker, Finder, drop, command
+    /// line) is a folder view: single-file mode on that folder, no file
+    /// selected, nothing indexed and not listed as a vault. «Open folder as
+    /// vault» converts it; after that the same folder opens as the vault.
+    #[gpui::test]
+    fn a_plain_folder_open_is_a_folder_view_until_converted(cx: &mut TestAppContext) {
+        use super::super::{
+            reader_history::ReadingHistory, reader_history::TestSessionDirectory, Opts,
+        };
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let root = fixture.path().join("Cline");
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+        std::fs::write(root.join("notes.md"), "# Notes").unwrap();
+        std::fs::write(root.join("tasks/deep.md"), "# Deep").unwrap();
+        let root = root.canonicalize().unwrap();
+        let plain = |cx: &mut App| {
+            open_window(
+                Opts {
+                    open_path: Some(root.clone()),
+                    session_directory: Some(state.clone()),
+                    cache_base_override: Some(fixture.path().join("cache")),
+                    ..Default::default()
+                },
+                cx,
+            )
+            .unwrap();
+        };
+        cx.update(|cx| {
+            crate::test_init(cx);
+            install(cx);
+            cx.set_global(TestSessionDirectory(state.clone()));
+            super::super::reader_ui_state::install(&state, cx);
+            super::super::reader_ui_state::set_vault_open("new", cx);
+            plain(cx);
+        });
+        cx.run_until_parked();
+        let reader = cx.update(|cx| {
+            let all = readers(cx);
+            assert_eq!(all.len(), 1, "one window for the folder");
+            all[0].clone()
+        });
+        cx.update(|cx| {
+            let r = reader.read(cx);
+            assert!(r.single_file, "a plain folder open is not a vault");
+            assert_eq!(r.vault_root, root);
+            assert_eq!(r.selected_file(), "", "no file is chosen for the user");
+            assert!(
+                r.searcher.is_none() && r.index_dir.is_none(),
+                "nothing indexed"
+            );
+            let listed = |path: &str| r.vault.entries.iter().any(|entry| entry.path == path);
+            assert!(
+                listed("notes.md") && listed("tasks"),
+                "the folder is listed"
+            );
+            assert!(
+                !listed("tasks/deep.md"),
+                "shallow, like a single file's folder"
+            );
+            assert_eq!(r.window_mode_label(), "Open folder as vault");
+        });
+        assert!(
+            !ReadingHistory::known_vault_roots(&state)
+                .unwrap()
+                .contains(&root),
+            "a folder view is not recorded as a vault"
+        );
+        // «Open folder as vault» converts the same window.
+        cx.update(|cx| {
+            reader
+                .read(cx)
+                .reader_window
+                .update(cx, |_, window, cx| {
+                    reader.update(cx, |reader, cx| reader.switch_window_mode(window, cx));
+                })
+                .unwrap();
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let r = reader.read(cx);
+            assert!(!r.single_file, "converted to a vault");
+            assert_eq!(r.vault_root, root);
+            assert!(r.searcher.is_some(), "the vault is indexed");
+        });
+        assert!(
+            ReadingHistory::known_vault_roots(&state)
+                .unwrap()
+                .contains(&root),
+            "the converted folder is a known vault"
+        );
+        // The converted folder opens as its vault again: the open window is reused.
+        cx.update(plain);
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(readers(cx).len(), 1, "the vault window is reused");
+            assert!(!reader.read(cx).single_file);
+        });
+        // A closed known vault also reopens as a vault, not a folder view.
+        cx.update(|cx| {
+            reader
+                .read(cx)
+                .reader_window
+                .update(cx, |_, window, _| window.remove_window())
+                .unwrap();
+        });
+        cx.run_until_parked();
+        // #3123: with no vault window open, a file inside the vault opened on
+        // its own (Finder, drop) opens in the quick viewer on the vault folder.
+        // That must not demote the folder from the known vaults.
+        cx.update(|cx| {
+            open_window(
+                Opts {
+                    open_path: Some(root.join("notes.md")),
+                    session_directory: Some(state.clone()),
+                    cache_base_override: Some(fixture.path().join("cache")),
+                    ..Default::default()
+                },
+                cx,
+            )
+            .unwrap();
+        });
+        cx.run_until_parked();
+        let open_readers = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                readers(cx)
+                    .into_iter()
+                    .filter(|r| cx.windows().contains(&r.read(cx).reader_window))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let file = open_readers(cx);
+        cx.update(|cx| {
+            assert_eq!(file.len(), 1);
+            let r = file[0].read(cx);
+            assert!(r.single_file, "the file opens in the quick viewer");
+            assert_eq!(r.vault_root, root);
+            assert_eq!(r.selected_file(), "notes.md");
+        });
+        assert!(
+            ReadingHistory::known_vault_roots(&state)
+                .unwrap()
+                .contains(&root),
+            "a file opened inside a vault keeps the vault known"
+        );
+        cx.update(|cx| {
+            file[0]
+                .read(cx)
+                .reader_window
+                .update(cx, |_, window, _| window.remove_window())
+                .unwrap();
+        });
+        cx.run_until_parked();
+        cx.update(plain);
+        cx.run_until_parked();
+        let open = open_readers(cx);
+        cx.update(|cx| {
+            assert_eq!(open.len(), 1);
+            assert!(!open[0].read(cx).single_file, "history makes it a vault");
+        });
+    }
+
+    /// #3098 control: the Finder Service «Open in Okilum as Vault» shares the
+    /// open queue with ordinary folder opens and still opens a vault; the same
+    /// folder URL without its mark is a folder view.
+    #[gpui::test]
+    fn the_vault_service_url_opens_a_vault_and_a_plain_folder_url_does_not(
+        cx: &mut TestAppContext,
+    ) {
+        use super::super::reader_history::TestSessionDirectory;
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let make = |name: &str| {
+            let root = fixture.path().join(name);
+            std::fs::create_dir(&root).unwrap();
+            std::fs::write(root.join("a.md"), "# A").unwrap();
+            root.canonicalize().unwrap()
+        };
+        let (service, plain) = (make("Service"), make("Plain"));
+        let url = |root: &Path| String::from(url::Url::from_file_path(root).unwrap());
+        cx.update(|cx| {
+            crate::test_init(cx);
+            install(cx);
+            cx.set_global(TestSessionDirectory(state.clone()));
+            super::super::reader_ui_state::install(&state, cx);
+            super::super::reader_ui_state::set_vault_open("new", cx);
+            dispatch_urls(vec![format!("{VAULT_URL_PREFIX}{}", url(&service))], cx);
+        });
+        cx.run_until_parked();
+        cx.update(|cx| dispatch_urls(vec![url(&plain)], cx));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let all = readers(cx);
+            assert_eq!(all.len(), 2);
+            let mode = |root: &Path| {
+                all.iter()
+                    .find(|r| r.read(cx).vault_root == root)
+                    .map(|r| r.read(cx).single_file)
+                    .unwrap()
+            };
+            assert!(!mode(&service), "the Service opens a vault");
+            assert!(mode(&plain), "an ordinary folder open is a folder view");
+        });
+    }
+
+    /// #3098: a folder view survives restarts. The update restart captures
+    /// it as a single-file window whose path is the folder; the session
+    /// restore as a single-file window without a note.
+    #[gpui::test]
+    async fn a_folder_view_resolves_back_to_a_folder_view(cx: &mut TestAppContext) {
+        use super::super::Opts;
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("Folder");
+        std::fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        cx.update(|cx| {
+            crate::test_init(cx);
+            install(cx);
+        });
+        let restart = cx.update(|cx| {
+            resolve(
+                Opts {
+                    vault: root.parent().map(Path::to_path_buf),
+                    note: Some("Folder".into()),
+                    single_file: true,
+                    ..Default::default()
+                },
+                cx,
+            )
+        });
+        let session = cx.update(|cx| {
+            resolve(
+                Opts {
+                    vault: Some(root.clone()),
+                    single_file: true,
+                    ..Default::default()
+                },
+                cx,
+            )
+        });
+        for opts in [restart.await.unwrap(), session.await.unwrap()] {
+            assert_eq!(opts.vault.as_deref(), Some(root.as_path()));
+            assert_eq!(opts.note, None);
+            assert!(opts.single_file);
+        }
+        // Control: an explicit vault request for the same folder stays a vault.
+        let vault = cx.update(|cx| {
+            resolve(
+                Opts {
+                    vault: Some(root.clone()),
+                    ..Default::default()
+                },
+                cx,
+            )
+        });
+        assert!(!vault.await.unwrap().single_file);
     }
 
     /// #1357: «Create a new vault…» names a folder in the save dialog,
@@ -3760,7 +4202,7 @@ mod entry_tests {
                     .map(|r| {
                         (
                             r.read(cx).vault_root.clone(),
-                            r.read(cx).current_rel.clone(),
+                            r.read(cx).pane.current_rel.clone(),
                         )
                     })
                     .collect();
@@ -3913,7 +4355,7 @@ mod entry_tests {
                 roots
             })
         };
-        cx.update(|cx| dispatch_path(&roots[0], cx));
+        cx.update(|cx| dispatch_vault(&roots[0], cx));
         settle(cx);
         let amber = cx.update(|cx| reader_of(&roots[0], cx)).unwrap();
         // Amber cannot share its session yet.
@@ -4063,7 +4505,7 @@ mod entry_tests {
                 let reader = reader.read(cx);
                 let top = reader.content.read(cx).list_state().logical_scroll_top();
                 (
-                    reader.current_rel.clone(),
+                    reader.pane.current_rel.clone(),
                     top.item_ix,
                     reader.link_notice.clone(),
                 )
@@ -4265,7 +4707,7 @@ mod entry_tests {
                     .map(|r| {
                         (
                             r.read(cx).vault_root.clone(),
-                            r.read(cx).current_rel.clone(),
+                            r.read(cx).pane.current_rel.clone(),
                         )
                     })
                     .collect::<Vec<_>>()
@@ -4411,7 +4853,11 @@ mod entry_tests {
                     .iter()
                     .map(|r| {
                         let r = r.read(cx);
-                        (r.single_file, r.vault_root.clone(), r.current_rel.clone())
+                        (
+                            r.single_file,
+                            r.vault_root.clone(),
+                            r.pane.current_rel.clone(),
+                        )
                     })
                     .collect::<Vec<_>>()
             })
@@ -4479,6 +4925,7 @@ mod entry_tests {
             let reader = readers(cx).last().unwrap().clone();
             let reader = reader.read(cx);
             let block = reader
+                .pane
                 .outline
                 .iter()
                 .find(|h| h.text == "Distant checkpoint")
@@ -4602,9 +5049,9 @@ mod entry_tests {
         cx.quit();
     }
 
-    /// #1110: on a clean first run, choosing a vault folder on the start
-    /// screen (the picker's `dispatch_path`) never leaves the app without a
-    /// window, and the vault opens.
+    /// #1110: on a clean first run, opening a vault from the start screen
+    /// (New Vault's `dispatch_vault`) never leaves the app without a window,
+    /// and the vault opens. A plain folder pick is a folder view (#3098).
     #[gpui::test]
     fn first_run_choosing_a_vault_folder_keeps_a_window_until_it_opens(cx: &mut TestAppContext) {
         use super::super::{reader_history::TestSessionDirectory, reader_startup, Opts};
@@ -4635,7 +5082,7 @@ mod entry_tests {
         );
         let entry = cx.update(|cx| cx.windows()[0]);
         cx.update(|cx| {
-            dispatch_path(&root, cx);
+            dispatch_vault(&root, cx);
             assert_eq!(
                 cx.windows(),
                 vec![entry],
@@ -4825,7 +5272,7 @@ mod entry_tests {
                 .update(cx, |_, window, _| window.activate_window())
                 .unwrap();
             first.update(cx, |reader, _| {
-                reader.properties_open = true;
+                reader.pane.properties_open = true;
                 reader.recent_expanded = true;
             });
             new_window(cx);
@@ -4842,9 +5289,9 @@ mod entry_tests {
                 .upgrade()
                 .unwrap();
             assert_ne!(first.entity_id(), second.entity_id());
-            assert_eq!(second.read(cx).current_rel, "a.md");
+            assert_eq!(second.read(cx).pane.current_rel, "a.md");
             assert!(
-                second.read(cx).properties_open,
+                second.read(cx).pane.properties_open,
                 "snapshot reaches duplicate restore"
             );
             assert!(second.read(cx).recent_expanded);
@@ -4871,8 +5318,8 @@ mod entry_tests {
         });
         cx.run_until_parked();
         cx.update(|cx| {
-            assert_eq!(first.read(cx).current_rel, "a.md");
-            assert_eq!(second.read(cx).current_rel, "b.md");
+            assert_eq!(first.read(cx).pane.current_rel, "a.md");
+            assert_eq!(second.read(cx).pane.current_rel, "b.md");
             assert_eq!(first.read(cx).navigation.history, vec!["a.md".to_string()]);
             assert_eq!(
                 second.read(cx).navigation.history,
@@ -4930,7 +5377,7 @@ mod entry_tests {
                 .upgrade()
                 .unwrap();
             assert_eq!(
-                third.read(cx).current_rel,
+                third.read(cx).pane.current_rel,
                 "b.md",
                 "attachment during a held worker uses the last published snapshot"
             );
@@ -4965,6 +5412,7 @@ mod entry_tests {
                 assert!(
                     second
                         .read(cx)
+                        .pane
                         .note_source
                         .contains("Changed after first window closed"),
                     "published document refresh cannot depend on worker-owned baseline"
@@ -4977,6 +5425,7 @@ mod entry_tests {
         cx.update(|cx| {
             assert!(second
                 .read(cx)
+                .pane
                 .note_source
                 .contains("Changed after first window closed"));
             dispatch_path(&root, cx);
@@ -5042,7 +5491,7 @@ mod entry_tests {
             assert_eq!(cx.global::<Readers>().0.len(), 1);
             let first = cx.global::<Readers>().0[0].0.upgrade().unwrap();
             let reader = first.read(cx);
-            assert_eq!(reader.current_rel, "start.md");
+            assert_eq!(reader.pane.current_rel, "start.md");
             assert_eq!(reader.vault_root, root);
             first.clone()
         });
@@ -5065,7 +5514,7 @@ mod entry_tests {
         cx.run_until_parked();
         cx.update(|cx| {
             assert_eq!(cx.global::<Readers>().0.len(), 1);
-            assert_eq!(first.read(cx).current_rel, "sub/Ю.md");
+            assert_eq!(first.read(cx).pane.current_rel, "sub/Ю.md");
             assert_eq!(first.read(cx).vault_root, root);
             assert!(!first.read(cx).single_file);
         });
@@ -5130,7 +5579,7 @@ mod entry_tests {
             assert_eq!(reused.entity_id(), first.entity_id());
             let reader = first.read(cx);
             assert_eq!(reader.vault_root, root);
-            assert_eq!(reader.current_rel, "missing.md");
+            assert_eq!(reader.pane.current_rel, "missing.md");
             assert!(
                 reader.editing.is_some(),
                 "the newly created file opens its editor"
@@ -5164,7 +5613,7 @@ mod entry_tests {
                 1,
                 "refusal must not open a namesake"
             );
-            assert_eq!(first.read(cx).current_rel, "missing.md");
+            assert_eq!(first.read(cx).pane.current_rel, "missing.md");
             let error = cx
                 .windows()
                 .iter()
@@ -5219,7 +5668,7 @@ pub(crate) fn reader_locations(cx: &App) -> Vec<(PathBuf, String)> {
         .filter_map(|(reader, root)| {
             reader
                 .upgrade()
-                .map(|reader| (root.clone(), reader.read(cx).current_rel.clone()))
+                .map(|reader| (root.clone(), reader.read(cx).pane.current_rel.clone()))
         })
         .collect()
 }
@@ -5228,4 +5677,153 @@ pub(crate) fn reader_locations(cx: &App) -> Vec<(PathBuf, String)> {
 #[cfg(any(windows, target_os = "linux", test))]
 pub(crate) fn update_restart_args(cx: &App) -> anyhow::Result<Vec<std::ffi::OsString>> {
     Ok(super::reader_update_restart::arguments(cx))
+}
+
+#[cfg(test)]
+mod destination_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    /// #3144: Windows lists Cancel last; macOS and GNOME list it first.
+    #[test]
+    fn cancel_is_last_only_where_the_platform_puts_it_last() {
+        use Destination::*;
+        assert_eq!(destination_order(true), [Current, New, Cancel]);
+        assert_eq!(destination_order(false), [Cancel, Current, New]);
+    }
+
+    /// #3144 review: under Linux client-side decorations gpui-kit's frame
+    /// keeps a 20 px shadow and a 1 px border inside the viewport and clips
+    /// below them. The fitted height must leave the padding inside that
+    /// frame. The test window reports server decorations only, so the
+    /// client cases are checked on the height function itself.
+    #[test]
+    fn the_fitted_height_keeps_the_padding_inside_a_client_side_frame() {
+        use gpui::{Decorations, Tiling};
+        let bottom = px(140.);
+        let shadow = px(20.);
+        // Server decorations (Windows, macOS, X11 SSD): no frame inside.
+        assert_eq!(fitted_height(bottom, px(0.), Decorations::Server), px(156.));
+        // Floating CSD window: the visible frame ends shadow + border above
+        // the viewport's bottom, and the last control's padding is inside it.
+        let floating = Decorations::Client {
+            tiling: Tiling::default(),
+        };
+        let height = fitted_height(bottom, shadow, floating);
+        let visible_bottom = height - shadow - FRAME_BORDER;
+        assert!(visible_bottom >= bottom + DESTINATION_PADDING, "{height:?}");
+        assert_eq!(height, px(177.));
+        // Control: the server formula would clip the buttons' bottom 5 px.
+        assert!(
+            fitted_height(bottom, px(0.), Decorations::Server) - shadow - FRAME_BORDER < bottom
+        );
+        // Bottom edge tiled: gpui-kit draws neither shadow nor border there.
+        let tiled = Decorations::Client {
+            tiling: Tiling {
+                bottom: true,
+                ..Tiling::default()
+            },
+        };
+        assert_eq!(fitted_height(bottom, px(0.), tiled), px(156.));
+    }
+
+    /// #3144 (Windows 11, tester screenshot): the prompt was 600×400 around
+    /// four controls, Cancel came first and the checkbox sat on its own row.
+    /// The test text system gives every glyph 0.6 em, wider than Segoe UI.
+    #[gpui::test]
+    fn the_destination_prompt_is_as_tall_as_its_controls_with_the_checkbox_on_the_button_row(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            crate::test_init(cx);
+            // The app's 14 px chrome font, not gpui-component's 16 px default.
+            super::super::brand::apply_theme(cx);
+        });
+        let opts = super::super::Opts {
+            vault: Some(PathBuf::from("/vaults/Obsidian Vaults")),
+            ..Default::default()
+        };
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            // A dropped source: the prompt shows its extra «window was closed» line.
+            let view = cx.new(|cx| VaultDestination::new(WeakEntity::new_invalid(), opts, cx));
+            Root::new(view, window, cx)
+        });
+        // The opening width and the narrowest the window allows, each from
+        // the old 400 px height the prompt inherited.
+        for width in [DESTINATION_WIDTH, DESTINATION_MIN_WIDTH] {
+            visual.simulate_resize(size(width, px(400.)));
+            visual.update(|window, _| window.refresh());
+            visual.run_until_parked();
+            let mut bounds = |id: &'static str| {
+                visual
+                    .debug_bounds(id)
+                    .unwrap_or_else(|| panic!("{id} at {width:?}"))
+            };
+            let question = bounds("vault-destination-question");
+            let remember = bounds("vault-destination-remember");
+            let [cancel, current, new] = [
+                "vault-destination-cancel",
+                "vault-destination-current",
+                "vault-destination-new",
+            ]
+            .map(&mut bounds);
+
+            // Every control, label included, stays inside the padding.
+            for control in [question, remember, cancel, current, new] {
+                assert!(
+                    control.left() >= DESTINATION_PADDING
+                        && control.right() <= width - DESTINATION_PADDING,
+                    "{control:?} outside a {width:?} window"
+                );
+            }
+
+            // Order follows the platform: on Windows Cancel is the rightmost.
+            let mut by_x = [
+                (cancel.left(), Destination::Cancel),
+                (current.left(), Destination::Current),
+                (new.left(), Destination::New),
+            ];
+            by_x.sort_by_key(|(x, _)| *x);
+            assert_eq!(
+                by_x.map(|(_, choice)| choice),
+                destination_order(cfg!(windows))
+            );
+            // The buttons stay one row, right-aligned.
+            for button in [cancel, current] {
+                assert_eq!(button.center().y, new.center().y);
+            }
+            let rightmost = cancel.right().max(current.right()).max(new.right());
+            assert!(
+                rightmost >= width - DESTINATION_PADDING - px(1.),
+                "{rightmost:?}"
+            );
+
+            // The checkbox lines up with the text on the left.
+            assert_eq!(remember.left(), question.left());
+            if width == DESTINATION_WIDTH {
+                // At the opening width it shares the buttons' row.
+                for button in [cancel, current, new] {
+                    assert!(remember.right() < button.left(), "{remember:?} {button:?}");
+                    assert!(
+                        (remember.center().y - button.center().y).abs() <= px(1.),
+                        "checkbox {remember:?} off the button row {button:?}"
+                    );
+                }
+            }
+
+            // The window ends one padding below the last control.
+            let size_now = visual.update(|window, _| window.bounds().size);
+            let bottom = cancel.bottom().max(current.bottom()).max(new.bottom());
+            let expected = visual.update(|window, _| {
+                fitted_height(
+                    bottom,
+                    gpui_component::window_paddings(window).bottom,
+                    window.window_decorations(),
+                )
+            });
+            assert_eq!(size_now.height, expected);
+            assert!(size_now.height >= bottom + DESTINATION_PADDING);
+            assert!(size_now.height < px(300.), "{size_now:?}");
+        }
+    }
 }

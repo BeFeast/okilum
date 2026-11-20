@@ -179,6 +179,9 @@ struct Saved {
     /// Pasting or dropping a file larger than this many MB asks before
     /// copying it into the vault (#1611); 0 never asks.
     paste_ask_above_mb: u32,
+    /// Upload pasted and dropped files to the upload provider after they
+    /// are saved, and link the uploaded copy (#1073). Off by default.
+    upload_pasted_files: bool,
     image_import: crate::note_paste::image_import::Options,
     /// Explicit read-mode choices, independently remembered for each file type.
     code_views: BTreeMap<String, reader_code_file::View>,
@@ -248,6 +251,7 @@ impl Default for Saved {
             close_code_fences: true,
             emoji_completion: true,
             paste_ask_above_mb: crate::note_paste::files::DEFAULT_ASK_ABOVE_MB,
+            upload_pasted_files: false,
             image_import: Default::default(),
             code_views: BTreeMap::new(),
             json_raw: None,
@@ -296,6 +300,7 @@ struct Store {
     close_code_fences_changed: bool,
     emoji_completion_changed: bool,
     paste_ask_changed: bool,
+    upload_pasted_changed: bool,
     image_import_changed: bool,
     code_views_changed: BTreeSet<String>,
     log_editor_changed: bool,
@@ -412,6 +417,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         close_code_fences_changed: false,
         emoji_completion_changed: false,
         paste_ask_changed: false,
+        upload_pasted_changed: false,
         image_import_changed: false,
         code_views_changed: BTreeSet::new(),
         log_editor_changed: false,
@@ -650,6 +656,7 @@ struct WriteJob {
     close_code_fences_changed: bool,
     emoji_completion_changed: bool,
     paste_ask_changed: bool,
+    upload_pasted_changed: bool,
     image_import_changed: bool,
     code_views_changed: BTreeSet<String>,
     log_editor_changed: bool,
@@ -776,6 +783,9 @@ impl WriteJob {
         }
         if self.paste_ask_changed {
             latest.paste_ask_above_mb = self.saved.paste_ask_above_mb;
+        }
+        if self.upload_pasted_changed {
+            latest.upload_pasted_files = self.saved.upload_pasted_files;
         }
         for key in &self.code_views_changed {
             if let Some(view) = self.saved.code_views.get(key) {
@@ -917,6 +927,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.close_code_fences_changed
             && !state.emoji_completion_changed
             && !state.paste_ask_changed
+            && !state.upload_pasted_changed
             && state.code_views_changed.is_empty()
             && !state.log_editor_changed
             && state.source_maps_changed.is_empty()
@@ -960,6 +971,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         close_code_fences_changed: state.close_code_fences_changed,
         emoji_completion_changed: state.emoji_completion_changed,
         paste_ask_changed: state.paste_ask_changed,
+        upload_pasted_changed: state.upload_pasted_changed,
         image_import_changed: state.image_import_changed,
         code_views_changed: state.code_views_changed.clone(),
         log_editor_changed: state.log_editor_changed,
@@ -1103,14 +1115,14 @@ impl Reader {
         self.sidebar.properties_collapsed = saved.properties_collapsed;
         self.sidebar.show_hidden = saved.show_hidden;
         self.recent_expanded = saved.recent_expanded;
-        self.properties_open = saved.properties_open;
-        self.show_hidden_properties = saved.hidden_properties;
+        self.pane.properties_open = saved.properties_open;
+        self.pane.show_hidden_properties = saved.hidden_properties;
         self.ui_state.tree = Some(saved.clone());
         self.ui_state.live_preview = saved.live_preview;
         if saved.source {
             self.ui_state.source_reader_position =
-                (saved.note == self.current_rel).then(|| saved.position.list());
-            self.ui_state.source = Some(if saved.note == self.current_rel {
+                (saved.note == self.pane.current_rel).then(|| saved.position.list());
+            self.ui_state.source = Some(if saved.note == self.pane.current_rel {
                 saved.source_scroll
             } else {
                 [0.; 2]
@@ -1146,7 +1158,7 @@ impl Reader {
         if known && saved.note.is_empty() && !explicit {
             self.show_empty_vault(window, cx);
         }
-        if known && saved.note == self.current_rel {
+        if known && saved.note == self.pane.current_rel {
             let visits: Vec<_> = saved
                 .history
                 .iter()
@@ -1156,7 +1168,7 @@ impl Reader {
             if visits.len() == saved.history.len()
                 && visits
                     .get(saved.history_index)
-                    .is_some_and(|visit| visit.note == self.current_rel)
+                    .is_some_and(|visit| visit.note == self.pane.current_rel)
             {
                 self.navigation.history = visits.iter().map(|visit| visit.note.clone()).collect();
                 self.navigation.history_positions =
@@ -1242,7 +1254,10 @@ impl Reader {
         let Some(offset) = self.ui_state.source.take() else {
             return;
         };
-        if self.editing.is_none() && !self.current_rel.is_empty() && self.file_preview.is_none() {
+        if self.editing.is_none()
+            && !self.pane.current_rel.is_empty()
+            && self.pane.file_preview.is_none()
+        {
             self.cancel_pending_landing();
             self.toggle_source(window, cx);
             if self.editing.is_none() {
@@ -1389,13 +1404,14 @@ impl Reader {
                 )
             }),
             recent_expanded: self.recent_expanded,
-            properties_open: self.properties_open,
-            hidden_properties: self.show_hidden_properties,
+            properties_open: self.pane.properties_open,
+            hidden_properties: self.pane.show_hidden_properties,
             note: self
+                .pane
                 .file_preview
                 .as_ref()
                 .filter(|p| p.log.is_some() || reader_delimited::previewable(&p.rel))
-                .map_or_else(|| self.current_rel.clone(), |p| p.rel.clone()),
+                .map_or_else(|| self.pane.current_rel.clone(), |p| p.rel.clone()),
             history,
             history_index: self.navigation.history_ix,
             position: position.into(),
@@ -1788,6 +1804,60 @@ pub(crate) fn set_paste_ask_above_mb(value: u32, cx: &mut App) {
     let state = cx.global_mut::<Store>();
     state.saved.paste_ask_above_mb = value;
     state.paste_ask_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+/// Settings → Editor (#1073): upload pasted and dropped files and link the
+/// uploaded copy. Off by default and when the state is not installed.
+pub(crate) fn upload_pasted_files(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.upload_pasted_files)
+}
+
+/// Bumped on every change of [`upload_pasted_files`] this session. An upload
+/// job runs only while the generation it started with is current, so turning
+/// the setting off cancels it even if it is turned on again meanwhile.
+#[derive(Default)]
+struct UploadPastedGeneration(u64);
+impl Global for UploadPastedGeneration {}
+
+pub(crate) fn upload_pasted_generation(cx: &App) -> u64 {
+    cx.try_global::<UploadPastedGeneration>()
+        .map_or(0, |generation| generation.0)
+}
+
+/// Whether a paste uploads, decided once when the paste happens (#1073) and
+/// carried with its background work: a conversion, copy or download that
+/// finishes later never reads the setting afresh.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct UploadDecision {
+    generation: u64,
+}
+
+/// The decision for a paste happening now: `None` while the setting is off.
+pub(crate) fn upload_decision(cx: &App) -> Option<UploadDecision> {
+    upload_pasted_files(cx).then(|| UploadDecision {
+        generation: upload_pasted_generation(cx),
+    })
+}
+
+/// A paste's decision still holds: it was on at the paste, it is on now, and
+/// it was never turned off in between (any change bumps the generation).
+pub(crate) fn upload_decision_holds(decision: Option<UploadDecision>, cx: &App) -> bool {
+    decision.is_some_and(|decision| {
+        upload_pasted_files(cx) && upload_pasted_generation(cx) == decision.generation
+    })
+}
+
+pub(crate) fn set_upload_pasted_files(value: bool, cx: &mut App) {
+    if !installed(cx) || upload_pasted_files(cx) == value {
+        return;
+    }
+    cx.default_global::<UploadPastedGeneration>().0 += 1;
+    let state = cx.global_mut::<Store>();
+    state.saved.upload_pasted_files = value;
+    state.upload_pasted_changed = true;
     schedule(cx);
     cx.refresh_windows();
 }
@@ -2297,6 +2367,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.close_code_fences_changed = false;
         state.emoji_completion_changed = false;
         state.paste_ask_changed = false;
+        state.upload_pasted_changed = false;
         state.image_import_changed = false;
         state.code_views_changed.clear();
         state.log_editor_changed = false;
@@ -2402,6 +2473,49 @@ mod tests {
         assert_eq!(restored.panels, legacy.panels);
         assert_eq!(restored.widths, legacy.widths);
         assert_eq!(restored.project_layout, saved.project_layout);
+    }
+
+    /// #1073, review of #3114: whether a paste uploads is decided at the
+    /// paste. Off then means never, even if the setting is turned on before
+    /// a background conversion finishes; an off→on cycle in between cancels.
+    #[gpui::test]
+    fn an_upload_decision_is_taken_at_the_paste(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("state");
+        cx.update(|cx| {
+            install(&directory, cx);
+            // Off at the paste: no decision, whatever happens later.
+            let off_at_paste = upload_decision(cx);
+            assert_eq!(off_at_paste, None);
+            set_upload_pasted_files(true, cx);
+            assert!(!upload_decision_holds(off_at_paste, cx));
+            // On at the paste: holds while nothing changes.
+            let on_at_paste = upload_decision(cx);
+            assert!(on_at_paste.is_some());
+            assert!(upload_decision_holds(on_at_paste, cx));
+            // Off, then on again before the work finishes: cancelled.
+            set_upload_pasted_files(false, cx);
+            assert!(!upload_decision_holds(on_at_paste, cx));
+            set_upload_pasted_files(true, cx);
+            assert!(!upload_decision_holds(on_at_paste, cx));
+            // A new paste decides afresh.
+            assert!(upload_decision_holds(upload_decision(cx), cx));
+        });
+    }
+
+    /// #1073: upload of pasted files is off unless the user turns it on,
+    /// including for state saved by builds that had no such setting.
+    #[test]
+    fn upload_of_pasted_files_is_off_by_default_and_round_trips() {
+        assert!(!Saved::default().upload_pasted_files);
+        let older: Saved = serde_json::from_str("{}").unwrap();
+        assert!(!older.upload_pasted_files);
+        let on = Saved {
+            upload_pasted_files: true,
+            ..Default::default()
+        };
+        let restored: Saved = serde_json::from_slice(&serde_json::to_vec(&on).unwrap()).unwrap();
+        assert!(restored.upload_pasted_files);
     }
 
     #[test]
@@ -3256,6 +3370,7 @@ mod tests {
                 close_code_fences_changed: false,
                 emoji_completion_changed: false,
                 paste_ask_changed: false,
+                upload_pasted_changed: false,
                 image_import_changed: false,
                 code_views_changed: BTreeSet::new(),
                 log_editor_changed: false,
@@ -3445,7 +3560,7 @@ mod tests {
                 reader.ui_state.ready,
                 "positive control: vault state was restored"
             );
-            assert!(reader.current_rel.is_empty());
+            assert!(reader.pane.current_rel.is_empty());
             assert_eq!(
                 cx.windows().len(),
                 1,

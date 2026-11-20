@@ -108,6 +108,7 @@ impl Hud {
 fn applies(this: &Reader) -> bool {
     this.editing.is_some()
         || this
+            .pane
             .file_preview
             .as_ref()
             .is_none_or(|preview| preview.code.is_some() || preview.text.is_some())
@@ -409,6 +410,7 @@ fn change(
     cx: &mut Context<Reader>,
 ) {
     if this
+        .pane
         .file_preview
         .as_ref()
         .is_some_and(|preview| preview.pdf.is_some() || preview.canvas.is_some())
@@ -429,7 +431,7 @@ fn change(
         editing
             .input()
             .update(cx, |state, _| state.preserve_zoom_anchor(pointer));
-    } else if let Some(preview) = &this.file_preview {
+    } else if let Some(preview) = &this.pane.file_preview {
         if let Some(code) = &preview.code {
             code.update(cx, |code, cx| code.preserve_zoom_anchor(pointer, cx));
         } else if let Some(text) = &preview.text {
@@ -697,7 +699,14 @@ mod tests {
         visual.run_until_parked();
         visual.update(|window, cx| window.simulate_next_frame(cx));
         let pdf = reader.read_with(visual, |reader, _| {
-            reader.file_preview.as_ref().unwrap().pdf.clone().unwrap()
+            reader
+                .pane
+                .file_preview
+                .as_ref()
+                .unwrap()
+                .pdf
+                .clone()
+                .unwrap()
         });
         let pdf_zoom = pdf.read_with(visual, |pdf, _| pdf.zoom_step());
         visual.simulate_keystrokes("secondary-=");
@@ -709,7 +718,7 @@ mod tests {
         visual.simulate_keystrokes("secondary-0");
         assert_eq!(pdf.read_with(visual, |pdf, _| pdf.zoom_step()), pdf_zoom);
         visual.update(|_, cx| assert!((reader_ui_state::text_zoom(cx) - 1.1).abs() < 0.001));
-        reader.update(visual, |reader, _| reader.file_preview = None);
+        reader.update(visual, |reader, _| reader.pane.file_preview = None);
     }
 
     /// A Reader window over one Markdown note, with the zoom store installed.

@@ -42,6 +42,7 @@ def receipt():
                 "Run CI, releases and updater Python suites", "Verify per-user AppImage runtime",
                 "Verify pinned Sync fixture lifecycle, source sharing and remote inspection",
                 "Verify managed launch and configuration admission",
+                "Verify real disk-full Sync transfer and first merge",
                 "Reject and reap surviving agent fixture daemons", "Verify additive vault regression controls")]},
         {"name": "windows-recovery", "conclusion": "success", "steps": [
             {"name": n, "conclusion": "success"} for n in (

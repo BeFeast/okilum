@@ -133,7 +133,7 @@ fn edit_setting_opens_notes_in_edit_and_files_in_read(cx: &mut TestAppContext) {
         open(&reader, visual, file);
         reader.read_with(visual, |r, _| {
             assert!(
-                r.file_preview.is_some(),
+                r.pane.file_preview.is_some(),
                 "positive control: {file} is a file view"
             )
         });
@@ -199,7 +199,7 @@ fn note_that_cannot_be_edited_stays_in_read_without_notice(cx: &mut TestAppConte
     let (reader, visual, _temp) = fixture(Some(NoteOpenMode::Edit), cx);
     open(&reader, visual, "damaged.md");
     reader.read_with(visual, |r, _| {
-        assert_eq!(r.current_rel, "damaged.md");
+        assert_eq!(r.pane.current_rel, "damaged.md");
         assert!(r.editing.is_none(), "an uneditable note stays readable");
         assert!(r.link_notice.is_none(), "the default asked for nothing");
     });
@@ -297,7 +297,7 @@ fn first_edit_after_another_window_took_the_note_returns_to_read(cx: &mut TestAp
     visual.simulate_input("lost");
     visual.run_until_parked();
     reader.read_with(visual, |r, _| {
-        assert_eq!(r.current_rel, "first.md");
+        assert_eq!(r.pane.current_rel, "first.md");
         assert!(r.editing.is_none(), "back to Read");
         let notice = r.link_notice.as_ref().expect("the reason is shown");
         assert!(notice.to_string().contains("being edited"), "{notice}");
@@ -313,7 +313,7 @@ fn note_another_window_edits_opens_in_read_with_notice(cx: &mut TestAppContext) 
     let other = okilum_core::file_editor::FileEditor::open(&path, &drafts(&temp)).unwrap();
     open(&reader, visual, "second.md");
     reader.read_with(visual, |r, _| {
-        assert_eq!(r.current_rel, "second.md");
+        assert_eq!(r.pane.current_rel, "second.md");
         assert!(r.editing.is_none());
         let notice = r
             .link_notice
@@ -360,7 +360,7 @@ fn read_only_note_opens_in_read_quietly(cx: &mut TestAppContext) {
     open(&reader, visual, "second.md");
     let state = reader.read_with(visual, |r, _| {
         (
-            r.current_rel.clone(),
+            r.pane.current_rel.clone(),
             r.editing.is_some(),
             r.link_notice.is_some(),
         )
@@ -419,7 +419,7 @@ fn assert_refused(
     typed: &str,
 ) {
     reader.read_with(visual, |r, cx| {
-        assert_eq!(r.current_rel, "first.md");
+        assert_eq!(r.pane.current_rel, "first.md");
         assert!(
             r.editing.is_none(),
             "the refused editor returns to Read: {:?}",
@@ -430,7 +430,7 @@ fn assert_refused(
         let notice = r.link_notice.as_ref().expect("the reason is shown");
         assert!(notice.to_string().contains("being edited"), "{notice}");
         assert!(
-            !r.note_source.contains(typed),
+            !r.pane.note_source.contains(typed),
             "the refused keystroke is not shown"
         );
     });

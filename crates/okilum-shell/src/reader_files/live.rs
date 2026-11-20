@@ -122,6 +122,7 @@ impl Reader {
                 if this
                     .update_in(cx, |this, window, cx| {
                         if this
+                            .pane
                             .file_preview
                             .as_ref()
                             .is_some_and(|p| Arc::ptr_eq(&p.live_identity, &identity))
@@ -143,7 +144,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(preview) = self.file_preview.as_mut() else {
+        let Some(preview) = self.pane.file_preview.as_mut() else {
             return;
         };
         if let Some(cache) = &preview.image_cache {
@@ -338,7 +339,7 @@ mod native_tests {
                 "works without a recursive vault watcher"
             );
             assert!(
-                r.file_preview.as_ref().unwrap()._live.is_some(),
+                r.pane.file_preview.as_ref().unwrap()._live.is_some(),
                 "native subscription positive control"
             );
         });
@@ -400,11 +401,11 @@ mod native_tests {
         });
         std::fs::remove_file(&path).unwrap();
         settle(visual, &reader, |r, _, _| {
-            r.file_preview.as_ref().unwrap().unavailable.is_some()
+            r.pane.file_preview.as_ref().unwrap().unavailable.is_some()
         });
         std::fs::write(&path, &one).unwrap();
         settle(visual, &reader, |r, cx, _| {
-            r.file_preview.as_ref().unwrap().unavailable.is_none()
+            r.pane.file_preview.as_ref().unwrap().unavailable.is_none()
                 && r.pdf_viewer().unwrap().read(cx).page_count() == Some(1)
         });
         reader.read_with(visual, |r, _| {
@@ -441,7 +442,7 @@ mod native_tests {
             // #3064: a macOS Quick Look thumbnail would draw the same 48 px
             // block, then never show the decoder's unreadable-image message.
             assert!(
-                r.file_preview.as_ref().unwrap().thumbnail.is_none(),
+                r.pane.file_preview.as_ref().unwrap().thumbnail.is_none(),
                 "HEIC uses the image viewer's decoder, not Quick Look"
             );
         });
@@ -459,11 +460,11 @@ mod native_tests {
         assert_eq!(std::fs::read(&path).unwrap(), rotated);
         std::fs::remove_file(&path).unwrap();
         settle(visual, &reader, |r, _, _| {
-            r.file_preview.as_ref().unwrap().unavailable.is_some()
+            r.pane.file_preview.as_ref().unwrap().unavailable.is_some()
         });
         std::fs::write(&path, first).unwrap();
         settle(visual, &reader, |r, _, bounds| {
-            r.file_preview.as_ref().unwrap().unavailable.is_none()
+            r.pane.file_preview.as_ref().unwrap().unavailable.is_none()
                 && bounds
                     .get("reader-block-image")
                     .is_some_and(|b| (b.size.height - px(48.)).abs() < px(1.))
@@ -488,7 +489,8 @@ mod native_tests {
                 .is_some_and(|b| (b.size.height - px(150.)).abs() < px(1.))
         });
         let cache = reader.read_with(visual, |r, _| {
-            r.file_preview
+            r.pane
+                .file_preview
                 .as_ref()
                 .unwrap()
                 .image_cache
@@ -512,11 +514,11 @@ mod native_tests {
         });
         std::fs::remove_file(&path).unwrap();
         settle(visual, &reader, |r, _, _| {
-            r.file_preview.as_ref().unwrap().unavailable.is_some()
+            r.pane.file_preview.as_ref().unwrap().unavailable.is_some()
         });
         std::fs::write(&path, &first).unwrap();
         settle(visual, &reader, |r, _, v| {
-            r.file_preview.as_ref().unwrap().unavailable.is_none()
+            r.pane.file_preview.as_ref().unwrap().unavailable.is_none()
                 && v.get("reader-block-image")
                     .is_some_and(|b| (b.size.height - px(150.)).abs() < px(1.))
         });
@@ -528,19 +530,19 @@ mod native_tests {
             std::fs::remove_file(&path).unwrap();
             std::os::unix::fs::symlink(&outside_path, &path).unwrap();
             settle(visual, &reader, |r, _, _| {
-                r.file_preview.as_ref().unwrap().unavailable.is_some()
+                r.pane.file_preview.as_ref().unwrap().unavailable.is_some()
             });
             assert_eq!(std::fs::read(&outside_path).unwrap(), last);
             std::fs::remove_file(&path).unwrap();
             std::fs::write(&path, &first).unwrap();
             settle(visual, &reader, |r, _, v| {
-                r.file_preview.as_ref().unwrap().unavailable.is_none()
+                r.pane.file_preview.as_ref().unwrap().unavailable.is_none()
                     && v.get("reader-block-image")
                         .is_some_and(|b| (b.size.height - px(150.)).abs() < px(1.))
             });
         }
         let old_identity = reader.read_with(visual, |r, _| {
-            Arc::downgrade(&r.file_preview.as_ref().unwrap().live_identity)
+            Arc::downgrade(&r.pane.file_preview.as_ref().unwrap().live_identity)
         });
         std::fs::write(dir.path().join("other.svg"), &last).unwrap();
         reader.update_in(visual, |r, window, cx| {

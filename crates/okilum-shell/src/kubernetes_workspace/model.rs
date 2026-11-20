@@ -61,6 +61,7 @@ impl Scope {
 
 /// Retained observations of one scope, one slot per source. A failed read
 /// keeps the older value as stale; it never empties the list.
+#[derive(Clone)]
 pub(crate) struct Data {
     pub scope: Scope,
     pub pods: Slot<List<Pod>>,

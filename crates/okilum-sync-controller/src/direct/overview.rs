@@ -129,7 +129,13 @@ impl Controller {
                     observed.read_status(&status);
                     if !vault.paused {
                         observed.state = if observed.errors {
-                            "Needs attention"
+                            // Name a known cause, such as a full disk (#3080).
+                            api.errors(&vault.folder_id)
+                                .ok()
+                                .and_then(|errors| {
+                                    crate::presentation::folder_problem(&status, &errors)
+                                })
+                                .unwrap_or("Needs attention")
                         } else if status["state"] == "idle" && observed.needed_items == 0 {
                             "Up to date"
                         } else {

@@ -625,6 +625,14 @@ impl ManagerGateway for PairedGateway {
         self.mcp.pending_requests(thread_id)
     }
 
+    fn pending_request_questions(
+        &self,
+        thread_id: &str,
+        request_id: &str,
+    ) -> GatewayResult<Vec<crate::PendingQuestion>> {
+        self.mcp.pending_request_questions(thread_id, request_id)
+    }
+
     fn capabilities(&self) -> GatewayResult<Capabilities> {
         self.mcp.capabilities()
     }

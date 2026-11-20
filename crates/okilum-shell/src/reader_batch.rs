@@ -491,7 +491,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert_eq!(r.tree.selected_paths(), ["A.md", "B.md"]);
-            assert_eq!(r.current_rel, "A.md", "modified click must not open B");
+            assert_eq!(r.pane.current_rel, "A.md", "modified click must not open B");
         });
         for id in ["batch-move", "batch-rename", "batch-trash"] {
             assert!(visual.debug_bounds(id).is_some(), "missing {id}");
@@ -566,7 +566,7 @@ mod tests {
         reader.read_with(visual, |r, _| {
             assert!(!r.batch.running && !r.note_move_pending);
             assert_eq!(
-                r.current_rel, "Dest/A.md",
+                r.pane.current_rel, "Dest/A.md",
                 "the open first item follows its move while the second item still completes"
             );
         });
@@ -596,7 +596,7 @@ mod tests {
         reader.read_with(visual, |r, _| {
             assert!(!r.batch.running && !r.note_move_pending);
             assert_eq!(
-                r.current_rel, "Dest/One.md",
+                r.pane.current_rel, "Dest/One.md",
                 "the open item follows batch rename"
             );
         });
@@ -636,7 +636,7 @@ mod tests {
         );
         reader.read_with(visual, |r, _| {
             assert!(!r.batch.running && !r.note_move_pending);
-            assert_eq!(r.current_rel, "One.md");
+            assert_eq!(r.pane.current_rel, "One.md");
         });
         drop(guard);
         reader.update_in(visual, |r, window, cx| {
@@ -651,7 +651,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert!(!r.batch.running && !r.trash_pending);
-            assert!(r.current_rel.is_empty(), "successful explicit Trash closes the current document without blocking the second item");
+            assert!(r.pane.current_rel.is_empty(), "successful explicit Trash closes the current document without blocking the second item");
         });
         assert!(
             !root.join("One.md").exists() && !root.join("C.md").exists(),

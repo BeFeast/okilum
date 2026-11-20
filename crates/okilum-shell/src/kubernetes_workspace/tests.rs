@@ -409,12 +409,12 @@ fn selection_and_scope_changes_never_start_or_retarget_logs(cx: &mut TestAppCont
     }
     // Old rows stay until the new session sends.
     h.workspace.read_with(h.visual, |ws, _| {
-        assert!(!ws.dock.displayed.as_ref().unwrap().previous);
+        assert!(!ws.dock.displayed.as_ref().unwrap().target.previous);
         assert_eq!(ws.dock.view.as_ref().unwrap().entity_id(), view.entity_id());
     });
     h.send(1, b"previous instance\n", worker::Status::Complete);
     h.workspace.read_with(h.visual, |ws, _| {
-        assert!(ws.dock.displayed.as_ref().unwrap().previous);
+        assert!(ws.dock.displayed.as_ref().unwrap().target.previous);
         assert_eq!(ws.dock.session.as_ref().unwrap().phase, dock::Phase::Ended);
         assert!(!ws.dock.worker_running());
     });
@@ -467,7 +467,7 @@ fn replacement_after_start_is_disclosed_from_the_next_pods_read(cx: &mut TestApp
         assert_eq!(tone, Tone::Neutral);
     });
     h.update(|ws, _, cx| {
-        let data = ws.data.as_mut().unwrap();
+        let data = Arc::make_mut(ws.data.as_mut().unwrap());
         fixtures::put(
             &mut data.pods,
             vec![fixtures::recovered_pod("checkout-a", "pod-a9", "rs-1")],
@@ -725,7 +725,7 @@ fn triage_keeps_recovered_rows_stable_and_never_resolves_them_silently(cx: &mut 
     // Refresh: reordered, plus a new failing Pod listed first. The selected
     // observation and the session stay; only the order of others changes.
     h.update(|ws, _, cx| {
-        let data = ws.data.as_mut().unwrap();
+        let data = Arc::make_mut(ws.data.as_mut().unwrap());
         fixtures::put(
             &mut data.pods,
             vec![
@@ -747,7 +747,7 @@ fn triage_keeps_recovered_rows_stable_and_never_resolves_them_silently(cx: &mut 
     // The selected container stops matching any rule (lastState no longer
     // reported). It stays selected, is not called resolved, and says so.
     h.update(|ws, _, cx| {
-        let data = ws.data.as_mut().unwrap();
+        let data = Arc::make_mut(ws.data.as_mut().unwrap());
         fixtures::put(
             &mut data.pods,
             vec![lenses::tests::healthy_pod("checkout-b", "pod-b", "rs-1")],
@@ -880,7 +880,7 @@ fn service_path_unknown_zero_and_missing_targets_read_differently(cx: &mut TestA
     });
     // A readable but empty slice list is zero endpoints, said as such.
     h.update(|ws, _, cx| {
-        fixtures::put(&mut ws.data.as_mut().unwrap().slices, vec![]);
+        fixtures::put(&mut Arc::make_mut(ws.data.as_mut().unwrap()).slices, vec![]);
         ws.refresh_rows(cx);
     });
     h.settle();
@@ -989,5 +989,454 @@ fn service_path_with_denied_pods_shows_unknown_targets(cx: &mut TestAppContext) 
                     if why.contains("forbidden")
             ));
         }
+    });
+}
+
+// ---------- Evidence export and terminal handoff (#3012) ----------
+
+#[gpui::test]
+fn export_writes_the_shown_session_and_reads_nothing(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = open(cx, routes(standard_pods(), "pod-a"));
+    assert!(
+        h.workspace.read_with(h.visual, |ws, _| ws.data.is_none()),
+        "nothing to export before Load"
+    );
+    h.load("");
+    h.click("k8s-section-Containers");
+    h.click("k8s-row-1");
+    h.click("k8s-open-logs-api");
+    h.wait("start", |ws| ws.dock.worker_running());
+    h.send(0, b"line one\nline two\n", worker::Status::Reading);
+    let reads = h.calls().len();
+    let path = dir.path().to_path_buf();
+    h.update(|ws, _, _| ws.export_dir = Some(path));
+    h.click("k8s-export");
+    h.wait("bundle written", |ws| !ws.exporting);
+    assert_eq!(
+        h.calls().len(),
+        reads,
+        "exporting reads nothing from the cluster"
+    );
+    let bundles: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(bundles.len(), 1, "one new bundle directory");
+    let bundle = &bundles[0];
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(bundle.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["scope"]["context"], "prod-east");
+    assert_eq!(manifest["selection"]["uid"], "pod-a");
+    assert_eq!(manifest["log_session"]["target"]["container"], "api");
+    assert_eq!(manifest["log_session"]["phase"], "receiving");
+    assert_eq!(manifest["log_rows"]["view_filter"]["rows_loaded"], 2);
+    assert_eq!(
+        manifest["log_rows"]["from_session"]["is_the_pinned_session"],
+        true
+    );
+    assert_eq!(
+        std::fs::read(bundle.join("logs/checkout-a_api_current.log")).unwrap(),
+        b"line one\nline two\n"
+    );
+    assert!(bundle.join("SHA256SUMS").exists());
+    h.workspace.read_with(h.visual, |ws, _| {
+        let (note, tone) = ws.export_note.clone().unwrap();
+        assert!(note.starts_with("Evidence written to"), "{note}");
+        assert_eq!(tone, Tone::Good);
+        assert!(ws.dock.worker_running(), "export never stops the session");
+    });
+}
+
+#[gpui::test]
+fn copy_command_hands_off_the_exact_pinned_argv(cx: &mut TestAppContext) {
+    let mut h = open(cx, routes(standard_pods(), "pod-a"));
+    h.load("");
+    h.click("k8s-section-Containers");
+    h.click("k8s-row-1");
+    h.click("k8s-open-previous-api");
+    h.wait("start", |ws| ws.dock.worker_running());
+    h.click("k8s-dock-copy-command");
+    let copied = h
+        .visual
+        .read(|cx| cx.read_from_clipboard().and_then(|c| c.text()))
+        .unwrap();
+    let argv = shell_words::split(&copied).unwrap();
+    let started = h.started.borrow().requests[0].args().unwrap();
+    assert_eq!(argv[0], "kubectl");
+    assert_eq!(
+        argv[1..],
+        started[..],
+        "the terminal gets the session's own argv"
+    );
+    assert!(argv.contains(&"--previous=true".to_string()));
+    h.workspace.read_with(h.visual, |ws, _| {
+        assert!(ws.dock.message.as_deref().unwrap().contains("by name"));
+    });
+}
+
+/// Review finding 3 through the real flows: exporting between a retarget
+/// and its first data, after a failed check, and after restarting the same
+/// target keeps the rows labelled with the session that sent them.
+#[gpui::test]
+fn export_labels_rows_by_their_own_session_across_retarget_failure_and_restart(
+    cx: &mut TestAppContext,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = open(cx, routes(standard_pods(), "pod-a"));
+    h.load("");
+    h.click("k8s-section-Containers");
+    h.click("k8s-row-1");
+    h.click("k8s-open-logs-api");
+    h.wait("start", |ws| ws.dock.worker_running());
+    h.send(0, b"current instance line\n", worker::Status::Reading);
+    let export = |h: &mut Harness, name: &str| -> Value {
+        let folder = dir.path().join(name);
+        std::fs::create_dir(&folder).unwrap();
+        h.update(|ws, _, _| ws.export_dir = Some(folder.clone()));
+        h.click("k8s-export");
+        h.wait("bundle written", |ws| !ws.exporting);
+        let bundle = std::fs::read_dir(&folder)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(bundle.join("manifest.json")).unwrap()).unwrap();
+        let file = manifest["log_rows"]["file"].as_str().unwrap().to_string();
+        assert_eq!(
+            std::fs::read(bundle.join(&file)).unwrap(),
+            b"current instance line\n",
+            "{name}: the file holds the rows the view shows"
+        );
+        manifest
+    };
+
+    // 1. Retarget to the previous instance; export before it sends data.
+    h.click("k8s-open-previous-api");
+    h.click("k8s-dock-retarget-confirm");
+    h.wait("retarget start", |ws| {
+        ws.dock
+            .session
+            .as_ref()
+            .is_some_and(|s| s.target.previous && s.phase == dock::Phase::Receiving)
+    });
+    let m = export(&mut h, "retarget");
+    assert_eq!(m["log_rows"]["file"], "logs/checkout-a_api_current.log");
+    assert_eq!(
+        m["log_rows"]["from_session"]["target"]["instance"],
+        "current"
+    );
+    assert_eq!(
+        m["log_rows"]["from_session"]["is_the_pinned_session"],
+        false
+    );
+    assert_eq!(m["log_session"]["target"]["instance"], "previous");
+    assert_eq!(m["log_session"]["has_sent_rows"], false);
+
+    // 2. Retarget to a Pod whose check fails (no synthetic route): the
+    // session is not started and the rows stay the earlier ones.
+    h.click("k8s-row-3");
+    h.click("k8s-open-logs-api");
+    h.click("k8s-dock-retarget-confirm");
+    h.wait("check failed", |ws| {
+        ws.dock
+            .session
+            .as_ref()
+            .is_some_and(|s| matches!(s.phase, dock::Phase::NotStarted(_)))
+    });
+    let m = export(&mut h, "failed");
+    assert_eq!(m["log_rows"]["file"], "logs/checkout-a_api_current.log");
+    assert_eq!(
+        m["log_rows"]["from_session"]["is_the_pinned_session"],
+        false
+    );
+    assert_eq!(m["log_session"]["target"]["pod"], "checkout-b");
+    assert_eq!(
+        m["log_session"]["phase"],
+        "not started: check before kubectl logs failed"
+    );
+
+    // 3. Back to the first target, then restart it: same name, new session.
+    h.click("k8s-row-1");
+    h.click("k8s-open-logs-api");
+    h.wait("same target start", |ws| {
+        ws.dock
+            .session
+            .as_ref()
+            .is_some_and(|s| !s.target.previous && s.phase == dock::Phase::Receiving)
+    });
+    h.click("k8s-dock-stop");
+    // The process-free worker ends when its session reports it stopped.
+    h.send(2, b"", worker::Status::Stopped);
+    assert!(h
+        .workspace
+        .read_with(h.visual, |ws, _| !ws.dock.worker_running()));
+    h.click("k8s-dock-start");
+    h.wait("restart", |ws| ws.dock.worker_running());
+    let m = export(&mut h, "restart");
+    assert_eq!(
+        m["log_rows"]["from_session"]["target"]["instance"],
+        "current"
+    );
+    assert_eq!(
+        m["log_rows"]["from_session"]["is_the_pinned_session"], false,
+        "same target, but the rows came from an earlier session"
+    );
+    assert_eq!(m["log_session"]["has_sent_rows"], false);
+}
+
+/// Review (terra) item 3: the copied command's note states the session's
+/// actual UID state, never a verification that did not happen.
+#[test]
+fn copy_note_reflects_pending_failed_replaced_and_verified_checks() {
+    let data = fixtures::fixture();
+    let pod = data.pods().iter().find(|p| p.meta.uid == "pod-a").unwrap();
+    let target = model::LogTarget::new(&data.scope, pod, "api", false).unwrap();
+    let note = |phase: dock::Phase, verified_at: Option<std::time::SystemTime>| {
+        dock::copy_note(
+            &dock::Session {
+                target: target.clone(),
+                phase,
+                follow: true,
+                verified_at,
+                received: false,
+                diagnostic: String::new(),
+                pending_bytes: 0,
+            },
+            dock::Shell::Posix,
+        )
+    };
+    let pending = note(dock::Phase::Verifying, None);
+    assert!(
+        pending.contains("still running") && !pending.contains("verified UID"),
+        "{pending}"
+    );
+    let failed = note(
+        dock::Phase::NotStarted(okilum_core::kubernetes::Failure::Forbidden {
+            detail: "pods is forbidden".into(),
+        }),
+        None,
+    );
+    assert!(
+        failed.contains("failed") && !failed.contains("verified UID"),
+        "{failed}"
+    );
+    let replaced = note(
+        dock::Phase::Replaced {
+            uid: "pod-a2".into(),
+        },
+        None,
+    );
+    assert!(
+        replaced.contains("now refers to Pod UID pod-a2"),
+        "{replaced}"
+    );
+    let stopped = note(dock::Phase::Stopped, None);
+    assert!(stopped.contains("was not verified"), "{stopped}");
+    let verified = note(
+        dock::Phase::Receiving,
+        Some(std::time::SystemTime::UNIX_EPOCH),
+    );
+    assert!(verified.contains("verified UID pod-a"), "{verified}");
+    for text in [&pending, &failed, &replaced, &stopped, &verified] {
+        assert!(text.contains("by name"), "{text}");
+    }
+}
+
+/// Review (Terra P1): a copied command is quoted for the shell it names.
+/// POSIX quoting is not safe in cmd.exe or PowerShell, and vice versa.
+#[test]
+fn command_line_quotes_per_shell_and_round_trips() {
+    let args: Vec<String> = [
+        "--context=team a&b|c;d$e'f`g",
+        "--namespace=shop",
+        "logs",
+        "pod/checkout-a",
+        "--container=api",
+        "--previous=false",
+        "--context=x,y@z",
+        "--context=curly\u{2019}quote",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+
+    // POSIX: shell_words splits it back to exactly the argv.
+    let posix = dock::command_line(&args, dock::Shell::Posix).unwrap();
+    let split = shell_words::split(&posix).unwrap();
+    assert_eq!(split[0], "kubectl");
+    assert_eq!(split[1..], args[..]);
+    assert!(
+        posix.contains("--namespace=shop"),
+        "plain args stay unquoted"
+    );
+
+    // PowerShell: every non-plain word is one single-quoted literal, in
+    // which only quote characters are special (doubled). Parse it back.
+    let ps = dock::command_line(&args, dock::Shell::PowerShell).unwrap();
+    let quotes = ['\'', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}'];
+    let mut words = Vec::new();
+    let mut chars = ps.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == ' ' {
+            continue;
+        }
+        let mut word = String::new();
+        if quotes.contains(&c) {
+            loop {
+                let c = chars.next().expect("closed literal");
+                if quotes.contains(&c) {
+                    if chars.peek().is_some_and(|n| quotes.contains(n)) {
+                        word.push(chars.next().unwrap());
+                        continue;
+                    }
+                    break;
+                }
+                word.push(c);
+            }
+        } else {
+            word.push(c);
+            while let Some(&n) = chars.peek() {
+                if n == ' ' {
+                    break;
+                }
+                assert!(
+                    n.is_ascii_alphanumeric() || "-_./=:".contains(n),
+                    "unquoted {n:?} in {ps}"
+                );
+                word.push(chars.next().unwrap());
+            }
+        }
+        words.push(word);
+    }
+    assert_eq!(words[0], "kubectl");
+    assert_eq!(words[1..], args[..], "{ps}");
+    assert!(ps.contains("'--context=team a&b|c;d$e''f`g'"), "{ps}");
+    assert!(
+        ps.contains("'--context=x,y@z'"),
+        "comma and @ are quoted: {ps}"
+    );
+
+    // A double quote cannot be passed safely by PowerShell 5.1: refused.
+    let quoted = vec!["--context=a\"b".to_string()];
+    assert!(dock::command_line(&quoted, dock::Shell::PowerShell).is_err());
+    assert!(dock::command_line(&quoted, dock::Shell::Posix).is_ok());
+}
+
+/// Review (Terra P1) through the real flow: logs opened in one namespace
+/// stay in the view after loading another; that scope's bundle leaves them
+/// out and says where they are from.
+#[gpui::test]
+fn export_after_a_scope_change_leaves_the_other_scopes_logs_out(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = open(cx, routes(standard_pods(), "pod-a"));
+    h.load("");
+    h.click("k8s-section-Containers");
+    h.click("k8s-row-1");
+    h.click("k8s-open-logs-api");
+    h.wait("start", |ws| ws.dock.worker_running());
+    h.send(0, b"shop namespace line\n", worker::Status::Reading);
+    h.load("payments");
+    let path = dir.path().to_path_buf();
+    h.update(|ws, _, _| ws.export_dir = Some(path));
+    h.click("k8s-export");
+    h.wait("bundle written", |ws| !ws.exporting);
+    let bundle = std::fs::read_dir(dir.path())
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert!(
+        !bundle.join("logs").exists(),
+        "no log file in the payments bundle"
+    );
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(bundle.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["scope"]["namespace"], "payments");
+    assert!(manifest["log_rows"]["excluded"]
+        .as_str()
+        .unwrap()
+        .contains("prod-east / shop"));
+    assert!(manifest["log_session"]["excluded"].as_str().is_some());
+    h.workspace.read_with(h.visual, |ws, _| {
+        assert!(ws.dock.worker_running(), "the shop session keeps running");
+    });
+}
+
+/// Review (Terra P2, b27e538a): the export capture shares the cluster data
+/// instead of copying it on the UI thread, and bytes, filter, counts and
+/// provenance all describe what the view shows, even when newer rows are
+/// waiting for the next frame.
+#[gpui::test]
+fn export_capture_shares_data_and_matches_the_view(cx: &mut TestAppContext) {
+    let mut h = open(cx, routes(standard_pods(), "pod-a"));
+    h.load("");
+    h.click("k8s-section-Containers");
+    h.click("k8s-row-1");
+    h.click("k8s-open-logs-api");
+    h.wait("start", |ws| ws.dock.worker_running());
+    h.send(0, b"first session line\n", worker::Status::Reading);
+    h.click("k8s-open-previous-api");
+    h.click("k8s-dock-retarget-confirm");
+    h.wait("retarget start", |ws| {
+        ws.dock
+            .session
+            .as_ref()
+            .is_some_and(|s| s.target.previous && s.phase == dock::Phase::Receiving)
+    });
+    h.update(|ws, _, cx| {
+        // The new session's first rows arrive; no frame has shown them yet.
+        let mut assembler = Assembler::new("pod.log".into(), "late".into()).unwrap();
+        let snapshot = assembler.append(b"new 1\nnew 2\nnew 3\n").unwrap();
+        let generation = ws.dock.generation;
+        ws.log_update(
+            generation,
+            worker::Update {
+                snapshot,
+                status: worker::Status::Reading,
+                diagnostic: String::new(),
+                pending: 0,
+            },
+            cx,
+        );
+        let capture = ws.evidence_capture(cx);
+        assert!(
+            Arc::ptr_eq(capture.data.as_ref().unwrap(), ws.data.as_ref().unwrap()),
+            "the capture shares the data; nothing is copied on the UI thread"
+        );
+        let shown = capture.displayed.as_ref().unwrap();
+        assert!(
+            !shown.target.previous,
+            "provenance of the rows the view shows"
+        );
+        let view = capture.view.as_ref().unwrap();
+        assert_eq!(
+            view.snapshot.as_ref().unwrap().bytes(),
+            b"first session line\n"
+        );
+        assert_eq!(view.filter["rows_loaded"], 1, "counts of the same snapshot");
+        // A read landing now copies the data once; the capture keeps its own.
+        let data = Arc::make_mut(ws.data.as_mut().unwrap());
+        fixtures::put(&mut data.pods, vec![]);
+        assert!(!Arc::ptr_eq(
+            capture.data.as_ref().unwrap(),
+            ws.data.as_ref().unwrap()
+        ));
+        assert_eq!(capture.data.as_ref().unwrap().pods().len(), 2);
+    });
+    // After the next frame the view shows the new rows; so does the capture.
+    h.settle();
+    h.workspace.read_with(h.visual, |ws, cx| {
+        let capture = ws.evidence_capture(cx);
+        assert!(capture.displayed.as_ref().unwrap().target.previous);
+        let view = capture.view.as_ref().unwrap();
+        assert_eq!(
+            view.snapshot.as_ref().unwrap().bytes(),
+            b"new 1\nnew 2\nnew 3\n"
+        );
+        assert_eq!(view.filter["rows_loaded"], 3);
     });
 }

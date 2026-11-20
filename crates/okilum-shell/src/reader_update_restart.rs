@@ -8,8 +8,21 @@ use std::path::PathBuf;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Window {
-    Vault { root: PathBuf, note: Option<String> },
-    File { path: PathBuf },
+    Vault {
+        root: PathBuf,
+        note: Option<String>,
+    },
+    /// A target written by builds before #3124: the file alone, so its parent
+    /// becomes the root. Still read from an older build's restart handoff.
+    File {
+        path: PathBuf,
+    },
+    /// A quick viewer or folder view with the folder it was opened with
+    /// (#3124): a document in a subfolder does not narrow the root.
+    Quick {
+        root: PathBuf,
+        note: Option<String>,
+    },
 }
 
 pub(crate) fn capture(cx: &App) -> Vec<Window> {
@@ -28,15 +41,12 @@ pub(crate) fn capture(cx: &App) -> Vec<Window> {
             if !windows.contains(&reader.reader_window) {
                 return None;
             }
+            let root = reader.vault_root.clone();
+            let note = Some(reader.selected_file().to_owned()).filter(|note| !note.is_empty());
             Some(if reader.single_file {
-                Window::File {
-                    path: reader.vault_root.join(reader.selected_file()),
-                }
+                Window::Quick { root, note }
             } else {
-                Window::Vault {
-                    root: reader.vault_root.clone(),
-                    note: Some(reader.selected_file().to_owned()).filter(|note| !note.is_empty()),
-                }
+                Window::Vault { root, note }
             })
         })
         .collect()
@@ -53,6 +63,11 @@ pub(crate) fn arguments(cx: &App) -> Vec<OsString> {
                 note.unwrap_or_default().into(),
             ],
             Window::File { path } => vec!["--restore-file-window".into(), path.into_os_string()],
+            Window::Quick { root, note } => vec![
+                "--restore-quick-window".into(),
+                root.into_os_string(),
+                note.unwrap_or_default().into(),
+            ],
         })
         .collect()
 }
@@ -86,41 +101,46 @@ pub(crate) fn restore(mut base: Opts, cx: &mut App) -> Task<bool> {
     cx.spawn(async move |cx| {
         let mut opened = false;
         for window in windows {
-            match window {
+            let (vault, note) = match window {
                 Window::Vault { root, note } => {
                     opened |= cx
                         .update(|cx| {
                             reader_startup::restore_windows(vec![(root, note)], base.clone(), cx)
                         })
                         .await;
+                    continue;
                 }
-                Window::File { path } => {
-                    let resolving = cx.update(|cx| {
-                        reader_open::resolve(
-                            Opts {
-                                vault: path.parent().map(std::path::Path::to_path_buf),
-                                note: path
-                                    .file_name()
-                                    .map(|name| name.to_string_lossy().into_owned()),
-                                single_file: true,
-                                ..base.clone()
-                            },
-                            cx,
-                        )
+                // The folder the window was opened with stays its root (#3124);
+                // a folder view has no note and comes back as a folder view.
+                Window::Quick { root, note } => (Some(root), note),
+                Window::File { path } => (
+                    path.parent().map(std::path::Path::to_path_buf),
+                    path.file_name()
+                        .map(|name| name.to_string_lossy().into_owned()),
+                ),
+            };
+            let resolving = cx.update(|cx| {
+                reader_open::resolve(
+                    Opts {
+                        vault,
+                        note,
+                        single_file: true,
+                        ..base.clone()
+                    },
+                    cx,
+                )
+            });
+            match resolving.await {
+                Ok(opts) => {
+                    // Do not route this file into an already restored vault,
+                    // even when its directory is inside that vault.
+                    opened |= cx.update(|cx| {
+                        reader_open::create_window(opts, None, None, cx)
+                            .map_err(|error| reader_open::show_error(error, cx))
+                            .is_ok()
                     });
-                    match resolving.await {
-                        Ok(opts) => {
-                            // Do not route this file into an already restored vault,
-                            // even when its directory is inside that vault.
-                            opened |= cx.update(|cx| {
-                                reader_open::create_window(opts, None, None, cx)
-                                    .map_err(|error| reader_open::show_error(error, cx))
-                                    .is_ok()
-                            });
-                        }
-                        Err(error) => cx.update(|cx| reader_open::show_error(error, cx)),
-                    }
                 }
+                Err(error) => cx.update(|cx| reader_open::show_error(error, cx)),
             }
         }
         // If every saved vault disappeared, use the normal start screen /
@@ -258,7 +278,10 @@ mod tests {
                 root: root.clone(),
                 note: Some("Б.md".into()),
             },
-            Window::File { path },
+            Window::Quick {
+                root: root.clone(),
+                note: Some("standalone file Ю.txt".into()),
+            },
         ];
         // Snapshot both the native argv path and Sparkle's one-use handoff.
         let opts = cx.update(|cx| {
@@ -340,6 +363,7 @@ mod tests {
             let order = |window: &Window| match window {
                 Window::Vault { root, note } => (false, root.clone(), note.clone()),
                 Window::File { path } => (true, path.clone(), None),
+                Window::Quick { root, note } => (true, root.clone(), note.clone()),
             };
             actual.sort_by_key(&order);
             expected.sort_by_key(order);
@@ -360,6 +384,108 @@ mod tests {
         assert!(parse(&["--restore-file-window", "/note.md", "--vault", "/vault"]).is_err());
         assert!(parse(&["--restore-file-window", "/note.md", "/other.md"]).is_err());
         assert!(parse(&["--restore-file-window", "/note.md"]).is_ok());
+        assert!(parse(&["--restore-quick-window", "/folder"]).is_err());
+        let launched = |args: &[&str]| match parse(args).unwrap() {
+            reader_open::Command::Launch(opts) => opts.restart_windows,
+            _ => panic!("restart must launch the reader"),
+        };
+        assert_eq!(
+            launched(&["--restore-quick-window", "/folder", "B/C.md"]),
+            vec![Window::Quick {
+                root: "/folder".into(),
+                note: Some("B/C.md".into()),
+            }]
+        );
+        assert_eq!(
+            launched(&["--restore-quick-window", "/folder", ""]),
+            vec![Window::Quick {
+                root: "/folder".into(),
+                note: None,
+            }]
+        );
+    }
+
+    /// #3124: a folder view showing a document in a subfolder comes back
+    /// after an update restart rooted at the folder it was opened with,
+    /// on that document, and still not a vault.
+    #[gpui::test]
+    fn update_restart_keeps_the_folder_of_a_folder_view_on_a_nested_document(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("A");
+        std::fs::create_dir_all(root.join("B")).unwrap();
+        let root = root.canonicalize().unwrap();
+        std::fs::write(root.join("top.md"), "# Top").unwrap();
+        std::fs::write(root.join("B").join("C.md"), "# C").unwrap();
+        let base = Opts {
+            session_directory: Some(fixture.path().join("state")),
+            cache_base_override: Some(fixture.path().join("cache")),
+            ..Default::default()
+        };
+        cx.update(|cx| {
+            crate::test_init(cx);
+            reader_open::install(cx);
+            cx.set_quit_mode(gpui::QuitMode::Explicit);
+            reader_open::create_window(
+                Opts {
+                    vault: Some(root.clone()),
+                    note: Some("B/C.md".into()),
+                    single_file: true,
+                    ..base.clone()
+                },
+                None,
+                None,
+                cx,
+            )
+            .unwrap();
+        });
+        cx.run_until_parked();
+        let expected = vec![Window::Quick {
+            root: root.clone(),
+            note: Some("B/C.md".into()),
+        }];
+        let opts = cx.update(|cx| {
+            assert_eq!(capture(cx), expected);
+            let args = reader_open::update_restart_args(cx).unwrap();
+            let reader_open::Command::Launch(opts) =
+                reader_open::parse_args(args, base.clone()).unwrap()
+            else {
+                panic!("restart must launch the reader")
+            };
+            assert_eq!(opts.restart_windows, expected);
+            for window in cx.windows() {
+                window
+                    .update(cx, |_, window, _| window.remove_window())
+                    .unwrap();
+            }
+            opts
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(capture(cx).is_empty(), "every window closed before restart");
+            restore(*opts, cx).detach();
+        });
+        for _ in 0..60 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(100));
+            cx.run_until_parked();
+            if cx.update(|cx| !capture(cx).is_empty()) {
+                break;
+            }
+        }
+        cx.update(|cx| {
+            assert_eq!(capture(cx), expected, "rooted at A, on B/C.md");
+            let windows = cx.windows();
+            let reader = reader_open::readers(cx)
+                .into_iter()
+                .find(|reader| windows.contains(&reader.read(cx).reader_window))
+                .unwrap();
+            let reader = reader.read(cx);
+            assert!(reader.single_file, "still not a vault");
+            assert_eq!(reader.vault_root, root);
+            assert_eq!(reader.pane.current_rel, "B/C.md");
+        });
     }
 
     #[gpui::test]

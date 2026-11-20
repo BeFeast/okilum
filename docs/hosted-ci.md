@@ -13,7 +13,9 @@ cache credentials go to GitHub.
 3. For Windows tests or unsigned packaging, manually run Forgejo **commit-ci**
    on the same branch, selecting `native-core` (core `windows_` tests),
    `native-sync` (sync-controller `sidecar::` tests), `windows-release`, `arch`,
-   `brain`, or `inbox`. `linux` is the default. Native tests use default features,
+   `brain`, `inbox`, or `inbox-restart` (Inbox + nginx ordered restart, drift
+   refusal and rollback integration on Ubuntu 24.04 with Docker/Compose; no
+   secrets or CT119 access). `linux` is the default. Native tests use default features,
    `--nocapture --test-threads=1` on Windows 2022. For a different package/filter,
    owners use exact-source `windows-native.yml` dispatch; CI owner handles lane failures.
 
@@ -154,6 +156,39 @@ primary success, download-timeout fallback with cache reuse, exhaustion without
 installation, GitHub local mirror lists, deb822 and legacy sources, untouched
 third-party configuration and unchanged originals. Local validation is limited
 to syntax and diff inspection; these regression cases run only on hosted CI.
+
+Run `44244922674` (2026-11-18, from ~03:30 UTC) failed **Install system
+libraries** five attempts in a row. The hosted Ubuntu 24.04 image now lists
+`http://us-east-2.ec2.archive.ubuntu.com/ubuntu/` first in its local mirror list.
+The official-origin pattern matched only `azure.archive`, two-letter country hosts,
+`archive` and `security`, so that AWS-region host was never rewritten: on every
+route the signed index update succeeded (36-37.5 MB in 15-24 seconds), but all
+package downloads still came from the HTTP ec2 mirror at roughly 60-500 KB/s,
+and each 150-second download window returned 124. The transport probes that
+followed showed IPv4 HTTPS reaching both Ubuntu hosts (`http=200`); the IPv6
+failures only reflect a runner without IPv6. The pattern now rewrites any
+`*.archive.ubuntu.com` host (including `<region>.ec2.archive`) plus `security`.
+HTTPS was chosen for throughput, not integrity: apt verifies Release signatures
+and package hashes on HTTP too. So after the three HTTPS routes, one last route
+uses the runner's own sources and mirror lists in place, unchanged, under the
+same per-phase bounds and with the shared package cache. Fake-apt cases cover
+the ec2 host in the mirror list, fallback to the original sources and exhaustion
+across all four routes.
+
+Three HTTPS routes alone could take 3 x (60 + 150) = 630 seconds, beyond the
+540-second outer deadline, so the runner-sources route might never start. The
+script now keeps its own 525-second budget on a monotonic clock. Each HTTPS
+phase is shortened so that 150 seconds stay reserved for the runner-sources route
+(a full 60-second update plus 90 seconds of download on top of the shared cache)
+and 90 seconds for the final `--no-download` install (about 20 seconds in run
+`44255520770`). A phase whose window would drop below 15 seconds is skipped and
+logged. Fast failures (DNS) keep every route at its nominal bounds, and after a
+successful download the install keeps its full four minutes. While a later
+route is still protected, the clip also subtracts apt-bounded.sh's 15-second
+kill grace, so a SIGKILL cannot eat that reserve. The fallback download keeps
+its promised 90 seconds beside the 90-second install reserve.
+Fake-clock tests cover this timeline, fallback success after HTTPS timeouts,
+fast failures and the unchanged HTTPS-success bounds.
 
 Separate read-only infrastructure evidence: baldr's
 `forgejo-runner-bridge.service` accepted Forgejo task `22335` (job `34758`, API

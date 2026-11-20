@@ -65,7 +65,11 @@ normal safe quit after arming the updater, not merely showing a clickable toast.
 Restart now carries each live Reader window's current target explicitly, including
 single-file viewers. Windows and Linux AppImage share `update_restart_args`:
 `--restore-vault-window ROOT NOTE` repeats once per vault window (including duplicate
-windows of one vault), and `--restore-file-window ABSOLUTE_PATH` once per quick viewer.
+windows of one vault), and `--restore-quick-window ROOT NOTE` once per quick viewer
+or folder view (empty `NOTE` for a folder view). `ROOT` is the folder the window was
+opened with, so a document in a subfolder does not narrow it (#3124). The older
+`--restore-file-window ABSOLUTE_PATH`, written by builds before #3124, is still read
+and roots that window at the file's folder.
 These internal options supersede inherited launch targets. Startup reuses the normal
 vault session restoration and creates separate quick-viewer windows, even if a file
 is inside an already restored vault. It does not ask users to close other windows.

@@ -29,6 +29,26 @@ recursive inventory; document links remain confined to the opened folder root.
 External-file actions retain the existing containment policy. Symlink directories
 are not followed by lazy folder enumeration.
 
+## Folder view (#3098)
+
+Opening a folder the way a file is opened (Open folder…, Finder/Explorer Open
+With, drag and drop, `okilum /path/folder`) is a folder view: the same quick
+viewer, rooted at that folder, with no file selected until the user picks one.
+It is not indexed and not listed as a vault. **Open folder as vault** in the
+header converts the window. A folder that already is a vault (an open vault
+window, or a full vault in the reading history) opens as that vault again.
+Explicit vault requests stay vaults: `--vault`, **New Vault…**, Settings →
+Vaults and Recent, and the «Open in Okilum as Vault» Finder Service, Linux
+desktop action and Explorer verb. A folder view is restored as a folder view on
+restart.
+
+A quick viewer or folder view keeps the folder it was opened with as its root
+(#3124). When the last document sits in a subfolder, the window still comes back
+rooted at that folder, on that document, after the last window was closed, after
+Quit and after an update restart; the root is never narrowed to the document's
+subfolder. The document is listed in Recent as well. A window opened on a single
+file still starts at that file's folder.
+
 The More menu and the ⌘K palette offer **Switch to single file mode** in a vault
 window and **Open folder as vault** in a quick viewer (#1527). Switching a
 Markdown document retains its rendered content and reading position. A downgrade

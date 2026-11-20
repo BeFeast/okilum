@@ -391,7 +391,7 @@ fn code2810_edit_entry_cancels_tree_find_before_debounce(cx: &mut TestAppContext
         &[("data.json", r#"{"value":"needle other needle"}"#)],
     );
     let code = reader.read_with(visual, |r, _| {
-        r.file_preview.as_ref().unwrap().code.clone().unwrap()
+        r.pane.file_preview.as_ref().unwrap().code.clone().unwrap()
     });
     code.update_in(visual, |s, w, cx| s.set_view(View::Tree, w, cx));
     let target = code.read_with(visual, |s, cx| s.find_target(code.clone(), cx));

@@ -17,6 +17,8 @@ LANES = {
     'linux-binary': ('linux-binary', 'Build and package Linux QA binary', 5400),
     'brain': ('brain', 'Run Brain tests', 2700),
     'inbox': ('inbox', 'Run Inbox tests', 1800),
+    # #729: ordered Inbox/ingress restart, drift refusal and rollback on hosted Docker.
+    'inbox-restart': ('inbox-restart', 'Run Inbox restart integration', 1800),
     'arch': ('arch', 'Validate Arch package', 5400),
     'windows-release': ('windows-release', 'Build and validate Windows package', 5400),
     'native-core': ('native', 'Run native tests', 3600),
@@ -47,8 +49,10 @@ ALSO_REQUIRED = {
 # Waiters inside a fixed Forgejo step ceiling. The primary `bridge` runner stops
 # every job at 60 min, so queue and run share one budget; the run still gets at
 # most its lane timeout. See docs/fast-runner.md (#2589).
+# inbox-restart (#729): the run takes ~7 min, but the default 30 min queue
+# limit cancelled it twice in a busy hosted queue before it started.
 BRIDGE_BUDGETS = {'shell-full': 53 * 60, 'check': 53 * 60, 'sync-source-sharing': 53 * 60,
-                  'feedback': 53 * 60, 'excalidraw': 53 * 60}
+                  'feedback': 53 * 60, 'excalidraw': 53 * 60, 'inbox-restart': 53 * 60}
 
 
 def main():

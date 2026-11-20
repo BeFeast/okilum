@@ -115,7 +115,16 @@ pub(crate) trait Host {
     /// Verified, idempotent staging and preparation publication. Never generates
     /// a device identity, changes configuration, peers or runtime selection.
     fn select_helper(&mut self, binding: &Binding, hash: &str) -> Result<()>;
-    fn ready(&mut self, binding: &Binding, deadline: Instant) -> Result<()>;
+    /// Wait for the started helper through the platform that started it. A new
+    /// platform reads the runtime selection under the exclusive state lock, and
+    /// the starting helper's managed-launch reads pin that directory without
+    /// waiting, so they fail with a sharing violation (#3069).
+    fn ready(
+        &mut self,
+        native: &mut Self::Native,
+        binding: &Binding,
+        deadline: Instant,
+    ) -> Result<()>;
     /// Only after new readiness. Deletion failure retains the replay marker.
     fn cleanup(&mut self, old: &Binding) -> Result<()>;
 }
@@ -422,18 +431,26 @@ impl<D: StateDir> Store<D> {
                 continue;
             }
             let mut native = host.platform(current.binding())?;
-            {
+            let stopped = {
                 let tx = self.begin(deadline)?;
                 self.still_planned(&tx, &plan.enabled)?;
                 native.verify_payload(current.binding())?;
                 if native.inspect(current.binding())? == Registration::Absent {
                     native.register(current.binding())?;
                 }
-                if native.inspect(current.binding())? == Registration::Stopped {
-                    native.start(current.binding())?;
-                }
+                native.inspect(current.binding())? == Registration::Stopped
+            };
+            // Start only after the state lock is released (#3069): the
+            // launched helper opens the state directory (its working directory
+            // and startup reads) possibly before Task Scheduler returns, and the
+            // exclusive transaction refuses every other open. A Disable that
+            // commits in between still wins: the helper re-reads the journal
+            // under the lock and stays idle unless it is Enabled, and readiness
+            // rechecks the intent before this plan can finish.
+            if stopped {
+                native.start(current.binding())?;
             }
-            host.ready(current.binding(), deadline)?;
+            host.ready(&mut native, current.binding(), deadline)?;
             let tx = self.begin(deadline)?;
             self.still_planned(&tx, &plan.enabled)?;
             // An update back to the retained image keeps its directory.

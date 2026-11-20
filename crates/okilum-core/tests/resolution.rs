@@ -479,6 +479,81 @@ fn data_file_link_reaches_the_nested_file_not_the_md_namesake() {
     assert!(vault.backlinks("data.json.md").is_empty());
 }
 
+// PDFs and images are data files too: wiki and Markdown links reach them
+// whatever the link's letter case, and a missing file gets no backlink.
+#[test]
+fn pdf_and_image_links_resolve_case_insensitively_and_missing_files_stay_empty() {
+    let (_root, vault) = vault_with(
+        "data-file-pdf-image-case-2905",
+        &[
+            (
+                "note.md",
+                "[[report.pdf]]\n\
+                 [[Report.pdf#page=3]]\n\
+                 [r](report.pdf)\n\
+                 [p](REPORT.PDF#page=2)\n\
+                 [[photo.png|Photo]]\n\
+                 ![[PHOTO.png]]\n\
+                 [shot](img/photo.png)\n\
+                 [[Data.JSON]]\n\
+                 [[report.png]]\n\
+                 [[missing.pdf]]\n\
+                 [gone](gone.png)\n\
+                 ![[absent.jpg]]\n",
+            ),
+            ("Report.PDF", "%PDF-1.4\n"),
+            ("img/Photo.PNG", "png"),
+            ("data.json", "{}"),
+        ],
+    );
+
+    let report = sources(&vault, "Report.PDF");
+    assert_eq!(report.len(), 4, "{report:?}");
+    assert!(report.iter().all(|(path, _)| path == "note.md"));
+    assert_eq!(report[0].1, "report.pdf");
+    assert_eq!(report[1].1, "Report.pdf");
+    assert!(vault.backlinks("Report.PDF").iter().all(|b| !b.ambiguous));
+
+    let photo = sources(&vault, "img/Photo.PNG");
+    assert_eq!(photo.len(), 3, "{photo:?}");
+    assert_eq!(photo[0].1, "photo.png");
+    assert_eq!(photo[1].1, "PHOTO.png");
+    assert!(vault
+        .backlinks("img/Photo.PNG")
+        .iter()
+        .all(|b| !b.ambiguous));
+
+    assert_eq!(
+        sources(&vault, "data.json"),
+        [("note.md".into(), "Data.JSON".into())]
+    );
+
+    // The Reader opens the same files the graph names.
+    assert_eq!(opens(&vault, "report.pdf", true, "note.md"), ["Report.PDF"]);
+    assert_eq!(
+        opens(&vault, "REPORT.PDF", false, "note.md"),
+        ["Report.PDF"]
+    );
+    assert_eq!(
+        opens(&vault, "PHOTO.png", true, "note.md"),
+        ["img/Photo.PNG"]
+    );
+    assert_eq!(
+        opens(&vault, "img/photo.png", false, "note.md"),
+        ["img/Photo.PNG"]
+    );
+
+    // A different extension is a different file; missing targets resolve nowhere.
+    for missing in ["report.png", "missing.pdf", "gone.png", "absent.jpg"] {
+        assert!(vault.backlinks(missing).is_empty(), "{missing}");
+        assert!(
+            opens(&vault, missing, true, "note.md").is_empty(),
+            "{missing}"
+        );
+    }
+    assert_eq!(vault.notes.len(), 1);
+}
+
 #[test]
 fn data_file_identity_never_shadows_notes() {
     let (_root, vault) = vault_with(

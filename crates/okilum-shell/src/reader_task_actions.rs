@@ -32,7 +32,7 @@ impl Owner {
             state: reader.session_directory.clone()?,
             index_directory: reader.index_dir.clone(),
             navigation: reader.navigation.generation,
-            document: reader.current_rel.clone(),
+            document: reader.pane.current_rel.clone(),
             content: reader.content.clone(),
         })
     }
@@ -41,7 +41,7 @@ impl Owner {
             && reader.session_directory.as_ref() == Some(&self.state)
             && reader.index_dir == self.index_directory
             && reader.navigation.generation == self.navigation
-            && reader.current_rel == self.document
+            && reader.pane.current_rel == self.document
             && reader.content == self.content
             && reader.editing.is_none()
     }

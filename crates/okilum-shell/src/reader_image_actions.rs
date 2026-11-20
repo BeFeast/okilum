@@ -91,7 +91,7 @@ impl Target {
                 .is_some_and(|path| reader.vault.cloud_placeholders.contains(path));
         Self {
             root: reader.vault_root.clone(),
-            note: reader.current_rel.clone(),
+            note: reader.pane.current_rel.clone(),
             generation: reader.navigation.preparation_generation,
             url: (relative.is_some() || remote).then(|| url.unwrap().to_owned()),
             local,
@@ -102,15 +102,15 @@ impl Target {
     }
     fn matches(&self, reader: &Reader) -> bool {
         self.root == reader.vault_root
-            && self.note == reader.current_rel
+            && self.note == reader.pane.current_rel
             && self.generation == reader.navigation.preparation_generation
     }
     fn matches_accepted(&self, reader: &Reader, cx: &App) -> bool {
         self.matches(reader)
             && self.accepted_source.as_ref().is_none_or(|source| {
                 reader.editing.is_none()
-                    && reader.file_preview.is_none()
-                    && !reader.use_html
+                    && reader.pane.file_preview.is_none()
+                    && !reader.pane.use_html
                     && reader.content.read(cx).document_source().as_ref() == Some(source)
             })
     }
@@ -303,7 +303,7 @@ impl Reader {
         let Some(image) = okilum_core::render::image_reference::references(
             source,
             &self.vault,
-            &self.current_rel,
+            &self.pane.current_rel,
         )
         .into_iter()
         .find(|image| image.range.contains(&offset)) else {
@@ -325,7 +325,7 @@ impl Reader {
         if !target.matches(self) {
             return;
         }
-        if self.editing.is_none() && self.file_preview.is_none() && !self.use_html {
+        if self.editing.is_none() && self.pane.file_preview.is_none() && !self.pane.use_html {
             target.accepted_source = self.content.read(cx).document_source();
         }
         let selection = reader_read_menu::snapshot(self, cx);
@@ -382,7 +382,12 @@ impl Reader {
     }
 
     pub(super) fn copy_preview_image(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(preview) = self.file_preview.as_ref().filter(|preview| preview.image) else {
+        let Some(preview) = self
+            .pane
+            .file_preview
+            .as_ref()
+            .filter(|preview| preview.image)
+        else {
             return;
         };
         let Ok(url) = url::Url::from_file_path(&preview.path) else {
@@ -642,21 +647,21 @@ impl SourceFacts {
         let stamp = source.stamp;
         if snapshot.stamp != Some(stamp)
             || snapshot.root != reader.vault_root
-            || snapshot.note != reader.current_rel
+            || snapshot.note != reader.pane.current_rel
             || snapshot.generation != reader.navigation.preparation_generation
         {
             snapshot.ranges = if source.text.len() <= okilum_core::source_classifier::MAX_BYTES {
                 okilum_core::render::image_reference::references(
                     &source.text,
                     &reader.vault,
-                    &reader.current_rel,
+                    &reader.pane.current_rel,
                 )
             } else {
                 Vec::new()
             };
             snapshot.stamp = Some(stamp);
             snapshot.root = reader.vault_root.clone();
-            snapshot.note = reader.current_rel.clone();
+            snapshot.note = reader.pane.current_rel.clone();
             snapshot.generation = reader.navigation.preparation_generation;
         }
         snapshot.selected = snapshot

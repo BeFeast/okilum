@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       lane:
-        description: 'linux, linux-binary, shared, native-core, native-sync, native-shell, windows-release, arch, brain, inbox, perf-linux, shell-full, check, sync-source-sharing, feedback, excalidraw, or fast (keys of LANES in scripts/ci/github-pr.py)'
+        description: 'linux, linux-binary, shared, native-core, native-sync, native-shell, windows-release, arch, brain, inbox, inbox-restart, perf-linux, shell-full, check, sync-source-sharing, feedback, excalidraw, or fast (keys of LANES in scripts/ci/github-pr.py)'
         required: true
         default: linux
       baseline:

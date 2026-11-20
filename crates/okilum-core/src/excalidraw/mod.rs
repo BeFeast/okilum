@@ -1,5 +1,6 @@
 //! Excalidraw scene decoding, independent of the desktop renderer, and the
 //! explicit writer an editor uses to save a scene back (`write`).
+pub mod edit;
 mod lz;
 mod vector;
 mod write;
@@ -64,7 +65,7 @@ impl Element {
 
 #[derive(Clone, Debug)]
 pub struct Scene {
-    /// Exact scene data for the explicit Copy scene / Open in Excalidraw action.
+    /// Exact scene data for the explicit Copy scene action.
     pub json: Value,
     pub elements: Vec<Element>,
     /// Obsidian image references live outside the compressed scene.

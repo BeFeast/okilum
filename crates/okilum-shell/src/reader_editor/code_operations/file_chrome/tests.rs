@@ -715,7 +715,7 @@ fn file2811_return_to_read_restores_view_folds_query_and_does_not_remember_raw(
     );
     tick(visual, 150);
     let code = reader.read_with(visual, |r, _| {
-        r.file_preview.as_ref().unwrap().code.clone().unwrap()
+        r.pane.file_preview.as_ref().unwrap().code.clone().unwrap()
     });
     code.update_in(visual, |s, w, cx| s.set_view(View::Tree, w, cx));
     frame(visual);
@@ -739,7 +739,7 @@ fn file2811_return_to_read_restores_view_folds_query_and_does_not_remember_raw(
     reader.update_in(visual, |r, w, cx| r.toggle_source(w, cx));
     tick(visual, 150);
     let restored = reader.read_with(visual, |r, _| {
-        r.file_preview.as_ref().unwrap().code.clone().unwrap()
+        r.pane.file_preview.as_ref().unwrap().code.clone().unwrap()
     });
     assert_eq!(
         restored.read_with(visual, |s, cx| s.save_presentation(cx)),
@@ -1131,7 +1131,7 @@ fn file2811_raw_parts_and_async_formatted_restore_after_edit(cx: &mut TestAppCon
         );
         tick(visual, 150);
         let code = reader.read_with(visual, |r, _| {
-            r.file_preview.as_ref().unwrap().code.clone().unwrap()
+            r.pane.file_preview.as_ref().unwrap().code.clone().unwrap()
         });
         code.update_in(visual, |c, w, cx| c.set_view(view, w, cx));
         frame(visual);
@@ -1150,7 +1150,7 @@ fn file2811_raw_parts_and_async_formatted_restore_after_edit(cx: &mut TestAppCon
         reader.update_in(visual, |r, w, cx| r.toggle_source(w, cx));
         tick(visual, 150);
         let restored = reader.read_with(visual, |r, _| {
-            r.file_preview.as_ref().unwrap().code.clone().unwrap()
+            r.pane.file_preview.as_ref().unwrap().code.clone().unwrap()
         });
         assert_eq!(
             restored.read_with(visual, |c, cx| c.save_presentation(cx)),

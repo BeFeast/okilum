@@ -71,6 +71,12 @@ not silently apply it or enable Sync.
 
 ## Verification and remaining integration
 
+A real disk-full control (#3080, `scripts/ci/sync-disk-full.sh`) fills a private
+tmpfs that holds the destination. The publication's `ENOSPC` leaves every
+original byte version on one of the two computers, publishes no partial file
+under a canonical name and keeps the operation pending; recovery after freeing
+space completes the same union. See `sync-recovery-evidence.md`.
+
 The implementation branch adds explicit pinned-runtime controls to
 `sync-managed-admission.sh`: a separate holder process proves scoped transfer
 exclusion, unrelated-folder progress and recovery across holder/runtime restart;

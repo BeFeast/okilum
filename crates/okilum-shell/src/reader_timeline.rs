@@ -95,22 +95,24 @@ fn changes(old: &str, current: &str) -> String {
 
 impl Reader {
     pub(super) fn active_timeline(&self) -> Option<&Timeline> {
-        self.timeline.as_ref().filter(|t| {
-            t.root == self.vault_root && t.rel == self.current_rel && !self.current_rel.is_empty()
+        self.pane.timeline.as_ref().filter(|t| {
+            t.root == self.vault_root
+                && t.rel == self.pane.current_rel
+                && !self.pane.current_rel.is_empty()
         })
     }
 
     pub(super) fn open_timeline(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.current_rel.is_empty() || self.file_preview.is_some() {
+        if self.pane.current_rel.is_empty() || self.pane.file_preview.is_some() {
             return;
         }
         let Some(state) = self.session_directory.clone() else {
             return;
         };
         let root = self.vault_root.clone();
-        let rel = self.current_rel.clone();
+        let rel = self.pane.current_rel.clone();
         let id = uuid::Uuid::new_v4();
-        self.timeline = Some(Timeline {
+        self.pane.timeline = Some(Timeline {
             id,
             root: root.clone(),
             rel: rel.clone(),
@@ -165,7 +167,7 @@ impl Reader {
                 if r.active_timeline().is_none_or(|t| t.id != id) {
                     return;
                 }
-                let t = r.timeline.as_mut().unwrap();
+                let t = r.pane.timeline.as_mut().unwrap();
                 t.loading = false;
                 match loaded {
                     Ok((listing, current, current_bytes)) => {
@@ -185,7 +187,7 @@ impl Reader {
     }
 
     pub(super) fn back_from_timeline(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(t) = self.timeline.as_mut() {
+        if let Some(t) = self.pane.timeline.as_mut() {
             t.selected = None;
             t.message = None;
             t.content = None;
@@ -213,7 +215,7 @@ impl Reader {
         let rel = t.rel.clone();
         let vault = self.vault.clone();
         let selection = uuid::Uuid::new_v4();
-        let t = self.timeline.as_mut().unwrap();
+        let t = self.pane.timeline.as_mut().unwrap();
         t.selected = Some(index);
         t.selection = selection;
         t.loading = true;
@@ -266,7 +268,7 @@ impl Reader {
                 }
                 match loaded {
                     Err(e) => {
-                        let t = r.timeline.as_mut().unwrap();
+                        let t = r.pane.timeline.as_mut().unwrap();
                         t.loading = false;
                         t.message = Some(format!("Cannot preview version: {e:#}"));
                     }
@@ -301,7 +303,7 @@ impl Reader {
                             source
                         });
                         let subscription = cx.observe(&content, |_, _, cx| cx.notify());
-                        let t = r.timeline.as_mut().unwrap();
+                        let t = r.pane.timeline.as_mut().unwrap();
                         t.loading = false;
                         if current.is_none() { t.message = Some("Current file is unavailable. Save as a recovered note to keep this version.".into()); }
                         t.current = current;
@@ -344,7 +346,7 @@ impl Reader {
     }
 
     pub(super) fn toggle_timeline_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(t) = self.timeline.as_mut() {
+        if let Some(t) = self.pane.timeline.as_mut() {
             t.source_mode = !t.source_mode;
             if t.changes {
                 if let (Some(source), Some(index)) = (&t.source, t.selected) {
@@ -377,7 +379,7 @@ impl Reader {
         if let Some(source) = &t.source {
             source.update(cx, |s, cx| s.set_value(text, window, cx));
         }
-        let t = self.timeline.as_mut().unwrap();
+        let t = self.pane.timeline.as_mut().unwrap();
         t.changes = enabled;
         t.source_mode = enabled;
         cx.notify();
@@ -421,13 +423,13 @@ impl Reader {
         };
         match result {
             Err(e) => {
-                if let Some(t) = self.timeline.as_mut() {
+                if let Some(t) = self.pane.timeline.as_mut() {
                     t.message = Some(format!("Cannot restore: {e:#}"));
                 }
                 cx.notify();
             }
             Ok(()) => {
-                self.timeline = None;
+                self.pane.timeline = None;
                 let reader = cx.weak_entity();
                 reader_toast::push(Notification::success("Version restored")
                     .action(move |_,_,cx| {
@@ -438,7 +440,7 @@ impl Reader {
                             .debug_selector(|| "history-undo".into())
                             .on_click(cx.listener(move |notice,_,window,cx| {
                                 let result = reader.update(cx, |r,cx| {
-                                    anyhow::ensure!(r.vault_root == root && r.current_rel == rel,
+                                    anyhow::ensure!(r.vault_root == root && r.pane.current_rel == rel,
                                         "Open the restored note before undoing");
                                     anyhow::ensure!(root.join(&rel).canonicalize().ok().as_ref() == Some(&note), "The note path changed; open history again");
                                     if raw_restore { r.restore_source_bytes(&restored_bytes, &replaced_bytes, window, cx) }
@@ -474,7 +476,7 @@ impl Reader {
             .child(
                 reader_icon_button("history-close", IconName::ArrowLeft, "On this page", cx)
                     .on_click(cx.listener(|r, _, window, cx| {
-                        r.timeline = None;
+                        r.pane.timeline = None;
                         r.focus_handle.focus(window, cx);
                         cx.notify();
                     })),
@@ -621,7 +623,7 @@ impl Reader {
                         .py_2()
                         .child(div().min_w_0().text_sm().truncate().child(format!(
                             "{} · {}",
-                            self.current_title,
+                            self.pane.current_title,
                             age(version.created)
                         )))
                         .child(
@@ -806,7 +808,7 @@ mod tests {
         let reader = reader.unwrap();
         visual.run_until_parked();
         reader.update_in(visual, |r, w, cx| {
-            assert_eq!(r.current_rel, "note.md");
+            assert_eq!(r.pane.current_rel, "note.md");
             r.source_history(false, w, cx);
             assert!(!w.has_active_dialog(cx));
         });
@@ -824,7 +826,7 @@ mod tests {
             assert!(!t.loading);
             assert!(t.content.is_some());
             assert_eq!(t.source.as_ref().unwrap().read(cx).value().as_ref(), old);
-            assert!(r.note_source.contains("Current"));
+            assert!(r.pane.note_source.contains("Current"));
             assert!(r.editing.is_none());
         });
         visual.update(|w, cx| w.draw(cx).clear(cx));
@@ -907,7 +909,7 @@ mod tests {
         reader.update_in(visual, |r, w, cx| {
             std::fs::write(root.join("note.md"), current).unwrap();
             r.restore_timeline(w, cx);
-            assert!(r.timeline.is_none());
+            assert!(r.pane.timeline.is_none());
             assert!(!w.has_active_dialog(cx));
         });
         visual.run_until_parked();
@@ -1017,7 +1019,7 @@ mod tests {
             r.open_timeline(w, cx);
             r.show_empty_vault(w, cx);
             assert!(w.has_active_dialog(cx));
-            assert_eq!(r.current_rel, "note.md");
+            assert_eq!(r.pane.current_rel, "note.md");
             assert!(r.active_timeline().is_some());
         });
         visual.run_until_parked();
@@ -1030,7 +1032,7 @@ mod tests {
         visual.simulate_click(dont_save.center(), Modifiers::default());
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
-            assert!(r.current_rel.is_empty());
+            assert!(r.pane.current_rel.is_empty());
             assert!(r.active_timeline().is_none());
         });
         assert!(

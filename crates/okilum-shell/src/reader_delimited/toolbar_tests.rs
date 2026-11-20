@@ -17,7 +17,8 @@ fn settle(v: &mut VisualTestContext) {
 
 fn code(reader: &Entity<Reader>, v: &VisualTestContext) -> Entity<CodePreview> {
     reader.read_with(v, |r, _| {
-        r.file_preview
+        r.pane
+            .file_preview
             .as_ref()
             .unwrap()
             .code
@@ -715,10 +716,15 @@ fn table2812_read_only_lock_stays_by_the_name_in_table(cx: &mut TestAppContext) 
     let (r, v, _temp) = fixture_with_files(cx, "array.json", &[("array.json", &source)]);
     settle(v);
     let c = code(&r, v);
-    c.read_with(v, |p, _| {
+    c.update(v, |p, cx| {
         assert_eq!(p.active_view(), View::Table, "positive: Table is active");
-        assert!(!p.editable(), "positive: over the JSON editing limit");
+        assert!(p.editable(), "JSON has no 4 MiB Edit cap (#2804)");
+        p.mark_folder_unwritable_for_test(cx);
+        assert!(!p.editable(), "positive: a read-only reason applies");
     });
+    // As after a real failed Edit admission, the Reader redraws its header.
+    r.update(v, |_, cx| cx.notify());
+    v.run_until_parked();
     assert!(
         measured_bounds(v, "code-readonly").is_some(),
         "the file's read-only lock stays by the name while Table is active"

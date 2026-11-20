@@ -293,12 +293,23 @@ impl Controller {
             .any(|f| f["id"] == *vault)
         {
             self.validate_first_sync_completion(receipt, true)?;
-            api.add_paused_folder(&json!({"id":vault,"label":owned_label(&transfer)?,"path":path,
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+            crate::managed_launch::folder_instance_changing(daemon, vault)?;
+            #[allow(unused_mut)]
+            let mut body = json!({"id":vault,"label":owned_label(&transfer)?,"path":path,
                 "type":"sendreceive","paused":true,"devices":[{"deviceID":daemon.device_id},{"deviceID":connection.device_id}],
-                "maxConflicts":-1,"versioning":{"type":"staggered","params":{"maxAge":"2592000"}}}))?;
+                "maxConflicts":-1,"versioning":{"type":"staggered","params":{"maxAge":"2592000"}}});
+            // Born behind its own root marker: never runs on `.stfolder` (#2582).
+            #[cfg(target_os = "linux")]
+            {
+                body["markerName"] = json!(crate::managed_launch::new_root_marker());
+            }
+            api.add_paused_folder(&body)?;
             inventory::merge::checkpoint("handoff-folder-created", receipt.operation);
         }
         let folder = api.folder(vault)?;
+        #[cfg(target_os = "linux")]
+        crate::managed_launch::materialize_root_marker(path, &folder)?;
         if transfer.witness.is_none() {
             ensure!(
                 folder["label"] == owned_label(&transfer)?
@@ -509,11 +520,22 @@ impl Controller {
             // Revalidate the empty-folder/no-overlap gate immediately before
             // creation; never use stale empty-destination evidence after a pause.
             validate_destination(&path, vault_id, &daemon::discover(&configs).folders()?)?;
-            api.add_paused_folder(&json!({"id":vault_id,"label":owned_label(&transfer)?,"path":path,"type":"receiveonly","paused":true,
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+            crate::managed_launch::folder_instance_changing(&daemon, vault_id)?;
+            #[allow(unused_mut)]
+            let mut body = json!({"id":vault_id,"label":owned_label(&transfer)?,"path":path,"type":"receiveonly","paused":true,
                 "devices":[{"deviceID":daemon.device_id},{"deviceID":connection.device_id}],
-                "maxConflicts":-1,"versioning":{"type":"staggered","params":{"maxAge":"2592000"}}}))?;
+                "maxConflicts":-1,"versioning":{"type":"staggered","params":{"maxAge":"2592000"}}});
+            // Born behind its own root marker: never runs on `.stfolder` (#2582).
+            #[cfg(target_os = "linux")]
+            {
+                body["markerName"] = json!(crate::managed_launch::new_root_marker());
+            }
+            api.add_paused_folder(&body)?;
         }
         let folder = api.folder(vault_id)?;
+        #[cfg(target_os = "linux")]
+        crate::managed_launch::materialize_root_marker(&path, &folder)?;
         validate_owned(&transfer, &self.granted(&transfer), &folder)?;
         // Capture the complete expanded configuration before the first unpause.
         // The UUID label predates folder creation and scopes lost-create recovery.
@@ -663,6 +685,9 @@ impl Transfer {
         self.owner.is_none() || self.destination_identity.is_none() || self.phase == Phase::Legacy
     }
     /// The paired computer this vault is received from.
+    pub(super) fn vault(&self) -> &str {
+        &self.vault
+    }
     pub(super) fn peer(&self) -> Uuid {
         self.peer
     }
@@ -691,6 +716,21 @@ impl std::fmt::Display for MembershipChanged {
 }
 impl std::error::Error for MembershipChanged {}
 
+/// The configured folder is still this transfer's own folder at its own root.
+/// Membership and pause state may differ: removal changed them.
+fn retirable(transfer: &Transfer, folder: &Value) -> Result<bool> {
+    Ok(
+        transfer.destination_identity.as_ref() == Some(&DirectoryIdentity::read(&transfer.path)?)
+            && Path::new(folder["path"].as_str().context("folder path missing")?).canonicalize()?
+                == transfer.path
+            && folder["id"] == transfer.vault
+            && (folder["label"] == expected_label(transfer)?
+                || transfer
+                    .label
+                    .as_ref()
+                    .is_some_and(|label| folder["label"] == *label)),
+    )
+}
 fn validate_owned(transfer: &Transfer, granted: &[String], folder: &Value) -> Result<()> {
     ensure!(
         !transfer.legacy_hold(),
@@ -763,6 +803,8 @@ fn validate_owned(transfer: &Transfer, granted: &[String], folder: &Value) -> Re
         actual["paused"] = json!(false);
         expected["type"] = json!("receiveonly");
         actual["type"] = json!("receiveonly");
+        #[cfg(target_os = "linux")]
+        crate::managed_launch::forgive_managed_marker(&mut expected, &actual, &transfer.path);
         ensure!(
             actual == expected,
             "owned replica configuration witness changed"
@@ -1205,6 +1247,66 @@ impl Controller {
                 Err(error) if offline(&error) => {}
                 Err(error) => return Err(error),
             }
+        }
+        Ok(())
+    }
+    /// #3079: after this computer is readmitted, release every Okilum-owned
+    /// copy it received through a pairing that its removal revoked. The folder
+    /// leaves this Syncthing runtime and its files stay; the copy joins again
+    /// only through the reviewed lossless first merge (#2043), never by
+    /// resuming the old membership.
+    pub(super) fn retire_readmitted_copies(&self) -> Result<()> {
+        self.check()?;
+        let _guard = self.shared.transfer_lock.lock().unwrap();
+        let retired: Vec<Transfer> = {
+            let db = self.shared.db.lock().unwrap();
+            db.transfers
+                .iter()
+                .filter(|t| {
+                    !t.active
+                        && !t.legacy_hold()
+                        && t.owner.is_some()
+                        && removal::released_by_readmission(
+                            &db,
+                            &t.daemon.device_id,
+                            t.peer,
+                            &t.vault,
+                        )
+                })
+                .cloned()
+                .collect()
+        };
+        for transfer in retired {
+            self.check()?;
+            let api = transfer.daemon.connect()?;
+            let config = api.config()?;
+            if let Some(folder) = config["folders"]
+                .as_array()
+                .context("folder inventory missing")?
+                .iter()
+                .find(|f| f["id"] == transfer.vault)
+            {
+                ensure!(
+                    retirable(&transfer, folder)?,
+                    "The kept copy of this vault changed outside Okilum; no folder was changed"
+                );
+                let _admission = crate::admission::configuration(
+                    &transfer.daemon,
+                    &transfer.vault,
+                    &transfer.path,
+                )?;
+                self.check()?;
+                api.remove_folder(&transfer.vault)?;
+            }
+            let mut db = self.shared.db.lock().unwrap();
+            db.transfers
+                .retain(|t| !(t.peer == transfer.peer && t.vault == transfer.vault));
+            db.attached.retain(|a| {
+                !(a.folder_id == transfer.vault
+                    && a.path == transfer.path
+                    && a.daemon == transfer.daemon)
+            });
+            self.save(&db)?;
         }
         Ok(())
     }

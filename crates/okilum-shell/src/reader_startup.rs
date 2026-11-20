@@ -189,7 +189,12 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
                 let last = intent.root.clone();
                 // Folder intent revalidates the last document and falls back if it disappeared.
                 if intent.single_file {
-                    opts.open_path = intent.note.map(|note| intent.root.join(note));
+                    // A folder view comes back as a folder view (#3098), and a
+                    // quick viewer on the folder it was opened with, not on the
+                    // folder of its last document (#3124).
+                    opts.vault = Some(intent.root);
+                    opts.note = intent.note;
+                    opts.single_file = true;
                 } else {
                     opts.vault = Some(intent.root);
                 }
@@ -227,10 +232,26 @@ fn history(
     let last = reader_history::ReadingHistory::default_vault(&directory)?.or(last);
     let restore = last.map(|root| {
         let intent = match reader_history::ReadingHistory::quick_document(&directory, &root) {
+            // A folder view (#3098): the folder again, still not a vault.
+            Ok(Some(note)) if note.is_empty() && root.is_dir() => Ok(reader_open::OpenIntent {
+                root: root.clone(),
+                single_file: true,
+                note: None,
+                created_note: false,
+            }),
             Ok(Some(note)) if note.is_empty() => Err(anyhow::anyhow!(
-                "The last quick viewer has no selected document"
+                "The last folder view is missing or inaccessible"
             )),
-            Ok(Some(note)) => reader_open::OpenIntent::validate(&root.join(note), None, None),
+            // The recorded root is the folder the window was opened with; a
+            // document in a subfolder keeps it (#3124). Not a vault either way.
+            Ok(Some(note)) => {
+                reader_open::OpenIntent::validate(&root.join(note), Some(&root), None).map(
+                    |intent| reader_open::OpenIntent {
+                        single_file: true,
+                        ..intent
+                    },
+                )
+            }
             Ok(None) => reader_open::OpenIntent::validate(&root, Some(&root), None),
             Err(error) => Err(error),
         };
@@ -283,10 +304,8 @@ fn restore_session_windows(
         let mut opened = 0;
         let mut skipped = Vec::new();
         for ((root, note), single_file) in windows {
-            if single_file && note.is_none() {
-                skipped.push(root);
-                continue;
-            }
+            // A single-file window without a file is a folder view (#3098);
+            // `resolve` refuses a folder that is gone, and it is skipped below.
             // A second window of a vault already back: New Window's path,
             // sharing that window's session, not a second open (#1335).
             if let Some(source) = cx.update(|cx| {
@@ -757,7 +776,7 @@ mod tests {
                 .iter()
                 .map(|reader| {
                     let reader = reader.read(cx);
-                    assert_eq!(reader.current_rel, "note.md");
+                    assert_eq!(reader.pane.current_rel, "note.md");
                     reader.single_file
                 })
                 .collect();
@@ -822,7 +841,7 @@ mod tests {
                 reader.document_ready(),
                 "positive control: usable note opened"
             );
-            assert_eq!(reader.current_rel, "note.md");
+            assert_eq!(reader.pane.current_rel, "note.md");
         });
         assert_eq!(
             ReadingHistory::default_vault(&state).unwrap(),
@@ -844,6 +863,143 @@ mod tests {
     #[gpui::test]
     fn explicit_open_supersedes_saved_windows_and_default_vault(cx: &mut TestAppContext) {
         default_priority(cx, true);
+    }
+
+    /// #3098: the last window was a folder view (a quick viewer with no
+    /// file). Startup reopens that folder view instead of refusing it, and
+    /// never as a vault.
+    #[test]
+    fn the_last_folder_view_reopens_as_a_folder_view() {
+        use reader_history::ReadingHistory;
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let folder = fixture.path().join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        ReadingHistory::record_document_mode(&state, &folder, "", true).unwrap();
+        let (_, _, selected) = history(Ok(state.clone())).unwrap();
+        let (root, intent) = selected.unwrap();
+        assert_eq!(root, folder);
+        let intent = intent.unwrap();
+        assert!(intent.single_file && intent.note.is_none());
+        assert_eq!(intent.root, folder);
+        // Gone: a visible failure, not a silent vault or another folder.
+        std::fs::remove_dir(&folder).unwrap();
+        let (_, _, selected) = history(Ok(state)).unwrap();
+        assert!(selected.unwrap().1.is_err());
+    }
+
+    /// #3124: the last window was a quick viewer or folder view on `A`
+    /// showing `B/C.md`. The startup fallback keeps `A` as the root instead
+    /// of narrowing it to `B`, and the file is listed in Recent.
+    #[test]
+    fn the_last_quick_viewer_keeps_the_folder_it_was_opened_with() {
+        use reader_history::ReadingHistory;
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let folder = fixture.path().join("A");
+        std::fs::create_dir_all(folder.join("B")).unwrap();
+        let folder = folder.canonicalize().unwrap();
+        std::fs::write(folder.join("B").join("C.md"), "# C").unwrap();
+        ReadingHistory::record_document_mode(&state, &folder, "B/C.md", true).unwrap();
+        let (_, roots, selected) = history(Ok(state.clone())).unwrap();
+        let (root, intent) = selected.unwrap();
+        assert_eq!(root, folder);
+        assert_eq!(
+            intent.unwrap(),
+            reader_open::OpenIntent {
+                root: folder.clone(),
+                single_file: true,
+                note: Some("B/C.md".into()),
+                created_note: false,
+            }
+        );
+        assert!(roots.contains(&folder));
+        assert!(
+            ReadingHistory::known_vault_roots(&state)
+                .unwrap()
+                .is_empty(),
+            "still not a vault"
+        );
+        assert_eq!(
+            ReadingHistory::quick_files(&state).unwrap()[0].0,
+            folder.join("B/C.md"),
+            "the document is in Recent"
+        );
+        // A document that is gone fails visibly; it is not replaced by `B`.
+        std::fs::remove_file(folder.join("B").join("C.md")).unwrap();
+        let (_, _, selected) = history(Ok(state)).unwrap();
+        assert!(selected.unwrap().1.is_err());
+    }
+
+    /// #3124, end to end: whether the window set was saved (Quit, macOS
+    /// close) or is empty (the last window closed on Linux/Windows), the
+    /// window comes back rooted at `A` on `B/C.md`, as a quick viewer.
+    fn nested_quick_viewer_restores_on_its_folder(cx: &mut TestAppContext, saved_set: bool) {
+        use reader_history::ReadingHistory;
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let folder = fixture.path().join("A");
+        std::fs::create_dir_all(folder.join("B")).unwrap();
+        let folder = folder.canonicalize().unwrap();
+        std::fs::write(folder.join("top.md"), "# Top").unwrap();
+        std::fs::write(folder.join("B").join("C.md"), "# C").unwrap();
+        ReadingHistory::record_document_mode(&state, &folder, "B/C.md", true).unwrap();
+        let (roots, notes, modes) = if saved_set {
+            (vec![&folder], vec!["B/C.md"], vec![true])
+        } else {
+            (vec![], vec![], vec![])
+        };
+        std::fs::write(
+            state.join("open-windows.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1, "roots": roots, "notes": notes, "single_file": modes
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        cx.update(|cx| {
+            crate::test_init(cx);
+            reader_open::install(cx);
+            launch(
+                Opts {
+                    session_directory: Some(state.clone()),
+                    cache_base_override: Some(state.join("cache")),
+                    ..Default::default()
+                },
+                cx,
+            );
+        });
+        for _ in 0..60 {
+            cx.run_until_parked();
+            if cx.update(|cx| {
+                reader_open::readers(cx)
+                    .iter()
+                    .any(|reader| reader.read(cx).document_ready())
+            }) {
+                break;
+            }
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(100));
+        }
+        cx.update(|cx| {
+            let readers = reader_open::readers(cx);
+            assert_eq!(readers.len(), 1);
+            let reader = readers[0].read(cx);
+            assert!(reader.document_ready(), "positive control: document opened");
+            assert_eq!(reader.vault_root, folder, "rooted at A, not at B");
+            assert_eq!(reader.pane.current_rel, "B/C.md");
+            assert!(reader.single_file, "still not a vault");
+        });
+    }
+
+    #[gpui::test]
+    fn issue3124_last_window_closed_reopens_on_the_opened_folder(cx: &mut TestAppContext) {
+        nested_quick_viewer_restores_on_its_folder(cx, false);
+    }
+
+    #[gpui::test]
+    fn issue3124_saved_window_set_reopens_on_the_opened_folder(cx: &mut TestAppContext) {
+        nested_quick_viewer_restores_on_its_folder(cx, true);
     }
 
     #[test]

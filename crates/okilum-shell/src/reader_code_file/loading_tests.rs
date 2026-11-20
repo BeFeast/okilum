@@ -21,7 +21,14 @@ fn held<'a>(
     let (release, gate) = futures::channel::oneshot::channel();
     let code = reader.update_in(visual, |reader, window, cx| {
         reader.preview_file("pending.json", window, cx);
-        let code = reader.file_preview.as_ref().unwrap().code.clone().unwrap();
+        let code = reader
+            .pane
+            .file_preview
+            .as_ref()
+            .unwrap()
+            .code
+            .clone()
+            .unwrap();
         code.update(cx, |code, _| code.preparation_gate = Some(gate));
         code
     });
@@ -191,7 +198,14 @@ fn code2809_real_park_draft_resumes_the_retained_header(cx: &mut TestAppContext)
         reader_viewer_chrome::tests::fixture_with_files(cx, "data.json", &[("data.json", source)]);
     settle(visual);
     let code = reader.read_with(visual, |reader, _| {
-        reader.file_preview.as_ref().unwrap().code.clone().unwrap()
+        reader
+            .pane
+            .file_preview
+            .as_ref()
+            .unwrap()
+            .code
+            .clone()
+            .unwrap()
     });
     reader.update_in(visual, |reader, window, cx| {
         reader.toggle_source(window, cx);
@@ -212,6 +226,7 @@ fn code2809_real_park_draft_resumes_the_retained_header(cx: &mut TestAppContext)
         assert!(reader.editing.is_none());
         assert_eq!(
             reader
+                .pane
                 .file_preview
                 .as_ref()
                 .unwrap()

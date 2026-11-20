@@ -55,7 +55,7 @@ impl Reader {
                 let moves = source_history::move_versions(&state, &root)?;
                 listing.versions.extend(moves.versions);
                 listing.warnings.extend(moves.warnings);
-                let note = root.canonicalize()?.join(&self.current_rel);
+                let note = root.canonicalize()?.join(&self.pane.current_rel);
                 let note = note.canonicalize().unwrap_or(note);
                 listing.versions.retain(|version| version.note == note);
                 listing
@@ -275,7 +275,7 @@ impl Reader {
                 &state.join("editor-drafts"),
                 version.bytes(),
             )?;
-            self.timeline = None;
+            self.pane.timeline = None;
             self.prepare_document(&rel, None, None, window, cx);
             Ok(())
         })();

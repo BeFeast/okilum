@@ -559,38 +559,353 @@ impl Staged {
             .create_new(true)
             .mode(0o600)
             .open(dir.join("apply.log"))?;
-        let mut command = Command::new("/bin/sh");
+        let mut note = log.try_clone()?;
+        // Keep the flock across shutdown until the helper has finished.
+        use std::os::fd::AsRawFd;
+        let mut command = helper_command(APPLY);
         command
-            .arg("-c")
-            .arg(APPLY)
-            .arg("okilum-appimage-update")
             .arg(std::process::id().to_string())
             .arg(&self.target.path)
             .arg(dir)
             .arg(&self.release.sha256)
             .arg(&self.target.hash)
             .args(args)
-            .stdin(Stdio::null())
             .stdout(log.try_clone()?)
-            .stderr(log)
-            .env_remove("APPIMAGE")
-            .env_remove("APPDIR")
-            .env_remove("LD_LIBRARY_PATH");
-        // Keep the flock across shutdown until the helper has finished.
-        use std::os::{fd::AsRawFd, unix::process::CommandExt};
-        let lock_fd = self._lock.as_raw_fd();
-        unsafe {
-            command.pre_exec(move || {
-                if libc::dup2(lock_fd, 9) == -1 || libc::fcntl(9, libc::F_SETFD, 0) == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
+            .stderr(log);
+        let (_helper, outcome) = start_helper(command, self._lock.as_raw_fd(), true)?;
+        if let Some(outcome) = outcome {
+            use std::io::Write;
+            let _ = writeln!(note, "{outcome}");
+            eprintln!("AppImage updater: {outcome}");
         }
-        command.spawn().context("Could not arm AppImage updater")?;
         let path = self.directory.keep();
         Ok(path)
     }
+}
+
+/// The APPLY helper process: `/bin/sh -c <script> okilum-appimage-update`.
+/// Callers append the positional arguments and stdout/stderr, then spawn it
+/// with [`start_helper`], which installs its descriptors.
+fn helper_command(script: &str) -> Command {
+    let mut command = Command::new("/bin/sh");
+    command
+        .arg("-c")
+        .arg(script)
+        .arg("okilum-appimage-update")
+        .stdin(Stdio::null())
+        .env_remove("APPIMAGE")
+        .env_remove("APPDIR")
+        .env_remove("LD_LIBRARY_PATH");
+    command
+}
+
+/// Spawn the helper with the transaction lock as fd 9, held at APPLY's gate
+/// (fd 8), and no other inherited descriptor; place it outside the app's
+/// systemd service unit when `leave_service` is set, then release the gate.
+/// Until released the helper runs shell builtins only, so it has no child
+/// process that a move of its PID would leave behind in the service (#3077).
+/// The gate also opens if this process dies: its write end closes with it.
+///
+/// If the helper cannot leave a service unit that would kill it when the app
+/// exits, it is stopped at the gate (APPLY's trap removes the unapplied
+/// backup link) and an error is returned while the app is still open.
+fn start_helper(
+    mut command: Command,
+    lock_fd: std::os::fd::RawFd,
+    leave_service: bool,
+) -> Result<(std::process::Child, Option<String>)> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::process::CommandExt;
+    let mut ends = [0; 2];
+    ensure!(
+        unsafe { libc::pipe2(ends.as_mut_ptr(), libc::O_CLOEXEC) } == 0,
+        "helper gate: {}",
+        std::io::Error::last_os_error()
+    );
+    let (gate_end, release) =
+        unsafe { (OwnedFd::from_raw_fd(ends[0]), OwnedFd::from_raw_fd(ends[1])) };
+    // Command installs stdio on fds 0-2 before pre_exec runs, so a source on
+    // one of them would be replaced first. Work from copies above stderr.
+    let lock = above_stdio(lock_fd).context("helper lock descriptor")?;
+    let gate = above_stdio(gate_end.as_raw_fd()).context("helper gate descriptor")?;
+    drop(gate_end);
+    let (lock_fd, gate_fd) = (lock.as_raw_fd(), gate.as_raw_fd());
+    let open = open_descriptors();
+    unsafe {
+        command.pre_exec(move || {
+            // #3076: the AppImage runtime keeps its mount directory open as a
+            // non-CLOEXEC fd 1023 in this process. Inherited by the helper and
+            // from there by the relaunched build, it kept the replaced image's
+            // runtime and FUSE mount alive for the whole next session.
+            inherit_no_descriptors(open.as_deref())?;
+            place_descriptors([(lock_fd, 9), (gate_fd, 8)])
+        });
+    }
+    let mut helper = command.spawn().context("Could not arm AppImage updater")?;
+    drop((gate, lock));
+    let outcome = if leave_service {
+        match place_outside_service(helper.id()) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                eprintln!("AppImage updater: helper stopped before apply: {error:#}");
+                unsafe { libc::kill(helper.id() as libc::pid_t, libc::SIGTERM) };
+                drop(release);
+                let _ = helper.wait();
+                return Err(error.context(
+                    "Restart now would lose the update helper with this systemd service; \
+                     quit Okilum and start it again outside the service (or with \
+                     ExitType=cgroup), then retry",
+                ));
+            }
+        }
+    } else {
+        None
+    };
+    drop(release);
+    Ok((helper, outcome))
+}
+
+/// A close-on-exec copy of `fd` numbered above stderr.
+fn above_stdio(fd: std::os::fd::RawFd) -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::FromRawFd;
+    let copy = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+    if copy == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(copy) })
+}
+
+/// Install each `(source, target)` pair inheritable at its target, whatever
+/// the overlap between sources and targets (a source may already sit on its
+/// own or on another pair's target). Every source is first copied above all
+/// targets, so no `dup2` can overwrite a source still to be placed; the copies
+/// stay close-on-exec. Runs between fork and exec: async-signal-safe only.
+fn place_descriptors<const N: usize>(
+    pairs: [(std::os::fd::RawFd, std::os::fd::RawFd); N],
+) -> std::io::Result<()> {
+    let above = pairs.iter().map(|&(_, target)| target).max().unwrap_or(2) + 1;
+    let mut copies = [-1; N];
+    for (copy, &(source, _)) in copies.iter_mut().zip(&pairs) {
+        *copy = unsafe { libc::fcntl(source, libc::F_DUPFD_CLOEXEC, above) };
+        if *copy == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    for (&copy, &(_, target)) in copies.iter().zip(&pairs) {
+        // dup2 leaves the new descriptor without FD_CLOEXEC; clear it anyway.
+        if unsafe { libc::dup2(copy, target) } == -1
+            || unsafe { libc::fcntl(target, libc::F_SETFD, 0) } == -1
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// This process's open descriptors, read before fork (the child may not
+/// allocate). The child inherits exactly this table plus close-on-exec
+/// descriptors other threads open meanwhile. `None` without /proc.
+fn open_descriptors() -> Option<Vec<std::os::fd::RawFd>> {
+    let entries = fs::read_dir("/proc/self/fd").ok()?;
+    Some(
+        entries
+            .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
+            .collect(),
+    )
+}
+
+/// Mark every descriptor above stderr close-on-exec. Runs between fork and
+/// exec, so it only makes async-signal-safe calls.
+fn inherit_no_descriptors(open: Option<&[std::os::fd::RawFd]>) -> std::io::Result<()> {
+    // Linux 5.11+. Not yet exported by the libc crate.
+    const CLOSE_RANGE_CLOEXEC: libc::c_uint = 1 << 2;
+    let first: libc::c_uint = 3;
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_close_range,
+            first,
+            libc::c_uint::MAX,
+            CLOSE_RANGE_CLOEXEC,
+        )
+    };
+    if result == 0 {
+        return Ok(());
+    }
+    scan_close_on_exec(open)
+}
+
+/// Kernels before 5.11 (or a filtered close_range): walk the descriptor
+/// table read before fork, or every number up to the hard limit without it.
+fn scan_close_on_exec(open: Option<&[std::os::fd::RawFd]>) -> std::io::Result<()> {
+    match open {
+        Some(open) => open
+            .iter()
+            .filter(|&&fd| fd > 2)
+            .try_for_each(|&fd| mark_close_on_exec(fd)),
+        None => {
+            // No /proc: every number up to the hard limit, which also covers
+            // descriptors opened before the soft limit was lowered.
+            const CEILING: libc::rlim_t = 1 << 20;
+            let mut limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            let last = if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } == 0 {
+                limit.rlim_max.min(CEILING)
+            } else {
+                CEILING
+            };
+            (3..last as libc::c_int).try_for_each(mark_close_on_exec)
+        }
+    }
+}
+
+/// Set FD_CLOEXEC on `fd`; a descriptor that is not open is fine, an
+/// interrupted call is retried and any other failure stops the spawn.
+fn mark_close_on_exec(fd: std::os::fd::RawFd) -> std::io::Result<()> {
+    let retry = |call: &dyn Fn() -> libc::c_int| loop {
+        let result = call();
+        if result != -1 {
+            return Ok(result);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::EINTR) {
+            return Err(error);
+        }
+    };
+    let flags = match retry(&|| unsafe { libc::fcntl(fd, libc::F_GETFD) }) {
+        Ok(flags) => flags,
+        Err(error) if error.raw_os_error() == Some(libc::EBADF) => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if flags & libc::FD_CLOEXEC == 0 {
+        retry(&|| unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) })?;
+    }
+    Ok(())
+}
+
+/// #3077: when Okilum runs as a systemd user *service* (`systemd-run --user`
+/// without `--scope`, uwsm `-t service`) with the default `ExitType=main`,
+/// systemd stops the unit as soon as the app exits for Restart now and kills
+/// its whole cgroup, the helper included. Move the helper into its own
+/// transient scope so the update does not depend on how the app was
+/// launched. Desktop launchers that use scopes need nothing: `Ok(None)`.
+/// When the move fails, a unit that keeps its remaining processes after the
+/// app exits is still safe; any other unit is an error.
+fn place_outside_service(helper: u32) -> Result<Option<String>> {
+    let Some(unit) = service_unit()? else {
+        return Ok(None);
+    };
+    match move_to_scope(helper, &unit) {
+        Ok(scope) => Ok(Some(format!("Helper moved into {scope}"))),
+        Err(error) => match unit_keeps_processes(&unit) {
+            Ok(true) => Ok(Some(format!(
+                "Helper stays in {unit}, which keeps it after the app exits ({error:#})"
+            ))),
+            Ok(false) => Err(error),
+            Err(check) => Err(error.context(format!("{check:#}"))),
+        },
+    }
+}
+
+/// The systemd user service this process runs in, if any.
+fn service_unit() -> Result<Option<String>> {
+    let Some(own) = cgroup_of("self")? else {
+        return Ok(None);
+    };
+    let leaf = own.rsplit('/').next().unwrap_or_default();
+    Ok((leaf.ends_with(".service") && own.contains("/user@")).then(|| leaf.to_owned()))
+}
+
+/// Ask the user manager for a transient scope holding `helper` and confirm
+/// the kernel moved it there.
+fn move_to_scope(helper: u32, unit: &str) -> Result<String> {
+    let scope = format!("okilum-update-{helper}.scope");
+    let output = Command::new("busctl")
+        .args([
+            "--user",
+            "--timeout=5",
+            "call",
+            "org.freedesktop.systemd1",
+            "/org/freedesktop/systemd1",
+            "org.freedesktop.systemd1.Manager",
+            "StartTransientUnit",
+            "ssa(sv)a(sa(sv))",
+            &scope,
+            "fail",
+            "3",
+            "PIDs",
+            "au",
+            "1",
+            &helper.to_string(),
+            "CollectMode",
+            "s",
+            "inactive-or-failed",
+            "Description",
+            "s",
+            "Okilum AppImage update helper",
+            "0",
+        ])
+        .stdin(Stdio::null())
+        .env_remove("LD_LIBRARY_PATH")
+        .output()
+        .with_context(|| format!("could not run busctl to leave {unit}"))?;
+    ensure!(
+        output.status.success(),
+        "busctl StartTransientUnit {scope} from {unit}: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    // The job that moves the PID runs right after the call returns.
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let current = cgroup_of(&helper.to_string())?;
+        if current
+            .as_deref()
+            .is_some_and(|path| path.rsplit('/').next() == Some(scope.as_str()))
+        {
+            return Ok(scope);
+        }
+        ensure!(
+            std::time::Instant::now() < deadline,
+            "{scope} started but the helper is still in {}",
+            current.unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Whether `unit` leaves its other processes running when its main process
+/// exits: `ExitType=cgroup`, or a KillMode that does not kill the cgroup.
+fn unit_keeps_processes(unit: &str) -> Result<bool> {
+    let output = Command::new("systemctl")
+        .args(["--user", "show", "-p", "ExitType", "-p", "KillMode", unit])
+        .stdin(Stdio::null())
+        .env_remove("LD_LIBRARY_PATH")
+        .output()
+        .with_context(|| format!("could not run systemctl to inspect {unit}"))?;
+    ensure!(
+        output.status.success(),
+        "systemctl show {unit}: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    let value = |key: &str| {
+        text.lines()
+            .find_map(|line| line.strip_prefix(key)?.strip_prefix('='))
+            .map(str::to_owned)
+    };
+    Ok(value("ExitType").as_deref() == Some("cgroup")
+        || matches!(value("KillMode").as_deref(), Some("process" | "none")))
+}
+
+/// The unified-hierarchy cgroup path of a process, if it has one.
+fn cgroup_of(pid: &str) -> Result<Option<String>> {
+    let text = fs::read_to_string(format!("/proc/{pid}/cgroup"))
+        .with_context(|| format!("could not read /proc/{pid}/cgroup"))?;
+    Ok(text
+        .lines()
+        .find_map(|line| line.strip_prefix("0::"))
+        .map(str::to_owned))
 }
 
 const APPLY: &str = r#"
@@ -604,6 +919,12 @@ cleanup_unapplied() {
 }
 trap cleanup_unapplied EXIT
 trap 'exit 1' HUP INT TERM
+# Gate (#3077): the app first moves this helper out of its service unit and
+# then closes the write end. Builtins only until here: no child process.
+if test -e /dev/fd/8; then
+    read -r _ <&8 || :
+    exec 8<&-
+fi
 n=0
 while kill -0 "$pid" 2>/dev/null; do
     n=$((n+1)); test "$n" -le 120 || { echo 'Shutdown timed out; original retained'; exit 1; }
@@ -1193,11 +1514,11 @@ mod tests {
             executable(&target, b"original");
             let stage = stage_directory(dir.path()).unwrap();
             fs::hard_link(&target, stage.path().join("previous.AppImage")).unwrap();
-            let ready = "trap 'exit 1' HUP INT TERM\nn=0";
+            let ready = "trap 'exit 1' HUP INT TERM\n";
             assert!(APPLY.contains(ready));
             let mut body = APPLY.replace(
                 ready,
-                "trap 'exit 1' HUP INT TERM\nprintf ready > \"$stage/ready\"\nn=0",
+                "trap 'exit 1' HUP INT TERM\nprintf ready > \"$stage/ready\"\n",
             );
             if !signal {
                 assert!(body.contains("test \"$n\" -le 120"));
@@ -1395,6 +1716,55 @@ sync() {
             }
         }
     }
+    /// Review of ff8823d5: the lock and the gate may already occupy each
+    /// other's targets (or their own) when the helper is spawned. Every
+    /// overlap must still end with the lock at fd 9 and the gate at fd 8.
+    #[test]
+    fn lock_and_gate_land_on_their_targets_whatever_their_source_descriptors() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+        let dir = tempfile::tempdir().unwrap();
+        let lock_path = dir.path().join("lock");
+        let gate_path = dir.path().join("gate");
+        let lock = File::create(&lock_path).unwrap();
+        let gate = File::create(&gate_path).unwrap();
+        // Park both well away from every slot a case arranges below.
+        let parked = |file: &File| {
+            let fd = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 100) };
+            assert!(fd >= 100);
+            fd
+        };
+        let (lock_parked, gate_parked) = (parked(&lock), parked(&gate));
+        // (lock source, gate source) as the child holds them before placement.
+        for (lock_at, gate_at) in [(8, 9), (9, 8), (9, 20), (20, 8), (20, 21)] {
+            let output = unsafe {
+                Command::new("/bin/sh")
+                    .args(["-c", "readlink /proc/$$/fd/8 /proc/$$/fd/9"])
+                    .pre_exec(move || {
+                        if libc::dup2(lock_parked, lock_at) == -1
+                            || libc::dup2(gate_parked, gate_at) == -1
+                        {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        place_descriptors([(lock_at, 9), (gate_at, 8)])
+                    })
+                    .output()
+                    .unwrap()
+            };
+            assert!(
+                output.status.success(),
+                "lock={lock_at} gate={gate_at}: {output:?}"
+            );
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                format!("{}\n{}\n", gate_path.display(), lock_path.display()),
+                "fd 8 must be the gate and fd 9 the lock (lock={lock_at} gate={gate_at})"
+            );
+        }
+        close_fd(lock_parked);
+        close_fd(gate_parked);
+    }
+
     #[test]
     fn running_executable_is_replaceable_even_though_write_open_is_etxtbsy() {
         let path = std::env::current_exe().unwrap();
@@ -1476,7 +1846,7 @@ sync() {
 
     #[test]
     fn confirmed_long_lived_child_does_not_retain_transaction_lock_or_trigger_late_rollback() {
-        use std::os::{fd::AsRawFd, unix::process::CommandExt};
+        use std::os::fd::AsRawFd;
         let dir = tempfile::tempdir().unwrap();
         let stage = dir.path().join("stage");
         fs::create_dir(&stage).unwrap();
@@ -1579,28 +1949,19 @@ trace_stage shell-start
         }
         traced.push_str(FILE_SYNC_ONLY);
         traced.push_str(&body);
-        let mut command = Command::new("/bin/sh");
+        // The production spawn: lock as fd 9, no other inherited descriptor.
+        let mut command = helper_command(&traced);
         command
             .env("SYNC_CALLS", stage.join("sync-calls"))
-            .args(["-c", traced.as_str(), "test", "2147483647"])
+            .arg("2147483647")
             .arg(&target)
             .arg(&stage)
             .arg(sha(&stage.join("new.AppImage")).unwrap())
             .arg(sha(&target).unwrap())
-            .stdin(Stdio::null())
             .stdout(Stdio::from(log.try_clone().unwrap()))
             .stderr(Stdio::from(log));
-        unsafe {
-            command.pre_exec(move || {
-                if libc::dup2(fd, 9) == -1 || libc::fcntl(9, libc::F_SETFD, 0) == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        let mut helper = command
-            .spawn()
-            .expect("/bin/sh helper spawn/pre_exec failed");
+        let (mut helper, _) =
+            start_helper(command, fd, false).expect("/bin/sh helper spawn/pre_exec failed");
         eprintln!(
             "helper trace: spawn PASS pid={} at {:?}; lock_fd={fd}; log={:?}",
             helper.id(),
@@ -1676,6 +2037,385 @@ trace_stage shell-start
             payload,
             "later session failure cannot roll back a committed update"
         );
+    }
+
+    /// A directory fd without FD_CLOEXEC at >= 1023, like the AppImage
+    /// runtime's keep-alive handle into its FUSE mount (#3076).
+    fn leaked_mount_handle(mount: &Path) -> (File, i32) {
+        use std::os::fd::AsRawFd;
+        fs::create_dir(mount).unwrap();
+        let handle = File::open(mount).unwrap();
+        // F_DUPFD (unlike F_DUPFD_CLOEXEC) clears close-on-exec on the copy.
+        let leaked = unsafe { libc::fcntl(handle.as_raw_fd(), libc::F_DUPFD, 1023) };
+        assert!(leaked >= 1023, "{}", std::io::Error::last_os_error());
+        assert_eq!(
+            unsafe { libc::fcntl(leaked, libc::F_GETFD) } & libc::FD_CLOEXEC,
+            0
+        );
+        (handle, leaked)
+    }
+
+    fn close_fd(fd: i32) {
+        assert_eq!(unsafe { libc::close(fd) }, 0);
+    }
+
+    #[test]
+    fn relaunched_build_and_helper_inherit_no_descriptor_into_the_old_image() {
+        use std::os::fd::AsRawFd;
+        let dir = tempfile::tempdir().unwrap();
+        let mount = dir.path().join("old-image-mount");
+        let (_handle, leaked) = leaked_mount_handle(&mount);
+        let target = dir.path().join("Okilum.AppImage");
+        executable(&target, b"original");
+        let stage = dir.path().join("stage");
+        fs::create_dir(&stage).unwrap();
+        fs::hard_link(&target, stage.join("previous.AppImage")).unwrap();
+        // The new build lists its own descriptors and its parent's (the helper,
+        // still waiting for this confirmation) before confirming startup.
+        let payload = b"#!/bin/sh\nls -l /proc/$$/fd > \"$OKILUM_APPIMAGE_UPDATE_RECEIPT/new-fds\" 2>&1\nls -l /proc/$PPID/fd > \"$OKILUM_APPIMAGE_UPDATE_RECEIPT/helper-fds\" 2>&1\ntouch \"$OKILUM_APPIMAGE_UPDATE_RECEIPT/started\"\n";
+        executable(&stage.join("new.AppImage"), payload);
+        let mount_name = mount.to_string_lossy().into_owned();
+
+        // Positive control: the probe sees a descriptor inherited by plain spawn.
+        let control = dir.path().join("control");
+        fs::create_dir(&control).unwrap();
+        let status = retry_text_busy(|| {
+            Command::new(stage.join("new.AppImage"))
+                .env("OKILUM_APPIMAGE_UPDATE_RECEIPT", &control)
+                .status()
+        })
+        .unwrap();
+        assert!(status.success());
+        let seen = fs::read_to_string(control.join("new-fds")).unwrap();
+        assert!(
+            seen.contains(&format!("{leaked} -> {mount_name}")),
+            "control must see the inherited mount handle: {seen}"
+        );
+
+        let lockpath = dir.path().join("lock");
+        let lock = File::create(&lockpath).unwrap();
+        let log_path = dir.path().join("apply.log");
+        let log = File::create(&log_path).unwrap();
+        let mut command = helper_command(&format!("{FILE_SYNC_ONLY}\n{APPLY}"));
+        command
+            .env("SYNC_CALLS", stage.join("sync-calls"))
+            .arg("2147483647")
+            .arg(&target)
+            .arg(&stage)
+            .arg(sha(&stage.join("new.AppImage")).unwrap())
+            .arg(sha(&target).unwrap())
+            .stdout(log.try_clone().unwrap())
+            .stderr(log);
+        let (mut helper, _) = start_helper(command, lock.as_raw_fd(), false).unwrap();
+        let status = helper.wait().unwrap();
+        close_fd(leaked);
+        let log = fs::read_to_string(&log_path).unwrap();
+        assert!(status.success(), "{status}: {log}");
+        assert!(log.contains("transaction committed"), "{log}");
+        let new_fds = fs::read_to_string(stage.join("new-fds")).unwrap();
+        let helper_fds = fs::read_to_string(stage.join("helper-fds")).unwrap();
+        // Positive control for the parent listing: the helper holds the lock.
+        assert!(
+            helper_fds.contains(&format!("9 -> {}", lockpath.display())),
+            "{helper_fds}"
+        );
+        assert!(!helper_fds.contains(&mount_name), "helper: {helper_fds}");
+        assert!(!new_fds.contains(&mount_name), "new build: {new_fds}");
+        assert!(
+            !new_fds.contains(&lockpath.to_string_lossy().into_owned()),
+            "{new_fds}"
+        );
+    }
+
+    /// The pre-5.11 fallback, with the soft limit lowered below the leaked
+    /// descriptor (Terra review of e77f4829): both the /proc table and the
+    /// no-/proc hard-limit walk must still mark it close-on-exec.
+    #[test]
+    fn descriptor_scan_fallback_marks_inherited_descriptors_close_on_exec() {
+        use std::os::unix::process::CommandExt;
+        let dir = tempfile::tempdir().unwrap();
+        let mount = dir.path().join("old-image-mount");
+        let (_handle, leaked) = leaked_mount_handle(&mount);
+        let open = open_descriptors().expect("/proc/self/fd");
+        assert!(open.contains(&leaked));
+        let list = |scan: Option<Option<Vec<i32>>>| {
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", "ls -l /proc/$$/fd"]);
+            unsafe {
+                command.pre_exec(move || {
+                    let mut limit = libc::rlimit {
+                        rlim_cur: 0,
+                        rlim_max: 0,
+                    };
+                    if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    limit.rlim_cur = 64;
+                    if libc::setrlimit(libc::RLIMIT_NOFILE, &limit) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    match &scan {
+                        Some(open) => scan_close_on_exec(open.as_deref()),
+                        None => Ok(()),
+                    }
+                });
+            }
+            let output = command.output().unwrap();
+            assert!(output.status.success(), "{output:?}");
+            String::from_utf8(output.stdout).unwrap()
+        };
+        let mount_name = mount.to_string_lossy().into_owned();
+        let control = list(None);
+        let from_table = list(Some(Some(open)));
+        let without_proc = list(Some(None));
+        close_fd(leaked);
+        assert!(control.contains(&mount_name), "control: {control}");
+        for scanned in [from_table, without_proc] {
+            assert!(!scanned.contains(&mount_name), "scanned: {scanned}");
+            assert!(scanned.contains("1 -> "), "stdio stays: {scanned}");
+        }
+    }
+
+    /// Terra review of e77f4829: Command installs stdio on fds 0-2 before
+    /// pre_exec, so a lock or gate that sat on one of them used to be replaced
+    /// before reaching fd 9/8. Runs in a re-executed copy of this test binary
+    /// because it rearranges the process's own stdio.
+    #[test]
+    fn lock_and_gate_on_stdio_descriptors_still_reach_fds_9_and_8() {
+        use std::os::fd::AsRawFd;
+        const MODE: &str = "OKILUM_STDIO_SOURCES_TEST";
+        const NAME: &str = "tests::lock_and_gate_on_stdio_descriptors_still_reach_fds_9_and_8";
+        if let Some(dir) = std::env::var_os(MODE) {
+            let dir = PathBuf::from(dir);
+            let out = File::create(dir.join("fds")).unwrap();
+            let lock = File::create(dir.join("lock")).unwrap();
+            // The lock on stdin; stdout closed so the gate's read end gets fd 1.
+            assert_eq!(unsafe { libc::dup2(lock.as_raw_fd(), 0) }, 0);
+            drop(lock);
+            assert_eq!(unsafe { libc::close(1) }, 0);
+            let mut command = helper_command("readlink /proc/$$/fd/8 /proc/$$/fd/9");
+            command.stdout(out);
+            let (mut helper, _) = start_helper(command, 0, false).unwrap();
+            assert!(helper.wait().unwrap().success());
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
+            .env(MODE, dir.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let fds = fs::read_to_string(dir.path().join("fds")).unwrap();
+        let lines: Vec<_> = fds.lines().collect();
+        assert_eq!(lines.len(), 2, "{fds}");
+        assert!(
+            lines[0].starts_with("pipe:["),
+            "fd 8 must be the gate: {fds}"
+        );
+        assert_eq!(
+            lines[1],
+            dir.path().join("lock").to_string_lossy(),
+            "fd 9 must be the lock: {fds}"
+        );
+    }
+
+    /// #3077 against a real systemd user manager, with the production APPLY
+    /// and spawn. Okilum (this test binary) runs as a transient service, arms
+    /// a real transaction and exits, so systemd stops the unit. APPLY sleeps
+    /// in an external `sleep` while it waits for the app, so a move that left
+    /// a child behind would fail too. Cases:
+    /// - not moved, ExitType=main (control): the update is lost;
+    /// - moved, ExitType=main: the update commits;
+    /// - move fails (busctl refuses), ExitType=main: arming fails while the
+    ///   app is open, the helper is stopped and the original stays;
+    /// - move fails, ExitType=cgroup: the unit keeps the helper; it commits.
+    ///
+    /// CI sets OKILUM_REQUIRE_SYSTEMD_USER so a missing manager fails, not skips.
+    #[test]
+    #[allow(clippy::zombie_processes)] // The helper must outlive the app side.
+    fn update_commits_after_the_systemd_service_the_app_ran_in_stops() {
+        use std::os::fd::AsRawFd;
+        const NAME: &str = "tests::update_commits_after_the_systemd_service_the_app_ran_in_stops";
+        if let Some(dir) = std::env::var_os("OKILUM_3077_DIR") {
+            // The app side, inside the transient service.
+            let dir = PathBuf::from(dir);
+            let target = dir.join("Okilum.AppImage");
+            let stage = dir.join("stage");
+            let lock = File::create(dir.join("lock")).unwrap();
+            let log = File::create(stage.join("apply.log")).unwrap();
+            let own = cgroup_of("self").unwrap().unwrap_or_default();
+            let mut command = helper_command(APPLY);
+            command
+                .arg(std::process::id().to_string())
+                .arg(&target)
+                .arg(&stage)
+                .arg(sha(&stage.join("new.AppImage")).unwrap())
+                .arg(sha(&target).unwrap())
+                .stdout(log.try_clone().unwrap())
+                .stderr(log);
+            let detach = std::env::var("OKILUM_3077_DETACH").as_deref() == Ok("1");
+            let (armed, placed) = match start_helper(command, lock.as_raw_fd(), detach) {
+                Ok((helper, outcome)) => {
+                    // Let APPLY reach its external `sleep` while the app lives.
+                    std::thread::sleep(Duration::from_millis(1500));
+                    let placed = cgroup_of(&helper.id().to_string())
+                        .unwrap()
+                        .unwrap_or_default();
+                    (format!("armed {outcome:?}"), placed)
+                }
+                Err(error) => (format!("refused {error:#}"), "none".to_owned()),
+            };
+            fs::write(dir.join("outcome"), format!("{own}\n{armed}\n{placed}\n")).unwrap();
+            return;
+        }
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() })));
+        let user = |args: &[&str]| {
+            Command::new("systemctl")
+                .arg("--user")
+                .args(args)
+                .env("XDG_RUNTIME_DIR", &runtime)
+                .output()
+        };
+        let state = user(&["is-system-running"])
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+            .unwrap_or_default();
+        if !matches!(state.as_str(), "running" | "degraded" | "starting") {
+            assert!(
+                std::env::var_os("OKILUM_REQUIRE_SYSTEMD_USER").is_none(),
+                "systemd user manager required but unavailable (state {state:?})"
+            );
+            eprintln!("SKIP: no systemd user manager (state {state:?})");
+            return;
+        }
+        // A busctl that refuses, ahead of the real one on PATH.
+        let refusing = tempfile::tempdir().unwrap();
+        executable(
+            &refusing.path().join("busctl"),
+            b"#!/bin/sh\necho 'refused by the test' >&2\nexit 1\n",
+        );
+        let payload = b"#!/bin/sh\ntouch \"$OKILUM_APPIMAGE_UPDATE_RECEIPT/started\"\n";
+        // (case, move, busctl refuses, ExitType)
+        for (case, detach, refuse, exit_type) in [
+            ("control", false, false, "main"),
+            ("moved", true, false, "main"),
+            ("refused", true, true, "main"),
+            ("kept", true, true, "cgroup"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let target = dir.path().join("Okilum.AppImage");
+            executable(&target, b"original");
+            let stage = dir.path().join("stage");
+            fs::create_dir(&stage).unwrap();
+            fs::hard_link(&target, stage.join("previous.AppImage")).unwrap();
+            executable(&stage.join("new.AppImage"), payload);
+            let unit = format!("okilum-3077-test-{}-{case}.service", std::process::id());
+            let mut command = Command::new("systemd-run");
+            command
+                .env("XDG_RUNTIME_DIR", &runtime)
+                .args(["--user", "--quiet", "--collect", "--unit", &unit])
+                .args(["--property", "Type=exec"])
+                .args(["--property", &format!("ExitType={exit_type}")])
+                .arg(format!("--setenv=OKILUM_3077_DIR={}", dir.path().display()))
+                .arg(format!("--setenv=OKILUM_3077_DETACH={}", u8::from(detach)));
+            if refuse {
+                command.arg(format!(
+                    "--setenv=PATH={}:/usr/local/bin:/usr/bin:/bin",
+                    refusing.path().display()
+                ));
+            }
+            let status = command
+                .arg("--")
+                .arg(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
+                .status()
+                .unwrap();
+            assert!(status.success(), "systemd-run {unit}");
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            loop {
+                let active = user(&["is-active", &unit]).unwrap();
+                let active = String::from_utf8_lossy(&active.stdout).trim().to_owned();
+                if matches!(active.as_str(), "inactive" | "failed") {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{unit} still {active}"
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            // APPLY notices the exit within a second; the commit follows.
+            let committed = stage.join("completed");
+            let deadline = std::time::Instant::now() + Duration::from_secs(15);
+            let expect_commit = matches!(case, "moved" | "kept");
+            while expect_commit && !committed.exists() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            if !expect_commit {
+                // Give a wrongly surviving helper the time it would need.
+                std::thread::sleep(Duration::from_secs(4));
+            }
+            let outcome = fs::read_to_string(dir.path().join("outcome")).unwrap_or_default();
+            let log = fs::read_to_string(stage.join("apply.log")).unwrap_or_default();
+            let lines: Vec<_> = outcome.lines().collect();
+            assert_eq!(
+                lines.len(),
+                3,
+                "{case}: the app side did not finish: {outcome} {log}"
+            );
+            assert!(
+                lines[0].ends_with(&format!("/{unit}")),
+                "{case}: the app must run in the service unit: {outcome}"
+            );
+            match case {
+                "control" => {
+                    assert!(lines[2].ends_with(&format!("/{unit}")), "{outcome}");
+                    assert!(
+                        !committed.exists() && fs::read(&target).unwrap() == b"original",
+                        "control: systemd did not kill {unit}'s cgroup, so the test proves nothing: {log}"
+                    );
+                }
+                "moved" => {
+                    assert!(
+                        lines[1].contains("Helper moved into okilum-update-"),
+                        "{outcome}"
+                    );
+                    assert!(lines[2].ends_with(".scope"), "{outcome}");
+                    assert!(
+                        committed.exists(),
+                        "update lost with {unit}: {outcome}\n{log}"
+                    );
+                    assert_eq!(fs::read(&target).unwrap(), payload, "{log}");
+                }
+                "refused" => {
+                    assert!(lines[1].starts_with("refused "), "{outcome}");
+                    assert!(lines[1].contains("refused by the test"), "{outcome}");
+                    assert!(!committed.exists(), "{log}");
+                    assert_eq!(fs::read(&target).unwrap(), b"original", "{log}");
+                    assert!(
+                        !stage.join("previous.AppImage").exists(),
+                        "the stopped helper must remove its unapplied backup link: {log}"
+                    );
+                }
+                _ => {
+                    assert!(
+                        lines[1].contains(&format!("Helper stays in {unit}")),
+                        "{outcome}"
+                    );
+                    assert!(
+                        committed.exists(),
+                        "update lost with {unit}: {outcome}\n{log}"
+                    );
+                    assert_eq!(fs::read(&target).unwrap(), payload, "{log}");
+                }
+            }
+        }
     }
 
     #[test]

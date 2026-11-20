@@ -144,7 +144,7 @@ impl Owner {
             root: reader.vault_root.clone(),
             state: reader.session_directory.clone(),
             index_directory: reader.index_dir.clone(),
-            document: reader.current_rel.clone(),
+            document: reader.pane.current_rel.clone(),
             navigation: reader.navigation.generation,
             preparation: reader.navigation.preparation_generation,
             content: reader.content.clone(),
@@ -154,12 +154,12 @@ impl Owner {
 
     pub(super) fn current(&self, reader: &Reader) -> bool {
         !reader.single_file
-            && reader.file_preview.is_none()
+            && reader.pane.file_preview.is_none()
             && !self.document.is_empty()
             && self.root == reader.vault_root
             && self.state == reader.session_directory
             && self.index_directory == reader.index_dir
-            && self.document == reader.current_rel
+            && self.document == reader.pane.current_rel
             && self.navigation == reader.navigation.generation
             && self.preparation == reader.navigation.preparation_generation
             && self.content == reader.content
@@ -206,8 +206,8 @@ impl Request {
             return Self::read(reader, cx);
         }
         if reader.single_file
-            || reader.file_preview.is_some()
-            || reader.current_rel.is_empty()
+            || reader.pane.file_preview.is_some()
+            || reader.pane.current_rel.is_empty()
             || reader.pointer_on_link()
             || reader.editing.is_some()
         {
@@ -263,9 +263,10 @@ impl Request {
             source: source
                 .unwrap_or_else(|| {
                     reader
+                        .pane
                         .note_canonical_source
                         .as_deref()
-                        .unwrap_or(&reader.note_source)
+                        .unwrap_or(&reader.pane.note_source)
                         .to_owned()
                 })
                 .into(),
@@ -290,9 +291,10 @@ impl Request {
                     reader.editing.is_none()
                         && reader.content.read(cx).document_source().as_ref() == Some(displayed)
                         && reader
+                            .pane
                             .note_canonical_source
                             .as_deref()
-                            .unwrap_or(&reader.note_source)
+                            .unwrap_or(&reader.pane.note_source)
                             == &*self.source
                 }
                 Evidence::Read => {
@@ -301,9 +303,9 @@ impl Request {
                         // left press. The immutable menu packet owns that
                         // selection; source/view identity remains authoritative.
                         && reader
-                            .note_canonical_source
+                            .pane.note_canonical_source
                             .as_deref()
-                            .unwrap_or(&reader.note_source)
+                            .unwrap_or(&reader.pane.note_source)
                             == &*self.source
                 }
                 Evidence::Editor {
@@ -355,10 +357,10 @@ impl Request {
         }
         let found = reminder_context::locate(&self.source, &self.selection);
         let sentence = found.sentence.unwrap_or_else(|| {
-            if reader.current_title.is_empty() {
+            if reader.pane.current_title.is_empty() {
                 reader_move::display_name(&self.owner.document)
             } else {
-                reader.current_title.clone()
+                reader.pane.current_title.clone()
             }
         });
         let line = match reminder_task::format(

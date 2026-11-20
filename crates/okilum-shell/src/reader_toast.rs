@@ -298,7 +298,7 @@ impl Reader {
                                             return;
                                         }
                                         #[cfg(any(unix, windows))]
-                                        if let Some(t) = this.timeline.as_mut().filter(|t| {
+                                        if let Some(t) = this.pane.timeline.as_mut().filter(|t| {
                                             t.id == id
                                                 && t.selection == selection
                                                 && t.message.as_ref() == Some(&message)
@@ -471,8 +471,8 @@ mod tests {
         visual.run_until_parked();
         visual.update(|window, cx| assert_eq!(window.notifications(cx).len(), 1));
         reader.read_with(visual, |r, _| {
-            assert_eq!(r.current_rel, "start.md");
-            assert!(r.file_menu.is_none() && r.file_preview.is_none());
+            assert_eq!(r.pane.current_rel, "start.md");
+            assert!(r.file_menu.is_none() && r.pane.file_preview.is_none());
         });
         assert_eq!(visual.debug_bounds("reader-document").unwrap(), before);
         let copy = visual

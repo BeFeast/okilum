@@ -786,3 +786,266 @@ fn random_edit_sequences_round_trip() {
         assert_ne!(file, start, "{name}");
     }
 }
+
+// Apply sessions (#478 slice 3a): the scene an editor hands back, written
+// through the note FileEditor into a real file. Their output goes through
+// `assert_plugin_consistent`, so the plugin oracle loads it too.
+mod apply_session {
+    use super::*;
+    use okilum_core::excalidraw::edit::{Applied, DrawingEdit, Undone};
+    use std::path::{Path, PathBuf};
+
+    struct Vault {
+        dir: tempfile::TempDir,
+        file: PathBuf,
+    }
+
+    impl Vault {
+        fn new(name: &str, contents: &str) -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join(name);
+            std::fs::write(&file, contents).unwrap();
+            Self { dir, file }
+        }
+        fn open(&self) -> anyhow::Result<DrawingEdit> {
+            DrawingEdit::open(self.dir.path(), &self.file, &self.dir.path().join(".state"))
+        }
+        fn read(&self) -> String {
+            std::fs::read_to_string(&self.file).unwrap()
+        }
+        fn root(&self) -> &Path {
+            self.dir.path()
+        }
+    }
+
+    /// Loads the session's scene as upstream Excalidraw would and reports it.
+    fn load(session: &mut DrawingEdit) -> Value {
+        let mut scene = session.editor_scene().unwrap();
+        for element in scene["elements"].as_array_mut().unwrap() {
+            element.as_object_mut().unwrap().remove("rawText");
+        }
+        session.loaded(session.revision(), scene.clone()).unwrap();
+        scene
+    }
+
+    fn markdown(name: &str) -> bool {
+        name != "plain file"
+    }
+
+    #[test]
+    fn apply_writes_the_writer_bytes_and_undo_restores_the_file_exactly() {
+        let mut cases: Vec<(&str, String)> = variants();
+        cases.push(("minimal", MINIMAL.to_owned()));
+        cases.push(("plain file", PLAIN_FILE.to_owned()));
+        for (name, original) in cases {
+            let file_name = if markdown(name) {
+                "Board.excalidraw.md"
+            } else {
+                "Board.excalidraw"
+            };
+            let vault = Vault::new(file_name, &original);
+            let mut session = vault.open().unwrap();
+            let baseline = load(&mut session);
+            assert_eq!(
+                session.apply(0, &baseline).unwrap(),
+                Applied::Unchanged { revision: 0 },
+                "{name}"
+            );
+            assert_eq!(vault.read(), original, "{name}: no-op writes nothing");
+
+            let mut edited = baseline.clone();
+            let id = edited["elements"][0]["id"].as_str().unwrap().to_owned();
+            edit(&mut edited, &id, |element| {
+                element["x"] = json!(element["x"].as_f64().unwrap() + 25.)
+            });
+            let prepared = updated(session.prepare(&edited).unwrap());
+            assert_eq!(
+                session.apply(0, &edited).unwrap(),
+                Applied::Saved { revision: 1 },
+                "{name}"
+            );
+            let saved = vault.read();
+            assert_eq!(saved, prepared, "{name}: exact prepared bytes");
+            assert_eq!(find(&scene(&saved), &id)["x"], find(&edited, &id)["x"]);
+            if markdown(name) {
+                assert_plugin_consistent(&saved);
+            }
+            assert_eq!(
+                session.undo(1).unwrap(),
+                Undone::Restored { revision: 2 },
+                "{name}"
+            );
+            assert_eq!(vault.read(), original, "{name}: Undo is byte-exact");
+        }
+    }
+
+    #[test]
+    fn links_in_text_stay_markdown_through_edits() {
+        for (name, original) in variants() {
+            let vault = Vault::new("Board.excalidraw.md", &original);
+            let mut session = vault.open().unwrap();
+            let shown = session.editor_scene().unwrap();
+            assert_eq!(
+                find(&shown, "Tx2kLmN4")["text"],
+                "See [[Project Plan|the plan]]",
+                "{name}: the editor gets the link source"
+            );
+            let baseline = load(&mut session);
+
+            // Moving linked text keeps the file's text and the Markdown.
+            let mut moved = baseline.clone();
+            edit(&mut moved, "Tx2kLmN4", |element| element["y"] = json!(500));
+            assert_eq!(
+                session.apply(0, &moved).unwrap(),
+                Applied::Saved { revision: 1 }
+            );
+            let saved = vault.read();
+            assert_eq!(
+                split_drawing(&saved).0,
+                split_drawing(&original).0,
+                "{name}"
+            );
+            let text = find(&scene(&saved), "Tx2kLmN4").clone();
+            assert_eq!(text["text"], "See the plan", "{name}");
+            assert_eq!(text["rawText"], "See [[Project Plan|the plan]]", "{name}");
+            assert_plugin_consistent(&saved);
+
+            // Typing in linked text writes the typed links as Markdown.
+            let mut typed = moved.clone();
+            set_text(
+                &mut typed,
+                "Tx2kLmN4",
+                "See [[Project Plan|the plan]] and [[Budget]]",
+            );
+            assert_eq!(
+                session.apply(1, &typed).unwrap(),
+                Applied::Saved { revision: 2 }
+            );
+            let saved = vault.read();
+            let entries = plugin_text_elements(&saved.replace("\r\n", "\n"));
+            assert_eq!(
+                entries["Tx2kLmN4"], "See [[Project Plan|the plan]] and [[Budget]]",
+                "{name}"
+            );
+            assert_plugin_consistent(&saved);
+
+            // Deleting the link text on purpose removes the link.
+            let mut unlinked = typed.clone();
+            set_text(&mut unlinked, "Tx2kLmN4", "See the plan");
+            assert_eq!(
+                session.apply(2, &unlinked).unwrap(),
+                Applied::Saved { revision: 3 }
+            );
+            let saved = vault.read();
+            assert_eq!(
+                find(&scene(&saved), "Tx2kLmN4")["rawText"],
+                "See the plan",
+                "{name}"
+            );
+            assert_plugin_consistent(&saved);
+        }
+    }
+
+    #[test]
+    fn outside_change_conflict_resolves_like_notes() {
+        let vault = Vault::new("Board.excalidraw.md", COMPRESSED);
+        let mut session = vault.open().unwrap();
+        let baseline = load(&mut session);
+        let outside = COMPRESSED.replace("Back of the note", "Edited in Obsidian");
+        assert_ne!(outside, COMPRESSED);
+        std::fs::write(&vault.file, &outside).unwrap();
+
+        let mut edited = baseline.clone();
+        set_text(&mut edited, "Tx1aBcD3", "Inbox (sorted)");
+        let mine = updated(session.prepare(&edited).unwrap());
+        assert_eq!(
+            session.apply(0, &edited).unwrap(),
+            Applied::Conflict {
+                disk: outside.clone()
+            }
+        );
+        assert_eq!(vault.read(), outside, "a conflict writes nothing");
+
+        // Save as copy: a second drawing with the edit; the original stays.
+        let copy = session.save_as_copy(0).unwrap();
+        let copy_text = std::fs::read_to_string(vault.root().join(&copy)).unwrap();
+        assert_eq!(copy_text, mine);
+        assert!(okilum_core::excalidraw::is_drawing(&copy.to_string_lossy()));
+        assert_plugin_consistent(&copy_text);
+        assert_eq!(vault.read(), outside);
+
+        // Keep mine: the edit replaces the reviewed outside version.
+        assert_eq!(
+            session.keep_mine(0, &outside).unwrap(),
+            Applied::Saved { revision: 1 }
+        );
+        assert_eq!(vault.read(), mine);
+        assert_plugin_consistent(&mine);
+        assert_eq!(session.undo(1).unwrap(), Undone::Restored { revision: 2 });
+        assert_eq!(
+            vault.read(),
+            outside,
+            "Undo brings the outside version back"
+        );
+    }
+
+    #[test]
+    fn reload_takes_the_outside_version_and_clears_recovery() {
+        let vault = Vault::new("Board.excalidraw.md", PLAIN_JSON);
+        let mut session = vault.open().unwrap();
+        let baseline = load(&mut session);
+        let outside = PLAIN_JSON.replace("Back of the note", "Edited in Obsidian");
+        std::fs::write(&vault.file, &outside).unwrap();
+        let mut edited = baseline;
+        edit(&mut edited, "Rr1aBcD3", |element| element["x"] = json!(321));
+        assert!(matches!(
+            session.apply(0, &edited).unwrap(),
+            Applied::Conflict { .. }
+        ));
+        assert_eq!(session.reload(0).unwrap(), 1);
+        assert_eq!(session.opened(), outside);
+        assert_eq!(vault.read(), outside);
+        drop(session);
+        // No recovery draft is left behind, so the drawing opens again.
+        let mut session = vault.open().unwrap();
+        assert_eq!(session.opened(), outside);
+        let baseline = load(&mut session);
+        let mut edited = baseline;
+        edit(&mut edited, "Rr1aBcD3", |element| element["x"] = json!(321));
+        assert_eq!(
+            session.apply(0, &edited).unwrap(),
+            Applied::Saved { revision: 1 }
+        );
+        assert!(vault.read().contains("Edited in Obsidian"));
+    }
+
+    #[test]
+    fn an_unresolved_conflict_keeps_the_edit_in_recovery() {
+        let vault = Vault::new("Board.excalidraw.md", PLAIN_JSON);
+        let mut session = vault.open().unwrap();
+        assert!(vault.open().is_err(), "one editor per drawing");
+        let baseline = load(&mut session);
+        let outside = PLAIN_JSON.replace("Back of the note", "Edited in Obsidian");
+        std::fs::write(&vault.file, &outside).unwrap();
+        let mut edited = baseline;
+        edit(&mut edited, "Rr1aBcD3", |element| element["x"] = json!(321));
+        assert!(matches!(
+            session.apply(0, &edited).unwrap(),
+            Applied::Conflict { .. }
+        ));
+        drop(session);
+        let refused = vault
+            .open()
+            .err()
+            .expect("recovery draft blocks a new edit");
+        assert!(format!("{refused:#}").contains("recovery"), "{refused:#}");
+        let draft = okilum_core::file_editor::FileEditor::unsaved_draft_text(
+            &vault.file.canonicalize().unwrap(),
+            &vault.root().join(".state"),
+        )
+        .unwrap()
+        .expect("the edit is in recovery");
+        assert_eq!(find(&scene(&draft), "Rr1aBcD3")["x"], 321);
+        assert_eq!(vault.read(), outside);
+    }
+}

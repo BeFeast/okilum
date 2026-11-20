@@ -182,7 +182,7 @@ class BridgeTests(unittest.TestCase):
                                        log=lambda line, **_: lines.append(line))
         self.assertEqual(result, 'success')
         self.assertFalse(any(method == 'POST' for _, method in api.calls))
-        self.assertTrue(any('Waiting for a GitHub macOS runner, queued 5 min' in line for line in lines))
+        self.assertTrue(any('Waiting for a GitHub runner, queued 5 min' in line for line in lines))
         self.assertGreaterEqual(len(lines), 20)
         # The Forgejo job budget covers the full queue plus execution budget.
         workflow = (Path(__file__).resolve().parents[2] / '.forgejo/workflows/ci.yml').read_text()
