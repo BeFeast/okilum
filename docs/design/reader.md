@@ -165,8 +165,9 @@ original combined titlebar and document controls:
   live in the bottom line.
   A standalone image's Copy menu offers the same checked Copy image command as
   an embedded image. Video retains its card and Open with default app button.
-  Drawing files contribute Expand/details, Open in Excalidraw and Copy drawing
-  details through their loaded drawing handle. Drawing details opens the full
+  Drawing files contribute Expand/details, Edit drawing (#478, the offline
+  editor in docs/excalidraw-reader.md), Copy drawing details and Copy scene
+  through their loaded drawing handle. Drawing details opens the full
   diagnostics in a dialog, including from overflow; embedded rows stay intact.
 - **Logs (#2808).** Find in records is the same header field, with no count,
   case toggle or stepping; Enter retains the filter and focuses records, Esc
