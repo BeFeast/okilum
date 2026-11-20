@@ -53,7 +53,7 @@ fn reader_press_and_drag(
     // document's opening space is part of that block (vendor 0097), so a fixed
     // offset from its origin lands above the text and selects nothing (#1695).
     let start = reader.read_with(visual, |reader, cx| {
-        let content = reader.content.read(cx);
+        let content = reader.pane.content.read(cx);
         let (segment, _, _) = content
             .rendered_source_at(None)
             .expect("first paragraph has painted geometry");
@@ -74,7 +74,7 @@ fn reader_press_and_drag(
     );
     visual.run_until_parked();
     let selection = reader.read_with(visual, |reader, cx| {
-        let content = reader.content.read(cx);
+        let content = reader.pane.content.read(cx);
         assert!(
             content.is_selecting(),
             "positive control: actual drag began"
@@ -101,7 +101,7 @@ fn lost_mouse_up_plain_motion_cannot_extend_read_selection(cx: &mut TestAppConte
         visual.simulate_mouse_move(start + point(px(180.), px(0.)), None, Modifiers::default());
         visual.run_until_parked();
         reader.read_with(visual, |reader, cx| {
-            let content = reader.content.read(cx);
+            let content = reader.pane.content.read(cx);
             assert_eq!(
                 content.selected_text(),
                 selected,
@@ -117,7 +117,7 @@ fn lost_mouse_up_plain_motion_cannot_extend_read_selection(cx: &mut TestAppConte
         );
         visual.run_until_parked();
         reader.read_with(visual, |reader, cx| {
-            assert_eq!(reader.content.read(cx).selected_text(), selected)
+            assert_eq!(reader.pane.content.read(cx).selected_text(), selected)
         });
     });
 }
@@ -138,7 +138,7 @@ fn native_resize_focus_loss_and_pointer_leave_end_read_gestures(cx: &mut TestApp
             }
             visual.run_until_parked();
             reader.read_with(visual, |reader, cx| {
-                let content = reader.content.read(cx);
+                let content = reader.pane.content.read(cx);
                 assert!(!content.is_selecting(), "signal {signal} must end drag");
                 assert_eq!(
                     content.selected_text(),
@@ -166,7 +166,7 @@ fn cancellation_reflow_before_observer_delivery_keeps_selected_text(cx: &mut Tes
             // SelectionChanged observers can update TextView's mirror flag.
             gpui_base::TextSelection::end(window, cx);
             assert!(
-                reader.read(cx).content.read(cx).is_selecting(),
+                reader.read(cx).pane.content.read(cx).is_selecting(),
                 "positive control: the observer has not run yet"
             );
             reader.update(cx, |reader, cx| {
@@ -177,14 +177,14 @@ fn cancellation_reflow_before_observer_delivery_keeps_selected_text(cx: &mut Tes
             window.refresh();
             window.draw(cx).clear(cx);
             assert_eq!(
-                reader.read(cx).content.read(cx).selected_text(),
+                reader.read(cx).pane.content.read(cx).selected_text(),
                 selected,
                 "cancellation keeps the exact range even before observer delivery"
             );
         });
         visual.run_until_parked();
         reader.read_with(visual, |reader, cx| {
-            let content = reader.content.read(cx);
+            let content = reader.pane.content.read(cx);
             assert!(!content.is_selecting());
             assert_eq!(content.selected_text(), selected);
         });
@@ -235,7 +235,7 @@ fn cancellation_before_the_next_paint_keeps_the_last_drag_range(cx: &mut TestApp
         });
         visual.run_until_parked();
         reader.read_with(visual, |reader, cx| {
-            let content = reader.content.read(cx);
+            let content = reader.pane.content.read(cx);
             assert!(!content.is_selecting());
             assert_eq!(
                 content.selected_text(),

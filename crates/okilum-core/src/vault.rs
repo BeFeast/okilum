@@ -3,7 +3,11 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+mod attachment_index;
 mod publication;
+#[doc(hidden)]
+pub use attachment_index::attachment_index_builds;
+pub(crate) use attachment_index::AttachmentIndex;
 pub use publication::Aliases;
 pub mod warm;
 use std::collections::{HashMap, HashSet};
@@ -613,6 +617,8 @@ pub struct Vault {
     symlink_paths: HashSet<String>,
     pub(crate) graph_root: Option<PathBuf>,
     pub(crate) graph_os_paths: std::sync::Arc<std::sync::Mutex<HashMap<String, Option<String>>>>,
+    /// Attachment suffix lookup for this exact inventory (#2803).
+    attachment_index: attachment_index::Slot,
 }
 
 impl Vault {
@@ -943,6 +949,7 @@ impl Vault {
             symlink_paths,
             graph_root: None,
             graph_os_paths: Default::default(),
+            attachment_index: Default::default(),
         })
     }
 
@@ -975,6 +982,7 @@ impl Vault {
 
     /// Apply a validated regular-note identity without a directory walk.
     fn set_note_identity(&mut self, path: &str, present: bool) {
+        self.invalidate_attachment_index();
         self.entries.retain(|entry| entry.path != path);
         self.notes.retain(|note| note.path != path);
         self.path_map.retain(|_, value| value != path);
@@ -1029,6 +1037,7 @@ impl Vault {
     /// The bare-filename asset lookup keeps the warm-load precedence: the first
     /// attachment with that name in path order.
     fn set_attachment_identity(&mut self, path: &str, present: bool) {
+        self.invalidate_attachment_index();
         let lower = path.to_lowercase();
         self.entries.retain(|entry| entry.path != path);
         self.occupied_paths.remove(&lower);
@@ -1131,6 +1140,7 @@ impl Vault {
             symlink_paths: HashSet::new(),
             graph_root: None,
             graph_os_paths: Default::default(),
+            attachment_index: Default::default(),
         };
         for path in paths {
             if service_path(Path::new(&path)) {
@@ -1181,6 +1191,7 @@ impl Vault {
     /// before a lazy folder refresh replaces the visible tree (#1823).
     pub fn register_created_directory(&mut self, path: &str) {
         self.freeze_publication();
+        self.invalidate_attachment_index();
         for directory in Path::new(path)
             .ancestors()
             .take_while(|path| !path.as_os_str().is_empty())

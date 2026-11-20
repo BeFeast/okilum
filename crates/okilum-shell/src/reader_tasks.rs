@@ -1262,16 +1262,16 @@ impl Reader {
     /// Duplicate/unsupported display text stays at its source-bound list, with
     /// an explicit notice instead of selecting another task's first match.
     pub(super) fn land_task_text(&mut self, text: String, cx: &mut Context<Self>) {
-        let generation = self.navigation.generation;
-        let landing = self.navigation.landing_generation;
+        let ticket = self.pane.navigation_ticket();
+        let landing = self.pane.navigation.landing_generation;
         cx.spawn(async move |reader, cx| {
             for _ in 0..100 {
                 cx.background_executor().timer(Duration::from_millis(50)).await;
                 let done = reader.update(cx, |this, cx| {
-                    if this.navigation.generation != generation || this.navigation.landing_generation != landing { return true; }
+                    if !this.pane.holds_navigation(ticket) || this.pane.navigation.landing_generation != landing { return true; }
                     if this.link_notice.is_some() { return true; }
-                    if this.navigation.pending_landing.is_some() { return false; }
-                    let unique = this.content.update(cx, |state, cx| {
+                    if this.pane.navigation.pending_landing.is_some() { return false; }
+                    let unique = this.pane.content.update(cx, |state, cx| {
                         state.set_search_query(text.clone(), cx);
                         if state.search_status().1 == 1 { true }
                         else { state.set_search_query("", cx); false }
@@ -1597,8 +1597,8 @@ mod tests {
         visual.run_until_parked();
         reader.update(visual, |r, cx| {
             assert_eq!(r.pane.current_rel, "Work.md");
-            assert_eq!(r.content.read(cx).search_status().1, 1);
-            assert!(r.editing.is_none(), "read-only navigation");
+            assert_eq!(r.pane.content.read(cx).search_status().1, 1);
+            assert!(r.pane.editing.is_none(), "read-only navigation");
         });
         assert_eq!(
             std::fs::read_to_string(root.join("Work.md")).unwrap(),

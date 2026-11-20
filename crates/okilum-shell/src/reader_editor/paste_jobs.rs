@@ -129,7 +129,7 @@ impl Target {
     /// no longer being edited (left for Reader, another note, parked).
     pub(super) fn live(&self, cx: &App) -> Option<Entity<EditorState>> {
         let reader = self.reader.upgrade()?;
-        let editing = reader.read(cx).editing.as_ref()?;
+        let editing = reader.read(cx).pane.editing.as_ref()?;
         let same_note = self
             .path
             .as_deref()
@@ -290,7 +290,7 @@ impl Reader {
         cx: &mut Context<Self>,
     ) {
         let paths = paths.0.to_vec();
-        if paths.is_empty() || self.editing.is_some() {
+        if paths.is_empty() || self.pane.editing.is_some() {
             return;
         }
         let block = self.reader_block_at(window.mouse_position(), cx);
@@ -322,6 +322,7 @@ impl Reader {
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 if this
+                    .pane
                     .editing
                     .as_ref()
                     .is_none_or(|editing| editing.input != input)
@@ -373,7 +374,7 @@ impl Reader {
     /// The rendered block under `position`: the first laid-out block that
     /// ends below it. `None` below the last block.
     fn reader_block_at(&self, position: Point<Pixels>, cx: &App) -> Option<usize> {
-        let content = self.content.read(cx);
+        let content = self.pane.content.read(cx);
         let list = content.list_state();
         let count = list.item_count();
         (list.logical_scroll_top().item_ix..count)
@@ -548,6 +549,7 @@ impl Reader {
         cx: &Context<Self>,
     ) -> Target {
         let path = self
+            .pane
             .editing
             .as_ref()
             .filter(|editing| editing.input == input)
@@ -1626,10 +1628,10 @@ mod reader_drop_tests {
         let (reader, visual, temp) = reader_on_note(cx);
         let (next, first) = reader.read_with(visual, |r, cx| {
             assert!(
-                r.editing.is_none(),
+                r.pane.editing.is_none(),
                 "positive control: the note opens in Read"
             );
-            let list = r.content.read(cx).list_state();
+            let list = r.pane.content.read(cx).list_state();
             (
                 list.bounds_for_item(2)
                     .expect("the `## Next` block is laid out"),
@@ -1668,7 +1670,7 @@ mod reader_drop_tests {
     fn a_drop_below_the_last_block_appends(cx: &mut TestAppContext) {
         let (reader, visual, temp) = reader_on_note(cx);
         let below = reader.read_with(visual, |r, cx| {
-            let list = r.content.read(cx).list_state();
+            let list = r.pane.content.read(cx).list_state();
             let last = list.bounds_for_item(3).expect("the last block is laid out");
             let viewport = list.viewport_bounds();
             assert!(
@@ -1694,7 +1696,12 @@ mod reader_drop_tests {
     fn edits_during_the_block_mapping_do_not_move_the_drop(cx: &mut TestAppContext) {
         let (reader, visual, temp) = reader_on_note(cx);
         let next = reader.read_with(visual, |r, cx| {
-            r.content.read(cx).list_state().bounds_for_item(2).unwrap()
+            r.pane
+                .content
+                .read(cx)
+                .list_state()
+                .bounds_for_item(2)
+                .unwrap()
         });
         visual.simulate_mouse_move(next.center(), None, Modifiers::default());
         let spec = temp.path().join("vault/docs/spec.txt");
@@ -1750,7 +1757,12 @@ mod reader_drop_tests {
     fn a_copied_drop_goes_in_once_and_one_undo_restores_the_note(cx: &mut TestAppContext) {
         let (reader, visual, temp) = reader_on_note(cx);
         let next = reader.read_with(visual, |r, cx| {
-            r.content.read(cx).list_state().bounds_for_item(2).unwrap()
+            r.pane
+                .content
+                .read(cx)
+                .list_state()
+                .bounds_for_item(2)
+                .unwrap()
         });
         let outside = temp.path().join("outside.pdf");
         std::fs::write(&outside, b"%PDF-1.4 dropped").unwrap();
@@ -1793,7 +1805,12 @@ mod reader_drop_tests {
             crate::reader_ui_state::set_paste_ask_above_mb(1, cx);
         });
         let next = reader.read_with(visual, |r, cx| {
-            r.content.read(cx).list_state().bounds_for_item(2).unwrap()
+            r.pane
+                .content
+                .read(cx)
+                .list_state()
+                .bounds_for_item(2)
+                .unwrap()
         });
         let large = temp.path().join("large.bin");
         std::fs::write(&large, vec![7u8; 2 * 1024 * 1024]).unwrap();
@@ -1809,7 +1826,7 @@ mod reader_drop_tests {
         let (source, _) = source_and_line(&reader, visual, "large");
         assert_eq!(source, NOTE, "Cancel: byte-identical");
         assert!(
-            reader.read_with(visual, |r, _| r.editing.is_some()),
+            reader.read_with(visual, |r, _| r.pane.editing.is_some()),
             "the note stays in Edit"
         );
     }
@@ -1822,7 +1839,13 @@ mod reader_drop_tests {
     fn an_unmappable_block_refuses_instead_of_appending(cx: &mut TestAppContext) {
         let (reader, visual, temp) = reader_on_note(cx);
         let next = reader.update(visual, |r, cx| {
-            let bounds = r.content.read(cx).list_state().bounds_for_item(2).unwrap();
+            let bounds = r
+                .pane
+                .content
+                .read(cx)
+                .list_state()
+                .bounds_for_item(2)
+                .unwrap();
             r.pane.note_source = "# Only one block\n".to_string();
             bounds
         });
@@ -1844,7 +1867,12 @@ mod reader_drop_tests {
         temp: &tempfile::TempDir,
     ) {
         let next = reader.read_with(visual, |r, cx| {
-            r.content.read(cx).list_state().bounds_for_item(2).unwrap()
+            r.pane
+                .content
+                .read(cx)
+                .list_state()
+                .bounds_for_item(2)
+                .unwrap()
         });
         pending_copy_at(visual, temp, next.center());
     }
@@ -2032,7 +2060,13 @@ mod reader_drop_tests {
         let opened = "# B\n\nParagraph B.\n\n# A\n\nParagraph A.\n";
         let (reader, visual, temp) = reader_on(cx, opened);
         let heading = reader.update(visual, |r, cx| {
-            let bounds = r.content.read(cx).list_state().bounds_for_item(2).unwrap();
+            let bounds = r
+                .pane
+                .content
+                .read(cx)
+                .list_state()
+                .bounds_for_item(2)
+                .unwrap();
             // What the Reader showed differs from what the editor opens.
             r.pane.note_canonical_source = Some(std::sync::Arc::from(shown));
             r.pane.note_source = shown.to_string();
@@ -2121,7 +2155,13 @@ mod reader_drop_tests {
         let opened = "---\ntags: [a] # label\n---\nBody.\n";
         let (reader, visual, temp) = reader_on(cx, opened);
         let first = reader.update(visual, |r, cx| {
-            let bounds = r.content.read(cx).list_state().bounds_for_item(0).unwrap();
+            let bounds = r
+                .pane
+                .content
+                .read(cx)
+                .list_state()
+                .bounds_for_item(0)
+                .unwrap();
             // The Reader showed the title; the editor opens the draft.
             r.pane.note_canonical_source = Some(std::sync::Arc::from(shown));
             r.pane.note_source = "# Title\n\nBody.\n".to_string();

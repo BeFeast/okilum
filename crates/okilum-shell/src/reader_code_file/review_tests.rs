@@ -283,12 +283,12 @@ fn file2811_pending_read_restore_yields_to_a_new_view_choice(cx: &mut TestAppCon
             reader.toggle_source(window, cx)
         });
         settle(visual);
-        assert!(reader.read_with(visual, |reader, _| reader.editing.is_some()));
+        assert!(reader.read_with(visual, |reader, _| reader.pane.editing.is_some()));
 
         let (release, gate) = futures::channel::oneshot::channel();
         let restored = reader.update_in(visual, |reader, window, cx| {
             reader.toggle_source(window, cx);
-            assert!(reader.editing.is_none());
+            assert!(reader.pane.editing.is_none());
             let code = reader
                 .pane
                 .file_preview
@@ -379,6 +379,7 @@ fn code2809_async_format_cannot_change_the_hidden_preview_after_real_edit_entry(
     settle(visual);
     reader.update_in(visual, |reader, window, cx| {
         assert!(reader
+            .pane
             .editing
             .as_ref()
             .unwrap()
@@ -394,6 +395,7 @@ fn code2809_async_format_cannot_change_the_hidden_preview_after_real_edit_entry(
     reader.update_in(visual, |reader, window, cx| {
         assert!(
             reader
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -648,7 +650,7 @@ fn code2809_real_edit_admission_distinguishes_vault_from_recovery_permissions(
     settle(visual);
     reader.read_with(visual, |reader, _| {
         assert!(
-            reader.editing.is_none(),
+            reader.pane.editing.is_none(),
             "real Edit is refused by unwritable vault directory"
         )
     });
@@ -705,7 +707,10 @@ fn code2809_real_edit_admission_distinguishes_vault_from_recovery_permissions(
     });
     settle(visual);
     reader.read_with(visual, |reader, _| {
-        assert!(reader.editing.is_none(), "private recovery failure is real")
+        assert!(
+            reader.pane.editing.is_none(),
+            "private recovery failure is real"
+        )
     });
     code.read_with(visual, |preview, cx| {
         assert!(
@@ -721,7 +726,7 @@ fn code2809_real_edit_admission_distinguishes_vault_from_recovery_permissions(
     settle(visual);
     reader.read_with(visual, |reader, _| {
         assert!(
-            reader.editing.is_some(),
+            reader.pane.editing.is_some(),
             "positive control: repaired private recovery permits Edit"
         )
     });
@@ -769,7 +774,7 @@ fn code2809_file_identity_admission_precedes_any_storage_probe(cx: &mut TestAppC
     });
     settle(visual);
     reader.read_with(visual, |reader, cx| {
-        assert!(reader.editing.is_none());
+        assert!(reader.pane.editing.is_none());
         assert!(
             reader
                 .link_notice

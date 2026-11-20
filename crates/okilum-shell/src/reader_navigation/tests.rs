@@ -72,7 +72,7 @@ fn return_to_section(cx: &mut gpui::TestAppContext, folder: bool, history: bool)
     // Preserve an intra-block offset too, not just the heading number.
     view.update(visual, |v, cx| {
         let block = v.pane.outline[2].target.block;
-        v.content.read(cx).list_state().scroll_to(ListOffset {
+        v.pane.content.read(cx).list_state().scroll_to(ListOffset {
             item_ix: block + 1,
             offset_in_item: px(7.),
         });
@@ -81,7 +81,7 @@ fn return_to_section(cx: &mut gpui::TestAppContext, folder: bool, history: bool)
     settle(visual);
     let position = view.read_with(visual, |v, cx| {
         assert_eq!(v.current_section(cx), Some(2));
-        let position = v.content.read(cx).list_state().logical_scroll_top();
+        let position = v.pane.content.read(cx).list_state().logical_scroll_top();
         assert!(position.item_ix > v.pane.outline[2].target.block);
         assert_ne!(position.offset_in_item, px(0.));
         position
@@ -122,7 +122,7 @@ fn return_to_section(cx: &mut gpui::TestAppContext, folder: bool, history: bool)
             Some(2),
             "RETURN1827: section 3 must remain active"
         );
-        let restored = v.content.read(cx).list_state().logical_scroll_top();
+        let restored = v.pane.content.read(cx).list_state().logical_scroll_top();
         assert_eq!(restored.item_ix, position.item_ix);
         assert_eq!(restored.offset_in_item, position.offset_in_item);
     });
@@ -163,7 +163,10 @@ fn return_to_section(cx: &mut gpui::TestAppContext, folder: bool, history: bool)
             Some(0),
             "a bare deep link opens at the top"
         );
-        assert!(v.navigation.flash.is_none(), "a bare deep link stays quiet");
+        assert!(
+            v.pane.navigation.flash.is_none(),
+            "a bare deep link stays quiet"
+        );
     });
 }
 
