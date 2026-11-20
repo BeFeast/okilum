@@ -67,6 +67,11 @@ menu as a separate command.
   Keep mine or Save as copy. Keep mine names the outside version the page was
   shown (by SHA-256); if the file changed again, that newer version is reported
   instead of overwritten. Done is refused until such a conflict is resolved.
+- **Unsaved marker.** The page counts element edits and the canvas settings
+  the file keeps (background, grid size/step, grid mode) as changes, never pan
+  or zoom. Only the snapshot Okilum wrote becomes saved: an edit made while
+  Apply is in flight stays unsaved. During a conflict the canvas is read-only,
+  because Keep mine and Save as copy use the scene that hit the conflict.
 - **Lifetime.** Done ends the session and releases the lock; so do two idle
   hours and quitting Okilum. Closing the tab without Apply leaves the drawing as
   it was. A second Edit of the same drawing opens the same session; a second tab

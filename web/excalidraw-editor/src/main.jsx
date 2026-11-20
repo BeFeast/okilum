@@ -8,9 +8,14 @@ import { Excalidraw, getSceneVersion, serializeAsJSON } from "@excalidraw/excali
 import "@excalidraw/excalidraw/index.css";
 import "./editor.css";
 import { Session, SessionError, sessionBase } from "./session.js";
+import { Tracker, fingerprint } from "./tracker.js";
 
 const base = sessionBase(window.location);
 const session = base ? new Session(base) : null;
+
+function stateOf(api) {
+  return fingerprint(getSceneVersion(api.getSceneElementsIncludingDeleted()), api.getAppState());
+}
 
 function sceneOf(api) {
   return JSON.parse(
@@ -42,7 +47,7 @@ function App() {
   const [conflict, setConflict] = useState(false);
   const [copy, setCopy] = useState("");
   const [, setTick] = useState(0);
-  const baseline = useRef(null);
+  const tracker = useRef(new Tracker());
   const refresh = () => setTick((tick) => tick + 1);
 
   const show = useCallback((data) => {
@@ -50,7 +55,7 @@ function App() {
     setScene(data.scene);
     setLoad((count) => count + 1);
     setApi(null);
-    baseline.current = null;
+    tracker.current = new Tracker();
     setDirty(false);
     setConflict(false);
     setCopy("");
@@ -77,15 +82,17 @@ function App() {
 
   // Report the loaded scene once per load.
   useEffect(() => {
-    if (!api || baseline.current !== null) return;
+    if (!api || tracker.current.loaded()) return;
     let cancelled = false;
     (async () => {
       await settled(api);
       if (cancelled) return;
       const loaded = sceneOf(api);
+      const snapshot = stateOf(api);
       try {
         await session.loaded(loaded);
-        baseline.current = getSceneVersion(api.getSceneElementsIncludingDeleted());
+        tracker.current.load(snapshot);
+        setDirty(tracker.current.dirty(stateOf(api)));
         setStatus("");
         refresh();
       } catch (e) {
@@ -108,9 +115,8 @@ function App() {
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
 
-  const onChange = useCallback((elements) => {
-    if (baseline.current === null) return;
-    setDirty(getSceneVersion(elements) !== baseline.current);
+  const onChange = useCallback((elements, appState) => {
+    setDirty(tracker.current.dirty(fingerprint(getSceneVersion(elements), appState)));
   }, []);
 
   const act = async (work) => {
@@ -125,15 +131,20 @@ function App() {
 
   const apply = () =>
     act(async () => {
-      if (!api || baseline.current === null) return;
+      if (!api || !tracker.current.loaded()) return;
+      // The canvas stays editable while the call is in flight: only this
+      // snapshot is what Okilum writes.
+      const snapshot = stateOf(api);
       const data = await session.apply(sceneOf(api));
       if (data.status === "conflict") {
+        tracker.current.conflict(snapshot);
         setConflict(true);
+        setDirty(tracker.current.dirty(stateOf(api)));
         setStatus("");
         return;
       }
-      baseline.current = getSceneVersion(api.getSceneElementsIncludingDeleted());
-      setDirty(false);
+      tracker.current.wrote(snapshot);
+      setDirty(tracker.current.dirty(stateOf(api)));
       setStatus(data.status === "unchanged" ? "Nothing to apply" : "Applied to the drawing");
     });
   const undo = () =>
@@ -154,8 +165,9 @@ function App() {
         setError("The drawing changed again. Look at it in Okilum, then choose again.");
         return;
       }
-      baseline.current = getSceneVersion(api.getSceneElementsIncludingDeleted());
-      setDirty(false);
+      // Keep mine writes the scene that hit the conflict, not the canvas.
+      tracker.current.keptMine();
+      setDirty(tracker.current.dirty(stateOf(api)));
       setConflict(false);
       setStatus("Applied to the drawing");
     });
@@ -172,7 +184,8 @@ function App() {
     });
   const close = () =>
     act(async () => {
-      if (dirty && !window.confirm("Close without applying your changes?")) return;
+      const unsaved = api ? tracker.current.dirty(stateOf(api)) : dirty;
+      if (unsaved && !window.confirm("Close without applying your changes?")) return;
       await session.close();
       setDirty(false);
       setPhase("closed");
@@ -192,7 +205,7 @@ function App() {
     );
   }
 
-  const ready = api !== null && baseline.current !== null && !session.closed;
+  const ready = api !== null && tracker.current.loaded() && !session.closed;
   return (
     <div className="okl-editor">
       <Excalidraw
@@ -200,6 +213,7 @@ function App() {
         initialData={{ ...scene, scrollToContent: true }}
         excalidrawAPI={setApi}
         onChange={onChange}
+        viewModeEnabled={!tracker.current.editable()}
         name={session.name}
         UIOptions={{ canvasActions: { loadScene: false, saveToActiveFile: false } }}
         renderTopRightUI={() => (
@@ -218,7 +232,7 @@ function App() {
         <div className="okl-bar" role="status">
           {conflict ? (
             <>
-              <span>The drawing changed outside this editor. Your edit was not applied.</span>
+              <span>The drawing changed outside this editor. Your edit was not applied, and the canvas is read-only until you choose.</span>
               <button className="okl-button" disabled={session.busy} onClick={reload}>Reload</button>
               <button className="okl-button" disabled={session.busy} onClick={keepMine}>Keep mine</button>
               <button className="okl-button" disabled={session.busy} onClick={saveCopy}>Save as copy</button>
