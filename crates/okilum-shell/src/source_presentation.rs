@@ -1454,11 +1454,15 @@ fn projected_styles(
                     } else if counts[0] > 0
                         && counts[2] == 0
                         && counts[3] == 0
+                        && counts[4] == 0
                         && colors.decorations.bold.is_some()
                     {
                         // Bold gradient slot (#3154): the editor paints these
-                        // letters itself; the run keeps its font, so shaping
-                        // and the line-layout cache key do not change.
+                        // letters itself. Body bold is its own font run, so
+                        // one colour adds no font-run split and the shaping
+                        // and line-layout cache key stay. Headings are drawn
+                        // bold throughout: a colour there would split their
+                        // run, so bold inside a heading stays solid.
                         Some(gpui_base::text::gradient_run_color())
                     } else if counts[4] > 0 {
                         Some(colors.heading(heading_level))
@@ -2577,6 +2581,18 @@ mod tests {
         let link = display.find("link").unwrap();
         assert_eq!(d.links.len(), 1);
         assert_eq!(d.links[0].start, ProjectedByte(link));
+        // Bold inside a heading (already bold) keeps the heading colour: a
+        // gradient colour there would split the heading's font run.
+        let heading_bold = self::source("# Left **middle** right\n");
+        let projection = Arc::new(CachedProvider::classify(heading_bold.clone()))
+            .with_colors(themed)
+            .compose(&heading_bold, &inactive(&heading_bold))
+            .unwrap();
+        assert!(projection
+            .styles()
+            .iter()
+            .all(|style| style.color != Some(gpui_base::text::gradient_run_color())));
+        assert!(projection.decorations().unwrap().bold.is_empty());
         // H2-H6 carry the rule; H1 does not.
         let line_of = |needle: &str| {
             display[..display.find(needle).unwrap()]

@@ -323,10 +323,10 @@ index e72cb01b..ef7f433a 100644
  }
 diff --git a/crates/base/src/text/decorations.rs b/crates/base/src/text/decorations.rs
 new file mode 100644
-index 00000000..776c5efb
+index 00000000..c565f239
 --- /dev/null
 +++ b/crates/base/src/text/decorations.rs
-@@ -0,0 +1,359 @@
+@@ -0,0 +1,374 @@
 +//! Theme decoration slots for rich text and the editor's Live Preview.
 +//!
 +//! A theme fills these with parameters; the renderer draws each slot in one
@@ -545,25 +545,39 @@ index 00000000..776c5efb
 +
 +/// Per-letter colours for byte ranges of a line: the `t` of a byte offset
 +/// along its span, counted in characters, so every letter gets its own step.
++/// Character starts are indexed once per span, so a lookup is a binary search.
 +pub struct LetterGradient<'a> {
-+    text: &'a str,
 +    spans: &'a [Range<usize>],
++    /// Per span, the byte offset (from the span start) of every character;
++    /// None when the text does not cover the span (steps fall back to bytes).
++    starts: Vec<Option<Vec<usize>>>,
 +}
 +
 +impl<'a> LetterGradient<'a> {
-+    pub fn new(text: &'a str, spans: &'a [Range<usize>]) -> Self {
-+        Self { text, spans }
++    pub fn new(text: &str, spans: &'a [Range<usize>]) -> Self {
++        let starts = spans
++            .iter()
++            .map(|span| {
++                text.get(span.clone())
++                    .map(|t| t.char_indices().map(|(i, _)| i).collect())
++            })
++            .collect();
++        Self { spans, starts }
 +    }
 +
 +    /// `t` for the character starting at `index`, if it is in a span.
 +    pub fn t_at(&self, index: usize) -> Option<f32> {
 +        let at = self.spans.partition_point(|span| span.end <= index);
 +        let span = self.spans.get(at).filter(|span| span.start <= index)?;
++        let offset = index - span.start;
 +        // A glyph inside a span always gets a colour: should the text not
 +        // cover the span, the step falls back to bytes.
-+        let (before, count) = match (self.text.get(span.clone()), self.text.get(span.start..index)) {
-+            (Some(text), Some(before)) => (before.chars().count(), text.chars().count()),
-+            _ => (index - span.start, span.len()),
++        let (before, count) = match &self.starts[at] {
++            Some(starts) => (
++                starts.partition_point(|start| *start <= offset).saturating_sub(1),
++                starts.len(),
++            ),
++            None => (offset, span.len()),
 +        };
 +        if count <= 1 {
 +            return Some(0.);
@@ -598,14 +612,15 @@ index 00000000..776c5efb
 +        if glyph.is_emoji {
 +            continue;
 +        }
-+        let Some(t) = letters.t_at(start + glyph.index) else {
-+            continue;
-+        };
 +        let at = origin + point(glyph.position.x - row_x, baseline + glyph.position.y);
++        // Clip first: the colour lookup runs only for glyphs that can show.
 +        if at.x > mask.right() + layout.font_size * 2. || at.x < mask.left() - layout.font_size * 2.
 +        {
 +            continue;
 +        }
++        let Some(t) = letters.t_at(start + glyph.index) else {
++            continue;
++        };
 +        let _ = window.paint_glyph(at, font_id, glyph.id, layout.font_size, gradient.color_at(t));
 +    }
 +}
@@ -687,10 +702,10 @@ index 00000000..776c5efb
 +    }
 +}
 diff --git a/crates/base/src/text/inline.rs b/crates/base/src/text/inline.rs
-index 2d9cd551..5b50e138 100644
+index 2d9cd551..36910e7c 100644
 --- a/crates/base/src/text/inline.rs
 +++ b/crates/base/src/text/inline.rs
-@@ -208,6 +208,165 @@ pub(super) fn text_runs(
+@@ -208,6 +208,205 @@ pub(super) fn text_runs(
      }
  }
  
@@ -718,6 +733,46 @@ index 2d9cd551..5b50e138 100644
 +            })
 +            .map(|(range, _)| range.clone()),
 +    )
++}
++
++/// Keeps only the gradient spans whose edges already are font-run
++/// boundaries: the run before and the run after resolve to a different font
++/// (bold body text, or a heading whose own weight is not bold). A span inside
++/// text of the same font (bold in an H1, a family without a bold face) is
++/// dropped, so its colour never adds a font-run split.
++pub(super) fn spans_on_font_boundaries(
++    runs: &[TextRun],
++    spans: Vec<Range<usize>>,
++    font_id: impl Fn(&gpui::Font) -> gpui::FontId,
++) -> Vec<Range<usize>> {
++    if spans.is_empty() {
++        return spans;
++    }
++    let mut starts = Vec::with_capacity(runs.len());
++    let mut offset = 0;
++    for run in runs {
++        starts.push(offset);
++        offset += run.len;
++    }
++    let same = |a: usize, b: usize| font_id(&runs[a].font) == font_id(&runs[b].font);
++    spans
++        .into_iter()
++        .filter(|span| {
++            let (Ok(first), Some(last)) = (
++                starts.binary_search(&span.start),
++                starts.binary_search(&span.end).map_or_else(
++                    |_| (span.end == offset).then(|| runs.len()),
++                    Some,
++                ),
++            ) else {
++                return false;
++            };
++            let Some(last) = last.checked_sub(1).filter(|last| *last >= first) else {
++                return false;
++            };
++            !(first > 0 && same(first - 1, first)) && !(last + 1 < runs.len() && same(last, last + 1))
++        })
++        .collect()
 +}
 +
 +/// `runs` with the gradient spans in [`super::gradient_run_color`], set on
@@ -856,7 +911,7 @@ index 2d9cd551..5b50e138 100644
  /// A inline element used to render a inline text and support selectable.
  ///
  /// All text in TextView (including the CodeBlock) used this for text rendering.
-@@ -222,6 +381,10 @@ pub(super) struct Inline {
+@@ -222,6 +421,10 @@ pub(super) struct Inline {
      highlights: Vec<(Range<usize>, InlineHighlight)>,
      styled_text: StyledText,
      link_click_handler: Option<Arc<LinkClickHandlerFn>>,
@@ -867,7 +922,7 @@ index 2d9cd551..5b50e138 100644
  
      state: Arc<Mutex<InlineState>>,
  }
-@@ -275,10 +438,18 @@ impl Inline {
+@@ -275,10 +478,18 @@ impl Inline {
              text: text.clone(),
              styled_text: StyledText::new(text),
              link_click_handler,
@@ -886,18 +941,21 @@ index 2d9cd551..5b50e138 100644
      pub(super) fn search_source(mut self, state: &Arc<Mutex<InlineState>>, offset: usize) -> Self {
          self.search_segment = Arc::as_ptr(state) as usize;
          self.search_offset = offset;
-@@ -650,7 +821,19 @@ impl Element for Inline {
+@@ -650,7 +861,22 @@ impl Element for Inline {
          cx: &mut App,
      ) -> (LayoutId, Self::RequestLayoutState) {
          let text_style = window.text_style();
 -        let runs = text_runs(&self.text, &text_style, &self.highlights);
 +        let runs = match self.decorations.bold {
 +            Some(_) => {
-+                self.gradient_spans = bold_gradient_spans(&self.text, &self.highlights);
-+                gradient_runs(
-+                    text_runs(&self.text, &text_style, &self.highlights),
-+                    &self.gradient_spans,
-+                )
++                let runs = text_runs(&self.text, &text_style, &self.highlights);
++                let text_system = window.text_system().clone();
++                self.gradient_spans = spans_on_font_boundaries(
++                    &runs,
++                    bold_gradient_spans(&self.text, &self.highlights),
++                    |font| text_system.resolve_font(font),
++                );
++                gradient_runs(runs, &self.gradient_spans)
 +            }
 +            None => {
 +                self.gradient_spans.clear();
@@ -907,7 +965,7 @@ index 2d9cd551..5b50e138 100644
  
          self.styled_text = StyledText::new(self.text.clone()).with_runs(runs);
          let (layout_id, _) =
-@@ -749,8 +932,35 @@ impl Element for Inline {
+@@ -749,8 +975,35 @@ impl Element for Inline {
  
          let text_layout =
              AlignedLayout::new(self.styled_text.layout().clone(), window.text_style().text_align);
@@ -943,14 +1001,16 @@ index 2d9cd551..5b50e138 100644
  
          // One transient index serves selection and hit geometry for this paint.
          let geometry = OnceCell::new();
-@@ -2050,3 +2260,169 @@ mod font_presentation_regressions {
+@@ -2050,3 +2303,199 @@ mod font_presentation_regressions {
          );
      }
  }
 +
 +#[cfg(test)]
 +mod issue3154_bold_gradient {
-+    use super::{InlineHighlight, bold_gradient_spans, gradient_runs, text_runs};
++    use super::{
++        InlineHighlight, bold_gradient_spans, gradient_runs, spans_on_font_boundaries, text_runs,
++    };
 +    use crate::text::Gradient;
 +    use gpui::{FontWeight, HighlightStyle, TextStyle, px};
 +    use std::sync::{
@@ -1058,6 +1118,29 @@ index 2d9cd551..5b50e138 100644
 +    }
 +
 +    #[test]
++    fn bold_inside_text_of_the_same_font_keeps_its_solid_colour() {
++        // `# Left **middle** right`: the H1 is bold already, so `middle` is
++        // the same font as its neighbours and a colour would split the run.
++        let text = "Left middle right";
++        let highlights = vec![(5..11, bold())];
++        let system = gpui::WindowTextSystem::new(Arc::new(gpui::TextSystem::new(Arc::new(
++            BoldFace(Arc::new(AtomicUsize::new(0))),
++        ))));
++        let font_id = |font: &gpui::Font| system.resolve_font(font);
++        let spans = bold_gradient_spans(text, &highlights);
++        assert_eq!(spans, vec![5..11], "positive control: an eligible bold span");
++        let heading = TextStyle {
++            font_weight: FontWeight::BOLD,
++            ..Default::default()
++        };
++        let runs = text_runs(text, &heading, &highlights);
++        assert!(spans_on_font_boundaries(&runs, spans.clone(), font_id).is_empty());
++        // Body text: the bold face is its own font, so the span stays.
++        let body = text_runs(text, &TextStyle::default(), &highlights);
++        assert_eq!(spans_on_font_boundaries(&body, spans, font_id), vec![5..11]);
++    }
++
++    #[test]
 +    fn bold_gradient_reuses_the_shaped_line_and_adds_no_shaping() {
 +        let text = "Plain words with a bold phrase inside, then plain words again";
 +        let bold_range = 19..30;
@@ -1070,6 +1153,11 @@ index 2d9cd551..5b50e138 100644
 +        let spans = bold_gradient_spans(text, &highlights);
 +        assert_eq!(spans, vec![bold_range.clone()]);
 +        let plain = text_runs(text, &style, &highlights);
++        let ids = gpui::WindowTextSystem::new(Arc::new(gpui::TextSystem::new(Arc::new(
++            BoldFace(Arc::new(AtomicUsize::new(0))),
++        ))));
++        let spans = spans_on_font_boundaries(&plain, spans, |font| ids.resolve_font(font));
++        assert_eq!(spans, vec![bold_range.clone()], "body bold is its own font run");
 +        let painted = gradient_runs(plain.clone(), &spans);
 +        assert_eq!(painted.len(), plain.len(), "only colours change");
 +        assert!(painted.iter().any(|run| run.color == crate::text::gradient_run_color()));
@@ -1187,7 +1275,7 @@ index 6465f8ea..9076b680 100644
  pub use node::{CodeBlock, TableData, TextMark};
  pub use state::*;
 diff --git a/crates/base/src/text/node.rs b/crates/base/src/text/node.rs
-index c2de3d89..5d1b71aa 100644
+index c2de3d89..51595287 100644
 --- a/crates/base/src/text/node.rs
 +++ b/crates/base/src/text/node.rs
 @@ -1842,6 +1842,7 @@ impl Paragraph {
@@ -1214,17 +1302,21 @@ index c2de3d89..5d1b71aa 100644
                  .into_any_element(),
              );
          }
-@@ -2990,9 +2993,32 @@ impl BlockNode {
+@@ -2990,9 +2993,36 @@ impl BlockNode {
                      .font_weight(font_weight)
                      .when_some(node_cx.style.heading_color(*level), |d, color| d.text_color(color))
                      .child(children.render(node_cx, window, cx))
-+                    // Theme slot: a rule under H2-H6, accent fading out.
++                    // Theme slot: a rule under H2-H6, accent fading out. It is
++                    // painted at the bottom of the heading's existing padding
++                    // box: absolute, so no block height or text moves.
 +                    .when_some(
 +                        node_cx.style.decorations().heading_rule.filter(|_| *level >= 2),
 +                        |d, rule| {
-+                            d.child(
++                            d.relative().child(
 +                                div()
-+                                    .mt(rems(0.3))
++                                    .absolute()
++                                    .left_0()
++                                    .bottom_0()
 +                                    .h(rule.thickness)
 +                                    .w(relative(rule.length.clamp(0., 1.)))
 +                                    .bg(rule.gradient.background()),
@@ -1248,7 +1340,7 @@ index c2de3d89..5d1b71aa 100644
                  .w_full()
                  .pb(mb)
                  .child(
-@@ -3001,8 +3027,24 @@ impl BlockNode {
+@@ -3001,8 +3031,24 @@ impl BlockNode {
                          .w_full()
                          .text_color(node_cx.style.muted_foreground())
                          .border_l_3()
@@ -1260,10 +1352,10 @@ index c2de3d89..5d1b71aa 100644
 +                        )
                          .px_4()
 +                        // Theme slot: angled background, short gradient bars
-+                        // along the top and bottom edges.
++                        // along the top and bottom edges, painted over the
++                        // quote's existing box (no padding or size change).
 +                        .when_some(decoration, |d, decoration| {
 +                            d.relative()
-+                                .py_3()
 +                                .rounded_r(px(5.))
 +                                .when_some(decoration.background, |d, g| d.bg(g.background()))
 +                                .when_some(decoration.top_bar, |d, b| d.child(bar(b).top_0()))
@@ -1274,7 +1366,7 @@ index c2de3d89..5d1b71aa 100644
                          .children({
                              let children_len = children.len();
                              children.into_iter().enumerate().map(move |(index, c)| {
-@@ -3011,7 +3053,8 @@ impl BlockNode {
+@@ -3011,7 +3057,8 @@ impl BlockNode {
                              })
                          }),
                  )
@@ -1284,7 +1376,7 @@ index c2de3d89..5d1b71aa 100644
              BlockNode::List {
                  children, ordered, ..
              } => v_flex()
-@@ -3065,12 +3108,23 @@ impl BlockNode {
+@@ -3065,12 +3112,26 @@ impl BlockNode {
              }
              BlockNode::HorizontalRule { .. } => div()
                  .pb(mb)
@@ -1292,13 +1384,16 @@ index c2de3d89..5d1b71aa 100644
 -                    div()
 +                .child(match node_cx.style.decorations().horizontal_rule {
 +                    // Theme slot: edge -> middle -> edge, two two-stop halves.
++                    // The rule keeps the default rule's 2 px box; the halves
++                    // are centred in it, so no block height changes.
 +                    Some(rule) => {
 +                        let [left, right] = rule.halves();
 +                        h_flex()
 +                            .id("horizontal-rule")
-+                            .h(rule.thickness)
-+                            .child(div().flex_1().h_full().bg(left.background()))
-+                            .child(div().flex_1().h_full().bg(right.background()))
++                            .h(px(2.))
++                            .items_center()
++                            .child(div().flex_1().h(rule.thickness).bg(left.background()))
++                            .child(div().flex_1().h(rule.thickness).bg(right.background()))
 +                            .into_any_element()
 +                    }
 +                    None => div()

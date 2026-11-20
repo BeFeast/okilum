@@ -457,8 +457,13 @@ Gradients are GPUI's two-stop `linear_gradient` (angles in CSS degrees);
 colours interpolate in sRGB with alpha. The bold gradient needs no GPUI patch:
 a bold span already is its own font run, so it takes one run colour (no new
 font-run split, so shaping and the line-layout cache key are unchanged) and
-its glyphs are painted again letter by letter at paint time. Links, code,
-syntax colours and right-to-left text keep their solid colours. A vendor test
+its glyphs are painted again letter by letter at paint time. A span is
+coloured only when its edges already are font-run boundaries (checked with the
+resolved fonts in the Reader); bold inside a heading, links, code, syntax
+colours and right-to-left text keep their solid colours. Reader slots paint
+inside the block's existing box (the heading rule sits in the heading's bottom
+padding, quote bars and background over the quote, `hr` halves inside the 2 px
+rule), so no block height or text position changes. A vendor test
 counts real shaping calls: the gradient adds none and reuses the cached line,
 while a colour run per letter (the control) reshapes. Every slot is
 paint-only: no text, run or layout changes, no animation, and a theme switch

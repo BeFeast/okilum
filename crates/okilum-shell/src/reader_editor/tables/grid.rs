@@ -6,8 +6,8 @@ use super::*;
 mod idle;
 use crate::source_presentation::{CachedProvider, ProjectionColors};
 use gpui_component::input::projection::{
-    ConcealBias, LineIndent, LineScale, ProjectedByte, ProjectionBlock, ProjectionMarker,
-    ProjectionStyle, SourceByte, SourceStamp,
+    ConcealBias, LineIndent, LineScale, ProjectedByte, ProjectionBlock, ProjectionDecorations,
+    ProjectionMarker, ProjectionStyle, SourceByte, SourceStamp,
 };
 use gpui_component::input::RopeExt as _;
 use gpui_component::input::{InputEvent, Redo, Textarea, TextareaState, Undo};
@@ -400,7 +400,9 @@ impl TableGrid {
                 headings: brand::reader_palette(cx).headings,
                 link: palette.link,
                 muted: palette.text_muted,
-                decorations: Default::default(),
+                // The whole note keeps its theme decorations while a grid is
+                // open, and close() restores this decorated provider (#3154).
+                decorations: brand::reader_palette(cx).decorations,
             },
             reader_fonts::code(cx).to_string(),
             cx.theme().highlight_theme.clone(),
@@ -1122,6 +1124,9 @@ impl SourceProjection for GridProjection {
     }
     fn styles(&self) -> &[ProjectionStyle] {
         self.base.styles()
+    }
+    fn decorations(&self) -> Option<&ProjectionDecorations> {
+        self.base.decorations()
     }
     fn markers(&self) -> &[ProjectionMarker] {
         self.base.markers()
