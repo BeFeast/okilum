@@ -79,6 +79,12 @@ pub(super) struct Removal {
     /// those grants (#3105).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     relayed: BTreeMap<Uuid, BTreeSet<String>>,
+    /// Vaults whose effects finished before a later delivery of the same
+    /// removal named more vaults: one decision can reach this computer as
+    /// disjoint subsets through different relays, each the owner of its own
+    /// vaults. Their folders are not touched again (#3195).
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    done: BTreeSet<String>,
 }
 /// An admission epoch: raised by every readmission. Ordered by counter, then
 /// by the readmitting computer's device, so two computers that readmit the
@@ -622,6 +628,7 @@ impl Removal {
             delivered: BTreeMap::new(),
             undo: None,
             relayed: BTreeMap::new(),
+            done: BTreeSet::new(),
         }
     }
 }
@@ -1291,18 +1298,38 @@ impl Controller {
     ) -> Result<()> {
         self.check()?;
         ensure!(valid(device) && !id.is_nil(), "Invalid removal identity");
-        let (attached, known, authorized) = {
+        let mut requested = requested;
+        let (attached, known, authorized, extending) = {
             let db = self.shared.db.lock().unwrap();
-            if let Some(old) = db.removals.iter().find(|r| r.id == id) {
-                ensure!(
-                    old.device == device,
-                    "Removal identity conflicts with its durable request"
-                );
-                return Ok(());
-            }
+            let extending = match db.removals.iter().find(|r| r.id == id) {
+                Some(old) => {
+                    ensure!(
+                        old.device == device,
+                        "Removal identity conflicts with its durable request"
+                    );
+                    // A replay changes nothing. A received delivery of the
+                    // same open decision may still name vaults this record
+                    // lacks: another relay owns those for this computer and
+                    // delivers its own subset under the same id (#3195).
+                    let Some(sender) = sender.filter(|_| !old.superseded()) else {
+                        return Ok(());
+                    };
+                    requested = requested
+                        .difference(&old.vaults)
+                        .filter(|v| knows(&db, sender, v))
+                        .cloned()
+                        .collect();
+                    if requested.is_empty() {
+                        return Ok(());
+                    }
+                    true
+                }
+                None => false,
+            };
             ensure!(
-                db.removals.iter().filter(|r| !r.superseded()).count() < 256
-                    && db.removals.len() < MAX_REMOVALS,
+                extending
+                    || db.removals.iter().filter(|r| !r.superseded()).count() < 256
+                        && db.removals.len() < MAX_REMOVALS,
                 "Removal history limit reached; existing records were kept"
             );
             if let Some(sender) = sender {
@@ -1323,6 +1350,7 @@ impl Controller {
                     .filter(|v| sender.is_some_and(|peer| knows(&db, peer, v)))
                     .cloned()
                     .collect::<BTreeSet<_>>(),
+                extending,
             )
         };
         let configs = self.configuration_paths()?;
@@ -1354,6 +1382,10 @@ impl Controller {
                 vaults.insert(fresh.folder_id);
             }
         }
+        if extending && vaults.is_empty() {
+            // Nothing of the further subset is here: as before, a duplicate.
+            return Ok(());
+        }
         ensure!(
             known || !vaults.is_empty(),
             "Removed computer is not in these vaults"
@@ -1371,12 +1403,45 @@ impl Controller {
         let mut db = self.shared.db.lock().unwrap();
         // A closed delivery of the same removal may have arrived during the
         // daemon inspection above (#3079); keep that record, never add another.
-        if let Some(old) = db.removals.iter().find(|r| r.id == id) {
+        if let Some(index) = db.removals.iter().position(|r| r.id == id) {
             ensure!(
-                old.device == device,
+                db.removals[index].device == device,
                 "Removal identity conflicts with its durable request"
             );
-            return Ok(());
+            if !extending || db.removals[index].superseded() {
+                return Ok(());
+            }
+            // The same decision for further vaults, from their owner: the one
+            // record covers them too and applies again, to those folders
+            // only. What finished already stays done (#3195).
+            let sender = sender.context("Removal sender missing")?;
+            let added: BTreeSet<String> = vaults
+                .difference(&db.removals[index].vaults)
+                .cloned()
+                .collect();
+            if added.is_empty() {
+                return Ok(());
+            }
+            let relayed = onward_to_removed(&db, sender, device, &added);
+            let relays: Vec<(Uuid, Paired)> = relayed
+                .keys()
+                .filter_map(|peer| db.peers.get(peer).map(|paired| (*peer, paired.clone())))
+                .collect();
+            let removal = &mut db.removals[index];
+            if removal.local_applied {
+                let finished = removal.vaults.clone();
+                removal.done.extend(finished);
+                removal.local_applied = false;
+            }
+            removal.vaults.extend(added);
+            for (peer, shared) in relayed {
+                removal.relayed.entry(peer).or_default().extend(shared);
+            }
+            for (peer, paired) in relays {
+                removal.delivered.remove(&peer);
+                removal.pending.insert(peer, paired);
+            }
+            return self.save(&db);
         }
         // Only the computer that decided the removal delivers it. A receiver,
         // including the removed computer, applies the decision and does not
@@ -1423,6 +1488,7 @@ impl Controller {
             delivered: BTreeMap::new(),
             undo: None,
             relayed,
+            done: BTreeSet::new(),
         });
         if older {
             if let Some(added) = db.removals.last_mut() {
@@ -1515,7 +1581,11 @@ impl Controller {
                     known.device == device,
                     "Removal identity conflicts with its durable request"
                 );
-                if !known.vaults.is_empty() {
+                // Closing needs the owner of everything the record covers.
+                // Learning an admission touches only this delivery's vaults,
+                // checked above; the record may hold another owner's subset
+                // of the same decision (#3195).
+                if stale && !known.vaults.is_empty() {
                     ensure!(
                         removal_from_owner(&db, scope, &known.vaults),
                         "Only the vault owner can remove a computer from this vault"
@@ -1704,13 +1774,24 @@ impl Controller {
             );
         }
         let configs = self.configuration_paths()?;
-        if removal.folders.is_none() {
-            let mut folders = Vec::new();
-            let mut mesh = Mesh::new();
-            for vault in attached
-                .into_iter()
-                .filter(|v| removal.vaults.contains(&v.folder_id))
-            {
+        // Vaults named since the preimages were captured: a further subset of
+        // the same decision from another owner (#3195).
+        let captured: BTreeSet<String> = removal
+            .folders
+            .iter()
+            .flatten()
+            .map(|f| f.vault.folder_id.clone())
+            .collect();
+        let uncaptured = removal
+            .folders
+            .as_ref()
+            .is_some_and(|_| removal.vaults.iter().any(|v| !captured.contains(v)));
+        if removal.folders.is_none() || uncaptured {
+            let mut folders = removal.folders.clone().unwrap_or_default();
+            let mut mesh = removal.mesh.clone().unwrap_or_default();
+            for vault in attached.into_iter().filter(|v| {
+                removal.vaults.contains(&v.folder_id) && !captured.contains(&v.folder_id)
+            }) {
                 let fresh = inspect_existing(&configs, &vault.path)?;
                 ensure!(
                     existing::same_binding(&vault, &fresh),
@@ -1723,7 +1804,14 @@ impl Controller {
                     &fresh,
                     &removal.device,
                 );
-                if needs_handoff && removal.mesh.is_none() {
+                // A further subset needs the introducer's mesh for its own
+                // vault, not only the one captured for the first (#3195).
+                if needs_handoff
+                    && removal
+                        .mesh
+                        .as_ref()
+                        .is_none_or(|m| uncaptured && !m.contains_key(&fresh.folder_id))
+                {
                     // Ask the still-serving introducer first. It freezes the
                     // final common-vault mesh before revoking its authority.
                     return Ok(false);
@@ -1800,6 +1888,11 @@ impl Controller {
             return Ok(false);
         }
         for folder in removal.folders.as_ref().unwrap() {
+            // Finished under an earlier subset of this decision; the
+            // revocations since change its view, and it needs nothing (#3195).
+            if removal.done.contains(&folder.vault.folder_id) {
+                continue;
+            }
             self.check()?;
             let fresh = inspect_existing(&configs, &folder.vault.path)?;
             ensure!(
@@ -2540,6 +2633,7 @@ mod tests {
             delivered: BTreeMap::new(),
             undo: None,
             relayed: BTreeMap::new(),
+            done: BTreeSet::new(),
         }
     }
     fn existing_vault(own: &str, vault: &str) -> Result<ExistingVault> {
@@ -4668,6 +4762,237 @@ mod tests {
         assert!(!removal_from_owner(&db, c, &both));
         drop(db);
         removed.shutdown();
+        Ok(())
+    }
+
+    /// Loopback Syncthing REST double for one computer's removal: inventory,
+    /// folder reads and folder PATCHes, which it counts (#3195).
+    #[cfg(target_os = "linux")]
+    fn removal_rest(
+        state: std::sync::Arc<std::sync::Mutex<serde_json::Value>>,
+    ) -> Result<std::net::SocketAddr> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let address = listener.local_addr()?;
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let _ = removal_rest_reply(&mut stream, &state);
+            }
+        });
+        Ok(address)
+    }
+    #[cfg(target_os = "linux")]
+    fn removal_rest_reply(
+        stream: &mut std::net::TcpStream,
+        state: &std::sync::Mutex<serde_json::Value>,
+    ) -> Result<()> {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let mut reader = BufReader::new(stream.try_clone()?);
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        let mut length = 0;
+        loop {
+            let mut header = String::new();
+            reader.read_line(&mut header)?;
+            if header.trim().is_empty() {
+                break;
+            }
+            if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = value.trim().parse()?;
+            }
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body)?;
+        let mut parts = line.split_whitespace();
+        let method = parts.next().unwrap_or_default();
+        let path = parts.next().unwrap_or_default();
+        let mut state = state.lock().unwrap();
+        let folder = path.strip_prefix("/rest/config/folders/").and_then(|id| {
+            state["folders"]
+                .as_array()
+                .and_then(|all| all.iter().position(|f| f["id"] == id))
+        });
+        let reply = match (method, path, folder) {
+            ("GET", "/rest/system/status", _) => Some(json!({"myID": state["me"].clone()})),
+            ("GET", "/rest/system/version", _) => Some(json!({"version":"v2.1.6"})),
+            ("GET", "/rest/config", _) => Some(
+                json!({"folders": state["folders"].clone(), "devices": state["devices"].clone()}),
+            ),
+            ("GET", _, Some(index)) => Some(state["folders"][index].clone()),
+            ("PATCH", _, Some(index)) => {
+                let changes: serde_json::Value = serde_json::from_slice(&body)?;
+                for (key, value) in changes.as_object().context("patch object")? {
+                    state["folders"][index][key] = value.clone();
+                }
+                let id = state["folders"][index]["id"].clone();
+                state["patches"].as_array_mut().unwrap().push(id);
+                Some(serde_json::Value::Null)
+            }
+            _ => None,
+        };
+        let (status, body) = match reply {
+            Some(serde_json::Value::Null) => ("200 OK", String::new()),
+            Some(value) => ("200 OK", value.to_string()),
+            None => ("404 Not Found", String::new()),
+        };
+        write!(
+            stream,
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )?;
+        Ok(())
+    }
+
+    /// #3195 (split from #3106 review 87342): A removes B from V1 and V2. B
+    /// received V1 through C and V2 through D, so each relay is the owner of
+    /// one vault on B and delivers only that vault, under the same removal
+    /// id. B applies both subsets whichever arrives first, across a restart
+    /// between them, keeps its files, and a replay of either changes nothing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn issue3195_one_removal_through_two_relays_applies_both_subsets() -> Result<()> {
+        use sha2::{Digest, Sha256};
+        let bob = ["BBBBBBB"; 8].join("-");
+        let carol = ["CCCCCCC"; 8].join("-");
+        let dave = ["DDDDDDD"; 8].join("-");
+        // Restart: the old controller and its worker are gone first.
+        let reopen = |old: Controller, state: &Path, configs: &[PathBuf]| -> Result<Controller> {
+            let worker = std::sync::Arc::downgrade(&old.shared);
+            old.shutdown();
+            drop(old);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while worker.strong_count() != 0 && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert_eq!(worker.strong_count(), 0, "worker did not terminate");
+            Controller::open(state.to_path_buf(), configs.to_vec())
+        };
+        for c_first in [true, false] {
+            let root = tempfile::tempdir()?;
+            let base = root.path().canonicalize()?;
+            let home = base.join("syncthing");
+            private::directory(&home)?;
+            let (v1, v2) = (base.join("v1"), base.join("v2"));
+            for (dir, name) in [(&v1, "v1"), (&v2, "v2")] {
+                std::fs::create_dir(dir)?;
+                std::fs::write(dir.join("keep.md"), format!("kept in {name}"))?;
+            }
+            let folder = |id: &str, path: &Path, relay: &str| {
+                json!({"id": id, "label": id, "path": path, "type": "sendreceive",
+                    "paused": false, "devices": [{"deviceID": bob}, {"deviceID": relay}]})
+            };
+            let rest = std::sync::Arc::new(std::sync::Mutex::new(json!({
+                "me": bob,
+                "folders": [folder("v1", &v1, &carol), folder("v2", &v2, &dave)],
+                "devices": [
+                    {"deviceID": bob, "addresses": ["dynamic"]},
+                    {"deviceID": carol, "addresses": ["tcp://127.0.0.1:22001"]},
+                    {"deviceID": dave, "addresses": ["tcp://127.0.0.1:22002"]},
+                ],
+                "patches": [],
+            })));
+            let address = removal_rest(rest.clone())?;
+            let config = home.join("config.xml");
+            private::write(&config, format!(r#"<configuration><gui tls="false"><address>{address}</address><apikey>fixture-key</apikey></gui></configuration>"#).as_bytes())?;
+            private::write(&home.join("cert.pem"), b"fixture certificate")?;
+            let configs = vec![config.canonicalize()?];
+            let mut via_c = pairing(&carol, wire::public(&wire::random()?)?)?;
+            via_c.allowed = vec!["v1".into()];
+            let mut via_d = pairing(&dave, wire::public(&wire::random()?)?)?;
+            via_d.allowed = vec!["v2".into()];
+            let (c, d) = (via_c.peer.id, via_d.peer.id);
+            let state = base.join("b");
+            let removed = Controller::open(state.clone(), configs.clone())?;
+            {
+                let mut db = removed.shared.db.lock().unwrap();
+                db.peers.insert(c, via_c);
+                db.peers.insert(d, via_d);
+                // B received V1 from C and V2 from D: each relay owns one.
+                db.transfers.push(received(c, "v1", &bob, false)?);
+                db.transfers.push(received(d, "v2", &bob, false)?);
+                db.attached.push(inspect_existing(&configs, &v1)?);
+                db.attached.push(inspect_existing(&configs, &v2)?);
+                let identity = &db.attached[0].daemon;
+                assert_eq!(
+                    identity.certificate_hash,
+                    format!("{:x}", Sha256::digest(b"fixture certificate"))
+                );
+                assert!(removal_from_owner(&db, c, &BTreeSet::from(["v1".into()])));
+                assert!(removal_from_owner(&db, d, &BTreeSet::from(["v2".into()])));
+                removed.save(&db)?;
+            }
+            let removed = reopen(removed, &state, &configs)?;
+            let id = Uuid::new_v4();
+            let (first, second) = if c_first {
+                ((c, "v1"), (d, "v2"))
+            } else {
+                ((d, "v2"), (c, "v1"))
+            };
+            let paused = |vault: &str| {
+                rest.lock().unwrap()["folders"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|f| f["id"] == vault && f["paused"] == true)
+            };
+            let patches = || rest.lock().unwrap()["patches"].as_array().unwrap().len();
+            let deliver = |removed: &Controller, (scope, vault): (Uuid, &str)| -> Result<()> {
+                let reply = removed.receive_removal(
+                    scope,
+                    id,
+                    bob.clone(),
+                    BTreeSet::from([vault.to_string()]),
+                    None,
+                    Version::default(),
+                )?;
+                ensure!(
+                    matches!(reply, Reply::RemovalRecorded { id: recorded } if recorded == id),
+                    "delivery of {vault} was not recorded"
+                );
+                Ok(())
+            };
+            deliver(&removed, first)?;
+            assert!(paused(first.1), "first subset applied");
+            assert!(
+                !paused(second.1),
+                "the first relay's subset names one vault"
+            );
+            assert_eq!(patches(), 1);
+            // Restart between the two subsets: the record is durable.
+            let removed = reopen(removed, &state, &configs)?;
+            deliver(&removed, second)?;
+            assert!(
+                paused(second.1),
+                "the second relay's subset of the same removal was acknowledged without pausing its folder (c_first={c_first})"
+            );
+            assert!(paused(first.1));
+            assert_eq!(patches(), 2, "each folder is paused exactly once");
+            // Replays of either subset, also after another restart, change nothing.
+            let removed = reopen(removed, &state, &configs)?;
+            deliver(&removed, first)?;
+            deliver(&removed, second)?;
+            assert_eq!(patches(), 2, "a replay applied the removal again");
+            {
+                let db = removed.shared.db.lock().unwrap();
+                let records: Vec<_> = db.removals.iter().filter(|r| r.id == id).collect();
+                assert_eq!(records.len(), 1, "one decision, one record");
+                assert_eq!(
+                    records[0].vaults,
+                    BTreeSet::from(["v1".into(), "v2".into()])
+                );
+                assert!(records[0].local_applied && !records[0].superseded());
+                assert_eq!(pending(&db), 0);
+                assert!(db.local_removed, "both pairings ended with their vaults");
+            }
+            for (dir, name) in [(&v1, "v1"), (&v2, "v2")] {
+                assert_eq!(
+                    std::fs::read_to_string(dir.join("keep.md"))?,
+                    format!("kept in {name}"),
+                    "removed copy was modified"
+                );
+            }
+            removed.shutdown();
+        }
         Ok(())
     }
 }
