@@ -13,6 +13,14 @@
 use super::*;
 
 pub(super) struct Surface {
+    // Which note this surface shows and its source.
+    pub current_rel: String,
+    pub current_title: String,
+    /// Source of the open note as rendered, before any find marks. Kept so
+    /// the find bar can re-mark it on every keystroke and restore it on Esc.
+    pub note_source: String,
+    pub note_canonical_source: Option<Arc<str>>,
+
     // Find.
     pub find_input: Entity<InputState>,
     pub find_open: bool,
@@ -57,6 +65,10 @@ pub(super) struct Surface {
 impl Surface {
     pub(super) fn new(find_input: Entity<InputState>, use_html: bool) -> Self {
         Self {
+            current_rel: String::new(),
+            current_title: String::new(),
+            note_source: String::new(),
+            note_canonical_source: None,
             find_input,
             find_open: false,
             link_choices: Vec::new(),

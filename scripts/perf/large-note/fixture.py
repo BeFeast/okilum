@@ -30,6 +30,84 @@ NOTE = "Large.md"
 SMALL = "Small.md"
 SMALL_TEXT = "".join(f"## Small section {i}\n\nA short paragraph {i}.\n\n" for i in range(5))
 NOTE_SHA256 = "ccb97e476dce3c9e32fe0ed73b62d85516609fc68915590dd3b2afa336bb188b"
+# The code-block note (#3156): 10,000 lines of fenced Rust, Python,
+# JavaScript and JSON under headings, for syntax-palette A/B runs.
+CODE_NOTE = "Code.md"
+CODE_NOTE_SHA256 = "41c31aa735dfe7b493ad7ab9517ff2308ae8d2d05248eb829fa85882a6535dce"
+CODE_SAMPLES = {
+    "rust": [
+        "/// Sums the weights of section {i}.",
+        "pub fn weigh_{i}(items: &[Item], limit: usize) -> Option<u64> {{",
+        "    let mut total: u64 = 0; // running sum",
+        "    for (index, item) in items.iter().enumerate().take(limit) {{",
+        "        if item.name.starts_with(\"skip-{i}\") {{",
+        "            continue;",
+        "        }}",
+        "        total += item.weight * {i} + index as u64;",
+        "    }}",
+        "    match total {{",
+        "        0 => None,",
+        "        n if n > 0x{i:04x} => Some(n - 1),",
+        "        n => Some(n),",
+        "    }}",
+        "}}",
+        "const LIMIT_{i}: usize = {i} * 16;",
+    ],
+    "python": [
+        "# Section {i}: parse and count records.",
+        "import json",
+        "from dataclasses import dataclass",
+        "",
+        "@dataclass",
+        "class Record{i}:",
+        "    name: str",
+        "    weight: float = {i}.5",
+        "",
+        "def count_{i}(rows: list[dict]) -> int:",
+        "    \"\"\"Count rows whose name matches.\"\"\"",
+        "    total = 0",
+        "    for row in rows:",
+        "        if row.get(\"name\", \"\").startswith(\"r{i}\") and row[\"weight\"] > 3.14:",
+        "            total += 1",
+        "    return total",
+    ],
+    "javascript": [
+        "// Section {i}: render a list of entries.",
+        "export async function render{i}(entries, {{ limit = {i} }} = {{}}) {{",
+        "  const out = [];",
+        "  for (const [index, entry] of entries.entries()) {{",
+        "    if (index >= limit || entry === null) break;",
+        "    out.push(`${{entry.title}} #{i}: ${{entry.count * 2}}`);",
+        "  }}",
+        "  const total = out.length > 0 ? out.length : -1;",
+        "  return {{ total, items: out, ok: true, ratio: 0.{i} }};",
+        "}}",
+        "",
+        "class View{i} extends Base {{",
+        "  constructor(root) {{ super(root); this.root = root; }}",
+        "  get size() {{ return this.root?.children.length ?? 0; }}",
+        "}}",
+        "const pattern{i} = /^item-{i}-(\\d+)$/u;",
+    ],
+    "json": [
+        "{{",
+        "  \"section\": {i},",
+        "  \"name\": \"code-{i}\",",
+        "  \"enabled\": true,",
+        "  \"ratio\": 0.{i},",
+        "  \"owner\": null,",
+        "  \"tags\": [\"alpha\", \"beta\", \"gamma-{i}\"],",
+        "  \"limits\": {{",
+        "    \"min\": -{i},",
+        "    \"max\": {i}00,",
+        "    \"step\": 1.5e3",
+        "  }},",
+        "  \"nested\": [{{ \"id\": 1 }}, {{ \"id\": 2 }}],",
+        "  \"escaped\": \"tab\\tnew\\nline\",",
+        "  \"last\": false",
+        "}}",
+    ],
+}
 
 
 def png(width, height, seed):
@@ -98,6 +176,26 @@ def note():
                   "tables": TABLES, "table_rows": TABLE_ROWS, "bytes": len(data)}
 
 
+def code_note():
+    """Code.md as bytes, and its counts: headings over fenced code blocks."""
+    lines = ["# Code stress note", ""]
+    headings, blocks = 1, 0
+    languages = list(CODE_SAMPLES)
+    i = 0
+    while True:
+        language = languages[i % len(languages)]
+        code = [line.format(i=i) for line in CODE_SAMPLES[language]]
+        section = [f"## Section {i} ({language})", "", f"Paragraph {i} explains the {language} sample below.", "",
+                   f"```{language}", *code, "```", ""]
+        if len(lines) + len(section) > LINES:
+            break
+        lines += section
+        headings, blocks, i = headings + 1, blocks + 1, i + 1
+    lines += [f"Closing line {n}." for n in range(LINES - len(lines))]
+    data = ("\n".join(lines) + "\n").encode()
+    return data, {"lines": len(lines), "headings": headings, "code_blocks": blocks, "bytes": len(data)}
+
+
 def write(vault, check=False):
     """Write the stress vault; return the large note's path and its counts."""
     vault = Path(vault)
@@ -114,6 +212,11 @@ def write(vault, check=False):
     path = vault / NOTE
     path.write_bytes(data)
     (vault / SMALL).write_text(SMALL_TEXT)
+    code, _ = code_note()
+    code_digest = hashlib.sha256(code).hexdigest()
+    if check and code_digest != CODE_NOTE_SHA256:
+        raise SystemExit(f"{CODE_NOTE} drifted: sha256 {code_digest}, pinned {CODE_NOTE_SHA256}")
+    (vault / CODE_NOTE).write_bytes(code)
     counts["sha256"] = digest
     return path, counts
 

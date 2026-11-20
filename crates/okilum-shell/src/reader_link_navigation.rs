@@ -55,7 +55,7 @@ pub(super) fn handle_link(
     }
     if let Some(entity) = entity.upgrade() {
         let landed = entity.update(cx, |this, cx| {
-            let landing = reader_obsidian::footnote_landing(url, &this.note_source)?;
+            let landing = reader_obsidian::footnote_landing(url, &this.pane.note_source)?;
             match landing {
                 Ok(ix) => this.scroll_to_block(ix, cx),
                 Err(reason) => this.link_notice = Some(reason.into()),
@@ -123,7 +123,7 @@ pub(super) fn handle_link(
         if let Some(entity) = entity.upgrade() {
             entity.update(cx, |this, cx| {
                 let rel = if rel.is_empty() {
-                    this.current_rel.clone()
+                    this.pane.current_rel.clone()
                 } else {
                     rel
                 };
@@ -145,7 +145,7 @@ pub(super) fn handle_link(
                     &target,
                     wiki,
                     &this.vault,
-                    &this.current_rel,
+                    &this.pane.current_rel,
                 );
                 this.link_notice = Some(ambiguous_notice(&resolved.candidates).into());
                 this.pane.link_choices = resolved

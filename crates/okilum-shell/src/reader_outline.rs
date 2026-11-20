@@ -153,7 +153,7 @@ impl Reader {
             input.read(cx).selected_range(),
         );
         let root = self.vault_root.clone();
-        let rel = self.current_rel.clone();
+        let rel = self.pane.current_rel.clone();
         self.cancel_pending_landing();
         let request = self.navigation.landing_generation;
         input.read(cx).focus_handle(cx).focus(window, cx);
@@ -162,7 +162,7 @@ impl Reader {
             let _ = this.update_in_own_window(cx, |this, window, cx| {
                 if this.navigation.landing_generation != request
                     || this.vault_root != root
-                    || this.current_rel != rel
+                    || this.pane.current_rel != rel
                     || this
                         .editing
                         .as_ref()
@@ -194,7 +194,7 @@ impl Reader {
                     let _ = reader.update(cx, |reader, cx| {
                         if reader.navigation.landing_generation != request
                             || reader.vault_root != root
-                            || reader.current_rel != rel
+                            || reader.pane.current_rel != rel
                             || reader
                                 .editing
                                 .as_ref()
@@ -282,11 +282,11 @@ mod tests {
             });
             visual.run_until_parked();
             reader.update_in(visual, |reader, window, cx| {
-                assert_eq!(reader.current_rel, name);
+                assert_eq!(reader.pane.current_rel, name);
                 assert!(reader.editing.is_none(), "Read is active");
-                assert_eq!(reader.note_source, body);
+                assert_eq!(reader.pane.note_source, body);
                 assert_eq!(
-                    reader.note_canonical_source.as_deref(),
+                    reader.pane.note_canonical_source.as_deref(),
                     Some(source.as_str())
                 );
                 assert_eq!(
@@ -873,7 +873,7 @@ mod tests {
         visual.executor().advance_clock(Duration::from_millis(300));
         settle(visual);
         reader.update_in(visual, |reader, window, cx| {
-            assert_eq!(reader.current_rel, "note.md");
+            assert_eq!(reader.pane.current_rel, "note.md");
             assert!(
                 reader.link_notice.is_none(),
                 "{mode:?}: {:?}",

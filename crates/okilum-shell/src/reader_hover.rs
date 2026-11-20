@@ -201,7 +201,9 @@ impl Reader {
         if self.quick_open.open || self.editing.is_some() || self.file_menu.is_some() {
             return;
         }
-        if let Some(target) = resolved_target(url, &self.pane.prepared_links, &self.current_rel) {
+        if let Some(target) =
+            resolved_target(url, &self.pane.prepared_links, &self.pane.current_rel)
+        {
             self.hover_note(url.to_owned(), target, position, window, cx);
         }
         #[cfg(any(unix, windows))]
@@ -738,7 +740,7 @@ fn preview_plugins(
                 || url.starts_with("http://")
                 || url.starts_with("data:")
             {
-                Some(MarkdownImage::Source(ImageSource::from(url)))
+                Some(MarkdownImage::Source(crate::note_upload::image_source(url)))
             } else {
                 None
             }
@@ -1000,7 +1002,7 @@ mod tests {
                 root.join("Life/Новая 🧠.md").exists(),
                 "creation exists={}, current={}, error={:?}, notice={:?}",
                 r.creation.is_some(),
-                r.current_rel,
+                r.pane.current_rel,
                 r.creation.as_ref().and_then(|c| c.error.as_ref()),
                 r.link_notice
             );
@@ -1010,7 +1012,7 @@ mod tests {
             "# Новая 🧠\nDefault body"
         );
         reader.update_in(visual, |r, window, cx| {
-            assert_eq!(r.current_rel, "Life/Новая 🧠.md");
+            assert_eq!(r.pane.current_rel, "Life/Новая 🧠.md");
             // Resolver has the created identity even before watcher delivery.
             assert!(matches!(
                 r.vault.resolve_from("Новая 🧠", "Life/Start.md"),
@@ -1216,7 +1218,7 @@ mod tests {
     fn delayed_preview_lands_without_navigating_and_closes(cx: &mut gpui::TestAppContext) {
         let (reader, visual, root) = fixture(cx);
         let original = reader.read_with(visual, |v, _| {
-            (v.current_rel.clone(), v.navigation.history.len())
+            (v.pane.current_rel.clone(), v.navigation.history.len())
         });
         reader.update_in(visual, |v, window, cx| {
             let url = v
@@ -1224,13 +1226,14 @@ mod tests {
                 .link_identities
                 .iter()
                 .find(|link| {
-                    resolved_target(&link.url, &v.pane.prepared_links, &v.current_rel).is_some()
+                    resolved_target(&link.url, &v.pane.prepared_links, &v.pane.current_rel)
+                        .is_some()
                 })
                 .expect("resolved internal positive control")
                 .url
                 .clone();
             assert!(
-                resolved_target(&url, &v.pane.prepared_links, &v.current_rel).is_some(),
+                resolved_target(&url, &v.pane.prepared_links, &v.pane.current_rel).is_some(),
                 "url={url}, states={:?}",
                 v.pane.prepared_links
             );
@@ -1261,7 +1264,7 @@ mod tests {
                 "heading landing"
             );
             assert_eq!(
-                (v.current_rel.clone(), v.navigation.history.len()),
+                (v.pane.current_rel.clone(), v.navigation.history.len()),
                 original
             );
         });

@@ -525,9 +525,9 @@ impl Reader {
                 // of that displayed text. Explicit Trash must not discard it.
                 let clear_document = (this.deleted_current().is_none()
                     && this.pane.file_preview.is_none()
-                    && !this.current_rel.is_empty()
-                    && under(&this.current_rel, &relative))
-                .then(|| (this.current_rel.clone(), this.navigation.generation));
+                    && !this.pane.current_rel.is_empty()
+                    && under(&this.pane.current_rel, &relative))
+                .then(|| (this.pane.current_rel.clone(), this.navigation.generation));
                 let editor = if own_path.as_ref() == Some(&root.join(this.selected_file())) {
                     this.editing.take()
                 } else {
@@ -589,7 +589,7 @@ impl Reader {
                         if this.vault_root == root && under(this.selected_file(), &relative) {
                             this.editing = None;
                             if clear_document.as_ref().is_some_and(|(rel, generation)| {
-                                rel == &this.current_rel
+                                rel == &this.pane.current_rel
                                     && *generation == this.navigation.generation
                             }) {
                                 // The confirmed move has a successful Trash
@@ -1071,7 +1071,7 @@ mod tests {
             "our own successful Trash move must not open an external-deletion dialog"
         );
         reader.read_with(visual, |v, _| {
-            assert!(v.current_rel.is_empty());
+            assert!(v.pane.current_rel.is_empty());
             assert!(v.deleted_current().is_none());
             assert_eq!(v.trash_undo.items.len(), 1);
         });
@@ -1121,7 +1121,7 @@ mod tests {
         std::fs::write(root.join("Home.md"), returned).unwrap();
         reader.update_in(visual, |r, window, cx| {
             assert!(r.track_deleted_note(&Default::default(), cx));
-            assert_eq!(r.note_source, old);
+            assert_eq!(r.pane.note_source, old);
             r.delete_path("Home.md".into(), window, cx);
         });
         visual.run_until_parked();
@@ -1132,8 +1132,11 @@ mod tests {
                 1,
                 "returned version reached Trash"
             );
-            assert_eq!(r.current_rel, "Home.md");
-            assert_eq!(r.note_source, old, "earlier display is still the only copy");
+            assert_eq!(r.pane.current_rel, "Home.md");
+            assert_eq!(
+                r.pane.note_source, old,
+                "earlier display is still the only copy"
+            );
             assert!(r.deleted_current().is_some());
         });
         assert!(
@@ -1150,10 +1153,10 @@ mod tests {
         reader.update_in(visual, |r, _, cx| {
             assert!(r.track_deleted_note(&Default::default(), cx));
             assert_eq!(
-                r.note_source, old,
+                r.pane.note_source, old,
                 "Undo cannot replace the retained display"
             );
-            assert_eq!(r.current_rel, "Home.md");
+            assert_eq!(r.pane.current_rel, "Home.md");
         });
     }
 

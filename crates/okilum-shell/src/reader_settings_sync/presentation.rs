@@ -152,6 +152,16 @@ pub(super) fn computer_details(vaults: Option<usize>) -> Option<String> {
     vaults.map(vault_count)
 }
 
+/// A vault location as the user picked it: Windows verbatim prefixes (`\\?\`,
+/// `\\?\UNC\`) stay internal to file I/O (#3160).
+pub(super) fn vault_path(path: &Path) -> String {
+    okilum_core::vault::display_path(path)
+}
+
+pub(super) fn history_label(path: &Path) -> String {
+    format!("Previous Sync versions · {}", vault_path(path))
+}
+
 pub(super) fn vault_count(count: usize) -> String {
     format!("{count} {}", if count == 1 { "vault" } else { "vaults" })
 }
@@ -411,5 +421,25 @@ mod tests {
         assert!(summary(Some(&snapshot), None).contains("needs review"));
         snapshot.status = "Receiving vault; checking safe bidirectional readiness".into();
         assert!(summary(Some(&snapshot), None).contains("in progress"));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod issue3160_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    #[test]
+    fn issue3160_received_vault_paths_show_without_verbatim_prefix() {
+        let local = Path::new(r"\\?\C:\Users\qa\Documents\IvanLikeVault");
+        assert_eq!(vault_path(local), r"C:\Users\qa\Documents\IvanLikeVault");
+        assert_eq!(
+            history_label(local),
+            r"Previous Sync versions · C:\Users\qa\Documents\IvanLikeVault"
+        );
+        let share = Path::new(r"\\?\UNC\server\share\Vault");
+        assert_eq!(vault_path(share), r"\\server\share\Vault");
+        // Control: a plain path is shown unchanged.
+        assert_eq!(vault_path(Path::new(r"C:\Vault")), r"C:\Vault");
     }
 }

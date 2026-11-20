@@ -336,7 +336,7 @@ def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
         if running_until is None and clock() >= next_progress:
             next_progress = clock() + PROGRESS_EVERY
             where = f": {matches[0]['html_url']}" if matches else ""
-            log(f"Waiting for a GitHub macOS runner, queued {int(clock() - started) // 60} min{where}", flush=True)
+            log(f"Waiting for a GitHub runner, queued {int(clock() - started) // 60} min{where}", flush=True)
         if running_until is not None and clock() >= running_until:
             if never_started:
                 return "failure", (f"GitHub macOS runner did not start within {queue_timeout // 60} min "

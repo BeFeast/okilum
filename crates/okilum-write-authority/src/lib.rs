@@ -286,6 +286,51 @@ pub struct DurableBinding {
     binding: Binding,
 }
 impl DurableBinding {
+    /// #2582: writer admission for a bound root that is currently absent
+    /// (moved, deleted, unmounted). It takes the same admission lock, requires
+    /// the same Open state and holds the same shared writers lock as
+    /// `Authority::admit`, so a drain cannot complete while the lease lives. It
+    /// verifies the binding and lock identities but never touches the root. It
+    /// authorizes no canonical publication: there is no root to publish into.
+    pub fn admit_without_root(&self) -> Result<WriterLease> {
+        let start = Authority {
+            account: self.account.clone(),
+            binding_path: self
+                .account
+                .join(format!("{}.json", key(&self.binding.root))),
+            directory: self.account.join(key(&self.binding.root)),
+            binding: self.binding.clone(),
+        };
+        let mut authority = start.enclosing()?.unwrap_or(start);
+        loop {
+            let admission = file(&authority.directory.join("admission.lock"), false)?;
+            admission
+                .lock()
+                .context("Cannot serialize local writer admission")?;
+            if let Some(parent) = authority.enclosing()? {
+                drop(admission);
+                authority = parent;
+                continue;
+            }
+            authority.validate_binding()?;
+            let s = authority.state()?;
+            ensure!(
+                s.phase == Phase::Open,
+                "Missing root admission deferred by local writer hold {:?} (operation {:?})",
+                s.phase,
+                s.operation_id
+            );
+            let writers = file(&authority.directory.join("writers.lock"), false)?;
+            writers
+                .try_lock_shared()
+                .context("Local writer drain is active; retry")?;
+            return Ok(WriterLease(Arc::new(LeaseInner {
+                authority: authority.clone(),
+                _writers: writers,
+                revision: s.revision,
+            })));
+        }
+    }
     pub fn open(&self) -> Result<Authority> {
         let authority = Authority {
             account: self.account.clone(),
@@ -964,6 +1009,51 @@ mod tests {
         fs::create_dir(t.path().join("vault")).unwrap();
         let a = Authority::open_in(&t.path().join("account"), &t.path().join("vault")).unwrap();
         (t, a)
+    }
+    #[test]
+    fn local_writer_admission_admit_without_root_pins_drains_of_an_absent_root() -> Result<()> {
+        let (temp, authority) = fixture();
+        let binding = authority.durable_binding()?;
+        let root = authority.root().to_owned();
+        let away = temp.path().join("unmounted");
+        fs::rename(&root, &away)?;
+        assert!(
+            binding.open().is_err(),
+            "ordinary admission still needs the root"
+        );
+        let lease = binding.admit_without_root()?;
+        assert!(!root.exists(), "admission never creates the root");
+        // The root returns while the lease lives: a drain cannot complete.
+        fs::rename(&away, &root)?;
+        let mut hold = binding.open()?.begin_drain("returning-root")?;
+        let token = hold.token().clone();
+        assert!(
+            !hold.try_hold(&token)?,
+            "a missing-root lease pins the drain"
+        );
+        drop(lease);
+        assert!(hold.try_hold(&token)?);
+        drop(hold); // the holder dies; the hold stays durable
+        fs::rename(&root, &away)?;
+        assert!(
+            binding.admit_without_root().is_err(),
+            "an unfinished hold refuses missing-root admission"
+        );
+        fs::rename(&away, &root)?;
+        let opened = binding.open()?;
+        let mut hold = opened.recover(&opened.snapshot()?)?;
+        let token = hold.token().clone();
+        assert!(hold.try_hold(&token)?);
+        let token = hold.token().clone();
+        hold.release(&token)?;
+        fs::rename(&root, &away)?;
+        drop(binding.admit_without_root()?);
+        fs::remove_file(&authority.binding_path)?;
+        assert!(
+            binding.admit_without_root().is_err(),
+            "a replaced authority is never admitted"
+        );
+        Ok(())
     }
     #[test]
     fn local_writer_admission_durable_sync_binding_never_recreates_missing_authority() -> Result<()>

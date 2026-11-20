@@ -925,7 +925,7 @@ mod mounted_tests {
         draw(visual);
         f.reader.read_with(visual, |r, _| {
             assert_eq!(
-                r.current_rel, "start.md",
+                r.pane.current_rel, "start.md",
                 "highlight and Control release are not navigation"
             );
             assert!(r.recent_switcher.gallery_open);
@@ -980,7 +980,7 @@ mod mounted_tests {
         );
         f.reader.read_with(visual, |r, _| {
             assert_eq!(
-                r.current_rel, "start.md",
+                r.pane.current_rel, "start.md",
                 "Retry must not bubble to card accept"
             )
         });
@@ -1014,7 +1014,7 @@ mod mounted_tests {
         visual.simulate_keystrokes("escape");
         draw(visual);
         f.reader.update_in(visual, |r, window, cx| {
-            assert_eq!(r.current_rel, "start.md");
+            assert_eq!(r.pane.current_rel, "start.md");
             assert!(
                 r.content.read(cx).focus_handle().is_focused(window),
                 "Escape restores document focus"

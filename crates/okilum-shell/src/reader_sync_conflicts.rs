@@ -347,7 +347,9 @@ impl crate::Reader {
         use gpui::*;
         use gpui_component::{button::Button, h_flex, Sizable};
         let (root, rel, copies, complete) = self.sync_note_conflicts.as_ref()?;
-        if *root != self.vault_root || *rel != self.current_rel || (copies.is_empty() && *complete)
+        if *root != self.vault_root
+            || *rel != self.pane.current_rel
+            || (copies.is_empty() && *complete)
         {
             return None;
         }

@@ -252,8 +252,8 @@ fn data_view_2669_native_32_mib_minified_file_has_bounded_layout_and_global_find
     });
     preview.update_in(visual, |p, window, cx| {
         assert!(
-            !p.editable(),
-            "UI Edit has a 4 MiB cap; the independent source-tool budget stays 64 MiB"
+            p.editable(),
+            "explicit JSON Edit admits inputs up to the 64 MiB source-tool budget"
         );
         assert!(!p.input().unwrap().read(cx).is_editable());
         assert!(p.input().unwrap().read(cx).value().len() <= 32 * 1024);

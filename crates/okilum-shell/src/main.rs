@@ -44,6 +44,7 @@ mod markdown_handler;
 #[cfg(test)]
 mod network_write_qa;
 mod note_paste;
+mod note_upload;
 mod open_in;
 mod pdf_engine;
 mod platform;
@@ -75,6 +76,7 @@ mod reader_diagnostics;
 mod reader_document;
 mod reader_document_menu;
 mod reader_drawing;
+mod reader_drawing_edit;
 #[cfg(any(unix, windows))]
 mod reader_editor;
 mod reader_embeds;
@@ -203,6 +205,8 @@ mod reader_sync_help;
 #[cfg(test)]
 use reader_features::test_init;
 mod reader_batch;
+#[cfg(any(unix, windows))]
+mod reader_daily_notes;
 mod reader_recent;
 #[cfg(any(unix, windows))]
 mod reader_recovery_rows;
@@ -391,6 +395,7 @@ actions!(
     okilum,
     [
         NewNote,
+        OpenDailyNote,
         NewUntitled,
         ShowRecentFiles,
         CloseNote,
@@ -505,6 +510,9 @@ pub(crate) const PARAGRAPH_KEY: &str = windows_key("secondary-alt-0", "ctrl-shif
 pub(crate) const FORMAT_CODE_KEY: &str = windows_key("alt-shift-f", "ctrl-shift-g");
 pub(crate) const VALIDATE_CODE_KEY: &str = windows_key("alt-shift-v", "ctrl-shift-j");
 pub(crate) const REPAIR_CODE_KEY: &str = windows_key("alt-shift-r", "ctrl-shift-r");
+/// Show in Finder/folder/Explorer. Not Win+Alt+R on Windows: the Xbox Game
+/// Bar records the screen there and the key never reaches Okilum (#3110).
+pub(crate) const REVEAL_FILE_KEY: &str = windows_key("alt-cmd-r", "ctrl-shift-s");
 
 /// ⌥⌘W / Ctrl+Alt+W (Ctrl+Shift+W on Windows): normal (reading width) or
 /// full note width. Free in every Reader context; W for width.
@@ -647,7 +655,7 @@ fn bind_keys(cx: &mut App) {
     ]);
     cx.bind_keys([
         KeyBinding::new(TOGGLE_PROJECT_KEY, ToggleProject, Some(READER_CONTEXT)),
-        KeyBinding::new("alt-cmd-r", RevealFile, Some(READER_CONTEXT)),
+        KeyBinding::new(REVEAL_FILE_KEY, RevealFile, Some(READER_CONTEXT)),
         KeyBinding::new("alt-cmd-c", CopyVaultPath, Some(READER_CONTEXT)),
         // Quick Look is a macOS service; elsewhere Space would only report that.
         #[cfg(target_os = "macos")]
@@ -1025,7 +1033,7 @@ fn load_appearance(cx: &App) -> (AppearancePreference, brand::ThemeChoice) {
 /// not set here are refined onto the themed defaults at layout time.
 fn reader_text_style(theme: &Theme) -> TextViewStyle {
     let tokens = brand::reader_palette_for_theme(theme);
-    TextViewStyle {
+    let mut style = TextViewStyle {
         highlight_theme: theme.highlight_theme.clone(),
         is_dark: theme.is_dark(),
         ..TextViewStyle::default()
@@ -1047,8 +1055,15 @@ fn reader_text_style(theme: &Theme) -> TextViewStyle {
         ..Default::default()
     })
     .paragraph_gap(rems(0.75))
-    // One scale for Reader and Live Preview (#1076).
+    // One scale and one colour per level for Reader and Live Preview
+    // (#1076, #3147, #3153).
     .heading_font_size(|level, base| base * source_presentation::heading_scale(level))
+    // Theme decoration slots, shared with Live Preview (#3154).
+    .decorations(tokens.decorations);
+    for (level, color) in (1u8..).zip(tokens.headings) {
+        style = style.heading_level_color(level, color);
+    }
+    style
 }
 
 #[cfg(test)]
@@ -1499,7 +1514,7 @@ fn reader_plugins_at(
                 || url.starts_with("http://")
                 || url.starts_with("data:")
             {
-                Some(MarkdownImage::Source(ImageSource::from(url)))
+                Some(MarkdownImage::Source(note_upload::image_source(url)))
             } else {
                 None
             }
@@ -1643,9 +1658,14 @@ fn markdown_plugins_at(
                 Some(MarkdownImage::Video(root, path)) => {
                     reader_media::video_card(&root, &path, cx)
                 }
-                Some(MarkdownImage::Drawing(root, path)) => {
-                    reader_drawing::render(&root, &path, image.drawing_size, window, cx)
-                }
+                Some(MarkdownImage::Drawing(root, path)) => reader_drawing::render(
+                    &root,
+                    &path,
+                    image.drawing_size,
+                    image_actions.clone(),
+                    window,
+                    cx,
+                ),
                 Some(MarkdownImage::DrawingUnavailable(payload)) => {
                     reader_drawing::unavailable(&payload, cx)
                 }
@@ -1882,6 +1902,12 @@ struct Reader {
     reminder_prefs: reader_reminder_settings::Preferences,
     #[cfg(any(unix, windows))]
     reminder_prefs_error: Option<String>,
+    /// Daily notes preference per vault root, read on demand (#3182).
+    #[cfg(any(unix, windows))]
+    daily_notes: Option<(PathBuf, Result<reader_daily_notes::Prefs, String>)>,
+    /// Why the last daily notes choice in Settings was not applied.
+    #[cfg(any(unix, windows))]
+    daily_notes_error: Option<String>,
     /// Show the reminders note through the native Tasks view (#919).
     #[cfg(any(unix, windows))]
     reminders_view: bool,
@@ -1972,8 +1998,6 @@ struct Reader {
     zoom_hud: reader_text_zoom::Hud,
     content: Entity<TextViewState>,
     _content_sub: Subscription,
-    current_rel: String,
-    current_title: String,
     link_notice: Option<reader_toast::Notice>,
     /// The note on screen was deleted outside Okilum (#1986).
     deleted_note: Option<reader_deleted_note::DeletedNote>,
@@ -2018,10 +2042,6 @@ struct Reader {
     /// input has focus. Clicking the text hands focus to the TextView, which
     /// sits under the same key context, so the bindings keep working.
     focus_handle: FocusHandle,
-    /// Source of the open note as rendered, before any find marks. Kept so
-    /// the find bar can re-mark it on every keystroke and restore it on Esc.
-    note_source: String,
-    note_canonical_source: Option<Arc<str>>,
     note_encoding_damaged: bool,
     encoding_repair_pending: Option<PathBuf>,
     draft_outline: reader_outline::DraftOutline,
@@ -2307,6 +2327,10 @@ impl Reader {
             #[cfg(any(unix, windows))]
             reminder_prefs_error: None,
             #[cfg(any(unix, windows))]
+            daily_notes: None,
+            #[cfg(any(unix, windows))]
+            daily_notes_error: None,
+            #[cfg(any(unix, windows))]
             reminders_view: false,
             #[cfg(any(unix, windows))]
             renaming: None,
@@ -2332,8 +2356,6 @@ impl Reader {
             recovery_startup: cx
                 .try_global::<reader_recovery::RecoveryStartup>()
                 .is_some_and(|state| state.0),
-            current_rel: String::new(),
-            current_title: String::new(),
             link_notice: None,
             deleted_note: None,
             displayed_deleted_notice: None,
@@ -2360,8 +2382,6 @@ impl Reader {
             perf_probe: reader_perf_probe::Probe::from_env(),
             sel_format,
             focus_handle: cx.focus_handle(),
-            note_source: String::new(),
-            note_canonical_source: None,
             note_encoding_damaged: false,
             encoding_repair_pending: None,
             draft_outline: Default::default(),
@@ -2756,7 +2776,7 @@ impl Reader {
                 );
                 return;
             }
-            if self.deleted_current().is_some() && request.rel == self.current_rel {
+            if self.deleted_current().is_some() && request.rel == self.pane.current_rel {
                 return;
             }
         }
@@ -2811,9 +2831,9 @@ impl Reader {
         self.pane.link_choices.clear();
         // A root publication clears history before replacing its old document;
         // do not attribute that old viewport to the newly published root.
-        if self.navigation.history.get(self.navigation.history_ix) == Some(&self.current_rel) {
+        if self.navigation.history.get(self.navigation.history_ix) == Some(&self.pane.current_rel) {
             self.navigation.places.insert(
-                (self.vault_root.clone(), self.current_rel.clone()),
+                (self.vault_root.clone(), self.pane.current_rel.clone()),
                 self.navigation
                     .pending_landing
                     .unwrap_or_else(|| self.content.read(cx).list_state().logical_scroll_top()),
@@ -2909,13 +2929,13 @@ impl Reader {
             .map(okilum_core::properties::parse)
             .unwrap_or_else(|| Ok(Vec::new()));
         self.pane.typed_navigation = Default::default();
-        self.note_source = source;
-        self.note_canonical_source = canonical_source;
+        self.pane.note_source = source;
+        self.pane.note_canonical_source = canonical_source;
         self.note_encoding_damaged = encoding_damaged;
         if request.history_index.is_none() {
             self.quick_open.remember(rel);
         }
-        if self.current_rel != rel {
+        if self.pane.current_rel != rel {
             self.pane.timeline = None;
         }
         // Every way of reaching another note (history, links, tree) ends up here:
@@ -2925,7 +2945,7 @@ impl Reader {
             self.reminders_view = false;
         }
         self.project_navigation.board_visible = false; // Accepted note; all existing save/navigation guards have passed.
-        self.current_rel = rel.to_string();
+        self.pane.current_rel = rel.to_string();
         self.pane.file_preview = if okilum_core::excalidraw::is_drawing(rel) {
             reader_files::FilePreview::load(&self.vault_root, rel)
                 .ok()
@@ -2943,9 +2963,9 @@ impl Reader {
         self.usable_document = true;
         self.record_usable_document(cx);
         self.refresh_link_preparation(cx);
-        self.current_title = self.note_label(rel);
+        self.pane.current_title = self.note_label(rel);
         self.set_backlinks(self.vault.backlinks(rel), true);
-        self.show_window_title(Some(self.current_title.clone()), window, cx);
+        self.show_window_title(Some(self.pane.current_title.clone()), window, cx);
         if request.history_index.is_none()
             && (heading.is_some()
                 || self
@@ -3549,7 +3569,7 @@ impl Reader {
     }
 
     fn note_opened(&mut self, cx: &mut Context<Self>) {
-        if self.current_rel.is_empty() {
+        if self.pane.current_rel.is_empty() {
             return;
         }
         if self.single_file
@@ -3558,15 +3578,15 @@ impl Reader {
                 .vault
                 .notes
                 .iter()
-                .any(|note| note.path == self.current_rel)
+                .any(|note| note.path == self.pane.current_rel)
         {
-            let parent = Path::new(&self.current_rel)
+            let parent = Path::new(&self.pane.current_rel)
                 .parent()
                 .unwrap_or(Path::new(""));
             self.load_quick_folder(okilum_core::vault::note_path(parent), cx);
         }
         self.load_sidebar_state();
-        let rel = self.current_rel.clone();
+        let rel = self.pane.current_rel.clone();
         if self.sidebar.record_open(&rel, reader_sidebar::now()) {
             self.save_sidebar(cx);
         }
@@ -3799,7 +3819,7 @@ impl Reader {
         if self.pane.file_preview.is_some() {
             self.note_label(self.selected_file())
         } else {
-            self.current_title.clone()
+            self.pane.current_title.clone()
         }
     }
 
@@ -4284,7 +4304,7 @@ impl Reader {
         if rels.is_empty() {
             return;
         }
-        let cur = rels.iter().position(|r| *r == self.current_rel);
+        let cur = rels.iter().position(|r| *r == self.pane.current_rel);
         let next = match cur {
             Some(ix) => (ix as isize + delta).clamp(0, rels.len() as isize - 1) as usize,
             None if delta < 0 => rels.len() - 1,
@@ -4770,10 +4790,11 @@ impl Reader {
             && !self.single_file
             && project.is_none()
         {
-            &SidebarAction::ALL[..usize::from(cfg!(any(unix, windows)))]
+            // New note and Today's note.
+            &SidebarAction::ALL[..2 * usize::from(cfg!(any(unix, windows)))]
         } else if self.sidebar.left_mode == reader_sidebar::LeftMode::Tree && project.is_none() {
             // Creation and Collapse all have permanent slots beside Vault Index.
-            &SidebarAction::ALL[3..]
+            &SidebarAction::ALL[4..]
         } else {
             SidebarAction::available()
         };
@@ -6178,7 +6199,7 @@ impl Reader {
         // Ambiguity is per link, but the flag is worth one word on the
         // card when any link in the group carries it.
         let any_ambiguous = links.iter().any(|b| b.ambiguous);
-        let is_current = head.path == self.current_rel;
+        let is_current = head.path == self.pane.current_rel;
         let via: Vec<String> = links
             .iter()
             .filter_map(|b| b.property.clone())
@@ -6876,7 +6897,7 @@ impl Reader {
                     .into_any_element()
             }
             V::Link { target, label } => {
-                let resolution = self.vault.resolve_from(target, &self.current_rel);
+                let resolution = self.vault.resolve_from(target, &self.pane.current_rel);
                 let missing = matches!(resolution, okilum_core::vault::Resolution::Unresolved);
                 let target = target.clone();
                 div()
@@ -6918,7 +6939,7 @@ impl Reader {
             Some((path, heading)) => (path, Some(heading.to_owned())),
             None => (target, None),
         };
-        match self.vault.resolve_from(path, &self.current_rel) {
+        match self.vault.resolve_from(path, &self.pane.current_rel) {
             Resolution::Resolved { path } => {
                 self.open_note_at(&path, None, heading.as_deref(), window, cx)
             }
@@ -7000,13 +7021,51 @@ impl Reader {
                     cx.notify();
                 });
             }),
-            reader_perf_probe::Step::Finish => {
-                if let Err(error) = probe.write_report(targets.len()) {
-                    diagnostic_error!("{}: {error}", reader_perf_probe::ENV);
-                }
-                cx.quit();
+            reader_perf_probe::Step::StartTimed => {
+                // Input on a wall-clock schedule, independent of paint (#3154):
+                // the probe only counts the frames these steps cause.
+                cx.spawn(async move |reader, cx| {
+                    let interval = Duration::from_millis(reader_perf_probe::TIMED_INTERVAL_MS);
+                    for _ in 0..reader_perf_probe::TIMED_STEPS {
+                        cx.background_executor().timer(interval).await;
+                        let scrolled = reader.update(cx, |_, cx| {
+                            list.scroll_by(reader_perf_probe::STEP);
+                            content.update(cx, |_, cx| cx.notify());
+                            cx.notify();
+                        });
+                        if scrolled.is_err() {
+                            return;
+                        }
+                    }
+                    cx.background_executor()
+                        .timer(Duration::from_millis(reader_perf_probe::TIMED_SETTLE_MS))
+                        .await;
+                    let _ = reader.update(cx, |this, cx| {
+                        if let Some(probe) = this.perf_probe.as_mut() {
+                            probe.finish_timed();
+                        }
+                        this.finish_perf_probe(targets.len(), cx);
+                    });
+                })
+                .detach();
             }
         }
+    }
+
+    /// Write the probe's report and quit.
+    fn finish_perf_probe(&mut self, outline_rows: usize, cx: &mut Context<Self>) {
+        // What the run was drawn with, so a theme A/B can check it (#3156).
+        let theme = serde_json::json!({
+            "key": brand::theme_id(cx).key(),
+            "dark": Theme::global(cx).is_dark(),
+            "syntax": Theme::global(cx).highlight_theme.name,
+        });
+        if let Some(probe) = self.perf_probe.as_ref() {
+            if let Err(error) = probe.write_report(outline_rows, theme) {
+                diagnostic_error!("{}: {error}", reader_perf_probe::ENV);
+            }
+        }
+        cx.quit();
     }
 
     fn render_outline(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -7277,7 +7336,7 @@ const SIDEBAR_NAME_GAP: f32 = 4.;
 const SIDEBAR_NAME_CHROME: f32 = 30.;
 /// The name keeps at least this much, caret included, before an action
 /// moves into ⋯; a longer name is cut with an ellipsis first (#1512). At the
-/// default 280 px width all four actions fit, vault colour dot included.
+/// default 280 px width all five actions fit, vault colour dot included.
 const SIDEBAR_NAME_MIN: f32 = 80.;
 
 /// The sidebar header's actions, in their fixed order (#1512). The order is
@@ -7285,14 +7344,17 @@ const SIDEBAR_NAME_MIN: f32 = 80.;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SidebarAction {
     NewNote,
+    /// Today's daily note (#3182).
+    DailyNote,
     NewFolder,
     CollapseAll,
     ShowHidden,
 }
 
 impl SidebarAction {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::NewNote,
+        Self::DailyNote,
         Self::NewFolder,
         Self::CollapseAll,
         Self::ShowHidden,
@@ -7318,6 +7380,7 @@ impl SidebarAction {
     fn id(self) -> &'static str {
         match self {
             Self::NewNote => "sidebar-new-note",
+            Self::DailyNote => "sidebar-daily-note",
             Self::NewFolder => "sidebar-new-folder",
             Self::CollapseAll => "sidebar-collapse-all",
             Self::ShowHidden => "sidebar-show-hidden",
@@ -7327,6 +7390,7 @@ impl SidebarAction {
     fn label(self) -> &'static str {
         match self {
             Self::NewNote => "New note",
+            Self::DailyNote => "Today's note",
             Self::NewFolder => "New folder",
             Self::CollapseAll => "Collapse all folders",
             Self::ShowHidden => HIDDEN_FILES_MENU,
@@ -7336,6 +7400,7 @@ impl SidebarAction {
     fn action(self) -> Box<dyn Action> {
         match self {
             Self::NewNote => Box::new(NewNote),
+            Self::DailyNote => Box::new(OpenDailyNote),
             Self::NewFolder => Box::new(NewFolder),
             Self::CollapseAll => Box::new(CollapseFolders),
             Self::ShowHidden => Box::new(ToggleHiddenFiles),
@@ -7350,6 +7415,7 @@ impl SidebarAction {
     fn icon(self, show_hidden: bool) -> Icon {
         match self {
             Self::NewNote => Icon::default().path("icons/square-pen.svg"),
+            Self::DailyNote => Icon::new(IconName::Calendar),
             Self::NewFolder => Icon::default().path("icons/folder-plus.svg"),
             Self::CollapseAll => Icon::default().path(brand::READER_COLLAPSE_ICON),
             Self::ShowHidden if show_hidden => Icon::new(IconName::Eye),
@@ -7362,11 +7428,13 @@ impl SidebarAction {
             #[cfg(any(unix, windows))]
             Self::NewNote => reader.new_note(None, window, cx),
             #[cfg(any(unix, windows))]
+            Self::DailyNote => reader.open_daily_note(window, cx),
+            #[cfg(any(unix, windows))]
             Self::NewFolder => reader.new_folder(None, window, cx),
             Self::CollapseAll => reader.collapse_folders(cx),
             Self::ShowHidden => reader.toggle_hidden_files(cx),
             #[cfg(not(any(unix, windows)))]
-            Self::NewNote | Self::NewFolder => {}
+            Self::NewNote | Self::DailyNote | Self::NewFolder => {}
         }
     }
 }
@@ -7560,6 +7628,7 @@ fn reader_more_menu(
                     .menu("New untitled file", Box::new(NewUntitled))
                     .menu("New Folder", Box::new(NewFolder))
                     .menu("New note from template…", Box::new(NewFromTemplate))
+                    .menu("Today's note", Box::new(OpenDailyNote))
                     .item(reader_capture::menu_item(reader.clone(), vault.clone(), cx))
                     .menu("Recover notes…", Box::new(RecoverUnsavedNotes))
                     .menu("Recover link moves…", Box::new(RecoverLinkMoves))
@@ -7700,12 +7769,12 @@ impl Reader {
     fn sync_agent_document(&mut self, cx: &mut Context<Self>) {
         let enabled = reader_features::enabled(reader_features::Feature::Agents, cx)
             && !self.single_file
-            && okilum_core::agent_imports::is_agent_document(&self.current_rel);
+            && okilum_core::agent_imports::is_agent_document(&self.pane.current_rel);
         let source = enabled
             .then(|| {
                 self.source_text(cx)
                     .map(Arc::<str>::from)
-                    .or_else(|| self.note_canonical_source.clone())
+                    .or_else(|| self.pane.note_canonical_source.clone())
             })
             .flatten();
         let Some(source) = source else {
@@ -7718,7 +7787,7 @@ impl Reader {
         };
         if self.agent_document.as_ref().is_some_and(|current| {
             current.root == self.vault_root
-                && current.path == self.current_rel
+                && current.path == self.pane.current_rel
                 && current.source == source
                 && agent_publication_is_current(
                     &current.inventory_source,
@@ -7771,7 +7840,7 @@ impl Reader {
             }
         }
         let root = self.vault_root.clone();
-        let path = self.current_rel.clone();
+        let path = self.pane.current_rel.clone();
         let expanded = self.agent_document.as_ref().is_some_and(|current| {
             current.root == root && current.path == path && current.imports.expanded()
         });
@@ -8685,7 +8754,7 @@ impl Reader {
                 this.invoke_viewer_action("drawing-expand", window, cx)
             }))
             .on_action(cx.listener(|this, _: &OpenDrawingExternally, window, cx| {
-                this.invoke_viewer_action("drawing-open", window, cx)
+                this.invoke_viewer_action("drawing-edit", window, cx)
             }))
             .on_action(cx.listener(|this, _: &ShowDrawingDetails, window, cx| {
                 this.invoke_viewer_action("drawing-diagnostic-details", window, cx)
@@ -8758,6 +8827,12 @@ impl Reader {
             .on_action(cx.listener(|this, _: &NewFromTemplate, window, cx| {
                 #[cfg(any(unix, windows))]
                 this.new_from_template(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &OpenDailyNote, window, cx| {
+                #[cfg(any(unix, windows))]
+                this.open_daily_note(window, cx);
+                #[cfg(not(any(unix, windows)))]
+                let _ = (this, window, cx);
             }))
             .on_action(cx.listener(|_, _: &reader_settings::OpenSettings, _, cx| {
                 reader_settings::show(Some(cx.entity().downgrade()), cx);
@@ -9840,7 +9915,7 @@ mod document_link_landing_tests {
                 for panel in [reader_layout::Panel::Notes, reader_layout::Panel::Backlinks] {
                     reader.update_in(visual, |reader, window, cx| {
                         assert_eq!(
-                            reader.current_rel, "note.md",
+                            reader.pane.current_rel, "note.md",
                             "loaded note positive control"
                         );
                         reader.panels.open(panel);
@@ -10319,7 +10394,7 @@ mod document_link_landing_tests {
         });
         visual.run_until_parked();
         view.read_with(visual, |v, cx| {
-            assert_eq!(v.current_rel, "plain.md");
+            assert_eq!(v.pane.current_rel, "plain.md");
             assert!(v.pane.outline.is_empty());
             assert_eq!(v.current_section(cx), None);
         });
@@ -10585,7 +10660,7 @@ mod document_link_landing_tests {
         });
         visual.run_until_parked();
         view.read_with(visual, |v, _| {
-            assert_eq!(v.current_rel, "b.md");
+            assert_eq!(v.pane.current_rel, "b.md");
             assert!(
                 v.pane.table_overlay.is_none(),
                 "navigation from the overlay closes it"
@@ -10638,13 +10713,13 @@ mod document_link_landing_tests {
             // An unresolved relation says so and stays put (positive control
             // for the navigation below).
             v.open_property_link("nowhere", window, cx);
-            assert_eq!(v.current_rel, "plan.md");
+            assert_eq!(v.pane.current_rel, "plan.md");
             assert!(v.link_notice.is_some());
             v.open_property_link("menu", window, cx);
         });
         visual.run_until_parked();
         view.read_with(visual, |v, _| {
-            assert_eq!(v.current_rel, "menu.md");
+            assert_eq!(v.pane.current_rel, "menu.md");
             assert!(
                 v.pane.properties.as_ref().unwrap().is_empty(),
                 "menu has none"
@@ -10709,7 +10784,7 @@ mod document_link_landing_tests {
                 "one item stays reported as unreadable"
             );
             assert!(!v.vault.inventory_complete);
-            assert_eq!(v.current_rel, "Target.md");
+            assert_eq!(v.pane.current_rel, "Target.md");
             let link = v
                 .pane
                 .link_identities
@@ -10731,7 +10806,9 @@ mod document_link_landing_tests {
         let entity = view.downgrade();
         visual.update(|window, cx| reader_link_navigation::handle_link(&entity, &url, window, cx));
         visual.run_until_parked();
-        view.read_with(visual, |v, _| assert_eq!(v.current_rel, "Other vault.md"));
+        view.read_with(visual, |v, _| {
+            assert_eq!(v.pane.current_rel, "Other vault.md")
+        });
     }
 
     /// #1313: leaving a note for the vault home emptied the backlinks but not the cards'
@@ -11045,7 +11122,7 @@ mod document_link_landing_tests {
                     reader_hover::resolved_target(
                         &link.url,
                         &v.pane.prepared_links,
-                        &v.current_rel
+                        &v.pane.current_rel
                     )
                     .is_some(),
                     "{launch}: the hover has a note to preview"
@@ -11074,7 +11151,10 @@ mod document_link_landing_tests {
             });
             visual.run_until_parked();
             view.read_with(visual, |v, _| {
-                assert_eq!(v.current_rel, "Beta.md", "{launch}: the click opened Beta");
+                assert_eq!(
+                    v.pane.current_rel, "Beta.md",
+                    "{launch}: the click opened Beta"
+                );
                 let link = v
                     .pane
                     .link_identities
@@ -11098,7 +11178,7 @@ mod document_link_landing_tests {
                     reader_hover::resolved_target(
                         &link.url,
                         &v.pane.prepared_links,
-                        &v.current_rel
+                        &v.pane.current_rel
                     )
                     .is_some(),
                     "{launch}: Beta's hover has a note to preview"
@@ -11224,7 +11304,7 @@ mod document_link_landing_tests {
             v.vault = Arc::new(Vault::from_note_paths(
                 (0..1000).map(|i| format!("Big/Sub/Note {i}.md")),
             ));
-            v.current_rel = "Big/Sub/Note 0.md".into();
+            v.pane.current_rel = "Big/Sub/Note 0.md".into();
             v.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
             v.panels.open(reader_layout::Panel::Notes);
             v.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
@@ -11652,6 +11732,7 @@ mod document_link_landing_tests {
         let ids: &[&str] = if cfg!(any(unix, windows)) {
             &[
                 "sidebar-new-note",
+                "sidebar-daily-note",
                 "sidebar-new-folder",
                 "sidebar-collapse-all",
                 "sidebar-show-hidden",
@@ -11790,15 +11871,15 @@ mod document_link_landing_tests {
         let all = &SidebarAction::ALL;
         let min = SIDEBAR_NAME_MIN;
         let slot = SIDEBAR_ACTION_SLOT;
-        assert_eq!(sidebar_visible_actions(400., 120., all), 4);
-        assert_eq!(sidebar_visible_actions(min + 4. * slot, 300., all), 4);
-        assert_eq!(sidebar_visible_actions(min + 4. * slot - 1., 300., all), 3);
-        assert_eq!(sidebar_visible_actions(60., min, all), 3);
-        assert!(all[3].spills());
-        assert!(!all[..3].iter().any(|action| action.spills()));
+        assert_eq!(sidebar_visible_actions(400., 120., all), 5);
+        assert_eq!(sidebar_visible_actions(min + 5. * slot, 300., all), 5);
+        assert_eq!(sidebar_visible_actions(min + 5. * slot - 1., 300., all), 4);
+        assert_eq!(sidebar_visible_actions(60., min, all), 4);
+        assert!(all[4].spills());
+        assert!(!all[..4].iter().any(|action| action.spills()));
         for dot in [0., VAULT_DOT_SLOT] {
             let room = 280. - 24. - dot - 2. * SIDEBAR_NAME_GAP;
-            assert_eq!(sidebar_visible_actions(room, 200., all), 4, "dot {dot}");
+            assert_eq!(sidebar_visible_actions(room, 200., all), 5, "dot {dot}");
         }
     }
 
@@ -12007,7 +12088,7 @@ mod document_link_landing_tests {
                 v.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
                 v.sync_tree();
                 (
-                    v.current_rel.clone(),
+                    v.pane.current_rel.clone(),
                     v.tree.cursor.clone(),
                     v.tree_current(),
                 )
@@ -12323,7 +12404,7 @@ mod document_link_landing_tests {
             view.update_in(visual, |v, _, _| {
                 v.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
                 v.sync_tree();
-                (v.current_rel.clone(), v.tree.cursor.clone())
+                (v.pane.current_rel.clone(), v.tree.cursor.clone())
             })
         };
         let bounds = |visual: &mut gpui::VisualTestContext, selector: &'static str| {
@@ -12477,7 +12558,7 @@ mod document_link_landing_tests {
         });
         visual.run_until_parked();
         view.read_with(visual, |v, _| {
-            assert_eq!(v.current_rel, "Work/Projects/Cafe/Menu.md");
+            assert_eq!(v.pane.current_rel, "Work/Projects/Cafe/Menu.md");
             assert!(v.panels.visible(
                 reader_layout::Panel::Notes,
                 f32::from(v.body_bounds.size.width)
@@ -12510,7 +12591,7 @@ mod document_link_landing_tests {
         });
         visual.run_until_parked();
         view.read_with(visual, |v, _| {
-            assert_eq!(v.current_rel, "Work/Projects/Cafe/Plan.md");
+            assert_eq!(v.pane.current_rel, "Work/Projects/Cafe/Plan.md");
             assert!(!v.panels.visible(
                 reader_layout::Panel::Notes,
                 f32::from(v.body_bounds.size.width)
@@ -12532,7 +12613,7 @@ mod document_link_landing_tests {
         visual.run_until_parked();
         assert!(visual.debug_bounds("reader-notes-panel").is_none());
         view.update_in(visual, |v, window, cx| {
-            assert_eq!(v.current_rel, "Work/Projects/Cafe/Menu.md");
+            assert_eq!(v.pane.current_rel, "Work/Projects/Cafe/Menu.md");
             assert!(v.content.read(cx).focus_handle().is_focused(window));
             assert!(v.panels.notes, "wide sidebar preference survives selection");
             v.open_note("Work/Projects/Cafe/Plan.md", None, window, cx);
@@ -12567,7 +12648,7 @@ mod document_link_landing_tests {
         });
         // The current-note crumb reveals the note itself.
         view.update_in(visual, |v, window, cx| {
-            let current = v.current_rel.clone();
+            let current = v.pane.current_rel.clone();
             v.reveal_in_tree(&current, window, cx)
         });
         visual.run_until_parked();
@@ -12812,7 +12893,7 @@ mod document_link_landing_tests {
             let p = v.content.read(cx).list_state().logical_scroll_top();
             (
                 v.content.entity_id(),
-                v.current_rel.clone(),
+                v.pane.current_rel.clone(),
                 v.vault_root.clone(),
                 v.navigation.history.clone(),
                 p.item_ix,
@@ -12849,11 +12930,11 @@ mod document_link_landing_tests {
         let after = view.read_with(visual, |v, cx| {
             assert_eq!(v.panel_widths.notes, 662.8242);
             assert_eq!(v.panel_widths.backlinks, 355.79297);
-            assert_eq!(v.note_source, source);
+            assert_eq!(v.pane.note_source, source);
             let p = v.content.read(cx).list_state().logical_scroll_top();
             (
                 v.content.entity_id(),
-                v.current_rel.clone(),
+                v.pane.current_rel.clone(),
                 v.vault_root.clone(),
                 v.navigation.history.clone(),
                 p.item_ix,
@@ -13498,20 +13579,20 @@ mod document_link_landing_tests {
         visual.executor().advance_clock(Duration::from_millis(300));
         visual.run_until_parked();
         view.update_in(visual, |v, window, cx| {
-            assert_eq!(v.current_rel, "target.md");
+            assert_eq!(v.pane.current_rel, "target.md");
             assert_eq!(
                 v.content.read(cx).list_state().logical_scroll_top().item_ix,
                 101
             );
             v.open_note_at("start.md", None, Some("Missing"), window, cx);
             assert_eq!(
-                v.current_rel, "target.md",
+                v.pane.current_rel, "target.md",
                 "missing heading preserves document"
             );
         });
         visual.run_until_parked();
         view.update_in(visual, |v, _, _| {
-            assert_eq!(v.current_rel, "target.md");
+            assert_eq!(v.pane.current_rel, "target.md");
             assert!(v.link_notice.is_some());
         });
         visual.simulate_keystrokes("alt-left");
@@ -13519,7 +13600,7 @@ mod document_link_landing_tests {
         visual.executor().advance_clock(Duration::from_millis(300));
         visual.run_until_parked();
         view.update_in(visual, |v, _, cx| {
-            assert_eq!(v.current_rel, "start.md");
+            assert_eq!(v.pane.current_rel, "start.md");
             let actual = v.content.read(cx).list_state().logical_scroll_top();
             assert_eq!(actual.item_ix, origin.item_ix);
             assert_eq!(actual.offset_in_item, origin.offset_in_item);
@@ -13557,7 +13638,7 @@ mod document_link_landing_tests {
         visual.executor().advance_clock(Duration::from_millis(300));
         visual.run_until_parked();
         view.update_in(visual, |v, _, cx| {
-            assert_eq!(v.current_rel, "target.md");
+            assert_eq!(v.pane.current_rel, "target.md");
             assert_eq!(
                 v.content.read(cx).list_state().logical_scroll_top().item_ix,
                 101
@@ -13567,7 +13648,7 @@ mod document_link_landing_tests {
         visual.run_until_parked();
         visual.executor().advance_clock(Duration::from_millis(300));
         visual.run_until_parked();
-        view.update_in(visual, |v, _, _| assert_eq!(v.current_rel, "start.md"));
+        view.update_in(visual, |v, _, _| assert_eq!(v.pane.current_rel, "start.md"));
         visual.simulate_keystrokes("ctrl-k");
         visual.run_until_parked();
         view.update_in(visual, |v, window, cx| {

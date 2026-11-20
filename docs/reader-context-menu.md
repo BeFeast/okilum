@@ -14,6 +14,9 @@ captured when the palette opens. Plain Ctrl/Cmd+C keeps its existing behavior.
 The binding is scoped to Read, excluding inputs and the file tree. Apple's
 Shift+Cmd+C shortcut opens Computer in Finder and is not global in this context.
 
+Read menu rows keep at least 12 logical pixels between their label and shortcut,
+matching the standard popup rows, and align shortcut hints to the right (#3145).
+
 Copy payloads are captured when the menu opens, without changing the selection,
 scroll position or default copy format. Whole-document Markdown uses the exact
 original body paired with the renderer's accepted revision, including whitespace

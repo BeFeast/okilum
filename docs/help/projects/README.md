@@ -43,7 +43,7 @@ This copies the playback bundle to `src/help/projects`, adds the same idempotent
 `help` copy hook as the Board installer (once), and adds **Projects help** to
 both footer templates without touching other links or download settings. Then
 use the site's normal build and Cloudflare deployment. Public destination:
-<https://okilum.app/help/projects/> (not yet deployed).
+<https://okilum.app/help/projects/> (live since 2026-11-17).
 
 ## Verification
 
@@ -60,3 +60,17 @@ installers coexist in either order. The hosted Rust test clicks Help in the
 Projects section with and without projects and requires the sheet to appear
 without opening a URL or changing any vault file. Native playback and human
 acceptance are separate from these checks.
+
+## Exact-build capture
+
+`exact-build/` holds frames of the in-app Help taken on 2026-11-20 from the
+published Linux beta **0.1.7911** (source
+`ecf83913b12effc11680b09df456d7f8c1f1e96a`, which contains the Help merge
+`5d7fc2bc1`). The AppImage sha256 matched the beta feed. The session used the
+same `session.sh` isolation and practice vault as the recording. The frames show
+the Help sheet opened from the Projects header before the first project exists,
+the end of the sheet (limits, troubleshooting, video button), Help again with one
+project listed, and the project's Board, Decisions, Reports and Handovers tabs.
+The practice vault was byte-identical before and after opening Help.
+`exact-build/receipt.json` records the artifact, the steps and frame checksums;
+`check.py` verifies them.

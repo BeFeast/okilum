@@ -1116,6 +1116,8 @@ impl ProjectView {
                 self.error = None;
                 self.generation += 1;
                 self.start_polling(window, cx);
+                // A retained launch of this manager resumes on the new connection.
+                self.poll_launch(window, cx);
                 #[cfg(native_manager)]
                 if self.threads.enabled {
                     self.native_restore(false, window, cx);
@@ -1140,6 +1142,8 @@ impl ProjectView {
         }
         self.generation = self.generation.wrapping_add(1);
         self.polling = false;
+        // The launch tracker is kept; its loop belongs to the old connection.
+        self.launch.polling = None;
         self.busy = false;
         self.gateway = None;
         self.identity = None;
@@ -2395,7 +2399,7 @@ impl Reader {
             cx.notify();
             return;
         }
-        let note = self.vault_root.join(&self.current_rel);
+        let note = self.vault_root.join(&self.pane.current_rel);
         let area = connections::area_for(&self.vault_root, &note)
             .unwrap_or_else(|_| self.vault_root.clone());
         self.open_project_area(area, window, cx);

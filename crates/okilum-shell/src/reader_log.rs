@@ -5720,7 +5720,7 @@ mod tests {
             visual.run_until_parked();
             reader.read_with(visual, |reader, _| {
                 assert!(reader.pane.file_preview.is_none());
-                assert_eq!(reader.current_rel, "start.md");
+                assert_eq!(reader.pane.current_rel, "start.md");
             });
             assert_eq!(std::fs::read_to_string(root.join(name)).unwrap(), text);
         }
@@ -5813,7 +5813,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
             assert!(reader.pane.file_preview.is_none());
-            assert_eq!(reader.current_rel, "notes.md");
+            assert_eq!(reader.pane.current_rel, "notes.md");
         });
         assert_eq!(
             std::fs::read_to_string(root.join("app.jsonl")).unwrap(),

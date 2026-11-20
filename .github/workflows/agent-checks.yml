@@ -389,10 +389,22 @@ jobs:
         run: |
           source scripts/ci/test-nofile.sh
           bash scripts/ci/test-group.sh agent-core 480 cargo test --offline --locked -p okilum-core
+      # #3077: the AppImage helper control needs a real systemd user manager
+      # (the runner has no login session). XDG_RUNTIME_DIR is not exported:
+      # the control passes it only to its own systemctl/systemd-run calls.
+      - name: Start a systemd user manager for updater unit controls
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          sudo loginctl enable-linger "$USER"
+          runtime="/run/user/$(id -u)"
+          for _ in $(seq 1 200); do test -S "$runtime/bus" && break; sleep 0.1; done
+          XDG_RUNTIME_DIR="$runtime" timeout 60 systemctl --user is-system-running --wait || true
+          XDG_RUNTIME_DIR="$runtime" systemctl --user --version | head -1
       - name: Run Linux Rust suites offline
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         env:
           CARGO_NET_OFFLINE: 'true'
+          OKILUM_REQUIRE_SYSTEMD_USER: '1'
         run: tini -s -- bash scripts/ci/test-group.sh agent-linux-rust 3000 bash scripts/ci/linux-rust-tests.sh
       # Explicit benchmark refs repeat on this SAME VM: cross-host timings are
       # not a controlled comparison. Ordinary worker checks pay for one pass.

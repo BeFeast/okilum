@@ -589,10 +589,10 @@ impl Reader {
         self.navigation.generation = self.navigation.generation.wrapping_add(1);
         self.pending_open_document = None;
         self.pane.timeline = None;
-        self.current_rel.clear();
-        self.current_title.clear();
-        self.note_source.clear();
-        self.note_canonical_source = None;
+        self.pane.current_rel.clear();
+        self.pane.current_title.clear();
+        self.pane.note_source.clear();
+        self.pane.note_canonical_source = None;
         self.note_encoding_damaged = false;
         self.pane.file_preview = None;
         self.editing = None;
@@ -984,7 +984,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |v, _| {
             assert!(v.document_ready(), "the empty vault is published");
-            assert!(v.current_rel.is_empty());
+            assert!(v.pane.current_rel.is_empty());
             let load = v.loading.as_ref().unwrap();
             assert!(!load.phase.contains("no readable"), "{}", load.phase);
         });
@@ -1060,12 +1060,15 @@ mod tests {
         let reader = reader.unwrap();
         visual.run_until_parked();
         reader.update_in(visual, |this, window, cx| {
-            assert_eq!(this.current_rel, "One.md", "loaded-note positive control");
+            assert_eq!(
+                this.pane.current_rel, "One.md",
+                "loaded-note positive control"
+            );
             this.focus_handle.focus(window, cx);
         });
         visual.simulate_keystrokes("secondary-w");
         reader.read_with(visual, |this, _| {
-            assert!(this.current_rel.is_empty());
+            assert!(this.pane.current_rel.is_empty());
             assert_eq!(this.vault_root, root);
             assert_eq!(this.navigation.history, vec!["One.md", ""]);
         });
@@ -1100,7 +1103,9 @@ mod tests {
         );
         reader.update_in(visual, |this, window, cx| this.history_move(-1, window, cx));
         visual.run_until_parked();
-        reader.update_in(visual, |this, _, _| assert_eq!(this.current_rel, "One.md"));
+        reader.update_in(visual, |this, _, _| {
+            assert_eq!(this.pane.current_rel, "One.md")
+        });
         assert!(visual.debug_bounds("reader-empty-vault").is_none());
         reader.update_in(visual, |this, window, cx| this.history_move(1, window, cx));
         visual.run_until_parked();

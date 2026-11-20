@@ -37,12 +37,12 @@ impl Reader {
         {
             trace.event(
                 "save_source_queued",
-                serde_json::json!({"path":self.current_rel}),
+                serde_json::json!({"path":self.pane.current_rel}),
             );
         }
         self.queue_vault_mutation(
             okilum_core::Changes {
-                changed: std::collections::BTreeSet::from([self.current_rel.clone()]),
+                changed: std::collections::BTreeSet::from([self.pane.current_rel.clone()]),
                 ..Default::default()
             },
             cx,
@@ -252,10 +252,10 @@ impl Reader {
                             }
                             this.quick_open.inventory = Some(inventory);
                             this.refresh_quick_open(cx);
-                            if sources.contains_key(&this.current_rel)
-                                || batch.removed.contains(&this.current_rel)
+                            if sources.contains_key(&this.pane.current_rel)
+                                || batch.removed.contains(&this.pane.current_rel)
                             {
-                                this.reconcile_source_publication(sources.get(&this.current_rel).cloned().as_ref(), graph_changed, window, cx);
+                                this.reconcile_source_publication(sources.get(&this.pane.current_rel).cloned().as_ref(), graph_changed, window, cx);
                             }
                             // Heading/body changes can invalidate target evidence
                             // even when aliases/backlink contexts are unchanged.

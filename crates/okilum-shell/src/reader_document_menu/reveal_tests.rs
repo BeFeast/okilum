@@ -138,8 +138,8 @@ fn breadcrumb_folder_click_expands_and_selects_that_folder_without_opening_a_not
 fn breadcrumb_reveal_is_disabled_for_a_document_outside_the_tree(cx: &mut TestAppContext) {
     let (reader, visual, _temp) = fixture(cx);
     reader.update(visual, |v, cx| {
-        v.current_rel = "Absent.md".into();
-        v.current_title = "Absent".into();
+        v.pane.current_rel = "Absent.md".into();
+        v.pane.current_title = "Absent".into();
         v.panels.close(reader_layout::Panel::Notes);
         cx.notify();
     });
@@ -182,8 +182,8 @@ fn shared_reveal_action_rejects_missing_and_out_of_scope_documents(cx: &mut Test
     });
     for (path, scope) in [("Absent.md", ""), ("Folder/Sub/Note.md", "Other")] {
         reader.update(visual, |v, cx| {
-            v.current_rel = path.into();
-            v.current_title = path.into();
+            v.pane.current_rel = path.into();
+            v.pane.current_title = path.into();
             v.tree.scope_to(scope);
             v.panels.close(reader_layout::Panel::Notes);
             cx.notify();

@@ -150,6 +150,18 @@ pub trait ManagerGateway: Send + Sync {
     /// Ids of the thread's pending user questions (not approvals).
     fn pending_requests(&self, thread_id: &str) -> GatewayResult<Vec<String>>;
 
+    /// The questions of one pending user-input request of `thread_id`.
+    fn pending_request_questions(
+        &self,
+        thread_id: &str,
+        request_id: &str,
+    ) -> GatewayResult<Vec<crate::PendingQuestion>> {
+        let _ = (thread_id, request_id);
+        Err(GatewayError::Protocol(
+            "This T3 connection cannot read pending questions".into(),
+        ))
+    }
+
     /// The live provider and model catalog, and this client's runtime ceiling.
     fn capabilities(&self) -> GatewayResult<Capabilities>;
 

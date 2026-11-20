@@ -208,7 +208,7 @@ impl Render for SyncSettings {
                                             })
                                             .ghost()
                                             .label("Remove")
-                                            .disabled(self.busy)
+                                            .disabled(self.locked())
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 this.confirm_remove_computer(
                                                     device.clone(),
@@ -225,7 +225,7 @@ impl Render for SyncSettings {
                                     .flex_shrink_0()
                                     .ghost()
                                     .label("Vaults →")
-                                    .disabled(self.busy)
+                                    .disabled(self.locked())
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.selected_peer = Some(id);
                                         this.presentation.destinations.clear();
@@ -276,7 +276,7 @@ impl Render for SyncSettings {
                                 .debug_selector(move || format!("sync-remove-introduced-{index}"))
                                 .ghost()
                                 .label("Remove")
-                                .disabled(self.busy)
+                                .disabled(self.locked())
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.confirm_remove_computer(
                                         device.clone(),
@@ -340,7 +340,7 @@ impl Render for SyncSettings {
                                         .truncate()
                                         .text_sm()
                                         .text_color(p.text_muted)
-                                        .child(vault.path.display().to_string()),
+                                        .child(presentation::vault_path(&vault.path)),
                                 )
                                 .child(
                                     div()
@@ -385,7 +385,7 @@ impl Render for SyncSettings {
                                 .debug_selector(move || format!("sync-shared-policy-{index}"))
                                 .ghost()
                                 .label("Shared exclusions")
-                                .disabled(self.busy)
+                                .disabled(self.locked())
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.edit_ignore_policy(ignore_path.clone(), window, cx)
                                 })),
@@ -407,7 +407,7 @@ impl Render for SyncSettings {
         if let Some(snapshot) = &self.snapshot {
             for (index, setting) in snapshot.history_retention.iter().enumerate() {
                 content = content.child(v_flex().gap_1()
-                    .child(format!("Previous Sync versions · {}", setting.path.display()))
+                    .child(presentation::history_label(&setting.path))
                     .child(format!("Keep for {} days on this computer. Restore from Note history or Recover notes. Sync is not a backup of every local edit.", setting.days.days()))
                     .child(h_flex().gap_2().children([7u16, 30, 90, 365].into_iter().map(|days| {
                         let path = setting.path.clone();
@@ -415,7 +415,7 @@ impl Render for SyncSettings {
                             .debug_selector(move || format!("sync-history-days-{index}-{days}"))
                             .label(format!("{days} days"))
                             .selected(setting.days.days() == days)
-                            .disabled(self.busy)
+                            .disabled(self.locked())
                             .on_click(cx.listener(move |this, _, window, cx| this.choose_retention(path.clone(), direct::RetentionDays::try_from(days).expect("valid retention preset"), window, cx)))
                     }))));
             }
@@ -608,7 +608,7 @@ impl SyncSettings {
                     } else {
                         "Try again"
                     })
-                    .disabled(self.busy)
+                    .disabled(self.locked())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if existing {
                             this.presentation.advanced = true;
@@ -641,7 +641,7 @@ impl SyncSettings {
                     .flex_shrink_0()
                     .ghost()
                     .label("Check again")
-                    .disabled(self.busy)
+                    .disabled(self.locked())
                     .on_click(cx.listener(|this, _, _, cx| this.run(Operation::Read, cx))),
             );
         }
@@ -671,7 +671,8 @@ impl SyncSettings {
                         .child(
                             self.presentation
                                 .error_details
-                                .clone()
+                                .as_deref()
+                                .map(okilum_core::vault::display_error)
                                 .unwrap_or_else(|| "No technical details available.".into()),
                         ),
                 );
@@ -690,15 +691,17 @@ impl SyncSettings {
                 )
                 .enumerate()
             {
-                result = result.child(
-                    div()
-                        .id(("sync-history-warning", index))
-                        .text_sm()
-                        .child(format!("{}: {}", warning.0.display(), warning.1)),
-                );
+                result = result.child(div().id(("sync-history-warning", index)).text_sm().child(
+                    format!(
+                        "{}: {}",
+                        presentation::vault_path(warning.0),
+                        okilum_core::vault::display_error(warning.1)
+                    ),
+                ));
             }
         }
-        if self.busy {
+        // A periodic refresh shows nothing: the line would move the page every 30 s.
+        if self.locked() {
             result = result.child(
                 div()
                     .id("sync-pending")
@@ -785,7 +788,7 @@ impl SyncSettings {
                     .flex_shrink_0()
                     .ghost()
                     .label("Reject")
-                    .disabled(self.busy)
+                    .disabled(self.locked())
                     .on_click(
                         cx.listener(move |this, _, _, cx| this.run(Operation::Reject(id), cx)),
                     ),
@@ -796,7 +799,7 @@ impl SyncSettings {
                     .flex_shrink_0()
                     .primary()
                     .label("Approve")
-                    .disabled(self.busy)
+                    .disabled(self.locked())
                     .on_click(
                         cx.listener(move |this, _, _, cx| this.run(Operation::Approve(id), cx)),
                     ),
@@ -832,7 +835,7 @@ impl SyncSettings {
             .unwrap_or_else(|| "your other computer".into());
         let complete = self
             .presentation
-            .first_sync_complete(self.snapshot.as_ref(), self.busy);
+            .first_sync_complete(self.snapshot.as_ref(), self.locked());
         let (title,help)=match step {
             Step::Start=>("Start on the computer with your notes".into(),"Create a link if your notes are here. Keep Okilum open on both computers.".into()),
             Step::Paste=>("Paste the link from your other computer".into(),format!("Paste the link created on the computer with your notes. You will approve {local} on that computer.")),
@@ -890,7 +893,7 @@ impl SyncSettings {
                         .debug_selector(|| "sync-cancel-first-preview".into())
                         .ghost()
                         .label("Back to folders")
-                        .disabled(self.busy || self.first_sync_applying(cx))
+                        .disabled(self.locked() || self.first_sync_applying(cx))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.close_first_sync_preview(cx);
                             this.presentation.transfers.clear();
@@ -909,7 +912,7 @@ impl SyncSettings {
                             .as_ref()
                             .expect("Settings initializes Sync inputs"),
                     )
-                    .disabled(self.busy),
+                    .disabled(self.locked()),
                 );
                 if step == Step::Start {
                     body = body
@@ -918,7 +921,7 @@ impl SyncSettings {
                                 .debug_selector(|| "sync-create-link".into())
                                 .primary()
                                 .label("Create pairing link")
-                                .disabled(self.busy)
+                                .disabled(self.locked())
                                 .on_click(
                                     cx.listener(|this, _, _, cx| this.start_pairing(false, cx)),
                                 ),
@@ -941,14 +944,14 @@ impl SyncSettings {
                                     .as_ref()
                                     .expect("Settings initializes Sync inputs"),
                             )
-                            .disabled(self.busy),
+                            .disabled(self.locked()),
                         )
                         .child(
                             Button::new("sync-connect")
                                 .debug_selector(|| "sync-connect".into())
                                 .primary()
                                 .label("Request connection")
-                                .disabled(self.busy)
+                                .disabled(self.locked())
                                 .on_click(
                                     cx.listener(|this, _, _, cx| this.start_pairing(true, cx)),
                                 ),
@@ -988,7 +991,7 @@ impl SyncSettings {
                             Button::new("sync-cancel-pairing")
                                 .ghost()
                                 .label("Cancel invitation")
-                                .disabled(self.busy)
+                                .disabled(self.locked())
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.presentation.wizard = None;
                                     this.run(Operation::Cancel, cx);
@@ -1031,7 +1034,7 @@ impl SyncSettings {
                             .debug_selector(|| "sync-cancel-request".into())
                             .ghost()
                             .label("Cancel request")
-                            .disabled(self.busy)
+                            .disabled(self.locked())
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.presentation.wizard = None;
                                 this.run(Operation::Cancel, cx);
@@ -1077,7 +1080,7 @@ impl SyncSettings {
                         .debug_selector(|| "sync-choose-more-vaults".into())
                         .ghost()
                         .label("Choose more vaults")
-                        .disabled(self.busy)
+                        .disabled(self.locked())
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.presentation.wizard = Some(Step::Vaults);
                             cx.notify();
@@ -1090,7 +1093,7 @@ impl SyncSettings {
                         .debug_selector(|| "sync-new-link".into())
                         .primary()
                         .label("Create new link")
-                        .disabled(self.busy)
+                        .disabled(self.locked())
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.error = None;
                             // A receiving computer cannot create an invitation
@@ -1136,7 +1139,7 @@ impl SyncSettings {
                                 .debug_selector(move || format!("sync-new-vault-folder-{index}"))
                                 .primary()
                                 .label("Choose folder")
-                                .disabled(self.busy)
+                                .disabled(self.locked())
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.presentation.picking_vault = true;
                                     this.choose_vault_folder(peer, new_id.clone(), &label, cx)
@@ -1169,11 +1172,10 @@ impl SyncSettings {
                         .find(|v| &v.id == id)
                         .map(|v| v.label.as_str())
                         .unwrap_or(id);
-                    body = body.child(
-                        div()
-                            .text_sm()
-                            .child(format!("Selected: {label} → {}", path.display())),
-                    );
+                    body = body.child(div().text_sm().child(format!(
+                        "Selected: {label} → {}",
+                        presentation::vault_path(path)
+                    )));
                 }
             }
             body = body.child(
@@ -1181,7 +1183,7 @@ impl SyncSettings {
                     .debug_selector(|| "sync-start-first-transfer".into())
                     .primary()
                     .label("Start first sync")
-                    .disabled(self.busy || self.presentation.destinations.is_empty())
+                    .disabled(self.locked() || self.presentation.destinations.is_empty())
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.presentation.transfers =
                             std::mem::take(&mut this.presentation.destinations)
@@ -1192,6 +1194,33 @@ impl SyncSettings {
                         }
                     })),
             );
+            // A click is never dropped silently (#3159): say what it waits for.
+            if matches!(
+                self.queued,
+                Some(
+                    Operation::Attach(..)
+                        | Operation::AttachNew(..)
+                        | Operation::ReviewDestination(..)
+                )
+            ) {
+                body = body.child(
+                    div()
+                        .id("sync-start-queued")
+                        .debug_selector(|| "sync-start-queued".into())
+                        .text_sm()
+                        .text_color(p.text_muted)
+                        .child("Starting first sync as soon as the current Sync check finishes…"),
+                );
+            } else if self.locked() && !self.presentation.destinations.is_empty() {
+                body = body.child(
+                    div()
+                        .id("sync-start-locked")
+                        .debug_selector(|| "sync-start-locked".into())
+                        .text_sm()
+                        .text_color(p.text_muted)
+                        .child("Sync is finishing the previous step. Start first sync becomes available when it is done."),
+                );
+            }
         }
         body.into_any_element()
     }
@@ -1224,7 +1253,7 @@ impl SyncSettings {
                             div()
                                 .text_sm()
                                 .text_color(brand::palette(cx).text_muted)
-                                .child(vault.path.display().to_string()),
+                                .child(presentation::vault_path(&vault.path)),
                         ),
                     );
                     count += 1;
@@ -1240,7 +1269,7 @@ impl SyncSettings {
                 Button::new("sync-receive-more")
                     .primary()
                     .label("Choose vaults to receive")
-                    .disabled(self.busy)
+                    .disabled(self.locked())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.presentation.wizard = Some(Step::Vaults);
                         if let Some(s) = this.snapshot.as_mut() {
@@ -1266,7 +1295,7 @@ impl SyncSettings {
         }) {
             body = body
                 .child(div().text_lg().child(vault.label.clone()))
-                .child(vault.path.display().to_string())
+                .child(presentation::vault_path(&vault.path))
                 .child(self.vault_connection_label(vault));
             if let Some(state) = self.presentation.overview.vaults.get(&vault.path) {
                 body = body

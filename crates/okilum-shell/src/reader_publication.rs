@@ -57,7 +57,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.current_rel.is_empty() {
+        if self.pane.current_rel.is_empty() {
             return;
         }
         if source.is_none() && !graph_changed {
