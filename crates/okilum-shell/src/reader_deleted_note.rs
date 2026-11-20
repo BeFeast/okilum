@@ -213,7 +213,7 @@ impl Reader {
         on_disk: Option<String>,
         cx: &mut Context<Self>,
     ) -> bool {
-        let editing = self.editing.is_some();
+        let editing = self.pane.editing.is_some();
         let retained = self.source_text(cx);
         let mut returned = false;
         let held = match (on_disk, self.deleted_note.as_mut()) {
@@ -257,8 +257,11 @@ impl Reader {
         }
         if held {
             // A previously prepared refresh must not replace the retained copy.
-            self.navigation.reconciliation_generation =
-                self.navigation.reconciliation_generation.wrapping_add(1);
+            self.pane.navigation.reconciliation_generation = self
+                .pane
+                .navigation
+                .reconciliation_generation
+                .wrapping_add(1);
         }
         cx.notify();
         held
@@ -273,9 +276,12 @@ impl Reader {
     ) {
         let root = self.vault_root.clone();
         let rel = self.pane.current_rel.clone();
-        self.navigation.reconciliation_generation =
-            self.navigation.reconciliation_generation.wrapping_add(1);
-        let generation = self.navigation.reconciliation_generation;
+        self.pane.navigation.reconciliation_generation = self
+            .pane
+            .navigation
+            .reconciliation_generation
+            .wrapping_add(1);
+        let generation = self.pane.navigation.reconciliation_generation;
         let vault = self.vault.clone();
         let selected = rel.clone();
         let task = cx.background_executor().spawn(async move {
@@ -299,8 +305,8 @@ impl Reader {
             let _ = this.update_in_own_window(cx, |this, window, cx| {
                 if this.vault_root != root
                     || this.pane.current_rel != rel
-                    || this.editing.is_some()
-                    || this.navigation.reconciliation_generation != generation
+                    || this.pane.editing.is_some()
+                    || this.pane.navigation.reconciliation_generation != generation
                 {
                     return;
                 }
@@ -334,7 +340,7 @@ impl Reader {
         let shown = self
             .deleted_current()
             .map(|deleted| (deleted.rel.clone(), deleted.disk));
-        if shown.is_some() && self.editing.is_some() {
+        if shown.is_some() && self.pane.editing.is_some() {
             // The editor's own «moved or deleted» notice says less than this one.
             self.clear_moved_or_deleted_notice();
         }
@@ -461,7 +467,7 @@ impl Reader {
         })();
         match result {
             Ok(()) => {
-                if self.editing.is_some() && !self.source_restored(window, cx) {
+                if self.pane.editing.is_some() && !self.source_restored(window, cx) {
                     // A recreated folder or a racing writer must not cause us
                     // to drop the retained editor and open unrelated bytes.
                     self.track_deleted_note(&Default::default(), cx);
@@ -503,7 +509,7 @@ impl Reader {
         if self.deleted_current().map(|deleted| deleted.disk) != Some(Disk::Different) {
             return;
         }
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             self.resolve_source(true, window, cx);
             return;
         }
@@ -548,7 +554,7 @@ impl Reader {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Note.md".into());
-        let generation = self.navigation.preparation_generation;
+        let generation = self.pane.navigation.preparation_generation;
         let picker = cx.prompt_for_new_path(&directory, Some(&name));
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(mut path))) = picker.await else {
@@ -562,7 +568,7 @@ impl Reader {
                 // Never mark newer contents saved or replay stale navigation.
                 if this.vault_root != root
                     || this.pane.current_rel != rel
-                    || this.navigation.preparation_generation != generation
+                    || this.pane.navigation.preparation_generation != generation
                 {
                     return;
                 }
@@ -591,7 +597,7 @@ impl Reader {
                     // has nothing left to protect.
                     this.source_saved_elsewhere(cx);
                     this.remember_source_mode();
-                    this.editing = None;
+                    this.pane.editing = None;
                 }
                 let inside = root.canonicalize().ok().and_then(|root| {
                     let parent = path.parent()?.canonicalize().ok()?;
@@ -931,7 +937,8 @@ mod tests {
         let edited = "# Start\n\nonly copy of these words, edited\n";
         reader.update_in(visual, |r, window, cx| {
             r.set_live_preview(live, window, cx);
-            r.editing
+            r.pane
+                .editing
                 .as_ref()
                 .expect("editing")
                 .set_value(edited, window, cx);
@@ -941,7 +948,7 @@ mod tests {
             disk(r) == Some(Disk::Missing)
         });
         reader.read_with(visual, |r, _| {
-            assert!(r.editing.is_some(), "the editor stays open");
+            assert!(r.pane.editing.is_some(), "the editor stays open");
             assert!(
                 !r.link_notice
                     .as_deref()
@@ -957,12 +964,12 @@ mod tests {
         );
         reader.read_with(visual, |r, _| {
             assert!(r.deleted_current().is_none());
-            assert!(r.editing.is_some(), "still editing the restored note");
+            assert!(r.pane.editing.is_some(), "still editing the restored note");
         });
         // The restored file is the editor's base: a later save just works.
         let more = "# Start\n\nonly copy of these words, edited twice\n";
         reader.update_in(visual, |r, window, cx| {
-            r.editing.as_ref().unwrap().set_value(more, window, cx);
+            r.pane.editing.as_ref().unwrap().set_value(more, window, cx);
             assert!(r.save_source(cx), "{:?}", r.link_notice);
         });
         assert_eq!(
@@ -988,7 +995,11 @@ mod tests {
         reader.update_in(visual, |r, window, cx| {
             r.toggle_source(window, cx);
             r.set_live_preview(live, window, cx);
-            r.editing.as_ref().unwrap().set_value(edited, window, cx);
+            r.pane
+                .editing
+                .as_ref()
+                .unwrap()
+                .set_value(edited, window, cx);
         });
         std::fs::remove_file(root.join("Start.md")).unwrap();
         settle(visual, &reader, "editor deletion", |r| {
@@ -1009,7 +1020,7 @@ mod tests {
         reader.read_with(visual, |r, cx| {
             assert_eq!(r.pane.current_rel, "Start.md");
             assert_eq!(r.source_text(cx).as_deref(), Some(edited));
-            assert!(r.editing.is_some());
+            assert!(r.pane.editing.is_some());
         });
 
         // Cancelling the path picker is also Cancel, not permission to leave.
@@ -1094,7 +1105,11 @@ mod tests {
         reader.update_in(visual, |r, window, cx| {
             r.toggle_source(window, cx);
             r.set_live_preview(live, window, cx);
-            r.editing.as_ref().unwrap().set_value(edited, window, cx);
+            r.pane
+                .editing
+                .as_ref()
+                .unwrap()
+                .set_value(edited, window, cx);
         });
         std::fs::remove_file(root.join("Start.md")).unwrap();
         settle(visual, &reader, "deleted", |r| {
@@ -1146,7 +1161,11 @@ mod tests {
         );
         let latest = "# Start\n\nchanged behind the path picker\n";
         reader.update_in(visual, |r, window, cx| {
-            r.editing.as_ref().unwrap().set_value(latest, window, cx);
+            r.pane
+                .editing
+                .as_ref()
+                .unwrap()
+                .set_value(latest, window, cx);
         });
         let stale = root.join("OldBuffer.md");
         visual.simulate_new_path_selection(move |_| Some(stale));
@@ -1199,7 +1218,7 @@ mod tests {
         assert!(visual.update(|window, cx| window.has_active_dialog(cx)));
         // Same path/root after a new document request is a different document.
         reader.update_in(visual, |r, _, _| {
-            r.navigation.preparation_generation += 1;
+            r.pane.navigation.preparation_generation += 1;
         });
         click(visual, "deleted-note-dont-save");
         reader.read_with(visual, |r, _| {
@@ -1212,7 +1231,7 @@ mod tests {
         visual.run_until_parked();
         assert!(visual.did_prompt_for_new_path());
         reader.update_in(visual, |r, _, _| {
-            r.navigation.preparation_generation += 1;
+            r.pane.navigation.preparation_generation += 1;
         });
         let path = root.join("StaleGeneration.md");
         visual.simulate_new_path_selection(move |_| Some(path));
@@ -1282,7 +1301,11 @@ mod tests {
             r.toggle_source(window, cx);
             r.set_live_preview(live, window, cx);
             if dirty {
-                r.editing.as_ref().unwrap().set_value(retained, window, cx);
+                r.pane
+                    .editing
+                    .as_ref()
+                    .unwrap()
+                    .set_value(retained, window, cx);
             }
         });
         std::fs::remove_file(root.join("Start.md")).unwrap();
@@ -1486,7 +1509,11 @@ mod tests {
         let latest = "# Latest unsaved mode-switch draft\n";
         reader.update_in(visual, |r, window, cx| {
             r.toggle_source(window, cx);
-            r.editing.as_ref().unwrap().set_value(latest, window, cx);
+            r.pane
+                .editing
+                .as_ref()
+                .unwrap()
+                .set_value(latest, window, cx);
         });
         std::fs::remove_file(root.join("Start.md")).unwrap();
         // Do not deliver the watcher: the transition itself must detect deletion.
@@ -1506,7 +1533,7 @@ mod tests {
             assert!(!r.single_file);
             assert_eq!(r.pane.current_rel, "Start.md");
             assert_eq!(r.source_text(cx).as_deref(), Some(latest));
-            assert!(r.editing.is_some());
+            assert!(r.pane.editing.is_some());
             assert!(r
                 .link_notice
                 .as_deref()
@@ -1522,7 +1549,8 @@ mod tests {
         let (reader, visual) = open(cx, &root, temp.path());
         reader.update_in(visual, |r, window, cx| {
             r.toggle_source(window, cx);
-            r.editing
+            r.pane
+                .editing
                 .as_ref()
                 .unwrap()
                 .set_value("# Unsaved draft\n", window, cx);

@@ -845,7 +845,7 @@ fn projects_menu_scope_switch_and_leave_restore_the_original_tree(cx: &mut TestA
                 .map(|r| r.path.clone())
                 .collect::<Vec<_>>(),
             view.panels.clone(),
-            view.content.clone(),
+            view.pane.content.clone(),
         )
     });
     for folder in ["Dev/Areas/App", "Music/Areas/Studio"] {
@@ -866,7 +866,7 @@ fn projects_menu_scope_switch_and_leave_restore_the_original_tree(cx: &mut TestA
                 .iter()
                 .all(|r| r.path.starts_with(&format!("{folder}/"))));
             assert_eq!(view.pane.current_rel, "note.md");
-            assert!(view.content == before.2);
+            assert!(view.pane.content == before.2);
         });
     }
     visual.update(|window, cx| reader.update(cx, |view, cx| view.leave_vault_project(window, cx)));
@@ -884,7 +884,7 @@ fn projects_menu_scope_switch_and_leave_restore_the_original_tree(cx: &mut TestA
         );
         assert_eq!(view.tree.cursor.as_deref(), Some("note.md"));
         assert_eq!(view.panels, before.1);
-        assert!(view.content == before.2);
+        assert!(view.pane.content == before.2);
     });
     assert!(
         visual.debug_bounds("reader-project").is_none(),

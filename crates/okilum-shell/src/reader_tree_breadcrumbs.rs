@@ -628,7 +628,7 @@ mod tests {
 
     /// #3182: the header's Today's note button creates today's note in the
     /// daily folder from the daily template and opens it for editing; the
-    /// next press opens that note again and rewrites nothing.
+    /// next press opens it again and only appends a `## HH:MM` entry.
     #[cfg(unix)]
     #[gpui::test]
     fn issue3182_todays_note_button_creates_then_reopens(cx: &mut TestAppContext) {
@@ -640,6 +640,7 @@ mod tests {
             folder: "Daily".into(),
             format: "YYYY/YYYY-MM-DD".into(),
             template: "Templates/Day.md".into(),
+            entry: String::new(),
         };
         reader.read_with(visual, |view, _| {
             let state = view.session_directory.clone().unwrap();
@@ -659,7 +660,10 @@ mod tests {
         assert_eq!(std::fs::read_to_string(vault.join(&rel)).unwrap(), source);
         reader.read_with(visual, |view, _| {
             assert_eq!(view.pane.current_rel, rel);
-            assert!(view.editing.is_some(), "today's note opens for writing");
+            assert!(
+                view.pane.editing.is_some(),
+                "today's note opens for writing"
+            );
         });
         reader.update_in(visual, |view, window, cx| {
             view.open_note("Other.md", None, window, cx)
@@ -672,7 +676,16 @@ mod tests {
         visual.simulate_click(button.center(), Modifiers::default());
         visual.run_until_parked();
         reader.read_with(visual, |view, _| assert_eq!(view.pane.current_rel, rel));
-        assert_eq!(std::fs::read_to_string(vault.join(&rel)).unwrap(), source);
+        // The second press adds a `## HH:MM` entry; the template is not
+        // applied again.
+        let text = std::fs::read_to_string(vault.join(&rel)).unwrap();
+        let entry = text
+            .strip_prefix(&format!("{source}\n## "))
+            .unwrap_or_else(|| panic!("an entry after the note: {text:?}"));
+        assert!(
+            entry.len() == 6 && entry.ends_with('\n') && entry.as_bytes()[2] == b':',
+            "{entry:?}"
+        );
         assert_eq!(
             std::fs::read_dir(vault.join("Daily").join(now.year().to_string()))
                 .unwrap()
@@ -690,9 +703,14 @@ mod tests {
         let (reader, visual, temp) = fixture(cx);
         let vault = temp.path().join("vault");
         let settings = okilum_core::daily_notes::Settings::default();
+        reader.read_with(visual, |view, _| {
+            let state = view.session_directory.clone().unwrap();
+            reader_daily_notes::save(&state, &view.vault_root, &settings).unwrap();
+        });
         let rel = okilum_core::vault::note_path(
             &settings.relative_path(reader_daily_notes::now()).unwrap(),
         );
+        assert!(rel.starts_with("Daily/"), "never the vault root: {rel}");
         assert!(!vault.join(&rel).exists());
         reader.update_in(visual, |view, window, cx| {
             view.show_app_section(reader_project_navigation::Section::Logs, window, cx)
@@ -714,7 +732,7 @@ mod tests {
         reader.read_with(visual, |view, _| {
             assert!(view.project_navigation.section == reader_project_navigation::Section::Reader);
             assert_eq!(view.pane.current_rel, rel);
-            assert!(view.editing.is_some());
+            assert!(view.pane.editing.is_some());
         });
         assert!(
             visual.debug_bounds("reader-source").is_some(),

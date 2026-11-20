@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub(super) struct PaneId(u64);
 
 impl PaneId {
-    fn next() -> Self {
+    pub(super) fn next() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         Self(
             NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))

@@ -51,7 +51,7 @@ impl HoverProvider for SourceHover {
         }
         let vault = state.vault.clone();
         let note = state.pane.current_rel.clone();
-        let generation = state.navigation.preparation_generation;
+        let generation = state.pane.navigation.preparation_generation;
         let root = state.vault_root.clone();
         let source = text.clone();
         let weak = self.0.clone();
@@ -130,8 +130,8 @@ impl HoverProvider for SourceHover {
                                 .and_then(|range| input.range_to_bounds(range))
                         ));
                     }
-                    reader.navigation.preparation_generation == generation
-                        && reader.editing.as_ref().is_some_and(|editing| {
+                    reader.pane.navigation.preparation_generation == generation
+                        && reader.pane.editing.as_ref().is_some_and(|editing| {
                             editing.input().read(cx).source_snapshot().text.rope() == &source
                         })
                 })

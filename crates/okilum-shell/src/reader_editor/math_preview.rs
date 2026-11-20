@@ -53,6 +53,7 @@ impl MathPreview {
         }
         let formula = reader
             .read(cx)
+            .pane
             .editing
             .as_ref()
             .filter(|editing| editing.input == self.input)?

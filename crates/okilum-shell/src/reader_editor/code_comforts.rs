@@ -692,7 +692,8 @@ impl Reader {
     ) -> Option<String> {
         let document = input.read(cx).source_stamp().document;
         Some(
-            self.editing
+            self.pane
+                .editing
                 .as_mut()?
                 .code_indentation
                 .resolve(document, text, block, None),
@@ -700,7 +701,7 @@ impl Reader {
     }
 
     fn clear_code_indentation(&mut self) {
-        if let Some(editing) = &mut self.editing {
+        if let Some(editing) = &mut self.pane.editing {
             editing.code_indentation.clear();
         }
     }
@@ -895,7 +896,9 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
         visual.run_until_parked();
-        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let input = reader.read_with(visual, |r, _| {
+            r.pane.editing.as_ref().unwrap().input.clone()
+        });
         (
             Note {
                 reader,
@@ -1115,7 +1118,7 @@ mod tests {
         visual.run_until_parked();
         template_quotes_in(&note, visual);
         assert!(note.reader.read_with(visual, |r, _| {
-            r.editing.as_ref().unwrap().live_preview.enabled
+            r.pane.editing.as_ref().unwrap().live_preview.enabled
         }));
     }
 
@@ -1191,6 +1194,7 @@ mod tests {
         visual.run_until_parked();
         go_raw_strings_in(&note, visual);
         assert!(note.reader.read_with(visual, |r, _| r
+            .pane
             .editing
             .as_ref()
             .unwrap()
@@ -1321,6 +1325,7 @@ mod tests {
         visual.run_until_parked();
         python_literal_enter_in(&note, visual);
         assert!(note.reader.read_with(visual, |r, _| r
+            .pane
             .editing
             .as_ref()
             .unwrap()
@@ -1574,6 +1579,7 @@ mod tests {
         visual.run_until_parked();
         stable_code_indent_in(&note, visual);
         assert!(note.reader.read_with(visual, |r, _| r
+            .pane
             .editing
             .as_ref()
             .unwrap()
@@ -1648,6 +1654,7 @@ mod tests {
         visual.run_until_parked();
         blank_line_indent_in(&note, visual);
         assert!(note.reader.read_with(visual, |r, _| r
+            .pane
             .editing
             .as_ref()
             .unwrap()
@@ -1756,7 +1763,7 @@ mod tests {
         visual.run_until_parked();
         let live = |visual: &mut VisualTestContext| {
             note.reader.read_with(visual, |r, _| {
-                r.editing.as_ref().unwrap().live_preview.enabled
+                r.pane.editing.as_ref().unwrap().live_preview.enabled
             })
         };
         assert!(live(visual));
