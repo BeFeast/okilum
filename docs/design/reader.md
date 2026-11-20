@@ -372,6 +372,7 @@ Reader tokens (new `reader-tokens.json`, loaded the same way):
 | --- | --- | --- | --- |
 | `text-faint` | `#8d929a` | `#7c818a` | section labels, counts, kbd hints |
 | `heading` | `#5034a8` | `#b9a9f5` | heading text in Reader and Live Preview (#3147); links inside keep `link` |
+| `heading1`..`heading6` | — | — | optional per-level heading colour (#3153); a missing level uses `heading`. Reader and Live Preview read the same values |
 | `link-underline` | `#0969e8` @ 28 % | `#71acff` @ 30 % | resting underline |
 | `missing-link` | `#9a5b00` | `#e2b25c` | unresolved wikilink text, dashed underline @ 50 % |
 | `code-bg` | `#f6f7f8` | `#26292e` | inline code, code blocks |
@@ -417,23 +418,33 @@ too. Status colors may fall back to the brand tokens; no other role inherits.
 | Paper | `paper` | warm off-white, ink-blue links, rust accent; sepia dark |
 | High contrast | `high-contrast` | black/white surfaces, AAA (7:1) reading text |
 | Nord | `nord` | cool arctic blues after the Nord palette |
-| Obsidianite | `obsidianite` | after Obsidianite (MIT): near-black violet canvas, cyan accent and headings, periwinkle links; derived light variant |
+| Obsidianite | `obsidianite` | after Obsidianite (MIT): near-black violet canvas, cyan accent and H1, slate `#cbdbe5` H2–H6 (`heading2`..`heading6`), periwinkle links; derived light variant |
 
 Token files live in `crates/okilum-shell/assets/themes/<key>.json`
 (`okilum-theme/v1`). A unit test checks every theme in both variants: `text`
 and `text-muted` on `surface`, `canvas` and `sidebar`; `link`, `missing-link` and
-`heading` on `surface` and `canvas`; `text` on `code-bg`, `surface-raised`, `selected` and
+`heading` and every heading level on `surface` and `canvas`; `text` on `code-bg`, `surface-raised`, `selected` and
 `hover`; status colors on `surface` and `on-status` on them — WCAG AA (4.5:1),
 AAA (7:1) for High contrast. `on-accent` on `accent` is 4.5:1 and `text-faint`
 3:1 (4.5:1 for High contrast). A new theme that fails is fixed, not exempted.
 Each theme's `heading` is a hue at least 25° from its `link`, so a heading
-never reads as clickable.
+never reads as clickable. A per-level colour differs from `text` and either
+keeps the same 25° or is a quiet tint under half the link's chroma, as
+Obsidianite's H2–H6 are.
 
-**Decoration slots** (#3151): a theme file may fill optional slots beside its
-colours; an absent slot renders exactly as before. Slots are paint-only: no
-text shaping, relayout or re-parse, and a theme switch only repaints.
+Obsidian community themes are ported offline with
+`scripts/themes/obsidian-theme-convert.py` (#3157, see
+[obsidian-theme-converter.md](obsidian-theme-converter.md)): it writes a theme
+file that already passes these gates, plus a report of every adjustment and
+every rule it could not carry over.
 
-- `decorations.taskCheck` (#3155) — `{"durationMs": 1..=600, "bounce": 0..=0.5}`.
+**Motion slots** (#3151): a theme file may set optional animations in a
+top-level `motion` object, apart from colours and the per-mode `decorations`;
+they do not depend on light or dark. An absent slot means no motion. Motion is
+paint-only: no text shaping, relayout or re-parse, and a theme switch only
+repaints.
+
+- `motion.taskCheck` (#3155) — `{"durationMs": 1..=600, "bounce": 0..=0.5}`.
   A click on a Live Preview task box plays the toggle: the box bounces to
   `1 + bounce` of its size and back within the first 60 % of the duration
   while the checkmark draws in (checking) or out (unchecking), easing out. The
