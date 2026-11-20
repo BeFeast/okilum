@@ -1489,6 +1489,16 @@ def find_decorations(sheet: Sheet, variables: Variables, mode: str,
     return deco, syntax, used, notes
 
 
+def app_syntax(syntax: dict) -> dict:
+    """The palette in the app's `syntax` schema (#3156): tree-sitter capture
+    names only. The toolkit palette has no `builtin` capture; builtins are
+    functions there, so `builtin` fills `function` when the theme left it out."""
+    out = {k: v for k, v in syntax.items() if k != "builtin"}
+    if "builtin" in syntax:
+        out.setdefault("function", syntax["builtin"])
+    return out
+
+
 def _color_in(value: str, resolver: Resolver):
     text = resolver.substitute(value)
     for part in split_top(text, " "):
@@ -1656,7 +1666,7 @@ def convert(css: str, *, theme_id: str, name: str, credit: str = "",
         if deco_by_mode.get(mode):
             entry["decorations"] = deco_by_mode[mode]
         if syntax_by_mode.get(mode):
-            entry["syntax"] = syntax_by_mode[mode]
+            entry["syntax"] = app_syntax(syntax_by_mode[mode])
         out_modes[mode] = entry
     theme = {"schema": SCHEMA, "version": "1.0.0", "id": theme_id, "name": name,
              "basis": basis, "modes": out_modes}

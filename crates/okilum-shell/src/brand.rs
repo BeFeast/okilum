@@ -11,7 +11,7 @@ use gpui::{px, rgb, svg, App, AssetSource, Hsla, SharedString, Styled, Svg};
 #[cfg(all(unix, feature = "brain"))]
 use gpui_component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 use gpui_component::input::projection::TaskCheckAnimation;
-use gpui_component::{Colorize as _, Theme};
+use gpui_component::{highlighter::HighlightTheme, Colorize as _, Theme};
 use okilum_shell::projects_picker;
 
 pub const SANS_FONT: &str = "Noto Sans";
@@ -620,6 +620,82 @@ pub fn palette(cx: &App) -> Palette {
     tokens(theme_id(cx), Theme::global(cx).is_dark()).0
 }
 
+/// The code syntax palette of a theme and mode (#3156). A theme may name an
+/// optional `syntax` map per mode, keyed by tree-sitter capture name
+/// (`comment`, `string`, `keyword`, `function`, `type`, …). Each entry sets
+/// the colour of that capture and of its dotted children it does not name
+/// itself (`string` also colours `string.escape`). Everything else, font
+/// style and weight included, stays the toolkit's palette for the mode, so a
+/// theme changes colours only and never adds a font run. A theme without
+/// `syntax` gets the toolkit's own `Arc`, unchanged from before.
+///
+/// One `Arc` per theme and mode for the whole run: consumers compare by
+/// pointer, so re-applying the same theme re-highlights nothing.
+pub fn syntax_theme(theme: ThemeId, dark: bool) -> std::sync::Arc<HighlightTheme> {
+    static THEMES: OnceLock<Vec<[std::sync::Arc<HighlightTheme>; 2]>> = OnceLock::new();
+    THEMES.get_or_init(|| {
+        ThemeId::ALL
+            .map(|theme| [false, true].map(|dark| build_syntax_theme(theme, dark)))
+            .to_vec()
+    })[theme.index()][usize::from(dark)]
+    .clone()
+}
+
+/// `string.special.symbol`, `string.special`, `string`: most specific first.
+fn capture_and_parents(capture: &str) -> impl Iterator<Item = &str> {
+    std::iter::successors(Some(capture), |name| {
+        name.rsplit_once('.').map(|(parent, _)| parent)
+    })
+}
+
+fn build_syntax_theme(theme: ThemeId, dark: bool) -> std::sync::Arc<HighlightTheme> {
+    let base = if dark {
+        HighlightTheme::default_dark()
+    } else {
+        HighlightTheme::default_light()
+    };
+    let Some(json) = theme.tokens() else {
+        return base;
+    };
+    let mode = if dark { "dark" } else { "light" };
+    let file: serde_json::Value = serde_json::from_str(json).expect("validated token file");
+    let Some(own) = file["modes"][mode].get("syntax") else {
+        return base;
+    };
+    let own = own
+        .as_object()
+        .unwrap_or_else(|| panic!("theme {} {mode} syntax must be an object", theme.key()));
+    let mut value = serde_json::to_value(&*base).expect("highlight theme serializes");
+    let syntax = value["style"]["syntax"]
+        .as_object_mut()
+        .expect("highlight theme has syntax colours");
+    for (capture, color) in own {
+        assert!(
+            syntax.contains_key(capture),
+            "theme {} {mode} syntax names unknown capture {capture}",
+            theme.key()
+        );
+        let color = color.as_str().unwrap_or_else(|| {
+            panic!(
+                "theme {} {mode} syntax {capture} is not a colour",
+                theme.key()
+            )
+        });
+        parse_color(color);
+    }
+    for (capture, style) in syntax.iter_mut() {
+        let Some(color) = capture_and_parents(capture).find_map(|name| own.get(name)) else {
+            continue;
+        };
+        if style.is_null() {
+            *style = serde_json::json!({});
+        }
+        style["color"] = color.clone();
+    }
+    value["name"] = format!("Okilum {} {mode}", theme.name()).into();
+    std::sync::Arc::new(serde_json::from_value(value).expect("syntax theme deserializes"))
+}
+
 /// Per-vault accent (#774), like Chrome profile colours: a dot at the vault
 /// name and a 2 px line along the window top. The theme stays app-wide.
 /// Each preset has a light and a dark value, both at least 3:1 against
@@ -798,13 +874,12 @@ fn contrast_ratio(a: Hsla, b: Hsla) -> f32 {
 const TITLE_TINT_STRENGTH: (f32, f32) = (0.12, 0.18);
 
 /// Reapply after `Theme::sync_system_appearance` or `Theme::change`, which resets
-/// component colors. Preserve the toolkit's matching syntax highlight theme.
+/// component colors. Code syntax colours come from the theme (#3156), else
+/// the toolkit's palette for the mode.
 pub fn apply_theme(cx: &mut App) {
     let p = palette(cx);
-    APPLIED_DARK.store(
-        Theme::global(cx).is_dark(),
-        std::sync::atomic::Ordering::Relaxed,
-    );
+    let dark = Theme::global(cx).is_dark();
+    APPLIED_DARK.store(dark, std::sync::atomic::Ordering::Relaxed);
     APPLIED_THEME.store(theme_id(cx).index(), std::sync::atomic::Ordering::Relaxed);
     // Paint-only: editors read it at the next click, nothing re-parses.
     match task_check_animation(theme_id(cx)) {
@@ -814,7 +889,9 @@ pub fn apply_theme(cx: &mut App) {
         }
         None => {}
     }
+    let syntax = syntax_theme(theme_id(cx), dark);
     let t = Theme::global_mut(cx);
+    t.highlight_theme = syntax;
     t.font_family = SANS_FONT.into();
     t.mono_font_family = MONO_FONT.into();
     t.font_size = px(CHROME_FONT_SIZE);
@@ -1628,6 +1705,187 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Capture names the toolkit palette knows, with its style for each.
+    fn toolkit_syntax(dark: bool) -> Vec<(String, Option<gpui::HighlightStyle>)> {
+        let base = if dark {
+            HighlightTheme::default_dark()
+        } else {
+            HighlightTheme::default_light()
+        };
+        let value = serde_json::to_value(&*base).unwrap();
+        value["style"]["syntax"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|name| (name.clone(), base.style(name)))
+            .collect()
+    }
+
+    fn own_syntax(
+        theme: ThemeId,
+        dark: bool,
+    ) -> Option<serde_json::Map<String, serde_json::Value>> {
+        let file: serde_json::Value = serde_json::from_str(theme.tokens()?).unwrap();
+        let mode = if dark { "dark" } else { "light" };
+        file["modes"][mode]["syntax"].as_object().cloned()
+    }
+
+    #[test]
+    fn issue3156_code_syntax_palette_comes_from_the_theme() {
+        let (obsidianite, theme_count) = (ThemeId::Obsidianite, ThemeId::ALL.len());
+        let mut themed = 0;
+        for theme in ThemeId::ALL {
+            for dark in [false, true] {
+                let syntax = syntax_theme(theme, dark);
+                // One Arc per theme and mode: re-applying highlights nothing anew.
+                assert!(std::sync::Arc::ptr_eq(&syntax, &syntax_theme(theme, dark)));
+                let toolkit = if dark {
+                    HighlightTheme::default_dark()
+                } else {
+                    HighlightTheme::default_light()
+                };
+                let Some(own) = own_syntax(theme, dark) else {
+                    // Fallback: today's palette, the very same Arc.
+                    assert!(
+                        std::sync::Arc::ptr_eq(&syntax, &toolkit),
+                        "{} keeps the toolkit palette",
+                        theme.key()
+                    );
+                    continue;
+                };
+                themed += 1;
+                assert!(!std::sync::Arc::ptr_eq(&syntax, &toolkit));
+                for (capture, before) in toolkit_syntax(dark) {
+                    let after = syntax.style(&capture);
+                    // Colours only: font style and weight stay, so no new
+                    // font run and no extra shaping (performance budget).
+                    assert_eq!(
+                        after.and_then(|s| s.font_weight),
+                        before.and_then(|s| s.font_weight),
+                        "{capture} weight"
+                    );
+                    assert_eq!(
+                        after.and_then(|s| s.font_style),
+                        before.and_then(|s| s.font_style),
+                        "{capture} style"
+                    );
+                    let named = capture_and_parents(&capture).find_map(|name| own.get(name));
+                    match named {
+                        Some(hex) => assert_eq!(
+                            after.and_then(|s| s.color),
+                            Some(parse_color(hex.as_str().unwrap())),
+                            "{} {capture}",
+                            theme.key()
+                        ),
+                        None => assert_eq!(after, before, "{capture} keeps the toolkit style"),
+                    }
+                }
+            }
+        }
+        assert!(
+            themed >= 2 && themed < theme_count * 2,
+            "some themes fall back"
+        );
+
+        // Obsidianite dark: Obsidianite's Prism Dracula colours.
+        let dark = syntax_theme(obsidianite, true);
+        let color = |name: &str| dark.style(name).and_then(|s| s.color);
+        for (capture, hex) in [
+            ("string", 0xf1fa8c),
+            ("keyword", 0xff79c6),
+            ("number", 0xbd93f9),
+            ("function", 0x50fa7b),
+            ("type", 0xffb86c),
+            ("operator", 0x8be9fd),
+        ] {
+            assert_eq!(color(capture), Some(rgb(hex).into()), "{capture}");
+        }
+        // A named parent colours its children: the toolkit's own
+        // `comment.doc` and `string.special` no longer show through.
+        assert_eq!(color("comment.doc"), color("comment"));
+        assert_eq!(color("string.special.symbol"), color("string"));
+        assert_ne!(color("string.escape"), color("string"));
+        // Captures the toolkit does not list fall back to their parent.
+        assert_eq!(color("keyword.modifier"), color("keyword"));
+        // Every capture the toolkit colours gets an Obsidianite colour.
+        let own = own_syntax(obsidianite, true).unwrap();
+        for (capture, before) in toolkit_syntax(true) {
+            if before.and_then(|s| s.color).is_some() {
+                assert!(
+                    capture_and_parents(&capture).any(|name| own.contains_key(name)),
+                    "toolkit colour leaks into Obsidianite: {capture}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn issue3156_theme_syntax_colours_pass_aa_on_code_surfaces() {
+        let mut failures = Vec::new();
+        for theme in ThemeId::ALL {
+            for dark in [false, true] {
+                let Some(own) = own_syntax(theme, dark) else {
+                    continue;
+                };
+                let (p, r) = tokens(theme, dark);
+                let min = if theme == ThemeId::HighContrast {
+                    7.
+                } else {
+                    4.5
+                };
+                for (capture, hex) in &own {
+                    let fg = parse_color(hex.as_str().unwrap());
+                    for (bg_name, bg) in [
+                        ("code-bg", r.code_bg),
+                        ("canvas", p.canvas),
+                        ("surface-raised", p.surface_raised),
+                    ] {
+                        let ratio = contrast_ratio(fg, bg);
+                        if ratio < min {
+                            failures.push(format!(
+                                "{} {}: {capture} on {bg_name} {ratio:.2}",
+                                theme.key(),
+                                if dark { "dark" } else { "light" }
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[gpui::test]
+    fn issue3156_theme_switch_swaps_the_live_syntax_palette(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::test_init);
+        cx.update(|cx| {
+            for mode in [ThemeMode::Dark, ThemeMode::Light] {
+                Theme::change(mode, None, cx);
+                let dark = mode == ThemeMode::Dark;
+                // The picker sets the choice and re-applies, without
+                // `Theme::change`, so the palette must also reset on the way back.
+                for theme in [
+                    ThemeId::Obsidianite,
+                    ThemeId::Graphite,
+                    ThemeId::Obsidianite,
+                ] {
+                    cx.set_global(ThemeChoice(theme));
+                    apply_theme(cx);
+                    let live = Theme::global(cx).highlight_theme.clone();
+                    assert!(
+                        std::sync::Arc::ptr_eq(&live, &syntax_theme(theme, dark)),
+                        "{} {mode:?}",
+                        theme.key()
+                    );
+                    assert!(std::sync::Arc::ptr_eq(
+                        &crate::reader_text_style(Theme::global(cx)).highlight_theme,
+                        &live
+                    ));
+                }
+            }
+        });
     }
 
     #[test]
