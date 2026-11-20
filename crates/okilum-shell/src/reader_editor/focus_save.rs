@@ -5,6 +5,7 @@ use super::*;
 impl Reader {
     pub(super) fn flush_focus_recovery(&mut self, cx: &mut Context<Self>) {
         let Some(editing) = self
+            .pane
             .editing
             .as_mut()
             .filter(|e| e.store.has_pending_revision())
@@ -27,6 +28,7 @@ impl Reader {
                 .await;
             let _ = reader.update(cx, |reader, cx| {
                 let Some(editing) = reader
+                    .pane
                     .editing
                     .as_mut()
                     .filter(|e| e.input.entity_id() == input && e.recovery_epoch == epoch)
@@ -48,7 +50,7 @@ impl Reader {
     pub(super) fn focus_save_ready(&self, window: &Window, cx: &App) -> bool {
         !self.move_applying
             && self.deleted_current().is_none()
-            && self.editing.as_ref().is_some_and(|e| {
+            && self.pane.editing.as_ref().is_some_and(|e| {
                 e.focus_save_pending
                     && e.autosaving.is_none()
                     && !e.conflict_detected
@@ -63,6 +65,7 @@ impl Reader {
             let _ = handle.update(cx, |_, window, cx| {
                 let _ = reader.update(cx, |reader, cx| {
                     if reader
+                        .pane
                         .editing
                         .as_ref()
                         .is_some_and(|e| e.input.entity_id() == input)

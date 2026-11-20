@@ -325,10 +325,10 @@ impl Reader {
             let retry = rel.to_owned();
             let jump = location.0.map(str::to_owned);
             let heading = location.1.map(str::to_owned);
-            let history = self.navigation.history_nav;
+            let history = self.pane.navigation.history_nav;
             self.ask_leaving_deleted_note(
                 Box::new(move |this, window, cx| {
-                    let outer = std::mem::replace(&mut this.navigation.history_nav, history);
+                    let outer = std::mem::replace(&mut this.pane.navigation.history_nav, history);
                     this.prepare_document_target(
                         &retry,
                         (jump.as_deref(), heading.as_deref()),
@@ -336,7 +336,7 @@ impl Reader {
                         window,
                         cx,
                     );
-                    this.navigation.history_nav = outer;
+                    this.pane.navigation.history_nav = outer;
                 }),
                 window,
                 cx,
@@ -347,22 +347,26 @@ impl Reader {
             self.reshow_deleted_notice(cx);
             return;
         }
-        if !self.leave_source(cx) {
+        if self.guard_pane_exit(self.pane.id(), cx).is_err() {
             return;
         }
         self.cancel_pending_landing();
-        self.navigation.preparation_generation =
-            self.navigation.preparation_generation.wrapping_add(1);
-        let generation = self.navigation.preparation_generation;
+        self.pane.navigation.preparation_generation =
+            self.pane.navigation.preparation_generation.wrapping_add(1);
+        let generation = self.pane.navigation.preparation_generation;
+        let ticket = self.pane.preparation_ticket();
+        #[cfg(test)]
+        let hold = self.pane.preparation_hold.take();
         let request = DocumentRequest {
             rel: rel.to_owned(),
             jump: location.0.map(str::to_owned),
             heading: location.1.map(str::to_owned),
-            history_index: self.navigation.history_nav,
+            history_index: self.pane.navigation.history_nav,
             restore_position: self
+                .pane
                 .navigation
                 .history_nav
-                .map(|index| self.navigation.history_positions[index])
+                .map(|index| self.pane.navigation.history_positions[index])
                 .or_else(|| {
                     // Plain file-list/Quick Open returns restore the last reading
                     // place. Explicit search, heading, line and task landings win.
@@ -370,9 +374,10 @@ impl Reader {
                         return None;
                     }
                     if rel == self.pane.current_rel {
-                        return Some(self.content.read(cx).list_state().logical_scroll_top());
+                        return Some(self.pane.content.read(cx).list_state().logical_scroll_top());
                     }
-                    self.navigation
+                    self.pane
+                        .navigation
                         .places
                         .get(&(self.vault_root.clone(), rel.to_owned()))
                         .copied()
@@ -406,7 +411,7 @@ impl Reader {
                 }
                 let current = this
                     .update_in_own_window(cx, |this, _, cx| {
-                        if this.navigation.preparation_generation != generation {
+                        if !this.pane.holds_preparation(ticket) {
                             return false;
                         }
                         if this.link_notice.as_deref() != Some(reader_icloud::DOWNLOADING) {
@@ -521,8 +526,13 @@ impl Reader {
                 }
                 document
             });
-            let _ = this.update_in_own_window(cx, |this, window, cx| {
-                if this.navigation.preparation_generation != generation {
+            #[cfg(test)]
+            if let Some(hold) = hold {
+                let _ = hold.recv().await;
+            }
+            let _ = this.update_in_own_window(cx, move |this, window, cx| {
+                this.run_for_pane(ticket.pane(), window, cx, move |this, window, cx| {
+                if !this.pane.holds_preparation(ticket) {
                     return;
                 }
                 if let Some(trace) = reader_diagnostics::trace(cx) {
@@ -535,9 +545,9 @@ impl Reader {
                 let task_landing = document.is_ok().then_some(task_text).flatten();
                 let unplaced_line = document.is_ok().then_some(unplaced_line).flatten();
                 let _phase = reader_diagnostics::phase(cx, "note_open_accept");
-                let navigation = this.navigation.generation;
+                let navigation = this.pane.navigation.generation;
                 this.accept_prepared_document(request, document, window, cx);
-                this.navigation.flash_pending = flash_block;
+                this.pane.navigation.flash_pending = flash_block;
                 if let Some(line) = landing_line {
                     this.trace_link_landing(line, flash_block, window, cx);
                 }
@@ -547,9 +557,9 @@ impl Reader {
                 this.finish_link_edit(generation, window, cx);
                 // Only a successfully accepted current request may reopen the
                 // chosen editor. Explicit link landings above keep ownership.
-                if this.navigation.generation != navigation
+                if this.pane.navigation.generation != navigation
                     && this.ui_state.source_mode
-                    && this.editing.is_none()
+                    && this.pane.editing.is_none()
                 {
                     let tree_had_focus = this.tree_focus.contains_focused(window, cx);
                     this.toggle_source(window, cx);
@@ -558,7 +568,7 @@ impl Reader {
                     if tree_had_focus {
                         this.tree_focus.focus(window, cx);
                     }
-                } else if this.navigation.generation != navigation && this.editing.is_none() {
+                } else if this.pane.navigation.generation != navigation && this.pane.editing.is_none() {
                     // #2817: the Settings default opens a note in Edit.
                     let tree_had_focus = this.tree_focus.contains_focused(window, cx);
                     this.open_note_by_default(tree_had_focus, window, cx);
@@ -572,6 +582,7 @@ impl Reader {
                     );
                     cx.notify();
                 }
+                });
             });
         })
         .detach();
@@ -592,6 +603,7 @@ impl Reader {
         };
         let top = |reader: &Self, cx: &App| {
             reader
+                .pane
                 .content
                 .read(cx)
                 .list_state()
@@ -630,7 +642,7 @@ impl Reader {
     fn prepare_links(&mut self, source: LinkSource, cx: &mut Context<Self>) {
         self.invalidate_links();
         let generation = self.pane.link_preparation_generation;
-        let navigation = self.navigation.generation;
+        let ticket = self.pane.navigation_ticket();
         let from = self.pane.current_rel.clone();
         let vault = self.vault.clone();
         let source_stamp = match &source {
@@ -679,41 +691,43 @@ impl Reader {
                     (states, identities)
                 })
                 .await;
-            let _ = this.update(cx, |this, cx| {
-                if this.pane.link_preparation_generation != generation
-                    || this.navigation.generation != navigation
-                    || source_stamp.is_some_and(|stamp| {
-                        this.editing
-                            .as_ref()
-                            .is_none_or(|editing| editing.input().read(cx).source_stamp() != stamp)
-                    })
-                {
-                    return;
-                }
-                let retired_states =
-                    std::mem::replace(&mut this.pane.link_presentations, states.clone());
-                let retired_identities =
-                    std::mem::replace(&mut this.pane.link_identities, identities);
-                this.pane.prepared_links = states;
-                cx.background_executor()
-                    .spawn(async move {
-                        drop((retired_states, retired_identities));
-                    })
-                    .detach();
-                // TextView caches its entity render independently of Reader.
-                // Refresh paint without replacing the parse, scroll or selection.
-                this.content.update(cx, |_, cx| cx.notify());
-                if let Some(overlay) = &this.pane.table_overlay {
-                    overlay.update(cx, |_, cx| cx.notify());
-                }
-                cx.notify();
+            let _ = this.update(cx, move |this, cx| {
+                this.run_for_pane_without_window(ticket.pane(), cx, move |this, cx| {
+                    if this.pane.link_preparation_generation != generation
+                        || !this.pane.holds_navigation(ticket)
+                        || source_stamp.is_some_and(|stamp| {
+                            this.pane.editing.as_ref().is_none_or(|editing| {
+                                editing.input().read(cx).source_stamp() != stamp
+                            })
+                        })
+                    {
+                        return;
+                    }
+                    let retired_states =
+                        std::mem::replace(&mut this.pane.link_presentations, states.clone());
+                    let retired_identities =
+                        std::mem::replace(&mut this.pane.link_identities, identities);
+                    this.pane.prepared_links = states;
+                    cx.background_executor()
+                        .spawn(async move {
+                            drop((retired_states, retired_identities));
+                        })
+                        .detach();
+                    // TextView caches its entity render independently of Reader.
+                    // Refresh paint without replacing the parse, scroll or selection.
+                    this.pane.content.update(cx, |_, cx| cx.notify());
+                    if let Some(overlay) = &this.pane.table_overlay {
+                        overlay.update(cx, |_, cx| cx.notify());
+                    }
+                    cx.notify();
+                });
             });
         })
         .detach();
     }
 
     pub(crate) fn refresh_link_preparation(&mut self, cx: &mut Context<Self>) {
-        if let Some(editing) = &self.editing {
+        if let Some(editing) = &self.pane.editing {
             let snapshot = editing.input().read(cx).source_snapshot();
             let text = okilum_core::source_projection::revision::Text::from_identified_rope(
                 snapshot.text.rope().clone(),
@@ -805,7 +819,7 @@ mod tests {
         reader.update_in(visual, |v, window, cx| {
             v.incremental_hold = Some(first_hold);
             v.toggle_source(window, cx);
-            v.editing.as_ref().unwrap().set_value(
+            v.pane.editing.as_ref().unwrap().set_value(
                 "# Start\n\n[[target|Control]]\n\n[[missing|Missing]]",
                 window,
                 cx,
@@ -815,7 +829,7 @@ mod tests {
         });
         visual.run_until_parked();
         let url = reader.read_with(visual, |v, _| {
-            assert!(v.editing.is_none() && v.incremental_active);
+            assert!(v.pane.editing.is_none() && v.incremental_active);
             v.pane
                 .link_identities
                 .iter()
@@ -1324,7 +1338,7 @@ mod tests {
         });
         visual.update(|window, cx| window.draw(cx).clear(cx));
         visual.run_until_parked();
-        let bounds = reader.read_with(visual, |v, cx| v.content.read(cx).bounds());
+        let bounds = reader.read_with(visual, |v, cx| v.pane.content.read(cx).bounds());
         let link = reader.read_with(visual, |v, cx| {
             crate::reader_scroll_geometry_tests::paragraph_origin(v, cx, 0)
         }) + point(px(25.), px(10.));
@@ -1338,13 +1352,13 @@ mod tests {
         visual.run_until_parked();
         let before = reader.read_with(visual, |v, cx| {
             (
-                v.content.read(cx).selected_text(),
-                v.content.entity_id(),
+                v.pane.content.read(cx).selected_text(),
+                v.pane.content.entity_id(),
                 v.pane.current_rel.clone(),
-                v.navigation.history.clone(),
-                v.navigation.history_ix,
+                v.pane.navigation.history.clone(),
+                v.pane.navigation.history_ix,
                 v.link_notice.clone(),
-                v.content.read(cx).list_state().logical_scroll_top(),
+                v.pane.content.read(cx).list_state().logical_scroll_top(),
                 v.pane.note_source.clone(),
             )
         });
@@ -1367,16 +1381,16 @@ mod tests {
             visual.run_until_parked();
             reader.read_with(visual, |v, cx| {
                 assert_eq!(
-                    v.content.read(cx).selected_text(),
+                    v.pane.content.read(cx).selected_text(),
                     before.0,
                     "down={down}, bounds={bounds:?}, link={link:?}"
                 );
-                assert_eq!(v.content.entity_id(), before.1);
+                assert_eq!(v.pane.content.entity_id(), before.1);
                 assert_eq!(v.pane.current_rel, before.2);
-                assert_eq!(v.navigation.history, before.3);
-                assert_eq!(v.navigation.history_ix, before.4);
+                assert_eq!(v.pane.navigation.history, before.3);
+                assert_eq!(v.pane.navigation.history_ix, before.4);
                 assert_eq!(v.link_notice, before.5);
-                let scroll = v.content.read(cx).list_state().logical_scroll_top();
+                let scroll = v.pane.content.read(cx).list_state().logical_scroll_top();
                 assert_eq!(scroll.item_ix, before.6.item_ix);
                 assert_eq!(scroll.offset_in_item, before.6.offset_in_item);
                 assert_eq!(v.pane.note_source, before.7);
@@ -1398,7 +1412,7 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |v, cx| {
-            assert_eq!(v.content.read(cx).selected_text().trim(), "Target");
+            assert_eq!(v.pane.content.read(cx).selected_text().trim(), "Target");
             assert_eq!(v.pane.current_rel, "start.md");
             assert_eq!(v.link_notice, before.5);
         });
@@ -1409,7 +1423,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |v, cx| {
             assert!(
-                v.content.read(cx).selected_text().is_empty(),
+                v.pane.content.read(cx).selected_text().is_empty(),
                 "ordinary text click still clears selection"
             )
         });
@@ -1483,14 +1497,14 @@ mod tests {
         // Target the actual second paragraph, independently of opening space.
         let word = |dx: f32| word_origin + point(px(dx), px(10.));
         double_click(visual, word(10.));
-        let first = reader.read_with(visual, |v, cx| v.content.read(cx).selected_text());
+        let first = reader.read_with(visual, |v, cx| v.pane.content.read(cx).selected_text());
         assert!(
             !first.trim().is_empty() && first.trim().len() < 12,
             "positive control: a word is selected: {first:?}"
         );
         visual.simulate_keystrokes("escape");
         double_click(visual, word(70.));
-        let second = reader.read_with(visual, |v, cx| v.content.read(cx).selected_text());
+        let second = reader.read_with(visual, |v, cx| v.pane.content.read(cx).selected_text());
         assert!(
             !second.trim().is_empty() && second != first,
             "positive control: another word is selected: {second:?}"
@@ -1617,7 +1631,7 @@ mod tests {
                 visual.run_until_parked();
             }
             reader.read_with(visual, |v, cx| {
-                let selected = v.content.read(cx).selected_text();
+                let selected = v.pane.content.read(cx).selected_text();
                 assert!(
                     !selected.trim().is_empty(),
                     "frames_between={frames_between}: positive control, the drag selected text"
@@ -1701,11 +1715,11 @@ mod tests {
                 v.pane.prepared_links[url].status,
                 LinkStatus::MissingDocument
             );
-            v.content.update(cx, |s, cx| s.select_all(cx));
+            v.pane.content.update(cx, |s, cx| s.select_all(cx));
             v.link_notice = Some("Retain notice".into());
-            v.content.entity_id()
+            v.pane.content.entity_id()
         });
-        let selection = reader.read_with(visual, |v, cx| v.content.read(cx).selected_text());
+        let selection = reader.read_with(visual, |v, cx| v.pane.content.read(cx).selected_text());
         assert!(
             !selection.is_empty(),
             "positive control: selected document text"
@@ -1713,8 +1727,8 @@ mod tests {
         visual.update(|window, cx| handle_link(&reader.downgrade(), url, window, cx));
         reader.update_in(visual, |v, _, _| {
             assert_eq!(v.pane.current_rel, "start.md");
-            assert_eq!(v.navigation.history, ["start.md"]);
-            assert_eq!(v.navigation.history_ix, 0);
+            assert_eq!(v.pane.navigation.history, ["start.md"]);
+            assert_eq!(v.pane.navigation.history_ix, 0);
             assert_eq!(v.link_notice.as_deref(), Some("Retain notice"));
         });
         for (text, expected) in [
@@ -1744,9 +1758,9 @@ mod tests {
             visual.run_until_parked();
             reader.update_in(visual, |v, _, cx| {
                 assert_eq!(v.pane.prepared_links[url].status, expected);
-                assert_eq!(v.content.read(cx).selected_text(), selection);
-                assert_eq!(v.content.entity_id(), content);
-                assert_eq!(v.navigation.history, ["start.md"]);
+                assert_eq!(v.pane.content.read(cx).selected_text(), selection);
+                assert_eq!(v.pane.content.entity_id(), content);
+                assert_eq!(v.pane.navigation.history, ["start.md"]);
             });
             assert_paint(expected.is_missing());
         }

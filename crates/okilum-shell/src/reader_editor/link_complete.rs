@@ -795,7 +795,7 @@ impl Drop for RefreshTiming {
 
 impl Reader {
     pub(super) fn suppress_pasted_completion(&mut self, cx: &mut Context<Self>) {
-        if let Some(editing) = self.editing.as_mut() {
+        if let Some(editing) = self.pane.editing.as_mut() {
             let stamp = editing.input.read(cx).source_stamp();
             let state = &mut editing.link_complete;
             state.pasted = Some(stamp);
@@ -815,7 +815,7 @@ impl Reader {
         let show_hidden = self.sidebar.show_hidden;
         let vault = self.vault.clone();
         let from = self.pane.current_rel.clone();
-        let Some(editing) = self.editing.as_mut() else {
+        let Some(editing) = self.pane.editing.as_mut() else {
             return;
         };
         let input = editing.input.read(cx);
@@ -975,7 +975,7 @@ impl Reader {
                     {
                         return;
                     }
-                    let Some(editing) = this.editing.as_mut() else {
+                    let Some(editing) = this.pane.editing.as_mut() else {
                         return;
                     };
                     if editing.input != input_entity {
@@ -1003,6 +1003,7 @@ impl Reader {
                     publish(&mut editing.link_complete, query, enriched.rows);
                     if let Some(trigger) = accept {
                         if this
+                            .pane
                             .editing
                             .as_ref()
                             .is_some_and(|editing| editing.link_complete.open.is_some())
@@ -1039,7 +1040,7 @@ impl Reader {
     /// goes on as before.
     fn show_code_languages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.refresh_link_complete(window, cx);
-        let Some(editing) = self.editing.as_mut() else {
+        let Some(editing) = self.pane.editing.as_mut() else {
             cx.propagate();
             return;
         };
@@ -1070,7 +1071,7 @@ impl Reader {
     /// Internal hook for initial rows and keyboard paging; slot32's editor
     /// observer/actions/overlay hooks remain unchanged.
     fn refresh_link_complete_metadata(&mut self, cx: &mut Context<Self>) {
-        let Some(editing) = self.editing.as_mut() else {
+        let Some(editing) = self.pane.editing.as_mut() else {
             return;
         };
         let Some(open) = editing.link_complete.open.as_ref() else {
@@ -1116,7 +1117,7 @@ impl Reader {
                 .spawn(async move { load_metadata(&request, &cache) })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                let Some(editing) = this.editing.as_mut() else {
+                let Some(editing) = this.pane.editing.as_mut() else {
                     return;
                 };
                 if editing.input != input_entity {
@@ -1155,7 +1156,7 @@ impl Reader {
 
     /// The editor while its link list is open and may take keys.
     fn link_complete_input(&self, window: &Window, cx: &App) -> Option<Entity<EditorState>> {
-        let editing = self.editing.as_ref()?;
+        let editing = self.pane.editing.as_ref()?;
         if editing.link_complete.open.is_none()
             && !editing
                 .link_complete
@@ -1203,6 +1204,7 @@ impl Reader {
             return;
         }
         let Some(open) = self
+            .pane
             .editing
             .as_mut()
             .and_then(|editing| editing.link_complete.open.as_mut())
@@ -1222,6 +1224,7 @@ impl Reader {
     fn link_complete_dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.refresh_link_complete(window, cx);
         if let Some(editing) = self
+            .pane
             .editing
             .as_mut()
             .filter(|editing| editing.link_complete.heading_accepting)
@@ -1235,7 +1238,7 @@ impl Reader {
         if self.link_complete_input(window, cx).is_none() {
             return;
         }
-        if let Some(editing) = self.editing.as_mut() {
+        if let Some(editing) = self.pane.editing.as_mut() {
             let state = &mut editing.link_complete;
             state.dismissed = state
                 .open
@@ -1256,7 +1259,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(choice) = self.editing.as_ref().and_then(|editing| {
+        let Some(choice) = self.pane.editing.as_ref().and_then(|editing| {
             intent.choice(
                 editing.link_complete.open.as_ref()?,
                 editing.input.read(cx).source_stamp(),
@@ -1282,7 +1285,7 @@ impl Reader {
         let Some(input) = self.link_complete_input(window, cx) else {
             return;
         };
-        let Some(editing) = self.editing.as_mut() else {
+        let Some(editing) = self.pane.editing.as_mut() else {
             return;
         };
         let Some(open) = editing.link_complete.open.take() else {
@@ -1341,7 +1344,7 @@ impl Reader {
                     {
                         return;
                     }
-                    let Some(editing) = reader.editing.as_mut() else {
+                    let Some(editing) = reader.pane.editing.as_mut() else {
                         return;
                     };
                     if editing.input != input_entity || !editing.link_complete.heading_accepting {
@@ -1425,7 +1428,7 @@ impl Reader {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let input = self.link_complete_input(window, cx)?;
-        let open = self.editing.as_ref()?.link_complete.open.as_ref()?;
+        let open = self.pane.editing.as_ref()?.link_complete.open.as_ref()?;
         let state = input.read(cx);
         let caret = state.range_to_bounds(&(open.query.caret..open.query.caret))?;
         let p = brand::palette(cx);
@@ -2195,7 +2198,9 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
         visual.run_until_parked();
-        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let input = reader.read_with(visual, |r, _| {
+            r.pane.editing.as_ref().unwrap().input.clone()
+        });
         (
             Note {
                 reader,
@@ -2238,7 +2243,7 @@ mod tests {
     /// The rows on offer, by path; `None` while the list is closed.
     fn offered(note: &Note, visual: &mut VisualTestContext) -> Option<Vec<String>> {
         note.reader.read_with(visual, |r, _| {
-            let open = r.editing.as_ref()?.link_complete.open.as_ref()?;
+            let open = r.pane.editing.as_ref()?.link_complete.open.as_ref()?;
             Some(open.items.iter().map(|c| c.path.clone()).collect())
         })
     }
@@ -2271,6 +2276,7 @@ mod tests {
     fn heading_targets(note: &Note, visual: &mut VisualTestContext) -> Vec<String> {
         note.reader.read_with(visual, |reader, _| {
             reader
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -2378,7 +2384,7 @@ mod tests {
         undo(visual);
         assert_eq!(shown(&note, visual), "# Unsaved\n\n[[#Un|");
         assert!(note.reader.read_with(visual, |reader, _| {
-            reader.editing.as_ref().unwrap().live_preview.enabled
+            reader.pane.editing.as_ref().unwrap().live_preview.enabled
         }));
     }
 
@@ -2464,6 +2470,7 @@ mod tests {
             set(&note, visual, source);
             let target = note.reader.read_with(visual, |reader, _| {
                 let open = reader
+                    .pane
                     .editing
                     .as_ref()
                     .unwrap()
@@ -2477,6 +2484,7 @@ mod tests {
             visual.update(|window, cx| window.draw(cx).clear(cx));
             let last = note.reader.read_with(visual, |reader, _| {
                 let open = reader
+                    .pane
                     .editing
                     .as_ref()
                     .unwrap()
@@ -2526,6 +2534,7 @@ mod tests {
             "Enter waits without a newline"
         );
         assert!(note.reader.read_with(visual, |r, _| r
+            .pane
             .editing
             .as_ref()
             .unwrap()
@@ -2884,7 +2893,7 @@ mod tests {
     /// The languages on offer, as written; `None` while the list is closed.
     fn languages(note: &Note, visual: &mut VisualTestContext) -> Option<Vec<String>> {
         note.reader.read_with(visual, |r, _| {
-            let open = r.editing.as_ref()?.link_complete.open.as_ref()?;
+            let open = r.pane.editing.as_ref()?.link_complete.open.as_ref()?;
             assert!(matches!(open.query.kind, Kind::Language));
             Some(open.items.iter().map(|c| c.target.clone()).collect())
         })
@@ -2894,6 +2903,7 @@ mod tests {
     fn chosen(note: &Note, visual: &mut VisualTestContext) -> String {
         note.reader.read_with(visual, |r, _| {
             let open = r
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()

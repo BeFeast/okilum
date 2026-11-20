@@ -374,7 +374,7 @@ mod mounted {
         let original = std::fs::read_to_string(f.root.join("Start.md")).unwrap();
         let input = f.reader.update_in(visual, |reader, window, cx| {
             reader.toggle_source(window, cx);
-            reader.editing.as_ref().unwrap().input().clone()
+            reader.pane.editing.as_ref().unwrap().input().clone()
         });
         draw(visual);
         input.update_in(visual, |input, window, cx| {
@@ -386,9 +386,9 @@ mod mounted {
                 assert!(reader.source_is_dirty(cx), "dirty draft positive control");
                 assert!(reader.pane.file_preview.is_none());
                 (
-                    reader.navigation.history.clone(),
-                    reader.navigation.history_ix,
-                    reader.content.clone(),
+                    reader.pane.navigation.history.clone(),
+                    reader.pane.navigation.history_ix,
+                    reader.pane.content.clone(),
                     input.read(cx).source_stamp(),
                     input.read(cx).selected_range(),
                 )
@@ -421,11 +421,11 @@ mod mounted {
                 assert!(reader.tree_preview.preview.is_none());
                 assert!(reader.tree_focus.is_focused(window));
                 assert_eq!(reader.pane.current_rel, "Start.md");
-                assert_eq!(reader.navigation.history, history);
-                assert_eq!(reader.navigation.history_ix, history_ix);
-                assert_eq!(reader.content, content);
+                assert_eq!(reader.pane.navigation.history, history);
+                assert_eq!(reader.pane.navigation.history_ix, history_ix);
+                assert_eq!(reader.pane.content, content);
                 assert!(reader.pane.file_preview.is_none());
-                assert_eq!(reader.editing.as_ref().unwrap().input(), &input);
+                assert_eq!(reader.pane.editing.as_ref().unwrap().input(), &input);
                 assert_eq!(
                     input.read(cx).value().as_ref(),
                     format!("Draft Ω\n{original}")
@@ -481,7 +481,7 @@ mod mounted {
         let saved = std::fs::read(f.root.join("Start.md")).unwrap();
         let history = f
             .reader
-            .read_with(visual, |reader, _| reader.navigation.history.clone());
+            .read_with(visual, |reader, _| reader.pane.navigation.history.clone());
         let paths = Rc::new(RefCell::new(Vec::new()));
         let capture = paths.clone();
         let real = decoder();
@@ -519,7 +519,7 @@ mod mounted {
         });
         f.reader.read_with(visual, |reader, _| {
             assert_eq!(reader.pane.current_rel, "Start.md");
-            assert_eq!(reader.navigation.history, history);
+            assert_eq!(reader.pane.navigation.history, history);
             assert!(reader.pane.file_preview.is_none());
         });
         assert_eq!(std::fs::read(f.root.join("Start.md")).unwrap(), saved);

@@ -187,7 +187,7 @@ impl Reader {
     /// settings. Called on every render; it changes the editor only when a
     /// setting or the theme changed.
     pub(super) fn apply_writing_modes(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(editing) = &self.editing else {
+        let Some(editing) = &self.pane.editing else {
             return;
         };
         let typewriter = reader_ui_state::typewriter_mode(cx);
@@ -402,15 +402,22 @@ mod tests {
     fn writing_geometry(cx: &mut TestAppContext, note: String, live: bool) {
         let (reader, visual, _directory) = fixture(cx, &note);
         reader.update_in(visual, |r, window, cx| {
-            r.editing.as_ref().unwrap().input.update(cx, |input, _| {
-                input.enable_layout_diagnostics();
-            });
-            if r.editing.as_ref().unwrap().live_preview.enabled != live {
+            r.pane
+                .editing
+                .as_ref()
+                .unwrap()
+                .input
+                .update(cx, |input, _| {
+                    input.enable_layout_diagnostics();
+                });
+            if r.pane.editing.as_ref().unwrap().live_preview.enabled != live {
                 r.toggle_live_preview(window, cx);
             }
         });
         visual.run_until_parked();
-        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let input = reader.read_with(visual, |r, _| {
+            r.pane.editing.as_ref().unwrap().input.clone()
+        });
         // Mid-note, at the start of a paragraph line.
         let middle = note[note.len() / 2..].find("A paragraph").unwrap() + note.len() / 2;
         input.update(visual, |input, cx| {
@@ -430,7 +437,13 @@ mod tests {
         assert!(input.read_with(visual, |input, _| input.is_typewriter()));
         if live {
             reader.read_with(visual, |r, _| {
-                let concealed = r.editing.as_ref().unwrap().live_preview.concealed_text();
+                let concealed = r
+                    .pane
+                    .editing
+                    .as_ref()
+                    .unwrap()
+                    .live_preview
+                    .concealed_text();
                 assert!(
                     concealed.is_some_and(|display| display.len() < note.len()),
                     "the fixture must conceal Markdown, not merely enable Live"
@@ -613,7 +626,8 @@ mod tests {
         // the viewport back from a user who has scrolled away.
         if live {
             let provider = reader.read_with(visual, |r, _| {
-                r.editing
+                r.pane
+                    .editing
                     .as_ref()
                     .unwrap()
                     .live_preview
@@ -664,7 +678,9 @@ mod tests {
         let (reader, visual, _directory) = fixture(cx, &note);
         visual.update(|_, cx| reader_ui_state::set_typewriter_mode(true, cx));
         visual.run_until_parked();
-        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let input = reader.read_with(visual, |r, _| {
+            r.pane.editing.as_ref().unwrap().input.clone()
+        });
         input.update(visual, |input, cx| {
             input.set_selected_range(note.len()..note.len(), cx)
         });
@@ -683,7 +699,9 @@ mod tests {
         let note =
             "# Title\n\nFirst paragraph\nstill first\n\n- one\n  - two\n    - three\n\nLast\n";
         let (reader, visual, _directory) = fixture(cx, note);
-        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let input = reader.read_with(visual, |r, _| {
+            r.pane.editing.as_ref().unwrap().input.clone()
+        });
         let at = |needle: &str| note.find(needle).unwrap();
         input.update(visual, |input, cx| {
             input.set_selected_range(at("three")..at("three"), cx)

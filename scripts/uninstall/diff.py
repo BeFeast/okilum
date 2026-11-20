@@ -5,10 +5,11 @@
 
 Prints every added entry. Fails if an added entry belongs to Okilum (name
 contains okilum / BeFeast.Okilum / com.befeast.okilum, UserAssist names
-decoded from ROT13) and is not under a
-vault, the exported unsaved drafts, or the known residue owned by Windows or
-Velopack. Only the part of a path below the snapshot's home is checked for the
-name, so a QA home such as /home/qa/okilum-night/home is not app residue (#1088).
+decoded from ROT13) and is not under a vault, the exported unsaved drafts,
+Sync's retained Windows identity (#3109), or the known residue owned by Windows
+or Velopack. Only the part of a path below the snapshot's home is checked for
+the name, so a QA home such as /home/qa/okilum-night/home is not app residue
+(#1088).
 The home comes from the snapshot's "# home" line or --home.
 """
 import argparse
@@ -26,6 +27,10 @@ KNOWN_RESIDUE = [
 ]
 # Uninstall deliberately exports unsaved drafts here (docs/uninstall.md).
 EXPORT = re.compile(r'[\\/]Documents[\\/]Okilum unsaved drafts([\\/]|$)')
+# Windows uninstall keeps Sync's identity (#3109, docs/uninstall.md); their
+# parent folder stays only because it holds them.
+SYNC_KEPT = re.compile(r'\\AppData\\Local\\Okilum\\Sync(Direct)?(\\|$)', re.IGNORECASE)
+SYNC_PARENT = re.compile(r'\\AppData\\Local\\Okilum$', re.IGNORECASE)
 
 
 def entries(path):
@@ -55,7 +60,7 @@ def readable(path):
     return path
 
 
-def classify(path, vaults, home):
+def classify(path, vaults, home, sync_kept=False):
     path = readable(path)
     lowered = path.lower()
     if any(lowered == v or lowered.startswith(v + '\\') or lowered.startswith(v + '/') for v in vaults):
@@ -64,6 +69,8 @@ def classify(path, vaults, home):
         return 'residue'
     if EXPORT.search(path):
         return 'export'
+    if SYNC_KEPT.search(path) or (sync_kept and SYNC_PARENT.search(path)):
+        return 'sync'
     return 'OKILUM' if OURS.search(below(path, home)) else 'other'
 
 
@@ -80,8 +87,9 @@ def main():
     home = args.home or home_after or home_before
     added = sorted(after - before)
     failures = []
+    sync_kept = any(SYNC_KEPT.search(entry[2:]) for entry in added)
     for entry in added:
-        tag = classify(entry[2:], vaults, home)
+        tag = classify(entry[2:], vaults, home, sync_kept)
         print(f'{tag:8} {entry}')
         if tag == 'OKILUM':
             failures.append(entry)

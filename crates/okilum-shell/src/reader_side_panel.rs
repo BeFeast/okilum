@@ -192,6 +192,7 @@ impl Reader {
     /// the document itself changed: a parse landed or failed.
     pub(super) fn content_changed(&mut self, cx: &mut Context<Self>) {
         let status = self
+            .pane
             .content
             .read(cx)
             .preparation_status()
@@ -302,7 +303,7 @@ pub(super) mod tests {
         // Inside the first section: the note moves, the panels are reused.
         let top = |visual: &mut VisualTestContext| {
             view.read_with(visual, |v, cx| {
-                let top = v.content.read(cx).list_state().logical_scroll_top();
+                let top = v.pane.content.read(cx).list_state().logical_scroll_top();
                 (top.item_ix, top.offset_in_item)
             })
         };

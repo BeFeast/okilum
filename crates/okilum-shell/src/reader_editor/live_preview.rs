@@ -233,7 +233,7 @@ impl Reader {
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
                 let keep = reader.update(cx, |reader, cx| {
-                    let Some(editing) = reader.editing.as_ref().filter(|e| e.input == input) else {
+                    let Some(editing) = reader.pane.editing.as_ref().filter(|e| e.input == input) else {
                         return false;
                     };
                     let editor = input.read(cx);
@@ -282,7 +282,12 @@ impl Reader {
     }
 
     pub(super) fn refresh_live_preview_colors(&self, cx: &mut Context<Self>) {
-        let Some(editing) = self.editing.as_ref().filter(|e| e.live_preview.enabled) else {
+        let Some(editing) = self
+            .pane
+            .editing
+            .as_ref()
+            .filter(|e| e.live_preview.enabled)
+        else {
             return;
         };
         let colors = projection_colors(cx);
@@ -326,7 +331,7 @@ impl Reader {
         labels: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Some(editing) = &self.editing else {
+        let Some(editing) = &self.pane.editing else {
             return div().into_any_element();
         };
         let oversize =
@@ -393,7 +398,7 @@ impl Reader {
             window,
             cx,
         );
-        if let Some(editing) = &mut self.editing {
+        if let Some(editing) = &mut self.pane.editing {
             editing.live_preview.restore_after_find = false;
             if editing.live_preview.enabled != enabled {
                 self.toggle_live_preview(window, cx);
@@ -402,7 +407,7 @@ impl Reader {
     }
 
     pub(crate) fn toggle_live_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.editing.as_ref().is_some_and(|editing| {
+        if self.pane.editing.as_ref().is_some_and(|editing| {
             editing
                 .table_grid
                 .update(cx, |grid, cx| grid.retain_pending_cells(cx))
@@ -413,7 +418,7 @@ impl Reader {
             return;
         }
         let colors = projection_colors(cx);
-        let Some(editing) = &mut self.editing else {
+        let Some(editing) = &mut self.pane.editing else {
             return;
         };
         editing.live_preview.restore_after_find = false;
@@ -435,7 +440,7 @@ impl Reader {
             input.set_searchable(!enabled, cx);
         });
         let agent_imports = self.agent_document_enabled(cx);
-        if let Some(editing) = &self.editing {
+        if let Some(editing) = &self.pane.editing {
             editing.live_preview.agent_imports.set(agent_imports);
         }
         let provider = if enabled {
@@ -471,7 +476,8 @@ impl Reader {
     /// Whether the open editor shows agent language marks (#1593).
     fn agent_language_marked(&self, cx: &App) -> bool {
         self.agent_language_marks.as_ref().is_some_and(|marks| {
-            self.editing
+            self.pane
+                .editing
                 .as_ref()
                 .is_some_and(|editing| editing.input.entity_id() == marks.input)
                 && !marks.collection.get_ranges(cx).is_empty()
@@ -483,7 +489,12 @@ impl Reader {
     /// Source hover maps offsets exactly and shows a marked term's Latin form
     /// (#2953); without marks Live keeps projection and no native hover.
     pub(crate) fn sync_live_language_hover(&self, cx: &mut Context<Self>) {
-        let Some(editing) = self.editing.as_ref().filter(|e| e.live_preview.enabled) else {
+        let Some(editing) = self
+            .pane
+            .editing
+            .as_ref()
+            .filter(|e| e.live_preview.enabled)
+        else {
             return;
         };
         let hover = self
@@ -498,7 +509,7 @@ impl Reader {
     }
 
     fn live_input(&self, entity: EntityId, cx: &App) -> Option<nav::Input> {
-        let editing = self.editing.as_ref()?;
+        let editing = self.pane.editing.as_ref()?;
         let state = &editing.live_preview;
         if !state.enabled || self.move_applying || !state.origin.matches(self, editing, entity) {
             return None;
@@ -527,7 +538,7 @@ impl Reader {
         if self.move_applying {
             return None;
         }
-        let state = &self.editing.as_ref()?.live_preview;
+        let state = &self.pane.editing.as_ref()?.live_preview;
         let provider = state.accepted.as_ref()?;
         let live = self.live_input(entity, cx)?;
         (provider.source().stamp == live.source.stamp && provider.source().text == live.source.text)
@@ -539,6 +550,7 @@ impl Reader {
             return;
         }
         if self
+            .pane
             .editing
             .as_ref()
             .is_some_and(|e| e.store.text() == e.input.read(cx).value().as_ref())
@@ -549,7 +561,7 @@ impl Reader {
     pub(super) fn schedule_live_preview(&mut self, cx: &mut Context<Self>) {
         // Refused inputs supersede below without copying the native buffer.
         let live = self.live_input(cx.entity_id(), cx);
-        let Some(editing) = &mut self.editing else {
+        let Some(editing) = &mut self.pane.editing else {
             return;
         };
         let state = &mut editing.live_preview;
@@ -601,7 +613,7 @@ impl Reader {
             return;
         }
         let live = self.live_input(cx.entity_id(), cx);
-        let Some(editing) = &mut self.editing else {
+        let Some(editing) = &mut self.pane.editing else {
             return;
         };
         let state = &mut editing.live_preview;
@@ -665,7 +677,7 @@ impl Reader {
                 let colors = projection_colors(cx);
                 let parked = this.move_applying;
                 let agent_imports = this.agent_document_enabled(cx);
-                let Some(editing) = &mut this.editing else {
+                let Some(editing) = &mut this.pane.editing else {
                     return;
                 };
                 let state = &mut editing.live_preview;
@@ -748,7 +760,7 @@ impl Reader {
         else {
             return;
         };
-        let Some(editing) = &mut self.editing else {
+        let Some(editing) = &mut self.pane.editing else {
             return;
         };
         if editing.live_preview.latency_subscriptions.is_some() {
@@ -806,7 +818,7 @@ impl Reader {
         let last = Rc::new(Cell::new(None));
         let live_trace = trace.clone();
         let classified = cx.observe_in(&input, window, move |this, input, window, cx| {
-            let Some(editing) = this.editing.as_ref().filter(|e| e.input == input) else {
+            let Some(editing) = this.pane.editing.as_ref().filter(|e| e.input == input) else {
                 return;
             };
             if !editing.live_preview.enabled {
@@ -873,7 +885,7 @@ impl Reader {
         // This is a conservative software post-frame boundary, never scanout.
         cx.on_next_frame(window, move |_, window, cx| {
             cx.on_next_frame(window, move |this, _, cx| {
-                let matching = this.editing.as_ref().filter(|e| e.input == input);
+                let matching = this.pane.editing.as_ref().filter(|e| e.input == input);
                 let editor = input.read(cx);
                 let current = editor.source_stamp();
                 let live = matching.is_some_and(|e| e.live_preview.enabled);
@@ -1017,6 +1029,7 @@ mod tests {
             reader.loading.as_mut().unwrap().opts.diagnostics = None;
             reader.install_editor_latency_diagnostics(true, window, cx);
             assert!(reader
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -1028,6 +1041,7 @@ mod tests {
             );
             reader.install_editor_latency_diagnostics(false, window, cx);
             assert!(reader
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -1045,6 +1059,7 @@ mod tests {
         reader.update_in(visual, |reader, window, cx| {
             reader.install_editor_latency_diagnostics(true, window, cx);
             assert!(reader
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -1155,7 +1170,7 @@ mod tests {
         );
         visual.simulate_click(edit.center(), Modifiers::default());
         visual.run_until_parked();
-        reader.read_with(visual, |reader, _| assert!(reader.editing.is_some()));
+        reader.read_with(visual, |reader, _| assert!(reader.pane.editing.is_some()));
         assert!(
             visual.debug_bounds("source-save").is_none(),
             "clean source needs no Save glyph"
@@ -1164,13 +1179,13 @@ mod tests {
         visual.simulate_click(live.center(), Modifiers::default());
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
-            assert!(reader.editing.as_ref().unwrap().live_preview.enabled)
+            assert!(reader.pane.editing.as_ref().unwrap().live_preview.enabled)
         });
         let source = visual.debug_bounds("reader-source").unwrap();
         visual.simulate_click(source.center(), Modifiers::default());
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
-            assert!(!reader.editing.as_ref().unwrap().live_preview.enabled)
+            assert!(!reader.pane.editing.as_ref().unwrap().live_preview.enabled)
         });
         // The editor offers only Read, never a second, selected Edit (#992).
         assert!(visual.debug_bounds("reader-edit").is_none());
@@ -1178,7 +1193,7 @@ mod tests {
         visual.simulate_click(read.center(), Modifiers::default());
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
-            assert!(reader.editing.is_none());
+            assert!(reader.pane.editing.is_none());
             assert!(reader.renaming.is_none());
         });
         // Reader offers only Edit: the pencil, never Rename (#871).
@@ -1187,7 +1202,7 @@ mod tests {
         visual.simulate_click(pencil.center(), Modifiers::default());
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
-            assert!(reader.editing.is_some(), "pencil enters the editor");
+            assert!(reader.pane.editing.is_some(), "pencil enters the editor");
             assert!(!reader.source_live_preview());
         });
         reader.update_in(visual, |reader, window, cx| {
@@ -1196,7 +1211,7 @@ mod tests {
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
-            assert!(reader.editing.is_none());
+            assert!(reader.pane.editing.is_none());
             assert!(
                 reader.ui_state.live_preview,
                 "Reader retains the last editor mode"
@@ -1210,7 +1225,7 @@ mod tests {
         visual.simulate_click(pencil.center(), Modifiers::default());
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
-            assert!(reader.editing.is_some(), "pencil re-enters the editor");
+            assert!(reader.pane.editing.is_some(), "pencil re-enters the editor");
             assert!(reader.source_live_preview());
         });
         let read = visual.debug_bounds("reader-read").unwrap();
@@ -1371,14 +1386,16 @@ mod tests {
         }
         original.push_str(&"z".repeat(bytes - original.len()));
         let (reader, visual, directory) = fixture(cx, &original);
-        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let input = reader.read_with(visual, |r, _| {
+            r.pane.editing.as_ref().unwrap().input.clone()
+        });
         reader.update_in(visual, |r, window, cx| {
             input.update(cx, |i, _| i.enable_layout_diagnostics());
             r.toggle_live_preview(window, cx);
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
-            let e = r.editing.as_ref().unwrap();
+            let e = r.pane.editing.as_ref().unwrap();
             let provider = e
                 .live_preview
                 .accepted
@@ -1567,7 +1584,8 @@ mod tests {
         let adopted = draw(&input, reference, visual);
         assert_held(&immediate, &adopted, "distant classification adoption");
         let provider = reader.read_with(visual, |r, _| {
-            r.editing
+            r.pane
+                .editing
                 .as_ref()
                 .unwrap()
                 .live_preview
@@ -1584,7 +1602,13 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert!(
-                r.editing.as_ref().unwrap().live_preview.accepted.is_none(),
+                r.pane
+                    .editing
+                    .as_ref()
+                    .unwrap()
+                    .live_preview
+                    .accepted
+                    .is_none(),
                 "the real Reader refuses an above-limit source revision"
             );
         });
@@ -1631,12 +1655,12 @@ mod tests {
             let (reader, visual, directory) = fixture(cx, &note);
             visual.simulate_resize(size(px(1000.), px(800.)));
             reader.update_in(visual, |reader, window, cx| {
-                if !reader.editing.as_ref().unwrap().live_preview.enabled {
+                if !reader.pane.editing.as_ref().unwrap().live_preview.enabled {
                     reader.toggle_live_preview(window, cx);
                 }
             });
             let input = reader.read_with(visual, |reader, _| {
-                reader.editing.as_ref().unwrap().input.clone()
+                reader.pane.editing.as_ref().unwrap().input.clone()
             });
             let draw = |visual: &mut VisualTestContext| {
                 visual.run_until_parked();
@@ -1790,12 +1814,12 @@ mod tests {
             reader_ui_state::set_selected_font(reader_fonts::Role::Note, brand::SANS_FONT, cx);
         });
         reader.update_in(visual, |reader, window, cx| {
-            if !reader.editing.as_ref().unwrap().live_preview.enabled {
+            if !reader.pane.editing.as_ref().unwrap().live_preview.enabled {
                 reader.toggle_live_preview(window, cx);
             }
         });
         let input = reader.read_with(visual, |reader, _| {
-            reader.editing.as_ref().unwrap().input.clone()
+            reader.pane.editing.as_ref().unwrap().input.clone()
         });
         let at = note.find("class").unwrap();
         input.update(visual, |input, cx| input.set_selected_range(at..at, cx));
@@ -1807,7 +1831,7 @@ mod tests {
         };
         let assert_code = |visual: &mut VisualTestContext, expected_font: &str| {
             reader.read_with(visual, |reader, cx| {
-                let live = &reader.editing.as_ref().unwrap().live_preview;
+                let live = &reader.pane.editing.as_ref().unwrap().live_preview;
                 assert!(live.enabled);
                 assert_eq!(live.code_font.borrow().as_ref(), expected_font);
                 let theme = cx.theme().highlight_theme.clone();
@@ -1929,12 +1953,12 @@ mod tests {
             reader_ui_state::install(&directory.path().join("font-state"), cx);
         });
         reader.update_in(visual, |reader, window, cx| {
-            if reader.editing.as_ref().unwrap().live_preview.enabled {
+            if reader.pane.editing.as_ref().unwrap().live_preview.enabled {
                 reader.toggle_live_preview(window, cx);
             }
         });
         let input = reader.read_with(visual, |reader, _| {
-            reader.editing.as_ref().unwrap().input.clone()
+            reader.pane.editing.as_ref().unwrap().input.clone()
         });
         input.update(visual, |input, cx| input.set_selected_range(12..12, cx));
         let draw = |visual: &mut VisualTestContext| {
@@ -1957,6 +1981,7 @@ mod tests {
         draw(visual);
         let accepted = reader.read_with(visual, |reader, _| {
             reader
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -1973,6 +1998,7 @@ mod tests {
         reader.read_with(visual, |reader, _| {
             assert_eq!(
                 reader
+                    .pane
                     .editing
                     .as_ref()
                     .unwrap()
@@ -1989,7 +2015,7 @@ mod tests {
         });
         draw(visual);
         reader.read_with(visual, |reader, cx| {
-            let live = &reader.editing.as_ref().unwrap().live_preview;
+            let live = &reader.pane.editing.as_ref().unwrap().live_preview;
             assert!(
                 Arc::ptr_eq(live.accepted.as_ref().unwrap(), &accepted),
                 "font change reuses classification"
@@ -2033,12 +2059,14 @@ mod tests {
             > [!tip]- Second callout\n> SECOND BODY\n\nControl **bold**\n";
         let (reader, visual, _directory) = fixture(cx, note);
         reader.update_in(visual, |r, window, cx| {
-            if !r.editing.as_ref().unwrap().live_preview.enabled {
+            if !r.pane.editing.as_ref().unwrap().live_preview.enabled {
                 r.toggle_live_preview(window, cx);
             }
         });
         visual.run_until_parked();
-        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let input = reader.read_with(visual, |r, _| {
+            r.pane.editing.as_ref().unwrap().input.clone()
+        });
         input.update(visual, |input, cx| {
             input.set_selected_range(note.len()..note.len(), cx)
         });
@@ -2083,12 +2111,14 @@ mod tests {
         let (reader, visual, directory) = fixture(cx, note);
         visual.simulate_resize(size(px(1000.), px(700.)));
         reader.update_in(visual, |r, window, cx| {
-            if !r.editing.as_ref().unwrap().live_preview.enabled {
+            if !r.pane.editing.as_ref().unwrap().live_preview.enabled {
                 r.toggle_live_preview(window, cx);
             }
         });
         visual.run_until_parked();
-        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let input = reader.read_with(visual, |r, _| {
+            r.pane.editing.as_ref().unwrap().input.clone()
+        });
         let end = note.len();
         input.update_in(visual, |input, window, cx| {
             input.focus(window, cx);
@@ -2171,6 +2201,7 @@ mod tests {
             );
             reader.read_with(visual, |r, cx| {
                 assert!(r
+                    .pane
                     .editing
                     .as_ref()
                     .unwrap()
@@ -2287,7 +2318,7 @@ mod tests {
             assert_eq!(input.value().as_ref(), note);
         });
         assert!(
-            reader.read_with(visual, |r, _| r.editing.is_some()),
+            reader.read_with(visual, |r, _| r.pane.editing.is_some()),
             "Esc kept the editor"
         );
         assert!(
@@ -2342,13 +2373,15 @@ mod tests {
         let (reader, input, visual, _directory) = live_fixture(cx, note);
         let rendered = |visual: &mut VisualTestContext| {
             reader.read_with(visual, |r, cx| {
-                r.editing
+                r.pane
+                    .editing
                     .as_ref()
                     .unwrap()
                     .live_preview
                     .concealed_text()
                     .is_some()
-                    && r.editing
+                    && r.pane
+                        .editing
                         .as_ref()
                         .unwrap()
                         .live_preview
@@ -2881,12 +2914,14 @@ mod tests {
         let (reader, visual, _directory) = fixture(cx, &note);
         visual.simulate_resize(size(px(1000.), px(600.)));
         reader.update_in(visual, |r, window, cx| {
-            if !r.editing.as_ref().unwrap().live_preview.enabled {
+            if !r.pane.editing.as_ref().unwrap().live_preview.enabled {
                 r.toggle_live_preview(window, cx);
             }
         });
         visual.run_until_parked();
-        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let input = reader.read_with(visual, |r, _| {
+            r.pane.editing.as_ref().unwrap().input.clone()
+        });
         input.update(visual, |input, cx| {
             input.set_selected_range(note.len()..note.len(), cx)
         });
@@ -2951,21 +2986,31 @@ mod tests {
         let (reader, visual, dir) = fixture(cx, &original);
         reader.update_in(visual, |r, window, cx| {
             r.toggle_live_preview(window, cx);
-            r.editing.as_ref().unwrap().input.update(cx, |input, cx| {
-                input.enable_layout_diagnostics();
-                input.set_value(format!("{original}Saved\n"), window, cx);
-            });
+            r.pane
+                .editing
+                .as_ref()
+                .unwrap()
+                .input
+                .update(cx, |input, cx| {
+                    input.enable_layout_diagnostics();
+                    input.set_value(format!("{original}Saved\n"), window, cx);
+                });
             assert!(r.save_source(cx));
         });
         visual.run_until_parked();
         reader.update_in(visual, |r, _, cx| {
-            r.editing.as_ref().unwrap().input.update(cx, |input, cx| {
-                input.set_scroll_offset(point(px(0.), px(-120.)), cx);
-            });
+            r.pane
+                .editing
+                .as_ref()
+                .unwrap()
+                .input
+                .update(cx, |input, cx| {
+                    input.set_scroll_offset(point(px(0.), px(-120.)), cx);
+                });
         });
         visual.run_until_parked();
         let snapshot = |r: &Reader, cx: &App| {
-            let e = r.editing.as_ref().unwrap();
+            let e = r.pane.editing.as_ref().unwrap();
             let input = e.input.read(cx);
             (
                 e.input.entity_id(),
@@ -2979,7 +3024,8 @@ mod tests {
         };
         let before = reader.read_with(visual, snapshot);
         let work = reader.read_with(visual, |r, _| {
-            r.editing
+            r.pane
+                .editing
                 .as_ref()
                 .unwrap()
                 .live_preview
@@ -2990,7 +3036,8 @@ mod tests {
             "actual classification worker positive control"
         );
         let accepted = reader.read_with(visual, |r, _| {
-            r.editing
+            r.pane
+                .editing
                 .as_ref()
                 .unwrap()
                 .live_preview
@@ -3022,7 +3069,8 @@ mod tests {
             assert_eq!(reader.read_with(visual, snapshot), before);
             reader.read_with(visual, |r, cx| {
                 assert_eq!(
-                    r.editing
+                    r.pane
+                        .editing
                         .as_ref()
                         .unwrap()
                         .live_preview
@@ -3033,7 +3081,7 @@ mod tests {
                 let (_, report) = okilum_core::open_diagnostics::capture(|| {
                     assert!(r
                         .checked_live_provider(
-                            r.editing.as_ref().unwrap().live_preview.origin.reader,
+                            r.pane.editing.as_ref().unwrap().live_preview.origin.reader,
                             cx
                         )
                         .is_some());
@@ -3044,7 +3092,8 @@ mod tests {
             reader.read_with(visual, |r, _| {
                 assert!(Arc::ptr_eq(
                     &accepted,
-                    r.editing
+                    r.pane
+                        .editing
                         .as_ref()
                         .unwrap()
                         .live_preview
@@ -3076,7 +3125,8 @@ mod tests {
     fn layout_counter_sampling_does_not_request_presentation_changes(cx: &mut TestAppContext) {
         let (reader, visual, _) = fixture(cx, ORIGINAL);
         reader.update_in(visual, |r, window, cx| {
-            r.editing
+            r.pane
+                .editing
                 .as_ref()
                 .unwrap()
                 .input
@@ -3085,7 +3135,7 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
-            let input = r.editing.as_ref().unwrap().input.read(cx);
+            let input = r.pane.editing.as_ref().unwrap().input.read(cx);
             let counts = input.layout_diagnostics().unwrap();
             assert!(counts.provider_applies > 0 && counts.projection_composes > 0);
             let epoch = input.presentation_epoch();
@@ -3102,7 +3152,8 @@ mod tests {
         reader.update_in(visual, |r, window, cx| {
             r.open_source_find(cx);
             assert!(
-                r.editing
+                r.pane
+                    .editing
                     .as_ref()
                     .unwrap()
                     .input
@@ -3111,14 +3162,14 @@ mod tests {
                     .open
             );
             r.toggle_live_preview(window, cx);
-            let input = r.editing.as_ref().unwrap().input.clone();
+            let input = r.pane.editing.as_ref().unwrap().input.clone();
             assert!(!input.read(cx).search_session().open);
             // Positive control: native search must be disabled while projected.
             input.update(cx, |input, cx| input.open_search(false, cx));
             assert!(!input.read(cx).search_session().open);
             let stamp = input.read(cx).source_stamp();
             r.open_source_find(cx);
-            assert!(!r.editing.as_ref().unwrap().live_preview.enabled);
+            assert!(!r.pane.editing.as_ref().unwrap().live_preview.enabled);
             assert!(input.read(cx).search_session().open);
             assert_eq!(input.read(cx).source_stamp(), stamp);
             assert_eq!(input.read(cx).value().as_ref(), ORIGINAL);
@@ -3130,13 +3181,15 @@ mod tests {
         let (reader, visual, _) = fixture(cx, ORIGINAL);
         reader.update_in(visual, |r, window, cx| r.toggle_live_preview(window, cx));
         visual.run_until_parked();
-        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let input = reader.read_with(visual, |r, _| {
+            r.pane.editing.as_ref().unwrap().input.clone()
+        });
         let stamp = input.read_with(visual, |input, _| input.source_stamp());
         // The menu action, including repeated activation, must remember Live Preview.
         reader.update_in(visual, |r, window, cx| {
             r.open_find(window, cx);
             r.open_find(window, cx);
-            assert!(!r.editing.as_ref().unwrap().live_preview.enabled);
+            assert!(!r.pane.editing.as_ref().unwrap().live_preview.enabled);
             assert!(input.read(cx).search_session().open);
         });
         visual.run_until_parked();
@@ -3144,7 +3197,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
             assert!(!input.read(cx).search_session().open);
-            assert!(r.editing.as_ref().unwrap().live_preview.enabled);
+            assert!(r.pane.editing.as_ref().unwrap().live_preview.enabled);
             assert_eq!(input.read(cx).source_stamp(), stamp);
             assert_eq!(input.read(cx).value().as_ref(), ORIGINAL);
         });
@@ -3153,7 +3206,7 @@ mod tests {
         input.update(visual, |input, cx| input.close_search(cx));
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
-            assert!(r.editing.as_ref().unwrap().live_preview.enabled)
+            assert!(r.pane.editing.as_ref().unwrap().live_preview.enabled)
         });
         reader.update_in(visual, |r, window, cx| {
             r.toggle_live_preview(window, cx);
@@ -3162,7 +3215,7 @@ mod tests {
         input.update(visual, |input, cx| input.close_search(cx));
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
-            assert!(!r.editing.as_ref().unwrap().live_preview.enabled)
+            assert!(!r.pane.editing.as_ref().unwrap().live_preview.enabled)
         });
     }
 
@@ -3185,7 +3238,9 @@ mod tests {
         visual.simulate_resize(size(px(1600.), px(1000.)));
         reader.update_in(visual, |r, window, cx| r.toggle_live_preview(window, cx));
         visual.run_until_parked();
-        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let input = reader.read_with(visual, |r, _| {
+            r.pane.editing.as_ref().unwrap().input.clone()
+        });
         let untouched = input.read_with(visual, |i, _| (i.source_stamp(), i.selected_range()));
         let at = note.find(query).unwrap();
         reader.update_in(visual, |r, window, cx| {
@@ -3328,8 +3383,8 @@ mod tests {
         reader.update_in(visual, |r, _, cx| {
             // Session restoration can publish a prepared replacement while the
             // editor is already visible. This new list has never been painted.
-            r.content = cx.new(|cx| TextViewState::markdown(&note, cx).scrollable(true));
-            assert_eq!(r.content.read(cx).list_state().item_count(), 0);
+            r.pane.content = cx.new(|cx| TextViewState::markdown(&note, cx).scrollable(true));
+            assert_eq!(r.pane.content.read(cx).list_state().item_count(), 0);
             r.scroll_to_block(block, cx);
         });
         for _ in 0..105 {
@@ -3338,7 +3393,7 @@ mod tests {
         }
         reader.read_with(visual, |r, cx| {
             assert!(
-                r.navigation.pending_landing.is_none(),
+                r.pane.navigation.pending_landing.is_none(),
                 "reachable heading must finish"
             );
             assert!(
@@ -3347,7 +3402,12 @@ mod tests {
                 r.link_notice
             );
             assert_eq!(
-                r.content.read(cx).list_state().logical_scroll_top().item_ix,
+                r.pane
+                    .content
+                    .read(cx)
+                    .list_state()
+                    .logical_scroll_top()
+                    .item_ix,
                 block
             );
         });
@@ -3376,7 +3436,7 @@ mod tests {
         }
         reader.read_with(visual, |r, cx| {
             assert!(r.live_preview_shown(), "heading keeps Live Preview");
-            let i = r.editing.as_ref().unwrap().input.read(cx);
+            let i = r.pane.editing.as_ref().unwrap().input.read(cx);
             assert_eq!(i.top_visible_line(), Some(line), "large heading is visible");
             assert_eq!(i.cursor_position().line as usize, line);
             assert!(r.link_notice.is_none(), "{:?}", r.link_notice);
@@ -3400,7 +3460,8 @@ mod tests {
             assert_eq!(r.pane.current_rel, "note.md");
             assert!(r.live_preview_shown(), "Back keeps Live Preview");
             assert_eq!(
-                r.editing
+                r.pane
+                    .editing
                     .as_ref()
                     .unwrap()
                     .input
@@ -3409,7 +3470,7 @@ mod tests {
                 Some(line),
                 "Back restores the large-note heading"
             );
-            assert!(r.navigation.pending_landing.is_none());
+            assert!(r.pane.navigation.pending_landing.is_none());
             assert!(
                 r.link_notice.is_none(),
                 "Back must not time out: {:?}",
@@ -3421,7 +3482,9 @@ mod tests {
     #[gpui::test]
     fn issue2484_closed_find_supersedes_pending_editor_handoff(cx: &mut TestAppContext) {
         let (reader, visual, _directory) = fixture(cx, ORIGINAL);
-        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let input = reader.read_with(visual, |r, _| {
+            r.pane.editing.as_ref().unwrap().input.clone()
+        });
         let untouched = input.read_with(visual, |i, _| (i.source_stamp(), i.selected_range()));
         reader.update_in(visual, |r, window, cx| {
             r.place_editor_at_reader(
@@ -3456,7 +3519,9 @@ mod tests {
     #[gpui::test]
     fn issue2484_editor_handoff_preserves_later_sidebar_focus(cx: &mut TestAppContext) {
         let (reader, visual, _directory) = fixture(cx, ORIGINAL);
-        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let input = reader.read_with(visual, |r, _| {
+            r.pane.editing.as_ref().unwrap().input.clone()
+        });
         reader.update_in(visual, |r, window, cx| {
             r.place_editor_at_reader(
                 input.clone(),
@@ -3491,7 +3556,7 @@ mod tests {
         reader.update_in(visual, |r, window, cx| r.toggle_live_preview(window, cx));
         visual.run_until_parked();
         let (accepted, stamp, height) = reader.read_with(visual, |r, cx| {
-            let editing = r.editing.as_ref().unwrap();
+            let editing = r.pane.editing.as_ref().unwrap();
             (
                 editing.live_preview.accepted.clone().unwrap(),
                 editing.input.read(cx).source_stamp(),
@@ -3506,7 +3571,7 @@ mod tests {
             visual.run_until_parked();
             visual.update(|window, cx| window.draw(cx).clear(cx));
             reader.read_with(visual, |r, cx| {
-                let editing = r.editing.as_ref().unwrap();
+                let editing = r.pane.editing.as_ref().unwrap();
                 assert!(Arc::ptr_eq(
                     &accepted,
                     editing.live_preview.accepted.as_ref().unwrap()
@@ -3521,7 +3586,8 @@ mod tests {
                 assert!(!editing.store.dirty());
             });
             let epoch = reader.read_with(visual, |r, cx| {
-                r.editing
+                r.pane
+                    .editing
                     .as_ref()
                     .unwrap()
                     .input
@@ -3531,7 +3597,8 @@ mod tests {
             visual.update(|window, cx| window.draw(cx).clear(cx));
             reader.read_with(visual, |r, cx| {
                 assert_eq!(
-                    r.editing
+                    r.pane
+                        .editing
                         .as_ref()
                         .unwrap()
                         .input
@@ -3555,7 +3622,7 @@ mod tests {
         let (reader, visual, directory) = fixture(cx, ORIGINAL);
         let input = reader.update_in(visual, |r, window, cx| {
             r.toggle_live_preview(window, cx);
-            let editing = r.editing.as_ref().unwrap();
+            let editing = r.pane.editing.as_ref().unwrap();
             assert!(
                 editing.live_preview.in_flight.get(),
                 "positive control: actual background classification started"
@@ -3571,7 +3638,7 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
-            let e = r.editing.as_ref().unwrap();
+            let e = r.pane.editing.as_ref().unwrap();
             assert!(!e.live_preview.in_flight.get() && e.live_preview.queued.is_none());
             let p = e.live_preview.accepted.as_ref().unwrap();
             assert_eq!(p.source().stamp, input.read(cx).source_stamp());
@@ -3591,7 +3658,14 @@ mod tests {
                 s.replace_text_in_range(Some(0..0), "pending ", window, cx)
             });
             r.schedule_live_preview(cx);
-            assert!(r.editing.as_ref().unwrap().live_preview.in_flight.get());
+            assert!(r
+                .pane
+                .editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .in_flight
+                .get());
             assert!(r.leave_source(cx));
             r.open_note("target.md", None, window, cx);
         });
@@ -3602,7 +3676,8 @@ mod tests {
                 "actual next note was accepted"
             );
             assert_ne!(
-                r.editing
+                r.pane
+                    .editing
                     .as_ref()
                     .expect("chosen editor restored after selection")
                     .input,
@@ -3616,7 +3691,7 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
-            let e = r.editing.as_ref().unwrap();
+            let e = r.pane.editing.as_ref().unwrap();
             assert_ne!(e.input, input);
             assert_eq!(
                 e.live_preview
@@ -3635,7 +3710,8 @@ mod tests {
             "🧠".repeat(okilum_core::source_classifier::MAX_BYTES / 4 + 1)
         );
         reader.update_in(visual, |r, window, cx| {
-            r.editing
+            r.pane
+                .editing
                 .as_ref()
                 .unwrap()
                 .input
@@ -3643,7 +3719,7 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
-            let e = r.editing.as_ref().unwrap();
+            let e = r.pane.editing.as_ref().unwrap();
             assert!(e.live_preview.accepted.is_none());
             assert_eq!(e.input.read(cx).value().as_ref(), large);
         });
@@ -3656,16 +3732,18 @@ mod tests {
     #[gpui::test]
     fn glyph_toggle_preserves_buffer_undo_copy_and_durable_conflict(cx: &mut TestAppContext) {
         let (reader, visual, directory) = fixture(cx, ORIGINAL);
-        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let input = reader.read_with(visual, |r, _| {
+            r.pane.editing.as_ref().unwrap().input.clone()
+        });
         let stamp = input.read_with(visual, |i, _| i.source_stamp());
         let toggle = visual.debug_bounds("reader-live-preview").unwrap().center();
         visual.simulate_click(toggle, Modifiers::default());
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
-            assert!(r.editing.as_ref().unwrap().live_preview.enabled);
+            assert!(r.pane.editing.as_ref().unwrap().live_preview.enabled);
             assert_eq!(input.read(cx).source_stamp(), stamp);
             assert_eq!(input.read(cx).value().as_ref(), ORIGINAL);
-            assert!(!r.editing.as_ref().unwrap().store.dirty());
+            assert!(!r.pane.editing.as_ref().unwrap().store.dirty());
         });
         reader.update_in(visual, |_, window, cx| {
             input.update(cx, |i, cx| {
@@ -3709,7 +3787,7 @@ mod tests {
             visual.run_until_parked();
         }
         reader.read_with(visual, |r, _| {
-            assert!(r.editing.as_ref().unwrap().live_preview.enabled)
+            assert!(r.pane.editing.as_ref().unwrap().live_preview.enabled)
         });
         assert_eq!(
             std::fs::read_to_string(directory.path().join("vault/note.md")).unwrap(),
@@ -3735,7 +3813,7 @@ mod tests {
         std::fs::write(directory.path().join("vault/note.md"), "external").unwrap();
         reader.update_in(visual, |r, _, cx| {
             assert!(!r.save_source(cx));
-            assert!(r.editing.as_ref().unwrap().conflict_detected);
+            assert!(r.pane.editing.as_ref().unwrap().conflict_detected);
         });
         let journal = std::fs::read_dir(directory.path().join("state/editor-drafts"))
             .unwrap()
@@ -3762,7 +3840,9 @@ mod tests {
         let (reader, visual, _directory) = fixture(cx, original);
         reader.update_in(visual, |r, window, cx| r.toggle_live_preview(window, cx));
         visual.run_until_parked();
-        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let input = reader.read_with(visual, |r, _| {
+            r.pane.editing.as_ref().unwrap().input.clone()
+        });
         let start = original.find('Ж').unwrap();
         let end = original.find('🧠').unwrap();
         let from = input.read_with(visual, |i, _| {
@@ -3868,7 +3948,8 @@ mod tests {
         reader.update_in(visual, |r, window, cx| r.set_live_preview(true, window, cx));
         visual.run_until_parked();
         let held = reader.read_with(visual, |r, _| {
-            r.editing
+            r.pane
+                .editing
                 .as_ref()
                 .unwrap()
                 .live_preview
@@ -3879,14 +3960,14 @@ mod tests {
         let expected = CachedProvider::classify(held.source().clone());
         for insert in ["x", "y"] {
             reader.update_in(visual, |r, window, cx| {
-                let input = r.editing.as_ref().unwrap().input.clone();
+                let input = r.pane.editing.as_ref().unwrap().input.clone();
                 input.update(cx, |i, cx| {
                     let at = i.value().find("** e").unwrap();
                     i.set_selected_range(at..at, cx);
                     i.replace(insert, window, cx);
                 });
                 r.schedule_live_preview(cx);
-                let e = r.editing.as_ref().unwrap();
+                let e = r.pane.editing.as_ref().unwrap();
                 assert!(Arc::ptr_eq(
                     e.live_preview.accepted.as_ref().unwrap(),
                     &held
@@ -3908,7 +3989,7 @@ mod tests {
         }
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
-            let e = r.editing.as_ref().unwrap();
+            let e = r.pane.editing.as_ref().unwrap();
             let source = e.input.read(cx).value();
             assert!(source.contains("tailxy"));
             assert!(r
@@ -3937,6 +4018,7 @@ mod tests {
         reader.update_in(visual, |r, window, cx| {
             r.set_live_preview(true, window, cx);
             let old_key = r
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -3949,7 +4031,7 @@ mod tests {
             r.set_live_preview(false, window, cx); // Refusal supersedes before return.
             r.set_live_preview(true, window, cx); // Same bytes, distinct new attempt.
             let live = r.live_input(cx.entity_id(), cx).unwrap();
-            let state = &r.editing.as_ref().unwrap().live_preview;
+            let state = &r.pane.editing.as_ref().unwrap().live_preview;
             assert!(!state.session.is_pending(&old_key, Some(&live)));
             assert!(state.queued.is_some());
         });
@@ -3970,6 +4052,7 @@ mod tests {
             assert!(r.checked_live_provider(cx.entity_id(), cx).is_some());
             let live = r.live_input(cx.entity_id(), cx).unwrap();
             assert!(r
+                .pane
                 .editing
                 .as_mut()
                 .unwrap()
@@ -3991,7 +4074,8 @@ mod tests {
         reader.update_in(visual, |r, window, cx| r.set_live_preview(true, window, cx));
         visual.run_until_parked();
         let baseline = reader.read_with(visual, |r, _| {
-            r.editing
+            r.pane
+                .editing
                 .as_ref()
                 .unwrap()
                 .live_preview
@@ -4010,12 +4094,13 @@ mod tests {
             "explicit Markdown destination actually changes, so the real move must park this note"
         );
         let old = reader.update_in(visual, |r, window, cx| {
-            let input = r.editing.as_ref().unwrap().input.clone();
+            let input = r.pane.editing.as_ref().unwrap().input.clone();
             // A real reset changes generation even though the final bytes return.
             input.update(cx, |i, cx| i.set_value(format!("{original} "), window, cx));
             input.update(cx, |i, cx| i.set_value(original, window, cx));
             r.schedule_live_preview(cx);
             let old = r
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -4031,10 +4116,10 @@ mod tests {
         let task = reader.update_in(visual, |r, window, cx| {
             assert!(r.save_source(cx));
             assert!(!r.source_is_dirty(cx));
-            let input = r.editing.as_ref().unwrap().input.clone();
+            let input = r.pane.editing.as_ref().unwrap().input.clone();
             let task = r.apply_link_move(&preview, window, cx).unwrap();
             assert!(
-                r.move_applying && r.editing.is_none(),
+                r.move_applying && r.pane.editing.is_none(),
                 "actual Editing::park path"
             );
             assert!(!input.read(cx).is_editable());
@@ -4048,7 +4133,7 @@ mod tests {
         reader.update_in(visual, |r, window, cx| {
             r.finish_move_editor(cx);
             r.sync_move_input(window, cx); // The real complete_move synchronization hook.
-            let e = r.editing.as_ref().unwrap();
+            let e = r.pane.editing.as_ref().unwrap();
             assert!(
                 e.live_preview.in_flight.get(),
                 "explicit resume starts latest work"
@@ -4077,22 +4162,22 @@ mod tests {
                     i.value(), i.layout_diagnostics().unwrap().provider_applies)
             };
             let before_echo = facts(cx);
-            let flight = r.editing.as_ref().unwrap().live_preview.running.clone().unwrap();
+            let flight = r.pane.editing.as_ref().unwrap().live_preview.running.clone().unwrap();
             let file = dir.path().join("vault/note.md");
             std::fs::write(&file, std::fs::read(&file).unwrap()).unwrap();
             r.apply_vault_changes(okilum_core::Changes { changed: ["note.md".into()].into(), ..Default::default() }, window, cx);
             assert_eq!(facts(cx), before_echo, "same-byte echo while resumed work is pending does not reinstall/reset native presentation");
-            assert!(Rc::ptr_eq(&flight, r.editing.as_ref().unwrap().live_preview.running.as_ref().unwrap()),
+            assert!(Rc::ptr_eq(&flight, r.pane.editing.as_ref().unwrap().live_preview.running.as_ref().unwrap()),
                 "echo cannot launch a second classification worker");
             // A real autosave starts while resumed classification is pending.
             input.update(cx, |i, cx| i.replace("x", window, cx));
         });
         let saved_text = reader.update_in(visual, |r, window, cx| {
-            let e = r.editing.as_ref().unwrap();
+            let e = r.pane.editing.as_ref().unwrap();
             let id = e.input.entity_id();
             let epoch = e.recovery_epoch;
             r.autosave(id, epoch, window, cx);
-            let editing = r.editing.as_ref().unwrap();
+            let editing = r.pane.editing.as_ref().unwrap();
             let saved_text = editing
                 .autosaving
                 .clone()
@@ -4106,14 +4191,14 @@ mod tests {
             // the full entry/echo regression above and its drained test stay separate.
             r.reconcile_inventory_document(&sources, window, cx);
             assert!(
-                r.editing.as_ref().unwrap().refresh_deferred,
+                r.pane.editing.as_ref().unwrap().refresh_deferred,
                 "DELIVERED consumer callback defers behind the REAL pending save"
             );
             saved_text
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
-            let e = r.editing.as_ref().unwrap();
+            let e = r.pane.editing.as_ref().unwrap();
             assert!(!e.refresh_deferred && !e.conflict_detected);
             assert_eq!(e.input.read(cx).value().as_ref(), &*saved_text);
             assert_eq!(std::fs::read_to_string(e.store.path()).unwrap(), saved_text);
@@ -4151,9 +4236,19 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
             assert!(r
-                .checked_live_provider(r.editing.as_ref().unwrap().live_preview.origin.reader, cx)
+                .checked_live_provider(
+                    r.pane.editing.as_ref().unwrap().live_preview.origin.reader,
+                    cx
+                )
                 .is_some());
-            assert!(!r.editing.as_ref().unwrap().live_preview.in_flight.get());
+            assert!(!r
+                .pane
+                .editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .in_flight
+                .get());
         });
     }
 
@@ -4162,7 +4257,8 @@ mod tests {
         let (reader, visual, _dir) = fixture(cx, ORIGINAL);
         let old = reader.update_in(visual, |r, window, cx| {
             r.set_live_preview(true, window, cx);
-            r.editing
+            r.pane
+                .editing
                 .as_ref()
                 .unwrap()
                 .live_preview
@@ -4175,7 +4271,8 @@ mod tests {
         let (reader, visual, _other_dir) = fixture(cx, ORIGINAL);
         let new = reader.update_in(visual, |r, window, cx| {
             r.set_live_preview(true, window, cx);
-            r.editing
+            r.pane
+                .editing
                 .as_ref()
                 .unwrap()
                 .live_preview
@@ -4187,7 +4284,10 @@ mod tests {
         assert!(!old.get() && !new.get());
         reader.read_with(visual, |r, cx| {
             assert!(r
-                .checked_live_provider(r.editing.as_ref().unwrap().live_preview.origin.reader, cx)
+                .checked_live_provider(
+                    r.pane.editing.as_ref().unwrap().live_preview.origin.reader,
+                    cx
+                )
                 .is_some());
         });
     }
@@ -4203,7 +4303,7 @@ mod tests {
         reader.update_in(visual, |r, window, cx| r.open_live_preview(window, cx));
         visual.run_until_parked();
         let owner = reader.read_with(visual, |r, _| {
-            r.editing.as_ref().unwrap().live_preview.owner.clone()
+            r.pane.editing.as_ref().unwrap().live_preview.owner.clone()
         });
         reader.update_in(visual, |r, window, cx| {
             r.rename_note_title(window, cx);
@@ -4219,7 +4319,7 @@ mod tests {
         reader.read_with(visual, |r, cx| {
             assert_eq!(r.pane.current_rel, "renamed.md");
             assert!(!dir.path().join("vault/note.md").exists());
-            let e = r.editing.as_ref().unwrap();
+            let e = r.pane.editing.as_ref().unwrap();
             assert!(
                 e.live_preview.owner != owner,
                 "actual rename/complete_move retires old Editing"
@@ -4237,6 +4337,7 @@ mod tests {
         let (old, latest) = reader.update_in(visual, |r, window, cx| {
             r.set_live_preview(true, window, cx);
             let flight = r
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -4248,6 +4349,7 @@ mod tests {
             r.open_source_find(cx); // Real direct enabled=false/source-clear path.
             assert!(r.live_input(cx.entity_id(), cx).is_none());
             assert!(!r
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -4255,7 +4357,8 @@ mod tests {
                 .session
                 .is_pending(&flight.key, Some(&live)));
             assert!(
-                r.editing
+                r.pane
+                    .editing
                     .as_ref()
                     .unwrap()
                     .input
@@ -4265,6 +4368,7 @@ mod tests {
             );
             r.toggle_live_preview(window, cx); // Actual restore path closes native Find.
             let latest = r
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -4274,6 +4378,7 @@ mod tests {
                 .unwrap();
             assert!(!Rc::ptr_eq(&flight, &latest));
             assert!(r
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -4285,7 +4390,7 @@ mod tests {
         visual.run_until_parked();
         assert!(!old.get() && !latest.get());
         reader.read_with(visual, |r, cx| {
-            let e = r.editing.as_ref().unwrap();
+            let e = r.pane.editing.as_ref().unwrap();
             assert_eq!(
                 e.live_preview.completed_navigation_bytes(),
                 vec![ORIGINAL.len() as u64],
@@ -4305,8 +4410,8 @@ mod tests {
                 .map_or(0, |phase| phase.calls)
         };
         reader.update_in(visual, |r, window, cx| {
-            let input = r.editing.as_ref().unwrap().input.clone();
-            assert!(!r.editing.as_ref().unwrap().live_preview.enabled);
+            let input = r.pane.editing.as_ref().unwrap().input.clone();
+            assert!(!r.pane.editing.as_ref().unwrap().live_preview.enabled);
             let (_, source_work) = okilum_core::open_diagnostics::capture(|| {
                 input.update(cx, |i, cx| i.replace("x", window, cx));
                 r.schedule_live_preview(cx);
@@ -4332,7 +4437,14 @@ mod tests {
                 0,
                 "oversized refusal has zero snapshot construction calls"
             );
-            assert!(r.editing.as_ref().unwrap().live_preview.running.is_none());
+            assert!(r
+                .pane
+                .editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .running
+                .is_none());
             let (_, admitted_work) = okilum_core::open_diagnostics::capture(|| {
                 input.update(cx, |i, cx| i.set_value(ORIGINAL, window, cx));
                 r.schedule_live_preview(cx);
@@ -4344,7 +4456,7 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
-            let e = r.editing.as_ref().unwrap();
+            let e = r.pane.editing.as_ref().unwrap();
             assert!(r
                 .checked_live_provider(e.live_preview.origin.reader, cx)
                 .is_some());

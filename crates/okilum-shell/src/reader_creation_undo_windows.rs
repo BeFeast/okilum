@@ -26,7 +26,7 @@ impl Reader {
             return;
         }
         let own = self.selected_file() == item.relative;
-        let held_editor = if own { self.editing.take() } else { None };
+        let held_editor = if own { self.pane.editing.take() } else { None };
         let has_editor = held_editor.is_some();
         self.trash_pending = true;
         cx.spawn_in(window, async move |this, cx| {
@@ -74,7 +74,7 @@ impl Reader {
                             && this.vault_root == item.root
                             && this.selected_file() == item.relative
                         {
-                            this.editing = held_editor;
+                            this.pane.editing = held_editor;
                         }
                         reader_toast::transient(
                             format!("Cannot undo creation: {error:#}"),
