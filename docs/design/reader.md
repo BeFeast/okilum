@@ -438,6 +438,39 @@ Obsidian community themes are ported offline with
 file that already passes these gates, plus a report of every adjustment and
 every rule it could not carry over.
 
+**Decoration slots** (#3154). Besides colours, a theme may fill up to five
+decoration slots under `decorations.light` / `decorations.dark`. Each slot is
+drawn by one renderer path in the Reader (vendor patch 0155, `TextDecorations`
+on the TextView style) and the same values in Live Preview (the projection's
+`decorations()`, painted by the editor). A slot a theme leaves out draws
+exactly what Okilum drew before; today only Obsidianite fills them.
+
+| Slot | Keys | Drawn as |
+| --- | --- | --- |
+| `headingRule` | `from`, `to`, `length` (share of width), `thickness` px | 1 px line under H2–H6, `from` fading into `to` (the canvas) |
+| `hr` | `edge`, `middle`, `thickness` px | `edge → middle → edge`, two two-stop halves |
+| `blockquote` | `background` {`angle`, `from`, `to`}, `border`, `topBar` / `bottomBar` {`from`, `to`, `length`, `thickness`} | angled background, left border colour, short bars along the top and bottom edges; in Live Preview one background per run of quoted lines |
+| `linkMarker` | `from`, `to`, `height`, `bottom` (shares of the line height) | a band under the lower part of each link line, never the full line height |
+| `bold` | `from`, `to` | bold text coloured letter by letter along the span |
+
+Gradients are GPUI's two-stop `linear_gradient` (angles in CSS degrees);
+colours interpolate in sRGB with alpha. The bold gradient needs no GPUI patch:
+a bold span already is its own font run, so it takes one run colour (no new
+font-run split, so shaping and the line-layout cache key are unchanged) and
+its glyphs are painted again letter by letter at paint time. A span is
+coloured only when its edges already are font-run boundaries (checked with the
+resolved fonts in the Reader); bold inside a heading, links, code, syntax
+colours and bold right-to-left text keep their solid colours (decided per
+span: Latin bold in a mixed-direction paragraph keeps the gradient). Reader slots paint
+inside the block's existing box (the heading rule sits in the heading's bottom
+padding, quote bars and background over the quote, `hr` halves inside the 2 px
+rule), so no block height or text position changes. A vendor test
+counts real shaping calls: the gradient adds none and reuses the cached line,
+while a colour run per letter (the control) reshapes. Every slot is
+paint-only: no text, run or layout changes, no animation, and a theme switch
+recomposes Live Preview from the existing classification without parsing.
+A unit test rejects unknown slot names and checks bold endpoints at AA.
+
 **Motion slots** (#3151): a theme file may set optional animations in a
 top-level `motion` object, apart from colours and the per-mode `decorations`;
 they do not depend on light or dark. An absent slot means no motion. Motion is
