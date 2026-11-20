@@ -192,8 +192,14 @@ impl Probe {
 
     /// Write the JSON report. Positive controls let the harness reject a run
     /// that never painted the document, never moved it or never jumped.
-    pub(crate) fn write_report(&self, outline_rows: usize) -> std::io::Result<()> {
+    /// `theme` names the live theme, mode and syntax palette of the run.
+    pub(crate) fn write_report(
+        &self,
+        outline_rows: usize,
+        theme: serde_json::Value,
+    ) -> std::io::Result<()> {
         let report = serde_json::json!({
+            "theme": theme,
             "open_ms": self.open_ms,
             "first_frame_ms": self.first_frame_ms,
             "blocks": self.first_frame_blocks,
