@@ -1367,6 +1367,14 @@ mod tests {
             source.folder.clone(),
             okilum_t3::projects::waiting::Read {
                 source: Some(source.clone()),
+                texts: ids
+                    .as_ref()
+                    .map(|ids| {
+                        ids.iter()
+                            .map(|id| (id.to_string(), format!("Ship {id}?")))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
                 ids: ids
                     .map(|ids| ids.into_iter().map(str::to_owned).collect())
                     .map_err(str::to_owned),
@@ -1412,6 +1420,21 @@ mod tests {
             ]);
             assert!(r.accept_waiting(&root, generation, reads, now, "12:00".into(), cx));
             assert!(!r.waiting.checking());
+            let view = r.waiting.view();
+            assert_eq!(
+                r.waiting_question_lines(&view.rows[0]),
+                (
+                    "Ship q1?".to_owned(),
+                    "App · open the manager thread".to_owned()
+                ),
+                "the row states the question T3 reports, then its project"
+            );
+            let mut unread = view.rows[0].clone();
+            unread.text = None;
+            assert_eq!(
+                r.waiting_question_lines(&unread).0,
+                "Question · text unavailable"
+            );
         });
         visual.run_until_parked();
         let heading = visual.debug_bounds("now-heading-waiting").unwrap();
@@ -1434,6 +1457,11 @@ mod tests {
             let view = r.waiting.view();
             assert_eq!(view.rows.len(), 1);
             assert!(view.rows[0].stale);
+            assert_eq!(
+                view.rows[0].text.as_deref(),
+                Some("Ship q1?"),
+                "a stale row keeps its confirmed question text"
+            );
             assert_eq!(
                 view.rows[0].observed_at, now,
                 "stale rows keep their own time"

@@ -54,9 +54,9 @@ pub use session::{
 pub use token::{StoredToken, TokenFreshness, EXPIRES_SOON_SECS};
 pub use types::{
     is_http_link, Capabilities, ModelCapabilities, ModelInfo, ModelOption, ModelOptionDescriptor,
-    ModelOptionValue, ModelSelection, OutgoingMessage, Project, ProviderCapability,
-    RepositoryIdentity, SendMode, SendReceipt, ServerIdentity, ThreadConfiguration, ThreadDetail,
-    ThreadPage, ThreadQuery, ThreadSummary, TimelineItem,
+    ModelOptionValue, ModelSelection, OutgoingMessage, PendingQuestion, Project,
+    ProviderCapability, RepositoryIdentity, SendMode, SendReceipt, ServerIdentity,
+    ThreadConfiguration, ThreadDetail, ThreadPage, ThreadQuery, ThreadSummary, TimelineItem,
 };
 
 /// Seconds since the Unix epoch, the clock tokens are compared against.

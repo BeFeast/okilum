@@ -59,9 +59,14 @@ T3 reports for each discovered project's bound manager thread
 (`t3_pending_request`), never file times or activity. Each row keeps the exact
 source: project folder, T3 environment, manager project, manager thread and
 pending request ID (shown in the tooltip). At most 20 rows per thread are listed;
-the rest is one explicit `+N more` row. T3 exposes question IDs only, not
-approvals or question text, so a row says *Question* and opens its project. Entering
-the project opens that manager thread, where the question is answered.
+the rest is one explicit `+N more` row. The text of each listed question is
+read with `t3_pending_request` `read` from the same thread; the row states that
+question (the first one, with `(+N more)` when a request asks several), then its
+project and freshness. A question whose text cannot be read stays a row titled
+*Question · text unavailable*; a failed text read keeps the confirmed text, and a
+withdrawn question drops it. T3's pending-request list does not include
+approvals, so approvals are not rows. A row opens its project; entering the
+project opens that manager thread, where the question is answered.
 A row opens only while its question and manager binding are still current; a
 rebound or removed manager never keeps the old thread's questions.
 

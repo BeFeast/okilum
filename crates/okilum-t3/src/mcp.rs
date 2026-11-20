@@ -551,6 +551,31 @@ impl ManagerGateway for McpGateway {
             .map_err(|error| GatewayError::Protocol(format!("t3_pending_request ids: {error}")))
     }
 
+    fn pending_request_questions(
+        &self,
+        thread_id: &str,
+        request_id: &str,
+    ) -> GatewayResult<Vec<crate::PendingQuestion>> {
+        let request = self.call_value(
+            "t3_pending_request",
+            json!({ "action": "read", "threadId": thread_id, "requestId": request_id }),
+        )?;
+        // A reply about another request is not this question's text.
+        if let Some(echoed) = request.get("requestId").and_then(Value::as_str) {
+            if echoed != request_id {
+                return Err(GatewayError::Protocol(format!(
+                    "t3_pending_request read returned {echoed}, not {request_id}"
+                )));
+            }
+        }
+        let questions = request.get("questions").cloned().ok_or_else(|| {
+            GatewayError::Protocol("t3_pending_request read has no questions".into())
+        })?;
+        serde_json::from_value(questions).map_err(|error| {
+            GatewayError::Protocol(format!("t3_pending_request questions: {error}"))
+        })
+    }
+
     fn capabilities(&self) -> GatewayResult<Capabilities> {
         self.call("orchestrator_capabilities", json!({}))
     }
