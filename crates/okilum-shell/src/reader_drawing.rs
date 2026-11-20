@@ -332,10 +332,20 @@ pub(super) fn render(
     root: &Path,
     path: &Path,
     requested_size: Option<(f32, Option<f32>)>,
+    reader: Option<WeakEntity<Reader>>,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    render_impl(root, path, requested_size, None, window, cx)
+    render_impl(root, path, requested_size, None, reader, window, cx)
+}
+
+/// Edit drawing (#478): open `path` in Okilum's offline editor page.
+/// Deferred: the menu command runs this while the Reader is being updated.
+fn edit(reader: &WeakEntity<Reader>, path: &Path, window: &mut Window, cx: &mut App) {
+    let (reader, path) = (reader.clone(), path.to_path_buf());
+    window.defer(cx, move |window, cx| {
+        let _ = reader.update(cx, |reader, cx| reader.edit_drawing(path, window, cx));
+    });
 }
 
 pub(super) fn render_file(
@@ -346,7 +356,8 @@ pub(super) fn render_file(
     cx: &mut App,
 ) -> AnyElement {
     handle.update(cx, |handle, cx| {
-        render_impl(root, path, None, Some(handle), window, cx)
+        let reader = Some(handle.reader.clone());
+        render_impl(root, path, None, Some(handle), reader, window, cx)
     })
 }
 
@@ -355,6 +366,7 @@ fn render_impl(
     path: &Path,
     requested_size: Option<(f32, Option<f32>)>,
     file: Option<&FileHandle>,
+    reader: Option<WeakEntity<Reader>>,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -389,7 +401,7 @@ fn render_impl(
     match result {
         Some(Ok(document)) => {
             let expand = document.clone();
-            let open = document.clone();
+            let edit_path = path.to_path_buf();
             let natural = document.tree.size();
             let width = requested_size.map_or(natural.width(), |(width, height)| {
                 height.map_or(width, |height| {
@@ -415,25 +427,19 @@ fn render_impl(
                                     open_expand(expand.clone(), window, cx)
                                 }),
                             )
-                            .child(
-                                reader_icon_button(
-                                    "drawing-open",
-                                    IconName::ExternalLink,
-                                    "Open in Excalidraw",
-                                    cx,
-                                )
-                                .on_click(move |_, window, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(
-                                        open.json.clone(),
-                                    ));
-                                    reader_toast::transient(
-                                        "Scene copied — paste it into Excalidraw",
-                                        window,
+                            .when_some(reader.clone(), |row, reader| {
+                                row.child(
+                                    reader_icon_button(
+                                        "drawing-edit",
+                                        Icon::default().path("icons/pencil.svg"),
+                                        "Edit drawing",
                                         cx,
-                                    );
-                                    cx.open_url("https://draw.oklabs.uk");
-                                }),
-                            ),
+                                    )
+                                    .on_click(
+                                        move |_, window, cx| edit(&reader, &edit_path, window, cx),
+                                    ),
+                                )
+                            }),
                     )
                 })
                 .child(DrawingCanvas {
@@ -464,7 +470,7 @@ fn render_impl(
 pub(super) fn chrome(handle: &FileHandle, cx: &App) -> reader_viewer_chrome::ViewerChrome {
     use reader_viewer_chrome::{ViewerAction, ViewerChrome};
     let loaded = handle.loaded.borrow();
-    let Some((_, result)) = loaded.as_ref() else {
+    let Some((source, result)) = loaded.as_ref() else {
         return ViewerChrome::default();
     };
     let details = match result {
@@ -474,6 +480,7 @@ pub(super) fn chrome(handle: &FileHandle, cx: &App) -> reader_viewer_chrome::Vie
     };
     let mut actions = Vec::new();
     let mut open_actions = Vec::new();
+    let mut scene = None;
     if let Ok(document) = result {
         let expanded = document.clone();
         actions.push(ViewerAction::new(
@@ -482,15 +489,21 @@ pub(super) fn chrome(handle: &FileHandle, cx: &App) -> reader_viewer_chrome::Vie
             "Expand drawing",
             Rc::new(move |window, cx| open_expand(expanded.clone(), window, cx)),
         ));
-        let document = document.clone();
+        let (reader, path) = (handle.reader.clone(), source.path.clone());
         open_actions.push(ViewerAction::new(
-            "drawing-open",
-            Icon::new(IconName::ExternalLink),
-            "Open in Excalidraw",
+            "drawing-edit",
+            Icon::default().path("icons/pencil.svg"),
+            "Edit drawing",
+            Rc::new(move |window, cx| edit(&reader, &path, window, cx)),
+        ));
+        let json = document.json.clone();
+        scene = Some(ViewerAction::new(
+            "drawing-copy-scene",
+            Icon::new(IconName::Copy),
+            "Copy scene",
             Rc::new(move |window, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string(document.json.clone()));
-                reader_toast::transient("Scene copied — paste it into Excalidraw", window, cx);
-                cx.open_url("https://draw.oklabs.uk");
+                cx.write_to_clipboard(ClipboardItem::new_string(json.clone()));
+                reader_toast::transient("Scene copied", window, cx);
             }),
         ));
     }
@@ -537,7 +550,7 @@ pub(super) fn chrome(handle: &FileHandle, cx: &App) -> reader_viewer_chrome::Vie
     ViewerChrome {
         actions,
         open_actions,
-        copy_actions: vec![copy],
+        copy_actions: std::iter::once(copy).chain(scene).collect(),
         ..Default::default()
     }
 }

@@ -38,6 +38,8 @@ suite direct-tests 180 cargo test --locked -p okilum-sync-controller --lib direc
 suite sync-cli 180 cargo test --locked -p okilum-shell --bin okilum issue2589_ -- --nocapture
 # #2049: explicit non-empty UI and compatibility verdicts before the full shell.
 suite web-sync 60 node --test web/inbox/tests/retired-sync.test.js web/inbox/tests/sync-pairing.test.js
+# #478: the offline drawing editor page's session client (no npm install needed).
+suite web-drawing-editor 60 node --test web/excalidraw-editor/test/session.test.mjs web/excalidraw-editor/test/tracker.test.mjs web/excalidraw-editor/test/controller.test.mjs
 suite issue2049 120 cargo test --locked -p okilum-shell --bin okilum issue2049_ -- --nocapture
 # Process fixtures fork with live descriptors. Isolate their lock lifecycle:
 # a sibling test's child can retain another fixture's flock until exec.

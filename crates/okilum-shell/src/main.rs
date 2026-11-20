@@ -76,6 +76,7 @@ mod reader_diagnostics;
 mod reader_document;
 mod reader_document_menu;
 mod reader_drawing;
+mod reader_drawing_edit;
 #[cfg(any(unix, windows))]
 mod reader_editor;
 mod reader_embeds;
@@ -1657,9 +1658,14 @@ fn markdown_plugins_at(
                 Some(MarkdownImage::Video(root, path)) => {
                     reader_media::video_card(&root, &path, cx)
                 }
-                Some(MarkdownImage::Drawing(root, path)) => {
-                    reader_drawing::render(&root, &path, image.drawing_size, window, cx)
-                }
+                Some(MarkdownImage::Drawing(root, path)) => reader_drawing::render(
+                    &root,
+                    &path,
+                    image.drawing_size,
+                    image_actions.clone(),
+                    window,
+                    cx,
+                ),
                 Some(MarkdownImage::DrawingUnavailable(payload)) => {
                     reader_drawing::unavailable(&payload, cx)
                 }
@@ -8748,7 +8754,7 @@ impl Reader {
                 this.invoke_viewer_action("drawing-expand", window, cx)
             }))
             .on_action(cx.listener(|this, _: &OpenDrawingExternally, window, cx| {
-                this.invoke_viewer_action("drawing-open", window, cx)
+                this.invoke_viewer_action("drawing-edit", window, cx)
             }))
             .on_action(cx.listener(|this, _: &ShowDrawingDetails, window, cx| {
                 this.invoke_viewer_action("drawing-diagnostic-details", window, cx)
