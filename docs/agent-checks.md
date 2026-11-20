@@ -9,7 +9,34 @@ build-slot pool (`scripts/ci/pool-dispatch.sh`, `pool-pre-merge.sh`,
 stay `pre-merge` and `linux`, and the step names `gh-check.sh` requires are
 unchanged. A pool failure (queue, timeout, missing receipt) fails the dispatch
 step, which the helper counts as infrastructure (exit 75). A failing phase
-fails the step of that name, which is a code verdict (exit 1). Windows and
+fails the step of that name, which is a code verdict (exit 1). 
+
+`linux` is split into six shards that run in parallel on different pool
+slots (Oleg 21.11: 4–6 shards, PR gate tickets first in build-slot, target
+≤ 20 minutes for the verdict). `pool-dispatch.sh linux-full` starts one
+`build-slot run --priority critical` per shard; the nightly scheduled run on
+`main` uses normal priority. Host capabilities come from the build-slot
+coordinator (`--needs`):
+
+| Shard | Needs | Phases |
+|---|---|---|
+| `base` | `docker` | AppImage runtime image, helper controls, CI/releases/updater Python suites, Sync Help and brand, managed admission crash checkpoints |
+| `admission` | `sudo` | managed admission `remaining-0` and the negative controls, real disk-full transfer (private tmpfs) |
+| `sync` | — | Sync source sharing, managed admission `remaining-1`, local writer authority |
+| `desktop` | — | workspace clippy, `cargo fmt --check` and desktop build, pairing through `okilum sync serve`, reveal stress, vault regression controls |
+| `rust-a` | `userbus` | `okilum-core` suite, Linux Rust groups outside the workspace census |
+| `rust-b` | `userbus` | Linux Rust workspace census (four ordinary processes) |
+
+Every shard also verifies the toolchain, vendor, locked dependencies and the
+Python environment, and reaps fixture daemons. `pool-aggregate.py` merges the
+shard receipts: a phase recorded by several shards passes only when every
+record passed. Any failing phase is a code verdict; a lost shard (queue, ssh,
+OOM kill, incomplete receipt) without a code failure fails the dispatch step,
+which is infrastructure. Managed admission keeps its unchanged 600 s deadline
+per process set: `crash`, `remaining-0` and `remaining-1` each check the full
+compiled inventory and run on their own shard, so no part waits behind
+another (`OKILUM_ADMISSION_PART`; default `all`). `pool-dispatch.sh
+linux-single` runs every phase in one slot. Windows and
 macOS jobs are unchanged. Landing is unchanged: a reviewed PR with a green
 `agent-checks` run is merged as before (`AGENTS.md`).
 

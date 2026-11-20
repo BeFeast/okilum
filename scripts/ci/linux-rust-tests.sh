@@ -7,12 +7,24 @@ source "$(dirname "${BASH_SOURCE[0]}")/test-nofile.sh"
 # Switching back to single-package roots otherwise recompiles the same GUI
 # and core dependencies inside short operation groups after cold admission.
 packages=(-p okilum-write-authority -p okilum-core -p okilum-shell -p okilum-t3)
+# The pool gate runs the workspace census and the other groups on separate
+# shards: OKILUM_LINUX_RUST_PART=groups|workspace (default all, one process).
+part=${OKILUM_LINUX_RUST_PART:-all}
+case $part in
+    all|groups|workspace) ;;
+    *) echo "unknown OKILUM_LINUX_RUST_PART: $part" >&2; exit 64 ;;
+esac
+ran=0
 # Keep every failure, while allowing independent suites to finish their evidence.
 failed=0
 suite() {
     local group=$1 limit=$2
     local account=()
     shift 2
+    if [[ $part == groups && $group == workspace-full ]] || [[ $part == workspace && $group != workspace-full ]]; then
+        return 0
+    fi
+    ran=$((ran + 1))
     if [[ ${1:-} == cargo && ${2:-} == test ]]; then
         case "$group" in
             appimage|http-updates|sprint-distribution|portable-reader) ;;
@@ -138,4 +150,9 @@ suite reader-trash-fs-vault-trash-inventory-tests 120 cargo test --locked -p oki
 
 # #588: one-use fresh preparation never regenerates partial state.
 suite sidecar-macos-preparation 120 cargo test --locked -p okilum-sync-controller --lib sidecar::macos::preparation:: --no-fail-fast
+if [[ $ran -eq 0 ]]; then
+    echo "no Linux suite ran for part $part" >&2
+    exit 1
+fi
+printf 'LINUX_RUST_PART part=%s groups=%s failed=%s\n' "$part" "$ran" "$failed"
 exit "$failed"

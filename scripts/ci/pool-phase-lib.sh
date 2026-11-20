@@ -126,6 +126,8 @@ pool_prepare_python() {
 }
 
 pool_finish() {
+    # pool-aggregate.py counts a shard as passed only with this final record.
+    pool_record "Pool shard complete" "$pool_fail"
     if [[ $pool_fail -eq 0 ]]; then
         exit 0
     fi

@@ -1,84 +1,130 @@
 #!/usr/bin/env bash
 # Run one Okilum Linux gate on the build-slot pool and publish its phase receipt
 # for the following GitHub steps. Exit 0 when the suite produced a code verdict
-# (pass or fail). Exit 1 when the pool produced no verdict (queue, timeout, ssh).
+# (pass or fail). Exit 1 when the pool produced no verdict (queue, timeout, ssh,
+# OOM kill, missing receipt); gh_check.py counts this step as infrastructure.
+#
+# linux-full runs six shards of pool-linux-gate.sh in parallel on different
+# slots (Oleg 21.11: 4-6 shards, PR gate jobs first in build-slot, <= 20 min);
+# pool-aggregate.py merges their receipts. pre-merge is one slot.
 set -euo pipefail
-mode=${1:?linux-full or pre-merge}
-case $mode in
-    linux-full) script=scripts/ci/pool-linux-gate.sh ;;
-    pre-merge) script=scripts/ci/pool-pre-merge.sh ;;
-    *) echo "unknown pool mode: $mode" >&2; exit 64 ;;
-esac
+mode=${1:?linux-full, linux-single or pre-merge}
 sha=${OKILUM_SOURCE_COMMIT:-$(git rev-parse HEAD)}
 [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "source is not a full SHA: $sha" >&2; exit 75; }
 export PATH="${HOME}/.local/bin:${HOME}/.cargo/bin:${PATH}"
 command -v build-slot >/dev/null || { echo "build-slot is not on PATH" >&2; exit 75; }
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # shellcheck source=scripts/ci/pool-phase-lib.sh
-source "$(dirname "${BASH_SOURCE[0]}")/pool-phase-lib.sh"
+source "$here/pool-phase-lib.sh"
 ship=$(pool_receipt_dir)
 receipt="$ship/phases.json"
-label="ci-${mode}-$(printf '%s' "$sha" | cut -c1-12)"
-# Measured 20.11: hosted linux ~57 min; pool attempt 44810220624#2 reached
-# managed admission in 26m44s and stopped on that phase's 600s cap, before
-# the Rust suites. Run 44818390902 was still in progress. Queue wait is
-# explicit. Job timeout is wait + run.
-run_minutes=30
-if [[ $mode == linux-full ]]; then
-    run_minutes=70
+short=$(printf '%s' "$sha" | cut -c1-12)
+
+# shard  mem(GiB)  needs(comma)  run minutes
+# Memory: the unsharded full run peaked at 6.1 GiB (anon 4.0) on baldr, 20.11.
+case $mode in
+    pre-merge) shards=("pre-merge 7 - 30") ;;
+    linux-single) shards=("all 7 docker,sudo,userbus 70") ;;
+    linux-full)
+        shards=(
+            "base 5 docker 25"
+            "admission 5 sudo 25"
+            "sync 5 - 25"
+            "desktop 7 - 25"
+            "rust-a 7 userbus 25"
+            "rust-b 7 userbus 25"
+        )
+        ;;
+    *) echo "unknown pool mode: $mode" >&2; exit 64 ;;
+esac
+# The benchmark branch measures warm rebuilds in one slot.
+if [[ $mode == linux-full && ${GITHUB_REF:-} == refs/heads/agent-checks-benchmark/* ]]; then
+    shards=("all 7 docker,sudo,userbus 70")
 fi
-slot_receipt="$ship/build-slot.json"
-args=(
-    run --project okilum --label "$label" --owner ci-pool
-    --wait-minutes 15 --timeout-minutes "$run_minutes" --mem 7
-    --receipt "$slot_receipt"
-    --ship "$ship"
-    --env "OKILUM_POOL_RECEIPT=$receipt"
-    --env "OKILUM_SOURCE_COMMIT=$sha"
-)
-# The full gate builds the per-user AppImage runtime with Docker. Only baldr
-# has Docker; pre-merge does not, and can land on any pool host.
-if [[ $mode == linux-full ]]; then
-    args+=(--require-host baldr)
-fi
-if [[ ${GITHUB_REF:-} == refs/heads/agent-checks-benchmark/* ]]; then
-    args+=(--env OKILUM_POOL_BENCHMARK=1)
-fi
-if [[ -n ${PUBLICATION_BASELINE:-} ]]; then
-    args+=(--env "OKILUM_PUBLICATION_BASELINE=${PUBLICATION_BASELINE}")
-fi
+
+archive=
+source_args=()
 if build-slot run --help 2>&1 | grep -q -- '--source-git'; then
-    args+=(--source-git "$PWD" --source-rev "$sha")
+    source_args=(--source-git "$PWD" --source-rev "$sha")
 else
     archive=$(mktemp "${TMPDIR:-/tmp}/okilum-src.XXXXXX.tar")
     git archive --format=tar -o "$archive" "$sha"
-    args+=(--source-tar "$archive")
+    source_args=(--source-tar "$archive")
 fi
-set +e
-build-slot "${args[@]}" -- bash "$script"
-rc=$?
-set -e
-rm -f "${archive:-}"
 
-oom=0
-if [[ -f $slot_receipt ]]; then
-    oom=$(python3 -c 'import json,sys; print(int((json.load(open(sys.argv[1])) or {}).get("oom_kill") or 0))' "$slot_receipt" 2>/dev/null || echo 0)
-fi
-phase_failed=0
-if [[ -f $receipt ]]; then
-    phase_failed=$(python3 -c 'import json,sys; phases=json.load(open(sys.argv[1])); print(1 if any(int(p.get("code") or 0) for p in phases) else 0)' "$receipt" 2>/dev/null || echo 0)
-fi
-kind=infra
-if [[ $oom -eq 0 && -f $receipt && ( $rc -eq 0 || $rc -eq 1 || ( $rc -eq 124 && $phase_failed -eq 1 ) ) ]]; then
-    kind=verdict
-fi
+dispatch() {
+    local name=$1 mem=$2 needs=$3 minutes=$4
+    local dir="$ship/$name" script label
+    mkdir -p "$dir"
+    if [[ $name == pre-merge ]]; then
+        script=(bash scripts/ci/pool-pre-merge.sh)
+        label="ci-pre-merge-$short"
+    else
+        script=(bash scripts/ci/pool-linux-gate.sh "$name")
+        label="ci-linux-$name-$short"
+    fi
+    local args=(
+        run --project okilum --label "$label" --owner ci-pool
+        --wait-minutes 15 --timeout-minutes "$minutes" --mem "$mem"
+        --receipt "$dir/build-slot.json"
+        --ship "$dir"
+        --env "OKILUM_POOL_RECEIPT=$dir/phases.json"
+        --env "OKILUM_SOURCE_COMMIT=$sha"
+    )
+    local need
+    if [[ $needs != - ]]; then
+        for need in ${needs//,/ }; do
+            args+=(--needs "$need")
+        done
+    fi
+    # PR gates go first in the queue (Oleg 21.11); the nightly main run does not.
+    if [[ ${GITHUB_EVENT_NAME:-} != schedule ]]; then
+        args+=(--priority critical)
+    fi
+    if [[ ${GITHUB_REF:-} == refs/heads/agent-checks-benchmark/* ]]; then
+        args+=(--env OKILUM_POOL_BENCHMARK=1)
+    fi
+    if [[ -n ${PUBLICATION_BASELINE:-} ]]; then
+        args+=(--env "OKILUM_PUBLICATION_BASELINE=${PUBLICATION_BASELINE}")
+    fi
+    set +e
+    build-slot "${args[@]}" "${source_args[@]}" -- "${script[@]}" > "$dir/log" 2>&1
+    local rc=$?
+    set -e
+    printf '%s\n' "$rc" > "$dir/rc"
+}
+
+started=$(date +%s)
+pids=()
+dirs=()
+for row in "${shards[@]}"; do
+    read -r name mem needs minutes <<< "$row"
+    dispatch "$name" "$mem" "$needs" "$minutes" &
+    pids+=($!)
+    dirs+=("$ship/$name")
+done
+for pid in "${pids[@]}"; do
+    wait "$pid" || true
+done
+rm -f "$archive"
+for dir in "${dirs[@]}"; do
+    printf '::group::shard %s (rc %s)\n' "$(basename "$dir")" "$(cat "$dir/rc" 2>/dev/null || echo none)"
+    cat "$dir/log" 2>/dev/null || true
+    printf '::endgroup::\n'
+done
+
+summary=$(python3 "$here/pool-aggregate.py" --out "$receipt" "${dirs[@]}")
+printf '%s\n' "$summary"
+kind=$(printf '%s\n' "$summary" | sed -n 's/^kind=//p')
 if [[ -n ${GITHUB_OUTPUT:-} ]]; then
     printf 'kind=%s\n' "$kind" >> "$GITHUB_OUTPUT"
 fi
 if [[ -n ${GITHUB_ENV:-} ]]; then
     printf 'OKILUM_POOL_RECEIPT=%s\n' "$receipt" >> "$GITHUB_ENV"
 fi
-printf 'pool dispatch mode=%s rc=%s kind=%s receipt=%s\n' "$mode" "$rc" "$kind" "$receipt"
+printf 'pool dispatch mode=%s shards=%s kind=%s wall=%ss receipt=%s\n' \
+    "$mode" "${#shards[@]}" "$kind" "$(( $(date +%s) - started ))" "$receipt"
 if [[ $kind == verdict ]]; then
     exit 0
 fi

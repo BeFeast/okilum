@@ -11,9 +11,19 @@ run_group() {
     }
     unlink "$evidence"
 }
-run_group cargo test --locked -p okilum-sync-controller --lib lifecycle::tests:: -- --nocapture
-run_group cargo test --locked -p okilum-sync-controller --lib linux_bootstrap::tests:: -- --nocapture
-run_group cargo test --locked -p okilum-sync-controller --lib runtime::tests::unopened_and_disabled_runtime_has_no_effects -- --exact --nocapture
+# OKILUM_ADMISSION_PART (sync-managed-admission-runs.py): the pool gate runs
+# crash, remaining-0 and remaining-1 on three shards; default all.
+part=${OKILUM_ADMISSION_PART:-all}
+case $part in
+    all|crash|remaining-0|remaining-1) ;;
+    *) echo "unknown OKILUM_ADMISSION_PART: $part" >&2; exit 64 ;;
+esac
+export OKILUM_ADMISSION_PART=$part
+if [[ $part == all || $part == crash ]]; then
+    run_group cargo test --locked -p okilum-sync-controller --lib lifecycle::tests:: -- --nocapture
+    run_group cargo test --locked -p okilum-sync-controller --lib linux_bootstrap::tests:: -- --nocapture
+    run_group cargo test --locked -p okilum-sync-controller --lib runtime::tests::unopened_and_disabled_runtime_has_no_effects -- --exact --nocapture
+fi
 # Reuse the same archive AND executable checksum verifier/atomic publisher as
 # source sharing; the old version-named executable is no longer populated.
 OKILUM_SYNC_DIRECT_CLIENT=$(python3 scripts/ci/sync-fixture-stage.py)
@@ -38,6 +48,8 @@ print(matches[0])
 PYTHON
 )
 python3 scripts/ci/sync-managed-admission-runs.py "$executable"
-python3 scripts/ci/sync-first-merge-negative-control.py
-python3 scripts/ci/sync-first-merge-expiry-negative-control.py
-python3 scripts/ci/sync-managed-admission-negative-control.py
+if [[ $part == all || $part == remaining-0 ]]; then
+    python3 scripts/ci/sync-first-merge-negative-control.py
+    python3 scripts/ci/sync-first-merge-expiry-negative-control.py
+    python3 scripts/ci/sync-managed-admission-negative-control.py
+fi

@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # #3080: real ENOSPC during a Sync transfer and during the first merge (#2043).
 # Each test fills its own private, small tmpfs; nothing else on the host is
-# filled. Only a disposable GitHub-hosted runner may run this: it mounts with
-# the runner's passwordless sudo.
+# filled. Only a disposable GitHub-hosted runner, or a build-slot pool slot
+# (OKILUM_POOL_DISK_FULL=1 from pool-linux-gate.sh, host capability sudo), may
+# run this: it mounts with passwordless sudo.
 set -euo pipefail
-if [[ ${GITHUB_ACTIONS:-} != true || ${RUNNER_ENVIRONMENT:-} != github-hosted ]]; then
-    echo 'sync-disk-full.sh mounts private volumes and runs only on a disposable GitHub-hosted runner; refusing here.' >&2
+if [[ ${OKILUM_POOL_DISK_FULL:-} == 1 && -n ${BUILD_SLOT:-}${OKILUM_POOL_SHARD:-} ]]; then
+    sudo -n true || { echo 'sync-disk-full.sh: this pool host has no passwordless sudo' >&2; exit 75; }
+elif [[ ${GITHUB_ACTIONS:-} != true || ${RUNNER_ENVIRONMENT:-} != github-hosted ]]; then
+    echo 'sync-disk-full.sh mounts private volumes and runs only on a disposable GitHub-hosted runner or a pool slot; refusing here.' >&2
     exit 64
 fi
 source "$(dirname "${BASH_SOURCE[0]}")/test-nofile.sh"

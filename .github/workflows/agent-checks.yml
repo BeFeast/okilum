@@ -181,10 +181,11 @@ jobs:
   linux:
     if: ${{ !startsWith(github.ref, 'refs/heads/agent-checks-fast/') }}
     runs-on: okilum-pool
-    # 15 min queue wait + 70 min run. Hosted linux was ~57 min (20.11).
-    # Pool run 44810220624 attempt 2 took 26m44s and died in managed admission
-    # before the Rust suites; 44818390902 was still running when this cap was set.
-    timeout-minutes: 90
+    # Six shards in parallel on different pool slots (Oleg 21.11, target
+    # <= 20 min): 15 min queue wait + 25 min per shard + aggregation.
+    # Hosted linux was 56-58 min (20.11); one unsharded pool slot ran 26 min
+    # into managed admission (run 44829689116).
+    timeout-minutes: 45
     env:
       OKILUM_SOURCE_COMMIT: ${{ github.sha }}
       PUBLICATION_BASELINE: ${{ inputs.publication_baseline }}
