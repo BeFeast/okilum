@@ -284,15 +284,47 @@ pub fn append_entry(
 /// «Restore draft»: today's note is created with the waiting draft's text,
 /// read again now. The draft then matches the file, so it is no longer an
 /// unsaved draft. Create-only: an existing file is never replaced.
-pub fn restore_draft(root: &Path, rel: &str, drafts: &Path) -> Result<String> {
-    ensure_real_folders(root, Path::new(rel))?;
-    let path = root.join(rel);
-    let text = crate::file_editor::FileEditor::unsaved_draft_text(&path, drafts)?
+/// No template is needed. If the note came back meanwhile (Sync, another
+/// window), nothing is written: `Existing`, so it opens with its normal
+/// recovery offer.
+pub fn restore_draft(root: &Path, rel: &str, drafts: &Path) -> Result<Today> {
+    let relative = Path::new(rel);
+    ensure_real_folders(root, relative)?;
+    let path = root.join(relative);
+    if note_is_there(&path, rel)? {
+        return Ok(Today::Existing(rel.to_owned()));
+    }
+    let text = crate::file_editor::FileEditor::waiting_draft_text(&path, drafts)?
         .context("The draft is no longer waiting; press Today's note again")?;
+    if let Some(parent) = relative.parent().filter(|p| !p.as_os_str().is_empty()) {
+        crate::note_files::create_folders(root, parent, false)?;
+    }
     let _lock = crate::file_editor::FileEditor::claim_idle(&path, drafts)?
         .context(crate::file_editor::BEING_EDITED)?;
-    crate::note_files::create_with_source(root, Path::new(rel), text.as_bytes())?;
-    Ok(text)
+    match crate::note_files::create_with_source(root, relative, text.as_bytes()) {
+        Ok(()) => Ok(Today::Created {
+            rel: rel.to_owned(),
+            source: text,
+        }),
+        // It arrived between the check and the create-only write.
+        Err(error) => {
+            if note_is_there(&path, rel)? {
+                Ok(Today::Existing(rel.to_owned()))
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
+/// The note is there as a regular file; something else there is an error.
+fn note_is_there(path: &Path, rel: &str) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_file() => Ok(true),
+        Ok(_) => bail!("{rel} is already there and is not a note"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).with_context(|| format!("Cannot check {rel}")),
+    }
 }
 
 /// «Start fresh from template» for the note `rel` the choice was shown for,
@@ -311,14 +343,16 @@ pub fn start_fresh(
 ) -> Result<Today> {
     let relative = Path::new(rel);
     ensure_real_folders(root, relative)?;
-    match std::fs::symlink_metadata(root.join(relative)) {
-        Ok(meta) if meta.is_file() => return Ok(Today::Existing(rel.to_owned())),
-        Ok(_) => bail!("{rel} is already there and is not a note"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error).with_context(|| format!("Cannot check {rel}")),
+    if note_is_there(&root.join(relative), rel)? {
+        return Ok(Today::Existing(rel.to_owned()));
+    }
+    // The journal is keyed by the note's real folder: make it first.
+    if let Some(parent) = relative.parent().filter(|p| !p.as_os_str().is_empty()) {
+        crate::note_files::create_folders(root, parent, false)?;
     }
     crate::file_editor::FileEditor::set_aside_draft(&root.join(relative), drafts)?;
-    create_at(root, relative, settings, templates, now, drafts)
+    // A missing daily template does not block starting fresh: title only.
+    create_at(root, relative, settings, templates, now, drafts, true)
 }
 
 /// Open today's note, or create it. Without a daily template the note is
@@ -332,10 +366,12 @@ pub fn open_or_create(
     drafts: &Path,
 ) -> Result<Today> {
     let relative = settings.relative_path(now)?;
-    create_at(root, &relative, settings, templates, now, drafts)
+    create_at(root, &relative, settings, templates, now, drafts, false)
 }
 
 /// Open or create the daily note at `relative` (see [`open_or_create`]).
+/// `title_only_fallback`: a missing daily template gives a title-only note
+/// instead of an error (Start fresh).
 fn create_at(
     root: &Path,
     relative: &Path,
@@ -343,38 +379,39 @@ fn create_at(
     templates: &Catalog,
     now: OffsetDateTime,
     drafts: &Path,
+    title_only_fallback: bool,
 ) -> Result<Today> {
     let rel = crate::vault::note_path(relative);
     ensure_real_folders(root, relative)?;
     let path = root.join(relative);
-    match std::fs::symlink_metadata(&path) {
-        Ok(meta) if meta.is_file() => return Ok(Today::Existing(rel)),
-        Ok(_) => bail!("{rel} is already there and is not a note"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error).with_context(|| format!("Cannot check {rel}")),
+    if note_is_there(&path, &rel)? {
+        return Ok(Today::Existing(rel));
     }
-    let (catalog, selected) = match settings.template_parts()? {
+    // A note deleted after an unsaved edit leaves its recovery draft keyed to
+    // the path; creating there would be refused. Offer it first (#3182), even
+    // when the template is missing: Restore needs none. Read-only; its folder
+    // may be gone too.
+    if let Some(text) = crate::file_editor::FileEditor::waiting_draft_text(&path, drafts)? {
+        return Ok(Today::Draft { rel, text });
+    }
+    let chosen = match settings.template_parts()? {
         Some((folder, file)) => {
-            let catalog = Catalog::load_with_folder(root, Some(&folder))?;
-            ensure!(
+            Catalog::load_with_folder(root, Some(&folder)).and_then(|catalog| {
+                ensure!(
                 catalog.files.iter().any(|name| name == &file),
                 "The daily note template «{}» is not in this vault. Choose it in Settings → Vault",
                 settings.template
             );
-            (catalog, Some(file))
+                Ok((catalog, Some(file)))
+            })
         }
-        None => (templates.clone(), None),
+        None => Ok((templates.clone(), None)),
     };
-    // A note deleted after an unsaved edit leaves its recovery draft keyed to
-    // the path; creating there would be refused. Offer it instead (#3182).
-    // The folder is made first (a missing template above creates nothing):
-    // the draft is keyed by the note's real path.
-    if let Some(parent) = relative.parent().filter(|p| !p.as_os_str().is_empty()) {
-        crate::note_files::create_folders(root, parent, false)?;
-    }
-    if let Some(text) = crate::file_editor::FileEditor::unsaved_draft_text(&path, drafts)? {
-        return Ok(Today::Draft { rel, text });
-    }
+    let (catalog, selected) = match chosen {
+        Ok(chosen) => chosen,
+        Err(_) if title_only_fallback => (templates.clone(), None),
+        Err(error) => return Err(error),
+    };
     let source = crate::note_files::create_from_template(
         root,
         relative,
@@ -688,7 +725,10 @@ mod tests {
         );
         assert_eq!(
             restore_draft(&root, rel, &drafts).unwrap(),
-            "my unsaved morning\n"
+            Today::Created {
+                rel: rel.into(),
+                source: "my unsaved morning\n".into()
+            }
         );
         assert_eq!(
             std::fs::read_to_string(root.join(rel)).unwrap(),
@@ -799,6 +839,92 @@ mod tests {
         );
         assert!(
             crate::file_editor::FileEditor::has_unsaved_draft(&root.join(next), &drafts).unwrap()
+        );
+    }
+
+    /// #3190 review: the chosen template is missing and the note's whole
+    /// folder is gone, but its draft is kept: the draft is still offered and
+    /// nothing is created; Restore needs no template; Start fresh falls back to
+    /// a title-only note.
+    #[test]
+    fn a_draft_is_offered_without_a_template_and_without_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+        std::fs::create_dir_all(&root).unwrap();
+        let drafts = dir.path().join("drafts");
+        let rel = "Daily/2026-11-20.md";
+        leave_draft(&root, rel, &drafts, "kept words\n");
+        std::fs::remove_dir(root.join("Daily")).unwrap();
+        let settings = Settings {
+            template: "Templates/Gone".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            create(&root, &settings).unwrap(),
+            Today::Draft {
+                rel: rel.into(),
+                text: "kept words\n".into()
+            }
+        );
+        assert!(!root.join("Daily").exists(), "asking creates nothing");
+        assert_eq!(
+            restore_draft(&root, rel, &drafts).unwrap(),
+            Today::Created {
+                rel: rel.into(),
+                source: "kept words\n".into()
+            }
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join(rel)).unwrap(),
+            "kept words\n"
+        );
+        // Start fresh with the template still missing: title only.
+        let other = "Daily/2026-11-19.md";
+        leave_draft(&root, other, &drafts, "older words\n");
+        let fresh = start_fresh(
+            &root,
+            other,
+            &settings,
+            &Catalog::load(&root).unwrap(),
+            NOW,
+            &drafts,
+        )
+        .unwrap();
+        assert_eq!(
+            fresh,
+            Today::Created {
+                rel: other.into(),
+                source: "# 2026-11-19\n".into()
+            }
+        );
+    }
+
+    /// #3190 review: the note comes back (Sync) while the choice is open.
+    /// Restore writes nothing and reports it as there, so it opens with its
+    /// normal recovery offer; the draft stays waiting.
+    #[test]
+    fn restore_after_the_note_came_back_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+        std::fs::create_dir_all(&root).unwrap();
+        let drafts = dir.path().join("drafts");
+        let rel = "Daily/2026-11-20.md";
+        leave_draft(&root, rel, &drafts, "kept words\n");
+        assert!(matches!(
+            create(&root, &Settings::default()).unwrap(),
+            Today::Draft { .. }
+        ));
+        std::fs::write(root.join(rel), "# synced back\n").unwrap();
+        assert_eq!(
+            restore_draft(&root, rel, &drafts).unwrap(),
+            Today::Existing(rel.into())
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join(rel)).unwrap(),
+            "# synced back\n"
+        );
+        assert!(
+            crate::file_editor::FileEditor::has_unsaved_draft(&root.join(rel), &drafts).unwrap()
         );
     }
 

@@ -437,6 +437,47 @@ impl FileEditor {
         Ok(Some(draft.text.to_string()))
     }
 
+    /// `unsaved_draft_text` for a note that is not there, whose folder may be
+    /// gone too (#3182): the path is resolved through its deepest existing
+    /// folder, as the journal was keyed when the note was there. Read-only,
+    /// and nothing is created.
+    pub fn waiting_draft_text(path: &Path, state: &Path) -> Result<Option<String>> {
+        if path.parent().is_some_and(Path::exists) {
+            return Self::unsaved_draft_text(path, state);
+        }
+        let mut missing = Vec::new();
+        let mut at = path;
+        let resolved = loop {
+            match at.canonicalize() {
+                Ok(mut base) => {
+                    for part in missing.iter().rev() {
+                        base.push(part);
+                    }
+                    break base;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    missing.push(at.file_name().context("Source has no filename")?.to_owned());
+                    at = at.parent().context("Source has no existing folder")?;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        };
+        let key = format!(
+            "{:x}",
+            Sha256::digest(resolved.as_os_str().as_encoded_bytes())
+        );
+        let bytes = match fs::read(state.join(format!("{key}.json"))) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let draft: Draft = serde_json::from_slice(&bytes)?;
+        if draft.path != resolved || (!draft.pending_input && draft.text == draft.base) {
+            return Ok(None);
+        }
+        Ok(Some(draft.text.to_string()))
+    }
+
     /// Whether a live editor (any window, any process) holds `path`'s editor
     /// lock. A probe only: the answer can be stale at once. Callers that act
     /// on "idle" must hold `claim_idle`'s lock instead.

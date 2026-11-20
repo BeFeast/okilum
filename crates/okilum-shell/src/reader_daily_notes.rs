@@ -717,10 +717,22 @@ impl Reader {
             &rel,
             &state.join("editor-drafts"),
         ) {
-            Ok(text) => {
+            Ok(Today::Created { rel, source }) => {
                 self.trace_file_operation("daily_note", "restored", &rel, None, cx);
                 self.prepare_daily_show(window, cx);
-                self.show_created_note(rel, text, window, cx);
+                self.show_created_note(rel, source, window, cx);
+            }
+            // The note came back meanwhile (Sync, another window): nothing was
+            // written; it opens with its normal recovery offer.
+            Ok(Today::Existing(rel)) | Ok(Today::Draft { rel, .. }) => {
+                self.trace_file_operation("daily_note", "back", &rel, None, cx);
+                self.prepare_daily_show(window, cx);
+                self.open_note(&rel, None, window, cx);
+                reader_toast::transient(
+                    "Today's note is back on disk; nothing was overwritten. Its unsaved edits are offered on the note.",
+                    window,
+                    cx,
+                );
             }
             Err(error) => {
                 let error = format!("{error:#}");
@@ -1585,6 +1597,34 @@ mod tests {
             std::fs::read_to_string(root.join(&rel)).unwrap(),
             "# saved\n",
             "no entry over unreviewed edits"
+        );
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.pane.current_rel, rel);
+            assert!(
+                r.pane.editing.is_none(),
+                "the draft is not adopted silently"
+            );
+            assert!(r.pane.recovery_offer, "the normal recovery offer");
+        });
+    }
+
+    /// #3190 review: the note comes back (Sync) while the choice is open.
+    /// Restore overwrites nothing and opens it with the normal recovery offer.
+    #[gpui::test]
+    fn restore_after_the_note_came_back_opens_it_with_the_offer(cx: &mut TestAppContext) {
+        let temp = vault_with_daily_template();
+        let (root, rel) = waiting_draft(&temp, true);
+        let (reader, visual) = open_vault(cx, &temp);
+        reader.update_in(visual, |r, window, cx| r.open_daily_note(window, cx));
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("daily-draft").is_some());
+        std::fs::write(root.join(&rel), "# synced back\n").unwrap();
+        let restore = visual.debug_bounds("daily-draft-restore").unwrap();
+        visual.simulate_click(restore.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            std::fs::read_to_string(root.join(&rel)).unwrap(),
+            "# synced back\n"
         );
         reader.read_with(visual, |r, _| {
             assert_eq!(r.pane.current_rel, rel);
