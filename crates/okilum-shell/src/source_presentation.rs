@@ -1145,6 +1145,37 @@ fn heading_line_scales(
     scales
 }
 
+/// The theme decorations Live Preview may draw with the note font `family`
+/// (#3154). Live Preview colours body bold as one run (the editor repaints its
+/// letters), which adds no font-run split only when bold resolves to its own
+/// face. A family without one (bold and regular resolve to the same font, as
+/// the platform falls back to the closest face) keeps bold solid: the bold
+/// slot is dropped, so no gradient colour or span is produced.
+pub(crate) fn live_preview_decorations(
+    mut decorations: gpui_base::text::TextDecorations,
+    family: &str,
+    font_id: impl Fn(&gpui::Font) -> gpui::FontId,
+) -> gpui_base::text::TextDecorations {
+    if decorations.bold.is_some() {
+        let face = |weight, style| {
+            font_id(&gpui::Font {
+                weight,
+                style,
+                ..gpui::font(family.to_owned())
+            })
+        };
+        let own_face = [gpui::FontStyle::Normal, gpui::FontStyle::Italic]
+            .into_iter()
+            .all(|style| {
+                face(gpui::FontWeight::BOLD, style) != face(gpui::FontWeight::NORMAL, style)
+            });
+        if !own_face {
+            decorations.bold = None;
+        }
+    }
+    decorations
+}
+
 /// Projected lines of H2-H6 headings, for the heading rule slot (#3154): the
 /// line where each heading ends, so a setext underline carries the rule.
 fn heading_rule_lines(
@@ -2593,6 +2624,40 @@ mod tests {
             .iter()
             .all(|style| style.color != Some(gpui_base::text::gradient_run_color())));
         assert!(projection.decorations().unwrap().bold.is_empty());
+        // A note font whose bold resolves to the regular face: a gradient
+        // colour would split `left **middle** right` into three font runs.
+        // The slot is dropped, so the runs (and the shaping key) are exactly
+        // the undecorated ones.
+        let one_face = live_preview_decorations(themed.decorations, "Single", |_| gpui::FontId(7));
+        assert!(one_face.bold.is_none());
+        assert!(one_face.heading_rule.is_some(), "other slots stay");
+        let two_faces = live_preview_decorations(themed.decorations, "Pair", |font| {
+            gpui::FontId(if font.weight >= gpui::FontWeight::BOLD {
+                2
+            } else {
+                1
+            })
+        });
+        assert_eq!(two_faces.bold, themed.decorations.bold, "positive control");
+        let body = self::source("left **middle** right\n");
+        let compose = |decorations| {
+            Arc::new(CachedProvider::classify(body.clone()))
+                .with_colors(ProjectionColors {
+                    decorations,
+                    ..themed
+                })
+                .compose(&body, &inactive(&body))
+                .unwrap()
+        };
+        let undecorated = compose(Default::default());
+        let single = compose(one_face);
+        assert_eq!(single.styles(), undecorated.styles());
+        assert!(single.decorations().unwrap().bold.is_empty());
+        let paired = compose(two_faces);
+        assert!(paired
+            .styles()
+            .iter()
+            .any(|style| style.color == Some(gpui_base::text::gradient_run_color())));
         // H2-H6 carry the rule; H1 does not.
         let line_of = |needle: &str| {
             display[..display.find(needle).unwrap()]

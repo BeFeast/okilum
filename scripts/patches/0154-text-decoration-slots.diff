@@ -1,5 +1,5 @@
 diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
-index 16c31524..f77de7d6 100644
+index 16c31524..79bfdaf0 100644
 --- a/crates/base/src/input/base/element.rs
 +++ b/crates/base/src/input/base/element.rs
 @@ -3028,6 +3028,77 @@ impl<M: InputModeKind> Element for TextElement<M> {
@@ -130,7 +130,7 @@ index 16c31524..f77de7d6 100644
              line.paint_background(
                  p,
                  &prepaint.last_layout.rows,
-@@ -3129,6 +3243,24 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -3129,6 +3243,32 @@ impl<M: InputModeKind> Element for TextElement<M> {
          // Track the y-position of the cursor row for positioning the first line suffix
          let mut cursor_row_y = None;
  
@@ -152,10 +152,18 @@ index 16c31524..f77de7d6 100644
 +                .collect();
 +            (!spans.is_empty()).then_some((gradient, spans))
 +        });
++        // One letter index per paint, shared by every visible row; a rope
++        // display answers character ranks without indexing whole spans.
++        let letters = bold_gradient.as_ref().zip(decoration_pin.as_ref()).map(|((_, spans), pin)| {
++            match pin.projection.display_rope() {
++                Some(rope) => crate::text::LetterGradient::from_rope(rope, spans),
++                None => crate::text::LetterGradient::new(pin.projection.text(), spans),
++            }
++        });
          let mut painted_tasks = Vec::new();
          for (line_index, (line, &buffer_line)) in prepaint
              .last_layout
-@@ -3162,7 +3294,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -3162,7 +3302,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                      let row_origin = p + point(x, row_top);
                      if let Some(Some(paint)) = rows.get(row_index) {
                          painted_tasks.extend(paint.paint(row_origin, row_height,
@@ -164,12 +172,11 @@ index 16c31524..f77de7d6 100644
                      } else {
                          let _ = row.paint(row_origin, row_height, align, align_width, window, cx);
                      }
-@@ -3170,6 +3302,33 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -3170,6 +3310,32 @@ impl<M: InputModeKind> Element for TextElement<M> {
              } else {
                  line.paint(p, &prepaint.last_layout.rows, text_align, Some(prepaint.last_layout.content_width), window, cx);
              }
-+            if let (Some((gradient, spans)), Some(pin)) = (bold_gradient.as_ref(), decoration_pin.as_ref()) {
-+                let letters = crate::text::LetterGradient::new(pin.projection.text(), spans);
++            if let (Some((gradient, spans)), Some(letters)) = (bold_gradient.as_ref(), letters.as_ref()) {
 +                let line_rows = line.rows(&prepaint.last_layout.rows);
 +                let mut row_start = prepaint.last_layout.visible_line_byte_offsets[line_index];
 +                for (row_index, row) in line.wrapped_lines.iter().enumerate() {
@@ -188,7 +195,7 @@ index 16c31524..f77de7d6 100644
 +                            line_rows.row_height(row_index),
 +                            row_start,
 +                            gradient,
-+                            &letters,
++                            letters,
 +                            window,
 +                        );
 +                    }
@@ -198,7 +205,7 @@ index 16c31524..f77de7d6 100644
              offset_y += line.size(&prepaint.last_layout.rows).height;
  
              if Some(row) == prepaint.current_row {
-@@ -4573,3 +4732,12 @@ mod projection_run_tests {
+@@ -4573,3 +4739,12 @@ mod projection_run_tests {
          assert_eq!(runs_for_range(&tail, 4, &(0..1))[0].font, font);
      }
  }
@@ -323,10 +330,10 @@ index e72cb01b..ef7f433a 100644
  }
 diff --git a/crates/base/src/text/decorations.rs b/crates/base/src/text/decorations.rs
 new file mode 100644
-index 00000000..c565f239
+index 00000000..c0d0bd87
 --- /dev/null
 +++ b/crates/base/src/text/decorations.rs
-@@ -0,0 +1,374 @@
+@@ -0,0 +1,438 @@
 +//! Theme decoration slots for rich text and the editor's Live Preview.
 +//!
 +//! A theme fills these with parameters; the renderer draws each slot in one
@@ -545,12 +552,26 @@ index 00000000..c565f239
 +
 +/// Per-letter colours for byte ranges of a line: the `t` of a byte offset
 +/// along its span, counted in characters, so every letter gets its own step.
-+/// Character starts are indexed once per span, so a lookup is a binary search.
++/// Build one per paint and reuse it for every row: from a short text it
++/// indexes character starts once per span; from a rope it indexes nothing and
++/// asks the rope for character ranks (O(log n)), so a long span costs the same
++/// as a short one.
 +pub struct LetterGradient<'a> {
 +    spans: &'a [Range<usize>],
++    ranks: Ranks<'a>,
++}
++
++enum Ranks<'a> {
 +    /// Per span, the byte offset (from the span start) of every character;
 +    /// None when the text does not cover the span (steps fall back to bytes).
-+    starts: Vec<Option<Vec<usize>>>,
++    Starts(Vec<Option<Vec<usize>>>),
++    Rope(&'a ropey::Rope),
++}
++
++#[cfg(test)]
++thread_local! {
++    /// Characters indexed by [`LetterGradient::new`], for bounded-work tests.
++    pub(crate) static INDEXED_CHARS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 +}
 +
 +impl<'a> LetterGradient<'a> {
@@ -558,11 +579,26 @@ index 00000000..c565f239
 +        let starts = spans
 +            .iter()
 +            .map(|span| {
-+                text.get(span.clone())
-+                    .map(|t| t.char_indices().map(|(i, _)| i).collect())
++                text.get(span.clone()).map(|t| {
++                    let starts: Vec<usize> = t.char_indices().map(|(i, _)| i).collect();
++                    #[cfg(test)]
++                    INDEXED_CHARS.with(|n| n.set(n.get() + starts.len()));
++                    starts
++                })
 +            })
 +            .collect();
-+        Self { spans, starts }
++        Self {
++            spans,
++            ranks: Ranks::Starts(starts),
++        }
++    }
++
++    /// Ranks from `rope`, which holds the text the spans index.
++    pub fn from_rope(rope: &'a ropey::Rope, spans: &'a [Range<usize>]) -> Self {
++        Self {
++            spans,
++            ranks: Ranks::Rope(rope),
++        }
 +    }
 +
 +    /// `t` for the character starting at `index`, if it is in a span.
@@ -572,12 +608,23 @@ index 00000000..c565f239
 +        let offset = index - span.start;
 +        // A glyph inside a span always gets a colour: should the text not
 +        // cover the span, the step falls back to bytes.
-+        let (before, count) = match &self.starts[at] {
-+            Some(starts) => (
-+                starts.partition_point(|start| *start <= offset).saturating_sub(1),
-+                starts.len(),
-+            ),
-+            None => (offset, span.len()),
++        let bytes = (offset, span.len());
++        let (before, count) = match &self.ranks {
++            Ranks::Starts(starts) => match &starts[at] {
++                Some(starts) => (
++                    starts.partition_point(|start| *start <= offset).saturating_sub(1),
++                    starts.len(),
++                ),
++                None => bytes,
++            },
++            Ranks::Rope(rope) if span.end <= rope.len_bytes() => {
++                let first = rope.byte_to_char(span.start);
++                (
++                    rope.byte_to_char(index) - first,
++                    rope.byte_to_char(span.end) - first,
++                )
++            }
++            Ranks::Rope(_) => bytes,
 +        };
 +        if count <= 1 {
 +            return Some(0.);
@@ -673,6 +720,30 @@ index 00000000..c565f239
 +        assert_eq!(letters.t_at(span.start + 2), Some(0.25));
 +        assert_eq!(letters.t_at(span.end - 1), Some(1.));
 +        assert_eq!(letters.t_at(span.end), None);
++    }
++
++    #[test]
++    fn rope_ranks_index_nothing_and_match_text_ranks() {
++        // A long multi-line bold span seen through a viewport: ranks come from
++        // the rope, so no character of the span is indexed per paint.
++        let body = "é".repeat(50_000) + "\n" + &"x".repeat(50_000);
++        let text = format!("a **{body}** b");
++        let span = 4..4 + body.len();
++        let spans = [span.clone()];
++        let rope = ropey::Rope::from_str(&text);
++        INDEXED_CHARS.with(|n| n.set(0));
++        let rope_letters = LetterGradient::from_rope(&rope, &spans);
++        let visible = [span.start, span.start + 2, span.start + 100_000, span.end - 1];
++        let from_rope: Vec<_> = visible.iter().map(|i| rope_letters.t_at(*i)).collect();
++        assert_eq!(INDEXED_CHARS.with(|n| n.get()), 0, "rope lookups index nothing");
++        // Control: the text index gives the same steps, and does index.
++        let text_letters = LetterGradient::new(&text, &spans);
++        assert_eq!(INDEXED_CHARS.with(|n| n.get()), 100_001);
++        let from_text: Vec<_> = visible.iter().map(|i| text_letters.t_at(*i)).collect();
++        assert_eq!(from_rope, from_text);
++        assert_eq!(from_rope[0], Some(0.));
++        assert_eq!(from_rope[3], Some(1.));
++        assert_eq!(rope_letters.t_at(span.end), None);
 +    }
 +
 +    #[test]

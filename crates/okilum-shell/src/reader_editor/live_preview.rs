@@ -196,8 +196,13 @@ fn projection_colors(cx: &App) -> ProjectionColors {
         headings: brand::reader_palette(cx).headings,
         link: palette.link,
         muted: palette.text_muted,
-        // The same decoration slots as the Reader (#3154).
-        decorations: brand::reader_palette(cx).decorations,
+        // The same decoration slots as the Reader (#3154); bold only when the
+        // note font has its own bold face.
+        decorations: crate::source_presentation::live_preview_decorations(
+            brand::reader_palette(cx).decorations,
+            &reader_fonts::note(cx),
+            |font| cx.text_system().resolve_font(font),
+        ),
     }
 }
 

@@ -402,7 +402,11 @@ impl TableGrid {
                 muted: palette.text_muted,
                 // The whole note keeps its theme decorations while a grid is
                 // open, and close() restores this decorated provider (#3154).
-                decorations: brand::reader_palette(cx).decorations,
+                decorations: crate::source_presentation::live_preview_decorations(
+                    brand::reader_palette(cx).decorations,
+                    &reader_fonts::note(cx),
+                    |font| cx.text_system().resolve_font(font),
+                ),
             },
             reader_fonts::code(cx).to_string(),
             cx.theme().highlight_theme.clone(),
