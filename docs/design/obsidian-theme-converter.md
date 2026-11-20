@@ -94,8 +94,11 @@ its "Contrast" table.
 ## Decoration slots and syntax
 
 Recognised patterns fill per-mode `decorations` and `syntax` objects next to the
-colour tokens. The app reads neither yet; the slices that render them (#3154
-gradients, #3156 syntax) settle the final schema, and the converter follows.
+colour tokens. The app reads `syntax` (#3156, schema in `docs/design/reader.md`
+§Code syntax palette): keys are tree-sitter capture names, so the converter's
+`builtin` slot is written as `function` when the theme set no `function`
+colour, and dropped otherwise. `decorations` is not read yet; #3154 settles
+its schema, and the converter follows.
 Every gradient slot takes two stops; more stops are reduced to the first and
 the last distinct colour (`toAt` keeps where the last colour starts).
 
@@ -106,7 +109,7 @@ the last distinct colour (`toAt` keeps where the last colour starts).
 | `blockquote` `{angle, from, to, border, bars: {top, bottom}}` | gradient `background` on `blockquote` / `.HyperMD-quote`, its `::before`/`::after` bars (with `width`), `border-left` colour |
 | `linkMarker` `{internal, external, heightPx}` | gradient `background-image` on `.internal-link` / `.external-link` / `.cm-link`, `background-size` height |
 | `boldGradient` `{angle, from, to}` | `background-clip: text` with a gradient on `strong` / `.cm-strong`; both ends kept at reading contrast |
-| `syntax` (comment, string, number, keyword, function, variable, type, builtin, operator, property, tag, attribute) | `color` on `.cm-*` (CodeMirror) and `.token.*` (Prism) classes |
+| `syntax` (comment, string, number, keyword, function, variable, type, builtin → function, operator, property, tag, attribute) | `color` on `.cm-*` (CodeMirror) and `.token.*` (Prism) classes |
 
 ## Report
 

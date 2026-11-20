@@ -72,6 +72,28 @@ class LargeNote(unittest.TestCase):
         self.assertIn("OVER", table)
 
 
+    def test_code_note_is_pinned_fenced_code_under_headings(self):
+        data, counts = fixture.code_note()
+        self.assertEqual(hashlib.sha256(data).hexdigest(), fixture.CODE_NOTE_SHA256)
+        self.assertEqual(counts["lines"], 10_000)
+        self.assertEqual(data.count(b"\n```rust\n") + data.count(b"\n```python\n")
+                         + data.count(b"\n```javascript\n") + data.count(b"\n```json\n"), counts["code_blocks"])
+        self.assertGreater(counts["code_blocks"], 400)
+        self.assertEqual(data.count(b"\n## ") + 1, counts["headings"])
+        with tempfile.TemporaryDirectory() as work:
+            fixture.write(Path(work) / "v", check=True)
+            self.assertEqual((Path(work) / "v" / fixture.CODE_NOTE).read_bytes(), data)
+
+    def test_controls_reject_a_run_in_another_theme_or_mode(self):
+        counts = fixture.note()[1]
+        drawn = run(theme={"key": "obsidianite", "dark": True, "syntax": "Okilum Obsidianite dark"})
+        self.assertEqual(bench.controls(drawn, counts, theme="obsidianite", appearance="dark"), [])
+        self.assertTrue(any("theme" in p for p in bench.controls(drawn, counts, theme="graphite")))
+        self.assertTrue(any("dark" in p for p in bench.controls(drawn, counts, appearance="light")))
+        # An older binary reports no theme: a themed run cannot pass on it.
+        self.assertTrue(bench.controls(run(), counts, theme="graphite"))
+        self.assertEqual(bench.ui_state("graphite", "dark"), {"version": 1, "theme": "graphite", "appearance": "dark"})
+
     def test_document_stage_needs_both_diagnostics(self):
         self.assertEqual(bench.document_stage({"first_event_received": 1000., "document_first_paint": 1250.}), 250.)
         with self.assertRaises(bench.NoEvidence):
