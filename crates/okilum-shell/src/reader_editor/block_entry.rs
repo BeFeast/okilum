@@ -147,7 +147,7 @@ impl Reader {
         &self,
         cx: &App,
     ) -> Option<(Entity<EditorState>, SourceSnapshot, Vec<Range<usize>>)> {
-        let editing = self.editing.as_ref()?;
+        let editing = self.pane.editing.as_ref()?;
         if !editing.live_preview.enabled || !editing.markdown {
             return None;
         }
@@ -163,7 +163,7 @@ impl Reader {
     /// The block focus, when it still holds: the caret has not moved and the
     /// source has not changed since Esc.
     pub(super) fn valid_block_focus(&self, cx: &App) -> Option<BlockFocus> {
-        let editing = self.editing.as_ref()?;
+        let editing = self.pane.editing.as_ref()?;
         let focus = editing.live_preview.block_focus.clone()?;
         let state = editing.input.read(cx);
         (editing.live_preview.enabled
@@ -176,7 +176,7 @@ impl Reader {
     /// Show `block`'s source with all of it selected, caret at its start, and
     /// remember where the caret was for Esc.
     fn open_rendered_block(&mut self, block: Range<usize>, caret: usize, cx: &mut Context<Self>) {
-        let Some(editing) = &mut self.editing else {
+        let Some(editing) = &mut self.pane.editing else {
             return;
         };
         let input = editing.input.clone();
@@ -207,6 +207,7 @@ impl Reader {
         // Reject selections before snapshot or block-list work. F2 then
         // retains its ordinary Rename note fallback.
         let selection = self
+            .pane
             .editing
             .as_ref()
             .map(|e| e.input.read(cx).selected_range());
@@ -241,6 +242,7 @@ impl Reader {
         // Esc belongs to the input method until its commit has settled. Consume
         // it here rather than falling through to closing the note editor.
         if self
+            .pane
             .editing
             .as_ref()
             .is_some_and(|e| e.input.read(cx).ime_settling(cx))
@@ -251,7 +253,7 @@ impl Reader {
         // In the same immutable revision, Esc needs neither a source snapshot
         // nor another block lookup. A changed source always takes the checked
         // current-source path below.
-        let remembered = self.editing.as_ref().and_then(|editing| {
+        let remembered = self.pane.editing.as_ref().and_then(|editing| {
             if !editing.live_preview.enabled || !editing.markdown {
                 return None;
             }
@@ -265,7 +267,7 @@ impl Reader {
                 .then(|| (editing.input.clone(), opened.clone()))
         });
         if let Some((input, opened)) = remembered {
-            let editing = self.editing.as_mut().unwrap();
+            let editing = self.pane.editing.as_mut().unwrap();
             let anchor = opened.block.start;
             editing.live_preview.opened_block = None;
             editing.live_preview.block_focus = Some(BlockFocus {
@@ -289,7 +291,7 @@ impl Reader {
         let Some(block) = block_holding(&blocks, &selection) else {
             return false;
         };
-        let Some(editing) = &mut self.editing else {
+        let Some(editing) = &mut self.pane.editing else {
             return false;
         };
         let opened = editing.live_preview.opened_block.take();
@@ -435,12 +437,14 @@ mod tests {
         draw(visual);
         reader.update_in(visual, |r, window, cx| {
             r.toggle_source(window, cx);
-            if !r.editing.as_ref().unwrap().live_preview.enabled {
+            if !r.pane.editing.as_ref().unwrap().live_preview.enabled {
                 r.toggle_live_preview(window, cx);
             }
         });
         draw(visual);
-        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let input = reader.read_with(visual, |r, _| {
+            r.pane.editing.as_ref().unwrap().input.clone()
+        });
         input.update_in(visual, |state, window, cx| {
             state.enable_layout_diagnostics();
             state.focus(window, cx);

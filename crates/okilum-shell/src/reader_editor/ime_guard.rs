@@ -43,7 +43,7 @@ pub(crate) fn allows(trigger: Trigger, composing: bool, settling: bool) -> bool 
 impl Reader {
     /// Whether `trigger` may run editor automation in the note editor now.
     pub(crate) fn ime_allows(&self, trigger: Trigger, cx: &App) -> bool {
-        let Some(editing) = &self.editing else {
+        let Some(editing) = &self.pane.editing else {
             return false;
         };
         let input = editing.input.read(cx);
@@ -108,7 +108,9 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
         visual.run_until_parked();
-        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let input = reader.read_with(visual, |r, _| {
+            r.pane.editing.as_ref().unwrap().input.clone()
+        });
         (reader, input, visual, directory)
     }
 

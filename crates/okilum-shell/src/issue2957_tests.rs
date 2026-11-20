@@ -64,7 +64,7 @@ fn open_json(cx: &mut TestAppContext, width: f32) -> (Fixture, &mut VisualTestCo
             reader_code_file::View::Formatted
         );
         assert!(code.read(cx).input().is_some(), "content loaded");
-        assert!(r.editing.is_none(), "read-only view, not Edit");
+        assert!(r.pane.editing.is_none(), "read-only view, not Edit");
     });
     (
         Fixture {
@@ -157,13 +157,16 @@ fn issue2957_maximize_chord_twice_in_formatted_json_restores_panels_and_keeps_sh
     // Ctrl/Cmd+E switches to Edit without a click.
     press(visual, "secondary-e");
     fixture.reader.read_with(visual, |r, _| {
-        assert!(r.editing.is_some(), "the Edit chord works after restore");
+        assert!(
+            r.pane.editing.is_some(),
+            "the Edit chord works after restore"
+        );
     });
     // Edit keeps working as before: Maximize twice from the editor.
     press(visual, crate::MAXIMIZE_NOTE_KEY);
     fixture.reader.update_in(visual, |r, window, cx| {
         assert!(r.panels.maximized());
-        let input = r.editing.as_ref().unwrap().input().focus_handle(cx);
+        let input = r.pane.editing.as_ref().unwrap().input().focus_handle(cx);
         assert!(input.is_focused(window), "Edit keeps its editor focused");
     });
     press(visual, crate::MAXIMIZE_NOTE_KEY);
@@ -197,7 +200,10 @@ fn issue2957_right_panel_chord_twice_in_formatted_json_docked(cx: &mut TestAppCo
     assert!(!visible(&fixture, visual, Panel::Backlinks));
     press(visual, "secondary-e");
     fixture.reader.read_with(visual, |r, _| {
-        assert!(r.editing.is_some(), "the Edit chord works after a hide");
+        assert!(
+            r.pane.editing.is_some(),
+            "the Edit chord works after a hide"
+        );
     });
 }
 

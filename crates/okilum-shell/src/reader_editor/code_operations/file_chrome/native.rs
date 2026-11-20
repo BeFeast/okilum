@@ -11,6 +11,7 @@ impl Reader {
     ) -> bool {
         let input = self.source_input().expect("native file Edit mounted");
         let file = self
+            .pane
             .editing
             .as_ref()
             .unwrap()
@@ -67,10 +68,11 @@ impl Reader {
                 self.code_operation(Action::Repair, window, cx);
             }
             3 => {
-                if self.editing.as_ref().unwrap().operations.busy {
+                if self.pane.editing.as_ref().unwrap().operations.busy {
                     return false;
                 }
                 let preview = self
+                    .pane
                     .editing
                     .as_ref()
                     .unwrap()
@@ -108,7 +110,7 @@ impl Reader {
                 );
                 assert!(self.save_source(cx));
                 self.toggle_source(window, cx);
-                assert!(self.editing.is_none());
+                assert!(self.pane.editing.is_none());
             }
             _ => unreachable!(),
         }

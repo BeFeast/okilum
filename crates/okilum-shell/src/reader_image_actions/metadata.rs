@@ -370,7 +370,7 @@ pub(super) mod tests {
                 (
                     reader.pane.current_rel.clone(),
                     reader.tree.cursor.clone(),
-                    reader.navigation.preparation_generation,
+                    reader.pane.navigation.preparation_generation,
                     window.focused(cx),
                 )
             })

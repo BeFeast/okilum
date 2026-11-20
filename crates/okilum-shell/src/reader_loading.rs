@@ -1558,8 +1558,14 @@ impl Reader {
             );
             state
         });
-        let observer = cx.observe_in(&content, window, |this, _, window, cx| {
-            this.publish_pending_document(window, cx)
+        // The pending document belongs to this pane. While another pane is
+        // active its parse progress waits; `resume_active_pane` publishes it
+        // once this pane is active again.
+        let pane = self.pane.id();
+        let observer = cx.observe_in(&content, window, move |this, _, window, cx| {
+            if this.is_active_pane(pane) {
+                this.publish_pending_document(window, cx)
+            }
         });
         // The outline scan is linear but slow on a long note; run it beside
         // the parse rather than on the UI thread at publication (#3073).
@@ -1571,7 +1577,7 @@ impl Reader {
                 Some((outline, started.elapsed().as_secs_f64() * 1000.))
             })
         });
-        self.pending_open_document = Some(PendingDocument {
+        self.pane.pending_open_document = Some(PendingDocument {
             intent,
             vault,
             searcher,
@@ -1589,8 +1595,9 @@ impl Reader {
         self.publish_pending_document(window, cx);
     }
 
-    fn publish_pending_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn publish_pending_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(status) = self
+            .pane
             .pending_open_document
             .as_ref()
             .and_then(|pending| pending.content.read(cx).preparation_status())
@@ -1598,11 +1605,12 @@ impl Reader {
             return;
         };
         if status.is_ok() {
+            let pane = self.pane.id();
             let trace = self
                 .loading
                 .as_ref()
                 .and_then(|load| load.opts.diagnostics.clone());
-            let pending = self.pending_open_document.as_mut().unwrap();
+            let pending = self.pane.pending_open_document.as_mut().unwrap();
             if !pending.languages_prepared {
                 if pending.language_task.is_none() {
                     let parsed_at = std::time::Instant::now();
@@ -1628,7 +1636,13 @@ impl Reader {
                             None => None,
                         };
                         let _ = this.update_in_own_window(cx, |this, window, cx| {
-                            let Some(pending) = this.pending_open_document.as_mut() else {
+                            // Mark the pane that started the work, even when
+                            // another pane is active now; a closed pane took
+                            // its pending document with it.
+                            let Some(pending) = this
+                                .surface_mut(pane)
+                                .and_then(|surface| surface.pending_open_document.as_mut())
+                            else {
                                 return;
                             };
                             if pending.content != content {
@@ -1651,14 +1665,16 @@ impl Reader {
                                     }),
                                 );
                             }
-                            this.publish_pending_document(window, cx);
+                            if this.is_active_pane(pane) {
+                                this.publish_pending_document(window, cx);
+                            }
                         });
                     }));
                 }
                 return;
             }
         }
-        if self.pending_open_document.is_some() && self.leaving_deleted_note(None, cx) {
+        if self.pane.pending_open_document.is_some() && self.leaving_deleted_note(None, cx) {
             self.ask_leaving_deleted_note(
                 Box::new(|this, window, cx| this.publish_pending_document(window, cx)),
                 window,
@@ -1666,7 +1682,7 @@ impl Reader {
             );
             return;
         }
-        let Some(pending) = self.pending_open_document.take() else {
+        let Some(pending) = self.pane.pending_open_document.take() else {
             return;
         };
         if let Err(error) = status {
@@ -1678,8 +1694,8 @@ impl Reader {
             cx.notify();
             return;
         }
-        self.navigation.preparation_generation =
-            self.navigation.preparation_generation.wrapping_add(1);
+        self.pane.navigation.preparation_generation =
+            self.pane.navigation.preparation_generation.wrapping_add(1);
         #[cfg(any(unix, windows))]
         {
             self.creation = None;
@@ -1757,9 +1773,9 @@ impl Reader {
         self.watcher_generation = self.watcher_generation.wrapping_add(1);
         self.deferred_vault_changes = Default::default();
         if !preserve_document {
-            self.navigation.history.clear();
-            self.navigation.history_positions.clear();
-            self.navigation.history_ix = 0;
+            self.pane.navigation.history.clear();
+            self.pane.navigation.history_positions.clear();
+            self.pane.navigation.history_ix = 0;
         }
         self.loading.as_mut().unwrap().published = true;
         let plain_file = pending
@@ -1771,7 +1787,7 @@ impl Reader {
         reader_open::register(cx.entity().downgrade(), pending.intent.root, cx);
         if preserve_document {
             self.link_notice = None;
-            self.last_recorded_document = None;
+            self.pane.last_recorded_document = None;
             self.record_usable_document(cx);
         } else {
             self.accept_prepared_document_using(
@@ -1797,9 +1813,9 @@ impl Reader {
             .as_ref()
             .and_then(|load| load.opts.landing.clone())
             .filter(|_| !preserve_document);
-        if let Some(note) = self.queued_open_note.take() {
+        if let Some(note) = self.pane.queued_open_note.take() {
             let edit = self.queued_edit_note.take().as_deref() == Some(note.as_str());
-            match self.queued_landing.take() {
+            match self.pane.queued_landing.take() {
                 Some(position) => self.open_link(&note, position, window, cx),
                 None if edit => self.open_created_note(&note, window, cx),
                 None => self.open_note(&note, None, window, cx),
@@ -1825,7 +1841,7 @@ impl Reader {
             self.preview_file(&rel, window, cx);
         } else if let Some(position) = first_link {
             self.open_first_link(position, window, cx);
-        } else if created_note && self.editing.is_none() {
+        } else if created_note && self.pane.editing.is_none() {
             self.toggle_source(window, cx);
         }
         self.refresh_quick_open(cx);
@@ -1858,8 +1874,11 @@ impl Reader {
         if self.current_document_is_cloud_pending() {
             // A previously queued refresh must not publish a late read failure
             // after metadata has identified the document as merely pending.
-            self.navigation.reconciliation_generation =
-                self.navigation.reconciliation_generation.wrapping_add(1);
+            self.pane.navigation.reconciliation_generation = self
+                .pane
+                .navigation
+                .reconciliation_generation
+                .wrapping_add(1);
             self.refresh_link_preparation(cx);
             return;
         }
@@ -1868,7 +1887,7 @@ impl Reader {
             self.refresh_link_preparation(cx);
             return;
         }
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             self.refresh_source_in_background(window, cx);
             self.refresh_link_preparation(cx);
             return;
@@ -1892,8 +1911,11 @@ impl Reader {
         // Supersede inventory work without cancelling a user navigation that
         // may already be preparing another note. Even a source equal to the
         // displayed snapshot cancels an older, different in-flight snapshot.
-        self.navigation.reconciliation_generation =
-            self.navigation.reconciliation_generation.wrapping_add(1);
+        self.pane.navigation.reconciliation_generation = self
+            .pane
+            .navigation
+            .reconciliation_generation
+            .wrapping_add(1);
         // Note and block embeds both wait for the inventory; an unchanged
         // source must still be rendered again to resolve them (#932). So does
         // an image the incomplete inventory did not know yet (#1126).
@@ -1918,7 +1940,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             self.refresh_source_in_background(window, cx);
             return;
         }
@@ -1935,20 +1957,22 @@ impl Reader {
     /// A hidden document's list may have been reset by a derived replacement.
     /// Its stored place, or a still-pending landing, remains authoritative.
     pub(super) fn retained_document_position(&self, cx: &App) -> ListOffset {
-        self.navigation
+        self.pane
+            .navigation
             .pending_landing
             .or_else(|| {
                 self.project_navigation
                     .board_visible
                     .then(|| {
-                        self.navigation
+                        self.pane
+                            .navigation
                             .places
                             .get(&(self.vault_root.clone(), self.pane.current_rel.clone()))
                             .copied()
                     })
                     .flatten()
             })
-            .unwrap_or_else(|| self.content.read(cx).list_state().logical_scroll_top())
+            .unwrap_or_else(|| self.pane.content.read(cx).list_state().logical_scroll_top())
     }
 
     pub(super) fn reconcile_document_source(
@@ -1963,12 +1987,15 @@ impl Reader {
         if self.current_document_is_cloud_pending() {
             // A previously queued refresh must not publish a late read failure
             // after metadata has identified the document as merely pending.
-            self.navigation.reconciliation_generation =
-                self.navigation.reconciliation_generation.wrapping_add(1);
+            self.pane.navigation.reconciliation_generation = self
+                .pane
+                .navigation
+                .reconciliation_generation
+                .wrapping_add(1);
             self.refresh_link_preparation(cx);
             return;
         }
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             self.refresh_source_in_background(window, cx);
             self.refresh_link_preparation(cx);
             return;
@@ -1984,12 +2011,15 @@ impl Reader {
         let vault = self.vault.clone();
         let rel = self.pane.current_rel.clone();
         let root = self.vault_root.clone();
-        let navigation = self.navigation.generation;
-        let generation = self.navigation.preparation_generation;
+        let navigation = self.pane.navigation_ticket();
+        let preparation = self.pane.preparation_ticket();
         let html = self.pane.use_html;
-        self.navigation.reconciliation_generation =
-            self.navigation.reconciliation_generation.wrapping_add(1);
-        let reconciliation = self.navigation.reconciliation_generation;
+        self.pane.navigation.reconciliation_generation = self
+            .pane
+            .navigation
+            .reconciliation_generation
+            .wrapping_add(1);
+        let reconciliation = self.pane.navigation.reconciliation_generation;
         let previous_canonical = self.pane.note_canonical_source.clone();
         let previous_rendered = self.pane.link_rendered_source.clone();
         let previous_original = self.pane.link_original_source.clone();
@@ -2046,57 +2076,59 @@ impl Reader {
                     }
                 })
                 .await;
-            let _ = this.update_in_own_window(cx, |this, window, cx| {
-                if this.vault_root != root
-                    || this.pane.current_rel != rel
-                    || this.navigation.generation != navigation
-                    || this.navigation.preparation_generation != generation
-                    || this.navigation.reconciliation_generation != reconciliation
-                {
-                    return;
-                }
-                if this.deleted_current().is_some() {
-                    this.reconcile_deleted_source_in_background(window, cx);
-                    return;
-                }
-                if this.track_deleted_note(&Default::default(), cx) {
-                    return;
-                }
-                let result = match result {
-                    Ok(None) => {
-                        this.refresh_link_preparation(cx);
+            let _ = this.update_in_own_window(cx, move |this, window, cx| {
+                this.run_for_pane(navigation.pane(), window, cx, move |this, window, cx| {
+                    if this.vault_root != root
+                        || this.pane.current_rel != rel
+                        || !this.pane.holds_navigation(navigation)
+                        || !this.pane.holds_preparation(preparation)
+                        || this.pane.navigation.reconciliation_generation != reconciliation
+                    {
                         return;
                     }
-                    Ok(Some(document)) => Ok(document),
-                    Err(error) => Err(error),
-                };
-                // Sample the position after preparation, so intervening scrolling
-                // cannot be overwritten with the earlier reconciliation position.
-                // A consumed session snapshot may still await its first layout
-                // landing. Carry that intent through this same-document derived
-                // replacement instead of substituting the not-yet-landed top.
-                let position = this.retained_document_position(cx);
-                let request = prepared_links::DocumentRequest {
-                    rel,
-                    jump: None,
-                    heading: None,
-                    history_index: Some(this.navigation.history_ix),
-                    restore_position: Some(position),
-                };
-                // A watcher refresh updates the retained document, not the
-                // user's project surface. Explicit note navigation still leaves Board.
-                let board_visible = this.project_navigation.board_visible;
-                this.accept_prepared_document(request, result, window, cx);
-                this.project_navigation.board_visible = board_visible;
-                if board_visible {
-                    // Its TextView is unmounted behind Board. Keep the reading
-                    // place for an explicit return without polling an invisible layout.
-                    this.navigation.places.insert(
-                        (this.vault_root.clone(), this.pane.current_rel.clone()),
-                        position,
-                    );
-                    this.cancel_pending_landing();
-                }
+                    if this.deleted_current().is_some() {
+                        this.reconcile_deleted_source_in_background(window, cx);
+                        return;
+                    }
+                    if this.track_deleted_note(&Default::default(), cx) {
+                        return;
+                    }
+                    let result = match result {
+                        Ok(None) => {
+                            this.refresh_link_preparation(cx);
+                            return;
+                        }
+                        Ok(Some(document)) => Ok(document),
+                        Err(error) => Err(error),
+                    };
+                    // Sample the position after preparation, so intervening scrolling
+                    // cannot be overwritten with the earlier reconciliation position.
+                    // A consumed session snapshot may still await its first layout
+                    // landing. Carry that intent through this same-document derived
+                    // replacement instead of substituting the not-yet-landed top.
+                    let position = this.retained_document_position(cx);
+                    let request = prepared_links::DocumentRequest {
+                        rel,
+                        jump: None,
+                        heading: None,
+                        history_index: Some(this.pane.navigation.history_ix),
+                        restore_position: Some(position),
+                    };
+                    // A watcher refresh updates the retained document, not the
+                    // user's project surface. Explicit note navigation still leaves Board.
+                    let board_visible = this.project_navigation.board_visible;
+                    this.accept_prepared_document(request, result, window, cx);
+                    this.project_navigation.board_visible = board_visible;
+                    if board_visible {
+                        // Its TextView is unmounted behind Board. Keep the reading
+                        // place for an explicit return without polling an invisible layout.
+                        this.pane.navigation.places.insert(
+                            (this.vault_root.clone(), this.pane.current_rel.clone()),
+                            position,
+                        );
+                        this.cancel_pending_landing();
+                    }
+                });
             });
         })
         .detach();
@@ -2297,7 +2329,7 @@ impl Reader {
             });
         };
         // Small notes parse synchronously: they are ready already.
-        if self.content.read(cx).preparation_status().is_some() {
+        if self.pane.content.read(cx).preparation_status().is_some() {
             report(window, trace);
             return;
         }
@@ -2305,7 +2337,7 @@ impl Reader {
         let reported = std::rc::Rc::new(std::cell::Cell::new(false));
         self.note_body_trace =
             Some(
-                cx.observe_in(&self.content, window, move |_, content, window, cx| {
+                cx.observe_in(&self.pane.content, window, move |_, content, window, cx| {
                     if reported.get() || content.read(cx).preparation_status().is_none() {
                         return;
                     }
@@ -2317,7 +2349,10 @@ impl Reader {
 
     pub(crate) fn record_usable_document(&mut self, cx: &Context<Self>) {
         if !self.document_ready()
-            || !matches!(self.content.read(cx).preparation_status(), Some(Ok(())))
+            || !matches!(
+                self.pane.content.read(cx).preparation_status(),
+                Some(Ok(()))
+            )
         {
             return;
         }
@@ -2333,9 +2368,9 @@ impl Reader {
         let identity = (
             self.vault_root.clone(),
             document,
-            self.navigation.generation,
+            self.pane.navigation.generation,
         );
-        if self.last_recorded_document.as_ref() == Some(&identity) {
+        if self.pane.last_recorded_document.as_ref() == Some(&identity) {
             return;
         }
         if let Some(send) = &self.session_records {
@@ -2361,24 +2396,24 @@ impl Reader {
                 })
                 .is_ok()
             {
-                self.last_recorded_document = Some(identity);
+                self.pane.last_recorded_document = Some(identity);
             }
         }
     }
 
     pub(crate) fn document_ready(&self) -> bool {
-        self.usable_document
+        self.pane.usable_document
     }
 
     pub(crate) fn cancel_loading(&mut self, cx: &mut Context<Self>) {
         if let Some(load) = self.loading.as_mut().filter(|l| l.active) {
             load.cancellation.cancel();
-            self.pending_open_document = None;
+            self.pane.pending_open_document = None;
             load.active = false;
             load.phase = "Preparation cancelled".into();
             load.opts.cache_lease = None;
-            self.navigation.preparation_generation =
-                self.navigation.preparation_generation.wrapping_add(1);
+            self.pane.navigation.preparation_generation =
+                self.pane.navigation.preparation_generation.wrapping_add(1);
             cx.notify();
         }
     }
@@ -2538,7 +2573,7 @@ impl Reader {
         if let Some(load) = &self.loading {
             load.cancellation.cancel();
         }
-        self.pending_open_document = None;
+        self.pane.pending_open_document = None;
         let generation = self
             .loading
             .as_ref()
@@ -2594,8 +2629,8 @@ impl Reader {
             self.loading.as_mut().unwrap().phase = "Checking search data".into();
             self.delay_warm_progress(cx);
         }
-        self.navigation.preparation_generation =
-            self.navigation.preparation_generation.wrapping_add(1);
+        self.pane.navigation.preparation_generation =
+            self.pane.navigation.preparation_generation.wrapping_add(1);
         if refresh.is_none() {
             self.cancel_pending_landing();
         }
@@ -2604,7 +2639,7 @@ impl Reader {
         let publication_vault = refresh_worker.then(|| self.vault.clone());
         let prepare_preferences = !refresh_worker || !self.panel_preferences_ready;
         let panel_revision = self.panel_widths_revision;
-        let recovery_startup = self.recovery_startup;
+        let recovery_startup = self.pane.recovery_startup;
         let ui_notes = reader_ui_state::notes(cx);
         cx.background_executor()
             .spawn(async move {
@@ -3393,7 +3428,7 @@ mod tests {
             r.toggle_source(window, cx);
             r.open_live_preview(window, cx);
             assert!(
-                r.editing.is_none(),
+                r.pane.editing.is_none(),
                 "neither editing entry accepts lossy text"
             );
             assert!(r.save_source(cx)); // Saving without an editor is a no-op.
@@ -3413,7 +3448,7 @@ mod tests {
             assert_eq!(r.pane.current_rel, "Valid.md");
             assert!(!r.note_encoding_damaged);
             r.toggle_source(window, cx);
-            assert!(r.editing.is_some());
+            assert!(r.pane.editing.is_some());
             assert!(r.save_source(cx));
             r.toggle_source(window, cx);
             // Positive control: ordinary I/O errors still open the attention dialog.
@@ -3529,7 +3564,8 @@ mod tests {
                 .is_some());
             r.toggle_source(window, cx);
             assert_eq!(
-                r.editing
+                r.pane
+                    .editing
                     .as_ref()
                     .unwrap()
                     .test_input()
@@ -3914,7 +3950,7 @@ mod tests {
                     "full cached tree before reconcile"
                 );
                 assert!(v.vault.inventory_scanned);
-                assert_eq!(v.content.read(cx).preparation_status(), Some(Ok(())));
+                assert_eq!(v.pane.content.read(cx).preparation_status(), Some(Ok(())));
                 let own = if index == 0 {
                     "orchardvaultsentinel"
                 } else {
@@ -5044,15 +5080,15 @@ mod tests {
                 1,
                 "old search positive control"
             );
-            v.content.read(cx).list_state().scroll_to(ListOffset {
+            v.pane.content.read(cx).list_state().scroll_to(ListOffset {
                 item_ix: 5,
                 offset_in_item: px(3.),
             });
-            window.focus(&v.content.read(cx).focus_handle().clone(), cx);
+            window.focus(&v.pane.content.read(cx).focus_handle().clone(), cx);
             v.watcher_poll_hold = Some(hold_poll);
             v.poll_vault(window, cx);
             assert!(v.watcher.is_none(), "worker really borrowed the watcher");
-            let identity = (v.content.entity_id(), v.watcher_generation);
+            let identity = (v.pane.content.entity_id(), v.watcher_generation);
             v.start_loading(
                 Opts {
                     vault: Some(temp.path().join("b")),
@@ -5073,7 +5109,7 @@ mod tests {
             );
             assert_eq!(v.watcher_generation, epoch);
             v.cancel_loading(cx);
-            assert_eq!(v.content.entity_id(), content);
+            assert_eq!(v.pane.content.entity_id(), content);
             assert_eq!(
                 v.searcher
                     .as_ref()
@@ -5083,7 +5119,7 @@ mod tests {
                     .len(),
                 1
             );
-            assert!(v.content.read(cx).focus_handle().is_focused(window));
+            assert!(v.pane.content.read(cx).focus_handle().is_focused(window));
         });
         release_validation.try_send(()).unwrap();
         visual.run_until_parked();
@@ -5102,7 +5138,7 @@ mod tests {
         reader.update_in(visual, |v, window, cx| {
             assert!(v.document_ready());
             assert!(v.watcher.is_some());
-            assert_eq!(v.content.entity_id(), content);
+            assert_eq!(v.pane.content.entity_id(), content);
             assert_eq!(v.vault_root, temp.path().join("a"));
             assert_eq!(v.index_dir, published_cache);
             assert!(
@@ -5110,10 +5146,15 @@ mod tests {
                 "failed candidate no longer pins an unused cache"
             );
             assert_eq!(
-                v.content.read(cx).list_state().logical_scroll_top().item_ix,
+                v.pane
+                    .content
+                    .read(cx)
+                    .list_state()
+                    .logical_scroll_top()
+                    .item_ix,
                 5
             );
-            assert!(v.content.read(cx).focus_handle().is_focused(window));
+            assert!(v.pane.content.read(cx).focus_handle().is_focused(window));
             assert_eq!(
                 v.searcher
                     .as_ref()
@@ -5419,17 +5460,17 @@ mod tests {
             assert!(v.searcher.is_none());
             assert!(v.pane.note_source.contains("pending target"));
             assert!(!v.pane.note_source.contains("missing target"));
-            assert_eq!(v.content.read(cx).preparation_status(), Some(Ok(())));
+            assert_eq!(v.pane.content.read(cx).preparation_status(), Some(Ok(())));
             let configured = reader_plugins(
                 v.vault_root.clone(),
-                TextView::new(&v.content),
+                TextView::new(&v.pane.content),
                 cx.entity().downgrade(),
                 v.sel_format,
                 v.pane.prepared_links.clone(),
                 &v.pane.link_identities,
                 v.agent_document_enabled(cx),
             );
-            v.content.update(cx, |state, cx| {
+            v.pane.content.update(cx, |state, cx| {
                 configured.prepare_state(state, cx);
                 assert_eq!(
                     state.preparation_status(),
@@ -5442,8 +5483,8 @@ mod tests {
                     "parsed custom callout positive control"
                 );
             });
-            window.focus(&v.content.read(cx).focus_handle().clone(), cx);
-            v.content.read(cx).list_state().scroll_to(ListOffset {
+            window.focus(&v.pane.content.read(cx).focus_handle().clone(), cx);
+            v.pane.content.read(cx).list_state().scroll_to(ListOffset {
                 item_ix: 10,
                 offset_in_item: px(3.),
             });
@@ -5451,8 +5492,8 @@ mod tests {
         visual.run_until_parked();
         let (history, position) = reader.read_with(visual, |v, cx| {
             (
-                v.navigation.history.clone(),
-                v.content.read(cx).list_state().logical_scroll_top(),
+                v.pane.navigation.history.clone(),
+                v.pane.content.read(cx).list_state().logical_scroll_top(),
             )
         });
         // This edit happens before watcher registration, independently of the
@@ -5473,8 +5514,8 @@ mod tests {
                 .note_source
                 .contains("EmbeddedPositiveControl changed before watcher"));
             assert!(!v.pane.note_source.contains("pending target"));
-            assert_eq!(v.navigation.history, history);
-            let now = v.content.read(cx).list_state().logical_scroll_top();
+            assert_eq!(v.pane.navigation.history, history);
+            let now = v.pane.content.read(cx).list_state().logical_scroll_top();
             assert_eq!(now.item_ix, position.item_ix);
             assert_eq!(now.offset_in_item, position.offset_in_item);
             assert!(v
@@ -5496,7 +5537,7 @@ mod tests {
             assert!(v.deleted_current().is_some(), "{:?}", v.link_notice);
             assert!(v.pane.note_source.contains("ScanTimePositiveControl"));
             assert_eq!(v.pane.current_rel, "start.md");
-            assert_eq!(v.navigation.history, history);
+            assert_eq!(v.pane.navigation.history, history);
         });
     }
 
@@ -5786,7 +5827,7 @@ mod tests {
                 opts.force_source_read = true;
                 v.start_preparation(opts, Some(Default::default()), window, cx);
                 (
-                    v.content.entity_id(),
+                    v.pane.content.entity_id(),
                     v.loading.as_ref().unwrap().generation,
                 )
             });
@@ -5800,7 +5841,7 @@ mod tests {
                 assert!(load.active);
                 assert_eq!(load.network_waiting, network);
                 assert_eq!(
-                    v.content.entity_id(),
+                    v.pane.content.entity_id(),
                     content,
                     "last readable document retained"
                 );
@@ -5990,8 +6031,8 @@ mod tests {
             v.tree.toggle("folder");
             v.tree.cursor = Some("stable-30.md".into());
             v.tree_scroll.scroll_to_item_strict(20, ScrollStrategy::Top);
-            v.content.update(cx, |state, cx| state.select_all(cx));
-            v.content.read(cx).list_state().scroll_to(ListOffset {
+            v.pane.content.update(cx, |state, cx| state.select_all(cx));
+            v.pane.content.read(cx).list_state().scroll_to(ListOffset {
                 item_ix: 20,
                 offset_in_item: px(6.),
             });
@@ -6016,7 +6057,7 @@ mod tests {
         let (content, selected, tree_offset) = reader.read_with(visual, |v, cx| {
             assert!(v.loading.as_ref().unwrap().show_progress);
             assert_eq!(v.loading.as_ref().unwrap().phase, "Checking search data");
-            let selected = v.content.read(cx).selected_text();
+            let selected = v.pane.content.read(cx).selected_text();
             assert!(
                 !selected.is_empty(),
                 "selection established before reconciliation"
@@ -6026,7 +6067,7 @@ mod tests {
                 tree_offset < px(-100.),
                 "nonzero tree-scroll positive control"
             );
-            (v.content.entity_id(), selected, tree_offset)
+            (v.pane.content.entity_id(), selected, tree_offset)
         });
         release.try_send(()).unwrap();
         visual.run_until_parked();
@@ -6042,14 +6083,20 @@ mod tests {
             );
             assert_eq!(v.tree.cursor.as_deref(), Some("stable-30.md"));
             assert_eq!(v.tree_scroll.0.borrow().base_handle.offset().y, tree_offset);
-            assert_eq!(v.content.entity_id(), content);
-            assert_eq!(v.content.read(cx).selected_text(), selected);
+            assert_eq!(v.pane.content.entity_id(), content);
+            assert_eq!(v.pane.content.read(cx).selected_text(), selected);
             assert_eq!(
-                v.content.read(cx).list_state().logical_scroll_top().item_ix,
+                v.pane
+                    .content
+                    .read(cx)
+                    .list_state()
+                    .logical_scroll_top()
+                    .item_ix,
                 20
             );
             assert_eq!(
-                v.content
+                v.pane
+                    .content
                     .read(cx)
                     .list_state()
                     .logical_scroll_top()
@@ -6250,7 +6297,7 @@ mod tests {
                         Some(primary.as_str())
                     );
                     assert!(v.tree.rows.iter().any(|row| row.path == "last.md"));
-                    v.content.update(cx, |state, cx| {
+                    v.pane.content.update(cx, |state, cx| {
                         state.set_search_query("searchcanary", cx);
                         assert!(
                             state.search_status().1 > 0,
@@ -6584,14 +6631,14 @@ mod tests {
         reader.update_in(visual, |v, window, cx| {
             assert_eq!(v.pane.current_rel, deep);
             assert!(v.pane.note_source.contains("Fresh 299"));
-            assert_eq!(v.content.read(cx).preparation_status(), Some(Ok(())));
+            assert_eq!(v.pane.content.read(cx).preparation_status(), Some(Ok(())));
             assert!(v.searcher.is_none());
             v.open_find(window, cx);
             v.pane
                 .find_input
                 .update(cx, |input, cx| input.set_value("Uncached", window, cx));
             v.run_find(window, cx);
-            assert_eq!(v.content.read(cx).search_status().1, 300);
+            assert_eq!(v.pane.content.read(cx).search_status().1, 300);
         });
         // Find intentionally reveals its first match on the next layout.
         // Settle that user action before establishing the scroll baseline.
@@ -6601,7 +6648,7 @@ mod tests {
             visual.run_until_parked();
         }
         reader.update_in(visual, |v, _, cx| {
-            v.content.read(cx).list_state().scroll_to(ListOffset {
+            v.pane.content.read(cx).list_state().scroll_to(ListOffset {
                 item_ix: 10,
                 offset_in_item: px(7.),
             });
@@ -6609,32 +6656,38 @@ mod tests {
         visual.update(|window, cx| window.draw(cx).clear(cx));
         visual.run_until_parked();
         let content = reader.read_with(visual, |v, cx| {
-            let position = v.content.read(cx).list_state().logical_scroll_top();
+            let position = v.pane.content.read(cx).list_state().logical_scroll_top();
             assert_eq!(
                 position.item_ix, 10,
                 "nonzero baseline established BEFORE inventory release"
             );
             assert_eq!(position.offset_in_item, px(7.));
             assert!(!v.vault.inventory_complete);
-            v.content.entity_id()
+            v.pane.content.entity_id()
         });
         release.try_send(()).unwrap();
         visual.run_until_parked();
         reader.read_with(visual, |v, cx| {
             assert_eq!(v.pane.current_rel, deep);
             assert_eq!(
-                v.content.entity_id(),
+                v.pane.content.entity_id(),
                 content,
                 "inventory must not replace unchanged selected document"
             );
             assert!(v.vault.inventory_complete);
             assert!(v.searcher.is_some());
             assert_eq!(
-                v.content.read(cx).list_state().logical_scroll_top().item_ix,
+                v.pane
+                    .content
+                    .read(cx)
+                    .list_state()
+                    .logical_scroll_top()
+                    .item_ix,
                 10
             );
             assert_eq!(
-                v.content
+                v.pane
+                    .content
                     .read(cx)
                     .list_state()
                     .logical_scroll_top()
@@ -6705,13 +6758,25 @@ mod tests {
                 .find_input
                 .update(cx, |input, cx| input.set_value("Readable", window, cx));
             v.run_find(window, cx);
-            v.content.read(cx).list_state().scroll_to_reveal_item(100);
+            v.pane
+                .content
+                .read(cx)
+                .list_state()
+                .scroll_to_reveal_item(100);
         });
         visual.run_until_parked();
         let input = start.elapsed();
         reader.update_in(visual, |v, window, cx| {
             assert_eq!(v.pane.find_input.read(cx).value().as_ref(), "Readable");
-            assert!(v.content.read(cx).list_state().logical_scroll_top().item_ix > 0);
+            assert!(
+                v.pane
+                    .content
+                    .read(cx)
+                    .list_state()
+                    .logical_scroll_top()
+                    .item_ix
+                    > 0
+            );
             v.dismiss(window, cx);
             assert!(!v.loading.as_ref().unwrap().active);
             assert!(v.document_ready());
@@ -6777,8 +6842,8 @@ mod tests {
         visual.run_until_parked();
         let (late_release, late_hold) = async_channel::bounded(1);
         reader.update_in(visual, |v, window, cx| {
-            let content = v.content.entity_id();
-            let history = v.navigation.history.clone();
+            let content = v.pane.content.entity_id();
+            let history = v.pane.navigation.history.clone();
             v.start_loading(
                 Opts {
                     vault: Some(root.join("missing")),
@@ -6789,8 +6854,8 @@ mod tests {
                 cx,
             );
             v.cancel_loading(cx);
-            assert_eq!(v.content.entity_id(), content);
-            assert_eq!(v.navigation.history, history);
+            assert_eq!(v.pane.content.entity_id(), content);
+            assert_eq!(v.pane.navigation.history, history);
             assert_eq!(v.vault_root, root.join("a"));
             assert!(v.document_ready());
         });
@@ -6814,7 +6879,7 @@ mod tests {
         reader.update_in(visual, |v, _, cx| {
             assert_eq!(v.pane.current_rel, "second.md");
             assert_eq!(v.vault_root, root.join("b"));
-            assert_eq!(v.navigation.history, ["second.md"]);
+            assert_eq!(v.pane.navigation.history, ["second.md"]);
             assert!(v.link_notice.is_none());
             assert!(v.loading.as_ref().unwrap().active);
             v.cancel_loading(cx);
@@ -7704,14 +7769,17 @@ mod tests {
         visual.run_until_parked();
         let (content, history) = reader.update_in(visual, |v, _, _| {
             assert_eq!(v.pane.current_rel, "second.md");
-            (v.content.entity_id(), v.navigation.history.clone())
+            (
+                v.pane.content.entity_id(),
+                v.pane.navigation.history.clone(),
+            )
         });
         release.try_send(()).unwrap();
         visual.run_until_parked();
         reader.update_in(visual, |v, _, _| {
             assert_eq!(v.pane.current_rel, "second.md");
-            assert_eq!(v.content.entity_id(), content);
-            assert_eq!(v.navigation.history, history);
+            assert_eq!(v.pane.content.entity_id(), content);
+            assert_eq!(v.pane.navigation.history, history);
             assert!(v.vault.inventory_complete);
             assert!(
                 v.searcher.is_some(),
@@ -7738,8 +7806,8 @@ mod tests {
         reader.update_in(visual, |v, _, _| {
             assert!(v.document_ready(), "previous document remains usable");
             assert_eq!(v.pane.current_rel, "second.md");
-            assert_eq!(v.content.entity_id(), content);
-            assert_eq!(v.navigation.history, history);
+            assert_eq!(v.pane.content.entity_id(), content);
+            assert_eq!(v.pane.navigation.history, history);
             assert!(!v.loading.as_ref().unwrap().published);
             assert!(!v.loading.as_ref().unwrap().active);
             assert!(v.loading.as_ref().unwrap().phase.contains("no readable"));
@@ -8744,10 +8812,11 @@ mod quick_view_tests {
                     r.single_file, single_file,
                     "both transition directions exercised"
                 );
-                if r.editing.is_none() {
+                if r.pane.editing.is_none() {
                     r.toggle_source(window, cx);
                 }
-                r.editing
+                r.pane
+                    .editing
                     .as_ref()
                     .unwrap()
                     .set_value("# Latest unsaved buffer\n", window, cx);
@@ -8772,13 +8841,15 @@ mod quick_view_tests {
                 std::fs::read_to_string(&path).unwrap(),
                 "# External replacement\n"
             );
-            let editor = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().test_input());
+            let editor =
+                reader.read_with(visual, |r, _| r.pane.editing.as_ref().unwrap().test_input());
             reader.update_in(visual, |r, window, cx| {
                 r.resolve_source(true, window, cx);
-                r.editing
-                    .as_ref()
-                    .unwrap()
-                    .set_value("# Safely saved latest buffer\n", window, cx);
+                r.pane.editing.as_ref().unwrap().set_value(
+                    "# Safely saved latest buffer\n",
+                    window,
+                    cx,
+                );
                 r.switch_window_mode(window, cx);
             });
             visual.run_until_parked();
@@ -8790,7 +8861,7 @@ mod quick_view_tests {
                 assert_eq!(r.single_file, !single_file);
                 assert_eq!(r.pane.current_rel, "nested/start.md");
                 assert_eq!(
-                    r.editing.as_ref().unwrap().test_input(),
+                    r.pane.editing.as_ref().unwrap().test_input(),
                     editor,
                     "the native editor keeps its caret and viewport owner"
                 );
@@ -8955,11 +9026,16 @@ mod quick_view_tests {
             assert!(reader.single_file);
             assert!(reader.pane.note_source.contains("file://"));
             assert!(reader.pane.note_source.contains("img.png"));
-            reader.content.read(cx).list_state().scroll_to(ListOffset {
-                item_ix: 12,
-                offset_in_item: px(3.),
-            });
-            (reader.content.clone(), reader.pane.note_source.clone())
+            reader
+                .pane
+                .content
+                .read(cx)
+                .list_state()
+                .scroll_to(ListOffset {
+                    item_ix: 12,
+                    offset_in_item: px(3.),
+                });
+            (reader.pane.content.clone(), reader.pane.note_source.clone())
         });
         assert_eq!(
             crate::reader_history::ReadingHistory::quick_document(&directory.join("state"), &root)
@@ -9007,7 +9083,7 @@ mod quick_view_tests {
                     assert!(reader.pane.note_source.contains("img.png"));
                 } else {
                     assert_eq!(
-                        reader.content, content,
+                        reader.pane.content, content,
                         "upgrade retains the rendered document"
                     );
                     assert_eq!(
@@ -9015,7 +9091,12 @@ mod quick_view_tests {
                         "relative image survives publication and inventory"
                     );
                 }
-                let position = reader.content.read(cx).list_state().logical_scroll_top();
+                let position = reader
+                    .pane
+                    .content
+                    .read(cx)
+                    .list_state()
+                    .logical_scroll_top();
                 assert_eq!(position.item_ix, 12);
                 assert_eq!(position.offset_in_item, px(3.));
             });
@@ -9064,7 +9145,12 @@ mod quick_view_tests {
             assert!(reader.inbox.is_empty() && reader.inbox_source.is_none());
             assert_eq!(reader.pane.current_rel, "start.md");
             assert!(reader.pane.note_source.contains("img.png"));
-            let position = reader.content.read(cx).list_state().logical_scroll_top();
+            let position = reader
+                .pane
+                .content
+                .read(cx)
+                .list_state()
+                .logical_scroll_top();
             assert_eq!(position.item_ix, 12);
             assert_eq!(position.offset_in_item, px(3.));
             assert!(reader
@@ -9154,7 +9240,7 @@ mod quick_view_tests {
             });
             visual.run_until_parked();
             let input = reader.read_with(visual, |reader, _| {
-                reader.editing.as_ref().unwrap().test_input()
+                reader.pane.editing.as_ref().unwrap().test_input()
             });
             input.update_in(visual, |input, window, cx| {
                 input.replace_text_in_range(Some(0..0), "edited ", window, cx);

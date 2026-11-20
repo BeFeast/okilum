@@ -44,7 +44,7 @@ async fn hold_outline_publication(source: &str) {
 
 impl Reader {
     pub(super) fn visible_outline(&self) -> &[HeadingEntry] {
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             &self.draft_outline.entries
         } else {
             &self.pane.outline
@@ -63,7 +63,7 @@ impl Reader {
             let Ok(Some((input, stamp, source))) = this.update(cx, |this, cx| {
                 #[cfg(test)]
                 let _work = crate::reader_editor::work::scope();
-                let Some(editing) = &this.editing else {
+                let Some(editing) = &this.pane.editing else {
                     this.draft_outline.worker = None;
                     return None;
                 };
@@ -89,6 +89,7 @@ impl Reader {
             cache = next_cache;
             let Ok(done) = this.update(cx, |this, cx| {
                 if this
+                    .pane
                     .editing
                     .as_ref()
                     .is_none_or(|editing| editing.input() != &input)
@@ -136,9 +137,10 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(editing) = &self.editing else {
+        let Some(editing) = &self.pane.editing else {
             self.scroll_to_block(heading.target.block, cx);
-            self.content
+            self.pane
+                .content
                 .read(cx)
                 .focus_handle()
                 .clone()
@@ -155,15 +157,16 @@ impl Reader {
         let root = self.vault_root.clone();
         let rel = self.pane.current_rel.clone();
         self.cancel_pending_landing();
-        let request = self.navigation.landing_generation;
+        let request = self.pane.navigation.landing_generation;
         input.read(cx).focus_handle(cx).focus(window, cx);
         cx.spawn_in(window, async move |this, cx| {
             let result = line;
             let _ = this.update_in_own_window(cx, |this, window, cx| {
-                if this.navigation.landing_generation != request
+                if this.pane.navigation.landing_generation != request
                     || this.vault_root != root
                     || this.pane.current_rel != rel
                     || this
+                        .pane
                         .editing
                         .as_ref()
                         .is_none_or(|editing| editing.input() != &input)
@@ -192,10 +195,11 @@ impl Reader {
                 let reader = cx.weak_entity();
                 window.on_next_frame(move |window, cx| {
                     let _ = reader.update(cx, |reader, cx| {
-                        if reader.navigation.landing_generation != request
+                        if reader.pane.navigation.landing_generation != request
                             || reader.vault_root != root
                             || reader.pane.current_rel != rel
                             || reader
+                                .pane
                                 .editing
                                 .as_ref()
                                 .is_none_or(|editing| editing.input() != &input)
@@ -283,7 +287,7 @@ mod tests {
             visual.run_until_parked();
             reader.update_in(visual, |reader, window, cx| {
                 assert_eq!(reader.pane.current_rel, name);
-                assert!(reader.editing.is_none(), "Read is active");
+                assert!(reader.pane.editing.is_none(), "Read is active");
                 assert_eq!(reader.pane.note_source, body);
                 assert_eq!(
                     reader.pane.note_canonical_source.as_deref(),
@@ -305,6 +309,7 @@ mod tests {
                 );
                 assert_eq!(
                     reader
+                        .pane
                         .content
                         .read(cx)
                         .list_state()
@@ -316,7 +321,12 @@ mod tests {
             });
             visual.run_until_parked();
             reader.update_in(visual, |reader, window, cx| {
-                let input = reader.editing.as_ref().expect("Source is active").input();
+                let input = reader
+                    .pane
+                    .editing
+                    .as_ref()
+                    .expect("Source is active")
+                    .input();
                 assert_eq!(input.read(cx).value().as_ref(), source);
                 reader.toggle_source(window, cx);
             });
@@ -409,6 +419,7 @@ mod tests {
         let draft = format!("## QA heading\n\n{original}");
         reader.update_in(visual, |reader, window, cx| {
             reader
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -420,7 +431,7 @@ mod tests {
             assert_eq!(reader.visible_outline()[0].text, "QA heading");
             assert_eq!(reader.outline_list.item_count(), 21);
             assert!(reader.save_source(cx), "explicit save succeeds");
-            assert!(reader.editing.is_some(), "Source remains open");
+            assert!(reader.pane.editing.is_some(), "Source remains open");
             assert_eq!(reader.visible_outline()[0].text, "QA heading");
         });
         assert_eq!(std::fs::read_to_string(&path).unwrap(), draft);
@@ -432,7 +443,7 @@ mod tests {
         settle(visual);
         reader.read_with(visual, |reader, cx| {
             assert!(reader.link_notice.is_none());
-            let input = reader.editing.as_ref().unwrap().input().read(cx);
+            let input = reader.pane.editing.as_ref().unwrap().input().read(cx);
             assert_eq!(input.cursor_position().line, 0);
             assert_eq!(reader.current_section(cx), Some(0));
         });
@@ -509,7 +520,7 @@ mod tests {
                 live,
                 "requested surface mounted"
             );
-            let input = reader.editing.as_ref().unwrap().input().clone();
+            let input = reader.pane.editing.as_ref().unwrap().input().clone();
             input.update(cx, |input, cx| input.set_selected_range(0..0, cx));
             input.read(cx).focus_handle(cx).focus(window, cx);
             input
@@ -591,6 +602,7 @@ mod tests {
             assert!(reader.link_notice.is_none());
             assert_eq!(
                 reader
+                    .pane
                     .content
                     .read(cx)
                     .list_state()
@@ -838,6 +850,7 @@ mod tests {
         settle(visual);
         let input = reader.read_with(visual, |reader, _| {
             reader
+                .pane
                 .editing
                 .as_ref()
                 .map(|editing| editing.input().clone())
@@ -900,6 +913,7 @@ mod tests {
                 assert_eq!(input.value().as_ref(), original);
                 assert_eq!(
                     reader
+                        .pane
                         .content
                         .read(cx)
                         .list_state()
@@ -911,6 +925,7 @@ mod tests {
             } else {
                 assert_eq!(
                     reader
+                        .pane
                         .content
                         .read(cx)
                         .list_state()
@@ -919,7 +934,7 @@ mod tests {
                     target_block,
                     "Read retains its block landing"
                 );
-                assert!(reader.editing.is_none());
+                assert!(reader.pane.editing.is_none());
             }
         });
         if let Some(input) = &input {

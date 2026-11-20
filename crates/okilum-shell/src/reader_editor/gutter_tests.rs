@@ -222,7 +222,7 @@ fn gutter_large_live_preview_caret_reveal_moves_text_at_most_one_pixel(cx: &mut 
     reader.update_in(visual, |r, window, cx| r.toggle_live_preview(window, cx));
     frame(visual);
     let input = reader.read_with(visual, |r, cx| {
-        let e = r.editing.as_ref().unwrap();
+        let e = r.pane.editing.as_ref().unwrap();
         assert!(e.live_preview.accepted.is_some(), "actual worker adopted");
         assert_eq!(e.input.read(cx).value().as_ref(), text);
         e.input.clone()
