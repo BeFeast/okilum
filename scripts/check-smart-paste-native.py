@@ -6,6 +6,8 @@ Needs: sway, wtype, grim, dbus-launch, gcc, wayland-scanner, pkg-config with
 wayland-client, ImageMagick, and wlr-data-control-unstable-v1.xml (found in the
 Cargo registry's wayland-protocols-wlr, or set WLR_DATA_CONTROL_XML).
 Usage: python3 scripts/check-smart-paste-native.py OKILUM_BINARY WORK_DIR
+Each run writes into a new smart-paste-* directory inside WORK_DIR and never
+deletes anything it did not create.
 
 scripts/wl_multi_copy.c owns the clipboard with several MIME types at once,
 each from a file, and logs every transfer the app asks for. Each case offers
@@ -31,10 +33,10 @@ Pages, images and titles come from a loopback HTTP server.
 Positive control: typed text reaches the saved note.
 Exit 0: all hold; 1: a check failed; 2: the run proves nothing.
 """
-import functools, glob, http.server, json, os, shutil, subprocess, sys, threading, time
+import functools, glob, http.server, json, os, shutil, subprocess, sys, tempfile, threading, time
 from pathlib import Path
 
-binary, work = sys.argv[1], Path(sys.argv[2]).resolve()
+binary, parent = sys.argv[1], Path(sys.argv[2])
 SCRIPTS = Path(__file__).resolve().parent
 
 
@@ -56,9 +58,7 @@ class Rig:
     """Headless sway and a virtual keyboard, nothing else (no input method)."""
 
     def __init__(self, root):
-        self.run = Path(f'/tmp/okpaste-{os.getpid()}')
-        shutil.rmtree(self.run, ignore_errors=True)
-        self.run.mkdir(mode=0o700)
+        self.run = Path(tempfile.mkdtemp(prefix='okpaste-'))  # 0700, owned by this run
         home = root / 'home'
         (home / '.config' / 'okilum').mkdir(parents=True)
         (home / '.config' / 'okilum' / 'appearance.json').write_text('{"appearance":"light"}')
@@ -230,8 +230,10 @@ def cases(base):
 
 
 def main():
-    shutil.rmtree(work, ignore_errors=True)
-    work.mkdir(parents=True)
+    global work
+    parent.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix='smart-paste-', dir=parent)).resolve()
+    print(f'work directory: {work}')
     copier = build_copier(work / 'copier')
     if not copier:
         print('no wlr-data-control-unstable-v1.xml (set WLR_DATA_CONTROL_XML)')
@@ -260,7 +262,8 @@ def main():
             time.sleep(.8)
             rig.keys('s', mods=('ctrl',))
             time.sleep(1.5)
-            return note.read_text(newline='')
+            with note.open('r', encoding='utf-8', newline='') as f:
+                return f.read()
 
         rig.keys('End', mods=('ctrl',))
         subprocess.run(['wtype', 'typed-control'], env=rig.env, check=True)
