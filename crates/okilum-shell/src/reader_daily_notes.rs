@@ -406,8 +406,12 @@ impl Reader {
             error: None,
         });
         let reader = cx.entity().downgrade();
-        window.open_dialog(cx, move |dialog, _, cx| {
-            setup_dialog(dialog, reader.clone(), cx)
+        // Opening builds the dialog at once, and the builder reads this
+        // Reader: open it after the current update ends.
+        window.defer(cx, move |window, cx| {
+            window.open_dialog(cx, move |dialog, _, cx| {
+                setup_dialog(dialog, reader.clone(), cx)
+            });
         });
         cx.notify();
     }
