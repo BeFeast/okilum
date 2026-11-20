@@ -293,7 +293,10 @@ class Contract(unittest.TestCase):
         self.assertGreater(len(read), 30)
         self.assertEqual(read - set(conv.TOKEN_ORDER), set())
         shipped = json.loads((ROOT / "crates/okilum-shell/assets/themes/obsidianite.json").read_text())
-        self.assertEqual(list(shipped["modes"]["dark"]), conv.TOKEN_ORDER)
+        # Per-level heading tokens (#3153) are optional extras; every other
+        # token is the converter's, in its order.
+        dark = list(shipped["modes"]["dark"])
+        self.assertEqual([k for k in dark if k not in conv.HEADING_LEVELS], conv.TOKEN_ORDER)
 
     def test_cli_writes_theme_and_report(self):
         with tempfile.TemporaryDirectory() as tmp:
