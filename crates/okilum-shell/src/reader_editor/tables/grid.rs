@@ -397,7 +397,7 @@ impl TableGrid {
         let palette = brand::palette(cx);
         let base = provider.with_code_syntax(
             ProjectionColors {
-                heading: brand::reader_palette(cx).heading,
+                headings: brand::reader_palette(cx).headings,
                 link: palette.link,
                 muted: palette.text_muted,
                 decorations: Default::default(),

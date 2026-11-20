@@ -19,7 +19,10 @@ import urllib.request
 import uuid
 
 ROOT = Path(__file__).resolve().parent
-FLAGS = ('pair', 'subscribe_thread', 'resume_thread', 'subscribe_shell', 'dispatch_command')
+FLAGS = ('pair', 'environment_capabilities', 'subscribe_thread', 'resume_thread',
+         'subscribe_shell', 'dispatch_command')
+CONSUMED_CAPABILITIES = frozenset({'questionAttachments', 'attachmentUploads',
+                                   'fileAttachments.maxUploadBytes'})
 MAX_OUTPUT = 1024 * 1024
 
 
@@ -257,6 +260,11 @@ def execute(args):
                                                          'expected_title': title}).encode()))
             for flag in FLAGS:
                 receipt[flag] = native.get(flag) is True
+            unknown = native.get('capability_unknown')
+            if isinstance(unknown, list) and all(isinstance(name, str) and name in CONSUMED_CAPABILITIES
+                                                 for name in unknown):
+                # Fixed allowlisted names only; never arbitrary peer text.
+                receipt['capability_unknown'] = sorted(unknown)
             if not all(receipt[flag] for flag in FLAGS):
                 raise ProbeFailure(stage, 'incomplete_native_proof')
         if digest(client) != receipt['client_binary_sha256'] or digest(binary) != receipt['server_binary_sha256']:

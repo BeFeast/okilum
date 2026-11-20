@@ -9,12 +9,18 @@ use std::sync::{Arc, Mutex};
 
 struct Fake {
     calls: Mutex<Vec<String>>,
+    /// `(thread, request)` of every question-text read.
+    reads: Mutex<Vec<(String, String)>>,
+    /// Disable Now (revoke the read's permit) during the first text read.
+    revoke_on_text_read: bool,
     answers: BTreeMap<String, GatewayResult<Vec<String>>>,
 }
 impl Fake {
     fn new(answers: impl IntoIterator<Item = (&'static str, GatewayResult<Vec<String>>)>) -> Self {
         Self {
             calls: Mutex::new(Vec::new()),
+            reads: Mutex::new(Vec::new()),
+            revoke_on_text_read: false,
             answers: answers
                 .into_iter()
                 .map(|(thread, answer)| (thread.to_owned(), answer))
@@ -41,6 +47,30 @@ impl crate::ManagerGateway for Fake {
             .get(thread)
             .cloned()
             .unwrap_or_else(|| Ok(Vec::new()))
+    }
+    /// `q…` ids have text, `blank…` ids have none, other ids fail to read.
+    fn pending_request_questions(
+        &self,
+        thread: &str,
+        request: &str,
+    ) -> GatewayResult<Vec<PendingQuestion>> {
+        self.reads
+            .lock()
+            .unwrap()
+            .push((thread.into(), request.into()));
+        if self.revoke_on_text_read {
+            NetworkAccess::current().revoke();
+        }
+        if request.starts_with("blank") {
+            return Ok(vec![PendingQuestion::default()]);
+        }
+        if !request.starts_with('q') {
+            return Err(crate::GatewayError::Protocol("no such request".into()));
+        }
+        Ok(vec![PendingQuestion {
+            header: "Header".into(),
+            question: format!("Ship  {request}\n now?"),
+        }])
     }
     fn read_thread(&self, _: &ThreadQuery) -> GatewayResult<ThreadPage> {
         unimplemented!()
@@ -118,6 +148,14 @@ fn rows_carry_the_exact_project_thread_and_request_identity() {
         &NetworkAccess::new(true),
     );
     assert_eq!(*fake.calls.lock().unwrap(), ["mcp:app", "mcp:music"]);
+    assert_eq!(
+        *fake.reads.lock().unwrap(),
+        [
+            ("mcp:app".into(), "q1".into()),
+            ("mcp:app".into(), "q2".into())
+        ],
+        "each pending id's text is read once, from its own thread"
+    );
     let mut ledger = Ledger::default();
     ledger.apply(reads, 100);
     let view = ledger.view();
@@ -128,6 +166,7 @@ fn rows_carry_the_exact_project_thread_and_request_identity() {
         ["q1", "q2"].map(|id| Row {
             source: source("/v/Dev/App", "mcp:app"),
             request_id: id.into(),
+            text: Some(format!("Ship {id} now?")),
             stale: false,
             observed_at: 100,
         })
@@ -267,4 +306,124 @@ fn rows_per_source_are_bounded_and_the_rest_is_counted() {
     assert_eq!(view.rows.len(), ROWS_PER_SOURCE);
     assert_eq!(view.omitted, [(source("/v/Dev/App", "mcp:app"), 3)]);
     assert_eq!(view.checked_at, Some(1));
+}
+
+#[test]
+fn rows_show_the_question_text_t3_reports_and_say_when_it_is_missing() {
+    let fake = Arc::new(Fake::new([(
+        "mcp:app",
+        Ok(vec!["q1".into(), "gone".into(), "blank".into()]),
+    )]));
+    let projects = [project("/v/Dev/App", Some("home"), thread("mcp:app"))];
+    let mut ledger = Ledger::default();
+    ledger.apply(
+        read(
+            &sources(&projects),
+            &gateways(&fake),
+            &NetworkAccess::new(true),
+        ),
+        100,
+    );
+    let texts: Vec<_> = ledger
+        .view()
+        .rows
+        .into_iter()
+        .map(|row| (row.request_id, row.text))
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            ("blank".to_owned(), None),
+            ("gone".to_owned(), None),
+            ("q1".to_owned(), Some("Ship q1 now?".to_owned())),
+        ],
+        "a question whose text is unreadable or empty stays a row without text"
+    );
+}
+
+#[test]
+fn a_text_read_failure_keeps_the_known_text_and_a_withdrawn_question_drops_it() {
+    let projects = [project("/v/Dev/App", Some("home"), thread("mcp:app"))];
+    let mut ledger = Ledger::default();
+    let first = Arc::new(Fake::new([("mcp:app", Ok(vec!["q1".into()]))]));
+    ledger.apply(
+        read(
+            &sources(&projects),
+            &gateways(&first),
+            &NetworkAccess::new(true),
+        ),
+        100,
+    );
+    // Same question, but this time its text cannot be read.
+    let mut reads = BTreeMap::from([(
+        PathBuf::from("/v/Dev/App"),
+        Read {
+            source: Some(source("/v/Dev/App", "mcp:app")),
+            ids: Ok(vec!["q1".into()]),
+            texts: BTreeMap::new(),
+        },
+    )]);
+    ledger.apply(reads.clone(), 200);
+    assert_eq!(
+        ledger.view().rows[0].text.as_deref(),
+        Some("Ship q1 now?"),
+        "a failed text read keeps the confirmed text"
+    );
+    // The question was answered: a later question with the same id has no
+    // inherited text.
+    reads.get_mut(&PathBuf::from("/v/Dev/App")).unwrap().ids = Ok(Vec::new());
+    ledger.apply(reads.clone(), 300);
+    reads.get_mut(&PathBuf::from("/v/Dev/App")).unwrap().ids = Ok(vec!["q1".into()]);
+    ledger.apply(reads, 400);
+    assert_eq!(ledger.view().rows[0].text, None);
+}
+
+#[test]
+fn only_listed_rows_have_their_text_read() {
+    let ids: Vec<String> = (0..ROWS_PER_SOURCE + 3)
+        .map(|i| format!("q{i:03}"))
+        .collect();
+    let fake = Arc::new(Fake::new([("mcp:app", Ok(ids))]));
+    let projects = [project("/v/Dev/App", Some("home"), thread("mcp:app"))];
+    read(
+        &sources(&projects),
+        &gateways(&fake),
+        &NetworkAccess::new(true),
+    );
+    assert_eq!(fake.reads.lock().unwrap().len(), ROWS_PER_SOURCE);
+}
+
+#[test]
+fn summary_is_one_line_and_counts_further_questions() {
+    let question = |header: &str, question: &str| PendingQuestion {
+        header: header.into(),
+        question: question.into(),
+    };
+    assert_eq!(summary(&[]), None);
+    assert_eq!(summary(&[question("", " \n ")]), None);
+    assert_eq!(
+        summary(&[question("Deploy", "")]).as_deref(),
+        Some("Deploy"),
+        "the header stands in for an empty question"
+    );
+    assert_eq!(
+        summary(&[question("H", "Which\n  branch?"), question("H2", "Why?")]).as_deref(),
+        Some("Which branch? (+1 more)")
+    );
+}
+
+#[test]
+fn disabling_now_during_a_read_stops_the_remaining_text_reads() {
+    let mut fake = Fake::new([("mcp:app", Ok(vec!["q1".into(), "q2".into(), "q3".into()]))]);
+    fake.revoke_on_text_read = true;
+    let fake = Arc::new(fake);
+    let projects = [project("/v/Dev/App", Some("home"), thread("mcp:app"))];
+    let permit = NetworkAccess::new(true);
+    read(&sources(&projects), &gateways(&fake), &permit);
+    assert!(!permit.allowed(), "the fake revoked the read's own permit");
+    assert_eq!(
+        *fake.reads.lock().unwrap(),
+        [("mcp:app".to_owned(), "q1".to_owned())],
+        "no text read starts after the permit is revoked"
+    );
 }

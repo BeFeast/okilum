@@ -46,12 +46,20 @@ pub const CODE_FONT: &str = "Cascadia Code";
 /// App theme colors; they do not participate in parsing or source revisions.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ProjectionColors {
-    pub heading: gpui::Hsla,
+    /// H1..H6 (index 0 = H1), as the Reader draws them (#3153).
+    pub headings: [gpui::Hsla; 6],
     pub link: gpui::Hsla,
     /// Quiet rows such as reference definitions.
     pub muted: gpui::Hsla,
     /// Theme decoration slots (#3154), the same ones the Reader draws.
     pub decorations: gpui_base::text::TextDecorations,
+}
+
+impl ProjectionColors {
+    /// The colour of a heading level; levels outside 1-6 are clamped.
+    pub fn heading(&self, level: u8) -> gpui::Hsla {
+        self.headings[usize::from(level.clamp(1, 6)) - 1]
+    }
 }
 
 // The standalone projection fixture imports this module without app theme colors.
@@ -1392,9 +1400,14 @@ fn projected_styles(
 ) -> Option<Vec<ProjectionStyle>> {
     let mut events = Vec::new();
     for style in styles {
+        // Headings never nest, so the level of the open heading is enough.
+        let mut level = 0;
         let slot = match style.style {
             Style::Strong => 0,
-            Style::Heading(_) => 4,
+            Style::Heading(heading) => {
+                level = heading;
+                4
+            }
             Style::Emphasis => 1,
             Style::Strike => 2,
             Style::Code | Style::CodeBlock => 3,
@@ -1406,23 +1419,28 @@ fn projected_styles(
         let start = projection.map_source(style.range.start)?;
         let end = projection.map_source(style.range.end)?;
         if start < end {
-            events.extend([(start, slot, 1i32), (end, slot, -1)]);
+            events.extend([(start, slot, 1i32, level), (end, slot, -1, level)]);
         }
     }
     events.sort_unstable();
     let mut counts = [0i32; 7];
+    let mut heading_level = 1;
     let mut runs = Vec::new();
     let mut index = 0;
     while index < events.len() {
         let start = events[index].0;
         while index < events.len() && events[index].0 == start {
-            counts[events[index].1] += events[index].2;
+            let (_, slot, delta, level) = events[index];
+            counts[slot] += delta;
+            if slot == 4 && delta > 0 {
+                heading_level = level;
+            }
             index += 1;
         }
         if counts.iter().any(|&n| n < 0) {
             return None;
         }
-        let Some(&(end, _, _)) = events.get(index) else {
+        let Some(&(end, _, _, _)) = events.get(index) else {
             break;
         };
         if start < end && counts.iter().any(|&n| n != 0) {
@@ -1443,7 +1461,7 @@ fn projected_styles(
                         // and the line-layout cache key do not change.
                         Some(gpui_base::text::gradient_run_color())
                     } else if counts[4] > 0 {
-                        Some(colors.heading)
+                        Some(colors.heading(heading_level))
                     } else if counts[6] > 0 {
                         Some(colors.muted)
                     } else {
@@ -2392,13 +2410,13 @@ mod tests {
         let plain = provider.compose(&source, &active).unwrap();
         for colors in [
             ProjectionColors {
-                heading: gpui::rgb(0x18202a).into(),
+                headings: [gpui::rgb(0x18202a).into(); 6],
                 link: gpui::rgb(0x005ca8).into(),
                 muted: gpui::rgb(0x6b7280).into(),
                 decorations: Default::default(),
             },
             ProjectionColors {
-                heading: gpui::rgb(0xf2f4f8).into(),
+                headings: [gpui::rgb(0xf2f4f8).into(); 6],
                 link: gpui::rgb(0x8dc8ff).into(),
                 muted: gpui::rgb(0x6b7280).into(),
                 decorations: Default::default(),
@@ -2434,7 +2452,7 @@ mod tests {
         }
         let source = self::source("# Plain heading\n\nend");
         let colors = ProjectionColors {
-            heading: gpui::rgb(0x18202a).into(),
+            headings: [gpui::rgb(0x18202a).into(); 6],
             link: gpui::rgb(0x005ca8).into(),
             muted: gpui::rgb(0x6b7280).into(),
             decorations: Default::default(),
@@ -2446,7 +2464,38 @@ mod tests {
         assert!(projection
             .styles()
             .iter()
-            .any(|style| style.bold && style.color == Some(colors.heading)));
+            .any(|style| style.bold && style.color == Some(colors.heading(1))));
+    }
+
+    #[test]
+    fn issue3153_each_heading_level_takes_its_own_colour() {
+        let text = "# One\n\n## Two [link](https://example.com)\n\n###### Six\n\nbody\n";
+        let source = source(text);
+        let colors = ProjectionColors {
+            headings: [0x0fb6d6, 0xcbdbe5, 0x111111, 0x222222, 0x333333, 0x666666]
+                .map(|c| gpui::rgb(c).into()),
+            link: gpui::rgb(0x7aa2f7).into(),
+            muted: gpui::rgb(0x6b7280).into(),
+            decorations: Default::default(),
+        };
+        let projection = Arc::new(CachedProvider::classify(source.clone()))
+            .with_colors(colors)
+            .compose(&source, &inactive(&source))
+            .unwrap();
+        let style_at = |label: &str| {
+            let offset = projection.text().find(label).unwrap();
+            projection
+                .styles()
+                .iter()
+                .find(|style| style.range.start.0 <= offset && offset < style.range.end.0)
+                .cloned()
+        };
+        assert_eq!(style_at("One").unwrap().color, Some(colors.headings[0]));
+        assert_eq!(style_at("Two").unwrap().color, Some(colors.headings[1]));
+        assert_eq!(style_at("Six").unwrap().color, Some(colors.headings[5]));
+        // A link inside a heading keeps the link colour.
+        assert_eq!(style_at("link").unwrap().color, Some(colors.link));
+        assert!(style_at("body").is_none_or(|style| style.color.is_none()));
     }
 
     #[test]
@@ -2457,7 +2506,7 @@ mod tests {
         let source = self::source(text);
         let provider = Arc::new(CachedProvider::classify(source.clone()));
         let base = ProjectionColors {
-            heading: gpui::rgb(0x18202a).into(),
+            headings: [gpui::rgb(0x18202a).into(); 6],
             link: gpui::rgb(0x005ca8).into(),
             muted: gpui::rgb(0x6b7280).into(),
             decorations: Default::default(),
@@ -2590,7 +2639,7 @@ mod tests {
     fn reference_definitions_keep_their_rows_and_render_muted() {
         let source = source("- see [docs][Id]\n\n[Id]: https://example.com\n");
         let colors = ProjectionColors {
-            heading: gpui::rgb(0x18202a).into(),
+            headings: [gpui::rgb(0x18202a).into(); 6],
             link: gpui::rgb(0x005ca8).into(),
             muted: gpui::rgb(0x6b7280).into(),
             decorations: Default::default(),
@@ -2641,7 +2690,7 @@ This paragraph remains ordinary Markdown.
         let provider = Arc::new(CachedProvider::classify(source.clone()));
         let projection = provider
             .with_colors(ProjectionColors {
-                heading: gpui::black(),
+                headings: [gpui::black(); 6],
                 link: gpui::rgb(0x005ca8).into(),
                 muted: gpui::rgb(0x6b7280).into(),
                 decorations: Default::default(),
