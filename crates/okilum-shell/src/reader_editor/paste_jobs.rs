@@ -2557,7 +2557,13 @@ mod reader_drop_tests {
         let opened = "---\ntags: [a] # label\n---\nBody.\n";
         let (reader, visual, temp) = reader_on(cx, opened);
         let first = reader.update(visual, |r, cx| {
-            let bounds = r.content.read(cx).list_state().bounds_for_item(0).unwrap();
+            let bounds = r
+                .pane
+                .content
+                .read(cx)
+                .list_state()
+                .bounds_for_item(0)
+                .unwrap();
             // The Reader showed the title; the editor opens the draft.
             r.pane.note_canonical_source = Some(std::sync::Arc::from(shown));
             r.pane.note_source = "# Title\n\nBody.\n".to_string();
