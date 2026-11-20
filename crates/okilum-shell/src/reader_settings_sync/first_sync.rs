@@ -278,13 +278,13 @@ impl SyncSettings {
                 .child("Both originals are retained. Recover the saved merge, or cancel if publication has not started. Keep both computers online.")
                 .child(h_flex().gap_2()
                     .child(Button::new(("sync-first-recover",index)).label("Recover first sync")
-                        .disabled(self.busy||self.first_sync_applying(cx))
+                        .disabled(self.locked()||self.first_sync_applying(cx))
                         .on_click(cx.listener(move|this,_,_,cx|{
                             this.close_first_sync_preview(cx);this.awaiting_open=Some(path.clone());
                             this.run(Operation::RecoverFirstSync(operation),cx);
                         })))
                     .child(Button::new(("sync-first-cancel",index)).ghost().label("Cancel before merge")
-                        .disabled(self.busy||self.first_sync_applying(cx))
+                        .disabled(self.locked()||self.first_sync_applying(cx))
                         .on_click(cx.listener(move|this,_,_,cx|{
                             this.close_first_sync_preview(cx);this.presentation.transfers.clear();
                             this.run(Operation::CancelFirstSync(operation),cx);
