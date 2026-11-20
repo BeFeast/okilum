@@ -1343,6 +1343,22 @@ const DESTINATION_HEIGHT: Pixels = px(160.);
 /// Matches the prompt's `p_4` padding below the button row.
 const DESTINATION_PADDING: Pixels = px(16.);
 
+/// gpui-kit's client-side frame border (`window_border::BORDER_SIZE`).
+const FRAME_BORDER: Pixels = px(1.);
+
+/// The viewport height that ends one padding below the last control inside
+/// the visible frame. With client-side decorations (Linux CSD) the viewport
+/// also holds gpui-kit's bottom shadow (`shadow`, from `window_paddings`)
+/// and the frame's 1 px border, both absent on a tiled bottom edge; the
+/// frame clips anything below them (#3144).
+fn fitted_height(content_bottom: Pixels, shadow: Pixels, decorations: gpui::Decorations) -> Pixels {
+    let frame = match decorations {
+        gpui::Decorations::Client { tiling } if !tiling.bottom => shadow + FRAME_BORDER,
+        _ => px(0.),
+    };
+    (content_bottom + DESTINATION_PADDING + frame).ceil()
+}
+
 /// Buttons of the vault-destination prompt, left to right.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Destination {
@@ -1454,7 +1470,11 @@ impl Render for VaultDestination {
                 let Some(bottom) = children.iter().map(|child| child.bottom()).max() else {
                     return;
                 };
-                let height = (bottom + DESTINATION_PADDING).ceil();
+                let height = fitted_height(
+                    bottom,
+                    gpui_component::window_paddings(window).bottom,
+                    window.window_decorations(),
+                );
                 let viewport = window.viewport_size();
                 if window.is_maximized()
                     || window.is_fullscreen()
@@ -5672,6 +5692,41 @@ mod destination_tests {
         assert_eq!(destination_order(false), [Cancel, Current, New]);
     }
 
+    /// #3144 review: under Linux client-side decorations gpui-kit's frame
+    /// keeps a 20 px shadow and a 1 px border inside the viewport and clips
+    /// below them. The fitted height must leave the padding inside that
+    /// frame. The test window reports server decorations only, so the
+    /// client cases are checked on the height function itself.
+    #[test]
+    fn the_fitted_height_keeps_the_padding_inside_a_client_side_frame() {
+        use gpui::{Decorations, Tiling};
+        let bottom = px(140.);
+        let shadow = px(20.);
+        // Server decorations (Windows, macOS, X11 SSD): no frame inside.
+        assert_eq!(fitted_height(bottom, px(0.), Decorations::Server), px(156.));
+        // Floating CSD window: the visible frame ends shadow + border above
+        // the viewport's bottom, and the last control's padding is inside it.
+        let floating = Decorations::Client {
+            tiling: Tiling::default(),
+        };
+        let height = fitted_height(bottom, shadow, floating);
+        let visible_bottom = height - shadow - FRAME_BORDER;
+        assert!(visible_bottom >= bottom + DESTINATION_PADDING, "{height:?}");
+        assert_eq!(height, px(177.));
+        // Control: the server formula would clip the buttons' bottom 5 px.
+        assert!(
+            fitted_height(bottom, px(0.), Decorations::Server) - shadow - FRAME_BORDER < bottom
+        );
+        // Bottom edge tiled: gpui-kit draws neither shadow nor border there.
+        let tiled = Decorations::Client {
+            tiling: Tiling {
+                bottom: true,
+                ..Tiling::default()
+            },
+        };
+        assert_eq!(fitted_height(bottom, px(0.), tiled), px(156.));
+    }
+
     /// #3144 (Windows 11, tester screenshot): the prompt was 600×400 around
     /// four controls, Cancel came first and the checkbox sat on its own row.
     /// The test text system gives every glyph 0.6 em, wider than Segoe UI.
@@ -5759,7 +5814,15 @@ mod destination_tests {
             // The window ends one padding below the last control.
             let size_now = visual.update(|window, _| window.bounds().size);
             let bottom = cancel.bottom().max(current.bottom()).max(new.bottom());
-            assert_eq!(size_now.height, (bottom + DESTINATION_PADDING).ceil());
+            let expected = visual.update(|window, _| {
+                fitted_height(
+                    bottom,
+                    gpui_component::window_paddings(window).bottom,
+                    window.window_decorations(),
+                )
+            });
+            assert_eq!(size_now.height, expected);
+            assert!(size_now.height >= bottom + DESTINATION_PADDING);
             assert!(size_now.height < px(300.), "{size_now:?}");
         }
     }
