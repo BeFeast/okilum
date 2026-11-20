@@ -305,7 +305,13 @@ impl Catalog {
 }
 
 /// Replace only recognized variables. Never rescan the inserted title.
-fn expand(source: &str, title: &str, now: OffsetDateTime, date: &str, time: &str) -> String {
+pub(crate) fn expand(
+    source: &str,
+    title: &str,
+    now: OffsetDateTime,
+    date: &str,
+    time: &str,
+) -> String {
     let mut out = String::new();
     let mut rest = source;
     while let Some(start) = rest.find("{{") {

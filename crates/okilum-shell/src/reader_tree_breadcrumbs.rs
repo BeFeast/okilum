@@ -628,7 +628,7 @@ mod tests {
 
     /// #3182: the header's Today's note button creates today's note in the
     /// daily folder from the daily template and opens it for editing; the
-    /// next press opens that note again and rewrites nothing.
+    /// next press opens it again and only appends a `## HH:MM` entry.
     #[cfg(unix)]
     #[gpui::test]
     fn issue3182_todays_note_button_creates_then_reopens(cx: &mut TestAppContext) {
@@ -640,6 +640,7 @@ mod tests {
             folder: "Daily".into(),
             format: "YYYY/YYYY-MM-DD".into(),
             template: "Templates/Day.md".into(),
+            entry: String::new(),
         };
         reader.read_with(visual, |view, _| {
             let state = view.session_directory.clone().unwrap();
@@ -672,7 +673,16 @@ mod tests {
         visual.simulate_click(button.center(), Modifiers::default());
         visual.run_until_parked();
         reader.read_with(visual, |view, _| assert_eq!(view.pane.current_rel, rel));
-        assert_eq!(std::fs::read_to_string(vault.join(&rel)).unwrap(), source);
+        // The second press adds a `## HH:MM` entry; the template is not
+        // applied again.
+        let text = std::fs::read_to_string(vault.join(&rel)).unwrap();
+        let entry = text
+            .strip_prefix(&format!("{source}\n## "))
+            .unwrap_or_else(|| panic!("an entry after the note: {text:?}"));
+        assert!(
+            entry.len() == 6 && entry.ends_with('\n') && entry.as_bytes()[2] == b':',
+            "{entry:?}"
+        );
         assert_eq!(
             std::fs::read_dir(vault.join("Daily").join(now.year().to_string()))
                 .unwrap()

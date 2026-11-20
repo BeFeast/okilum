@@ -657,9 +657,14 @@ stay hidden when no template collection exists.
 ## Daily notes (#3182)
 
 Daily notes follow Obsidian's core Daily notes plugin. Today's note (the
-calendar button in the sidebar header, the vault menu and the Now menu) opens
-today's note, or creates it and opens it for writing. An existing note is opened
-as it is and never rewritten. A daily note never goes into the vault root.
+calendar button in the sidebar header, the vault menu and the Now menu) creates
+today's note from the note template on the first press of the day and opens it
+for writing. Each later press the same day appends an entry at the end of the
+note, `## HH:MM` (local time) by default or the entry template chosen in Settings
+→ Vault («Later entries»), and puts the cursor on the line under its first line.
+The note template is applied only when the file is created. The append goes
+through the note's editor: an open editor saves first, and a change on disk at the
+same moment adds nothing. A daily note never goes into the vault root.
 
 Where the settings come from, in order:
 

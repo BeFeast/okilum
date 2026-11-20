@@ -499,6 +499,25 @@ impl Reader {
         // in this new folder to render a focused, actionable input row.
         self.tree
             .entry_created(&rel, okilum_core::vault::EntryKind::Markdown);
+        // Typing starts in the body after the heading, never before
+        // the frontmatter (#1117).
+        let body = okilum_core::note_files::body_start(&source);
+        self.show_written_note(rel, &source, body, window, cx);
+        self.announce_creation(&created, Some(source), window, cx);
+    }
+
+    /// A note this window just wrote (created, or a daily entry appended,
+    /// #3182): show `source` at once, open it for editing with the cursor at
+    /// `cursor`, select its row, and publish the change to the index.
+    pub(super) fn show_written_note(
+        &mut self,
+        rel: String,
+        source: &str,
+        cursor: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let written = rel.clone();
         // New note opened the sidebar for its name row. In a narrow
         // window that sidebar covers the note, so it closes like
         // after any other selection (#1412). The editor takes focus
@@ -507,7 +526,7 @@ impl Reader {
         self.editing = None;
         self.navigation.preparation_generation =
             self.navigation.preparation_generation.wrapping_add(1);
-        let document = okilum_core::render::reader_document_from_source(&self.vault, &rel, &source);
+        let document = okilum_core::render::reader_document_from_source(&self.vault, &rel, source);
         self.accept_prepared_document(
             prepared_links::DocumentRequest {
                 rel,
@@ -521,26 +540,21 @@ impl Reader {
             cx,
         );
         self.edit_created_note(window, cx);
-        // Typing starts in the body after the heading, never before
-        // the frontmatter (#1117).
-        let body = okilum_core::note_files::body_start(&source);
         if let Some(editing) = &self.editing {
             editing
                 .input()
-                .update(cx, |input, cx| input.set_selected_range(body..body, cx));
+                .update(cx, |input, cx| input.set_selected_range(cursor..cursor, cx));
         }
-        // Created from the tree: its row is shown and selected
-        // whether or not auto-reveal is on (#1762), so the next
-        // New note goes beside it.
-        let ix = self.tree.reveal(&created);
-        if let Some(ix) = self.select_index_folder(&created, ix) {
+        // Its row is shown and selected whether or not auto-reveal is on
+        // (#1762), so the next New note goes beside it.
+        let ix = self.tree.reveal(&written);
+        if let Some(ix) = self.select_index_folder(&written, ix) {
             self.scroll_tree_to(ix);
         }
-        self.tree_revealed = created.clone();
-        self.announce_creation(&created, Some(source), window, cx);
+        self.tree_revealed = written.clone();
         self.queue_vault_mutation(
             okilum_core::Changes {
-                changed: std::collections::BTreeSet::from([created]),
+                changed: std::collections::BTreeSet::from([written]),
                 ..Default::default()
             },
             cx,

@@ -12,6 +12,9 @@ pub const DEFAULT_FORMAT: &str = "YYYY-MM-DD";
 /// Where daily notes go when no folder is set, in Okilum or in Obsidian's
 /// settings. Never the vault root (#3182): created on first use.
 pub const DEFAULT_FOLDER: &str = "Daily";
+/// What a later press the same day appends when no entry template is set:
+/// a heading with the local time (#3182).
+pub const DEFAULT_ENTRY: &str = "## {{time:HH:mm}}\n";
 /// Offered for templates when the vault's templates folder is not there.
 pub const FALLBACK_TEMPLATES: &str = "Templates";
 
@@ -24,8 +27,11 @@ pub struct Settings {
     /// Empty is [`DEFAULT_FORMAT`].
     pub format: String,
     /// Vault-relative template note, `.md` optional as in Obsidian; empty is
-    /// no template.
+    /// no template. Applied only when the day's note is created.
     pub template: String,
+    /// Vault-relative entry template: what each later press the same day
+    /// appends. Empty is [`DEFAULT_ENTRY`]. Okilum only; Obsidian has none.
+    pub entry: String,
 }
 
 /// What «Today's note» found or made.
@@ -98,7 +104,19 @@ impl Settings {
 
     /// The template as (folder, file name), `None` without one.
     pub fn template_parts(&self) -> Result<Option<(String, String)>> {
-        let template = trimmed(&self.template);
+        note_parts(&self.template, "daily note template")
+    }
+
+    /// The entry template as (folder, file name), `None` for the default.
+    pub fn entry_parts(&self) -> Result<Option<(String, String)>> {
+        note_parts(&self.entry, "entry template")
+    }
+}
+
+/// A template note setting as (folder, file name); `.md` optional.
+fn note_parts(value: &str, what: &str) -> Result<Option<(String, String)>> {
+    {
+        let template = trimmed(value);
         if template.is_empty() {
             return Ok(None);
         }
@@ -113,10 +131,10 @@ impl Settings {
         // templates folder, and every note in it a template.
         let (folder, file) = template
             .rsplit_once('/')
-            .context("Put the daily note template in a folder, not in the vault root")?;
+            .with_context(|| format!("Put the {what} in a folder, not in the vault root"))?;
         ensure!(
             inside_vault(folder) && !file.is_empty(),
-            "Choose a daily note template inside the vault"
+            "Choose a {what} inside the vault"
         );
         Ok(Some((folder.to_owned(), file.to_owned())))
     }
@@ -159,6 +177,68 @@ pub fn suggested_template(candidates: &[String]) -> Option<String> {
         })
         .or_else(|| candidates.iter().find(|path| stem(path).contains("daily")))
         .cloned()
+}
+
+/// A later press the same day (#3182): append the entry (the entry template,
+/// or `## HH:MM`) at the end of today's note through the note's own editor,
+/// so a change on disk at the same moment is refused, never overwritten.
+/// Returns the new source and where typing starts: the line under the
+/// entry's first line. The note keeps its line endings.
+pub fn append_entry(
+    root: &Path,
+    rel: &str,
+    settings: &Settings,
+    now: OffsetDateTime,
+    drafts: &Path,
+) -> Result<(String, usize)> {
+    let title = Path::new(rel)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .context("Use a UTF-8 note name")?;
+    let mut entry = match settings.entry_parts()? {
+        Some((folder, file)) => {
+            let catalog = Catalog::load_with_folder(root, Some(&folder))?;
+            ensure!(
+                catalog.files.iter().any(|name| name == &file),
+                "The entry template «{}» is not in this vault. Choose it in Settings → Vault",
+                settings.entry
+            );
+            catalog.source(root, Some(&file), title, now)?
+        }
+        None => note_templates::expand(DEFAULT_ENTRY, title, now, DEFAULT_FORMAT, "HH:mm"),
+    };
+    let mut editor = crate::file_editor::FileEditor::open(&root.join(rel), drafts)?;
+    let mut source = editor.text().to_owned();
+    let newline = if source.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    entry = entry.replace("\r\n", "\n");
+    if !entry.ends_with('\n') {
+        entry.push('\n');
+    }
+    let entry = entry.replace('\n', newline);
+    if !source.is_empty() {
+        if !source.ends_with(newline) {
+            source.push_str(newline);
+        }
+        if !source.ends_with(&newline.repeat(2)) {
+            source.push_str(newline);
+        }
+    }
+    let cursor = source.len()
+        + entry
+            .find(newline)
+            .map_or(entry.len(), |end| end + newline.len());
+    source.push_str(&entry);
+    editor.set_text(source.clone())?;
+    match editor.save()? {
+        crate::file_editor::Save::Saved => Ok((source, cursor)),
+        crate::file_editor::Save::Conflict => {
+            bail!("Today's note changed on disk at the same moment; nothing was added. Try again")
+        }
+    }
 }
 
 /// Open today's note, or create it. Without a daily template the note is
@@ -223,6 +303,7 @@ mod tests {
             folder: folder.into(),
             format: format.into(),
             template: String::new(),
+            entry: String::new(),
         };
         let path = |s: Settings| s.relative_path(NOW).unwrap();
         // Nothing set: the Daily folder, never the vault root (#3182).
@@ -289,6 +370,7 @@ mod tests {
             folder: "Daily".into(),
             format: "YYYY/MM/YYYY-MM-DD".into(),
             template: "Templates/Daily".into(),
+            entry: String::new(),
         };
         let created = create(&root, &settings).unwrap();
         let rel = "Daily/2026/11/2026-11-20.md";
@@ -342,6 +424,64 @@ mod tests {
         };
         std::fs::create_dir_all(root.join("Daily/x.md")).unwrap();
         assert!(create(&root, &blocked).is_err());
+    }
+
+    #[test]
+    fn a_later_press_appends_a_timed_entry_and_the_template_applies_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+        std::fs::create_dir_all(root.join("Templates")).unwrap();
+        std::fs::write(root.join("Templates/Daily.md"), "# {{title}}\n\n## Plan\n").unwrap();
+        let drafts = dir.path().join("drafts");
+        std::fs::create_dir_all(&drafts).unwrap();
+        let settings = Settings {
+            template: "Templates/Daily".into(),
+            ..Default::default()
+        };
+        let Today::Created { rel, .. } = create(&root, &settings).unwrap() else {
+            panic!("first press creates");
+        };
+        assert_eq!(rel, "Daily/2026-11-20.md");
+        // Second press: the template is not applied again; an entry is added.
+        assert_eq!(
+            create(&root, &settings).unwrap(),
+            Today::Existing(rel.clone())
+        );
+        let at = time::macros::datetime!(2026-11-20 14:05 +02:00);
+        let (source, cursor) = append_entry(&root, &rel, &settings, at, &drafts).unwrap();
+        assert_eq!(source, "# 2026-11-20\n\n## Plan\n\n## 14:05\n");
+        assert_eq!(cursor, source.len(), "the empty line under the heading");
+        assert_eq!(std::fs::read_to_string(root.join(&rel)).unwrap(), source);
+        // A note ending without a newline, and one with CRLF, stay tidy.
+        std::fs::write(root.join(&rel), "a\r\nb").unwrap();
+        let later = time::macros::datetime!(2026-11-20 18:30 +02:00);
+        let (source, cursor) = append_entry(&root, &rel, &settings, later, &drafts).unwrap();
+        assert_eq!(source, "a\r\nb\r\n\r\n## 18:30\r\n");
+        assert_eq!(cursor, source.len());
+        // An entry template: expanded, typing starts under its first line.
+        std::fs::write(
+            root.join("Templates/Entry.md"),
+            "### {{time:HH:mm}} {{title}}\n- \n",
+        )
+        .unwrap();
+        let custom = Settings {
+            entry: "Templates/Entry".into(),
+            ..settings.clone()
+        };
+        std::fs::write(root.join(&rel), "x\n").unwrap();
+        let (source, cursor) = append_entry(&root, &rel, &custom, at, &drafts).unwrap();
+        assert_eq!(source, "x\n\n### 14:05 2026-11-20\n- \n");
+        assert_eq!(&source[cursor..], "- \n");
+        let gone = Settings {
+            entry: "Templates/Gone".into(),
+            ..settings
+        };
+        assert!(append_entry(&root, &rel, &gone, at, &drafts).is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.join(&rel)).unwrap(),
+            source,
+            "nothing added"
+        );
     }
 
     #[test]

@@ -180,6 +180,17 @@ fn effective_settings(prefs: &Prefs, templates: &Templates) -> DailySettings {
     settings
 }
 
+/// Where «Other file in this vault…» puts its choice.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PickFor {
+    Setup,
+    Template,
+    Entry,
+}
+
+const NO_TEMPLATE: &str = "None: just the date as title";
+const NO_ENTRY_TEMPLATE: &str = "None: a ## HH:MM heading";
+
 /// A template chosen in a dropdown (`None`: no template).
 type PickTemplate = Rc<dyn Fn(Option<String>, &mut Window, &mut App)>;
 /// «Other file in this vault…»: the native picker.
@@ -188,6 +199,7 @@ type OtherTemplate = Rc<dyn Fn(&mut Window, &mut App)>;
 /// A template dropdown: None, the templates folder's notes, another file.
 fn template_menu(
     menu: PopupMenu,
+    none_label: &'static str,
     current: &str,
     candidates: &[String],
     pick: PickTemplate,
@@ -196,7 +208,7 @@ fn template_menu(
     let current = current.trim();
     let none = pick.clone();
     let mut menu = menu.item(
-        PopupMenuItem::new("None: just the date as title")
+        PopupMenuItem::new(none_label)
             .checked(current.is_empty())
             .on_click(move |_, window, cx| none(None, window, cx)),
     );
@@ -338,8 +350,9 @@ impl Reader {
     }
 
     /// A template outside the list: any Markdown note in this vault, picked
-    /// natively. `setup` routes the choice to the open dialog.
-    fn choose_daily_template_file(&mut self, setup: bool, cx: &mut Context<Self>) {
+    /// natively, for the open dialog, the daily template or the entry template.
+    fn choose_daily_template_file(&mut self, target: PickFor, cx: &mut Context<Self>) {
+        let setup = target == PickFor::Setup;
         let root = self.vault_root.clone();
         let picker = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -371,10 +384,10 @@ impl Reader {
                     cx.notify();
                     return;
                 };
-                if setup {
-                    this.set_setup_template(Some(note), cx);
-                } else {
-                    this.set_daily_template(Some(note), cx);
+                match target {
+                    PickFor::Setup => this.set_setup_template(Some(note), cx),
+                    PickFor::Template => this.set_daily_template(Some(note), cx),
+                    PickFor::Entry => this.set_daily_entry(Some(note), cx),
                 }
             });
         })
@@ -449,6 +462,7 @@ impl Reader {
                 folder,
                 format: okilum_core::daily_notes::DEFAULT_FORMAT.into(),
                 template,
+                entry: String::new(),
             };
             settings
                 .relative_path(now())
@@ -570,21 +584,19 @@ impl Reader {
                 &state.join("editor-drafts"),
             )
         })();
-        match result {
-            Ok(Today::Existing(rel)) => {
-                self.trace_file_operation("daily_note", "opened", &rel, None, cx);
-                self.open_note(&rel, None, window, cx);
+        if result.is_ok() {
+            // From Inbox, Projects or Logs the note must come on screen,
+            // as `open_note` does; Quick Look draws over the editor.
+            if self.project_navigation.active.is_none() {
+                self.close_project(window, cx);
             }
+            self.project_navigation.section = reader_project_navigation::Section::Reader;
+            self.tree_preview.close();
+        }
+        match result {
+            Ok(Today::Existing(rel)) => self.append_daily_entry(rel, &prefs.settings, window, cx),
             Ok(Today::Created { rel, source }) => {
                 self.trace_file_operation("daily_note", "created", &rel, None, cx);
-                // From Inbox, Projects or Logs the note must come on screen,
-                // as `open_note` does for an existing one.
-                if self.project_navigation.active.is_none() {
-                    self.close_project(window, cx);
-                }
-                self.project_navigation.section = reader_project_navigation::Section::Reader;
-                // Quick Look draws over the editor; close it like opening does.
-                self.tree_preview.close();
                 self.show_created_note(rel, source, window, cx);
             }
             Err(error) => {
@@ -594,6 +606,61 @@ impl Reader {
             }
         }
         cx.notify();
+    }
+}
+
+impl Reader {
+    /// A later press the same day (#3182): append a timed entry at the end of
+    /// today's note and put the cursor under it. The note template is not
+    /// applied again. An open editor saves and closes first, so the append
+    /// goes through the note's own editor without a second lock holder.
+    fn append_daily_entry(
+        &mut self,
+        rel: String,
+        settings: &DailySettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.editing.is_some() && !self.leave_source(cx) {
+            reader_toast::error(
+                "Cannot add to today's note: resolve the current note's save first",
+                window,
+                cx,
+            );
+            return;
+        }
+        let Some(state) = self.session_directory.clone() else {
+            return;
+        };
+        match okilum_core::daily_notes::append_entry(
+            &self.vault_root,
+            &rel,
+            settings,
+            now(),
+            &state.join("editor-drafts"),
+        ) {
+            Ok((source, cursor)) => {
+                self.trace_file_operation("daily_note", "entry", &rel, None, cx);
+                self.show_written_note(rel, &source, cursor, window, cx);
+            }
+            Err(error) => {
+                let error = format!("{error:#}");
+                self.trace_file_operation("daily_note", "failed", &rel, Some(&error), cx);
+                reader_toast::error(format!("Cannot add to today's note: {error}"), window, cx);
+                self.open_note(&rel, None, window, cx);
+            }
+        }
+    }
+
+    fn set_daily_entry(&mut self, entry: Option<String>, cx: &mut Context<Self>) {
+        let mut settings = self.daily_settings();
+        settings.entry = entry.unwrap_or_default();
+        if let Err(error) = settings.entry_parts() {
+            self.daily_notes_error = Some(format!("{error:#}"));
+            cx.notify();
+            return;
+        }
+        self.set_daily_settings(settings, cx);
     }
 }
 
@@ -630,7 +697,9 @@ fn setup_dialog(
     });
     let other_reader = reader.clone();
     let other: OtherTemplate = Rc::new(move |_, cx| {
-        let _ = other_reader.update(cx, |this, cx| this.choose_daily_template_file(true, cx));
+        let _ = other_reader.update(cx, |this, cx| {
+            this.choose_daily_template_file(PickFor::Setup, cx)
+        });
     });
     let (create, cancel, close, create_button) =
         (reader.clone(), reader.clone(), reader.clone(), reader);
@@ -668,7 +737,14 @@ fn setup_dialog(
                         .label(template_label(&template))
                         .dropdown_caret(true)
                         .dropdown_menu(move |menu, _, _| {
-                            template_menu(menu, &template, &candidates, pick.clone(), other.clone())
+                            template_menu(
+                                menu,
+                                NO_TEMPLATE,
+                                &template,
+                                &candidates,
+                                pick.clone(),
+                                other.clone(),
+                            )
                         })
                         .into_any_element(),
                 ))
@@ -765,6 +841,18 @@ pub(super) fn controls(reader: &Entity<Reader>, cx: &App) -> AnyElement {
     }
     let template = settings.template.clone();
     let candidates = templates.candidates.clone();
+    let entry = settings.entry.clone();
+    let entry_candidates = templates.candidates.clone();
+    let entry_reader = reader.downgrade();
+    let pick_entry: PickTemplate = Rc::new(move |entry, _, cx| {
+        let _ = entry_reader.update(cx, |this, cx| this.set_daily_entry(entry, cx));
+    });
+    let other_entry_reader = reader.downgrade();
+    let other_entry: OtherTemplate = Rc::new(move |_, cx| {
+        let _ = other_entry_reader.update(cx, |this, cx| {
+            this.choose_daily_template_file(PickFor::Entry, cx)
+        });
+    });
     let muted = brand::palette(cx).text_muted;
     let value = |text: String| {
         div()
@@ -783,7 +871,9 @@ pub(super) fn controls(reader: &Entity<Reader>, cx: &App) -> AnyElement {
     });
     let other_reader = reader.downgrade();
     let other: OtherTemplate = Rc::new(move |_, cx| {
-        let _ = other_reader.update(cx, |this, cx| this.choose_daily_template_file(false, cx));
+        let _ = other_reader.update(cx, |this, cx| {
+            this.choose_daily_template_file(PickFor::Template, cx)
+        });
     });
     v_flex()
         .gap_2()
@@ -852,7 +942,33 @@ pub(super) fn controls(reader: &Entity<Reader>, cx: &App) -> AnyElement {
                 .dropdown_caret(true)
                 .disabled(!storage)
                 .dropdown_menu(move |menu, _, _| {
-                    template_menu(menu, &template, &candidates, pick.clone(), other.clone())
+                    template_menu(menu, NO_TEMPLATE, &template, &candidates, pick.clone(), other.clone())
+                }),
+            cx,
+        ))
+        .child(setting_row(
+            "Later entries",
+            "Each later press the same day adds this at the end of the note, with the cursor under it.",
+            Button::new("settings-daily-entry")
+                .debug_selector(|| "settings-daily-entry".into())
+                .outline()
+                .small()
+                .label(if entry.trim().is_empty() {
+                    "## HH:MM".to_owned()
+                } else {
+                    template_label(&entry)
+                })
+                .dropdown_caret(true)
+                .disabled(!storage)
+                .dropdown_menu(move |menu, _, _| {
+                    template_menu(
+                        menu,
+                        NO_ENTRY_TEMPLATE,
+                        &entry,
+                        &entry_candidates,
+                        pick_entry.clone(),
+                        other_entry.clone(),
+                    )
                 }),
             cx,
         ))
@@ -901,6 +1017,7 @@ mod tests {
             folder: "Journal".into(),
             format: FORMATS[1].into(),
             template: "Templates/Day.md".into(),
+            entry: String::new(),
         };
         save(&state, &root, &chosen).unwrap();
         let loaded = load(&state, &root).unwrap();
@@ -956,6 +1073,7 @@ mod tests {
                 folder: folder.into(),
                 format: String::new(),
                 template: template.into(),
+                entry: String::new(),
             },
             origin,
         };
@@ -1101,13 +1219,36 @@ mod tests {
             r.open_note("Start.md", None, window, cx)
         });
         visual.run_until_parked();
+        // Second press the same day: no question, no second template; a
+        // `## HH:MM` entry at the end, the cursor on the line under it.
+        let before = hhmm(super::now());
         reader.update_in(visual, |r, window, cx| r.open_daily_note(window, cx));
         visual.run_until_parked();
+        let after = hhmm(super::now());
         assert!(
             visual.debug_bounds("daily-setup").is_none(),
             "asks only once"
         );
-        reader.read_with(visual, |r, _| assert_eq!(r.pane.current_rel, rel));
+        let text = std::fs::read_to_string(root.join(&rel)).unwrap();
+        let base = format!("# {date}\n{long}\n\n## Plan\n");
+        assert!(
+            text == format!("{base}\n## {before}\n") || text == format!("{base}\n## {after}\n"),
+            "the entry is appended once, the template not again: {text:?}"
+        );
+        reader.read_with(visual, |r, cx| {
+            assert_eq!(r.pane.current_rel, rel);
+            let editing = r.editing.as_ref().expect("open for writing");
+            assert_eq!(
+                editing.input().read(cx).cursor(),
+                text.len(),
+                "under the heading"
+            );
+            assert_eq!(r.source_text(cx).as_deref(), Some(text.as_str()));
+        });
+    }
+
+    fn hhmm(at: time::OffsetDateTime) -> String {
+        format!("{:02}:{:02}", at.hour(), at.minute())
     }
 
     /// Cancel and a folder that is the vault root create nothing.
