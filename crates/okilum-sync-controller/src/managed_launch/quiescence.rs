@@ -27,6 +27,20 @@ struct Record {
     phase: Phase,
 }
 
+/// Whether `folder` has a scoped transport hold that has not completed. Such a
+/// folder's configuration is compared field by field on resume, so the launch
+/// command never rewrites its marker (#2582).
+pub(super) fn unfinished(reference: &Path, folder: &str) -> Result<bool> {
+    let path = reference
+        .join("scoped-holds")
+        .join(format!("{:x}.json", Sha256::digest(folder.as_bytes())));
+    if !path.try_exists()? {
+        return Ok(false);
+    }
+    let record: Record = serde_json::from_slice(&private::read(&path)?)?;
+    Ok(record.phase != Phase::Complete)
+}
+
 /// The gate prevents a new managed generation/configuration from entering while
 /// publication uses this proof. A crash releases the OS gate, but the local hold
 /// keeps future launches fenced. Ordinary transfers of other folders continue.

@@ -25,10 +25,14 @@ from compatibility import compare, load_baseline
 UPSTREAM = 'pingdotgg/t3code'
 MARKER = '<!-- okilum-t3-nightly-contract -->'
 ROOT = Path(__file__).resolve().parents[2]
-RUNTIME_PROOFS = ('pair', 'subscribe_thread', 'resume_thread', 'subscribe_shell', 'dispatch_command')
+RUNTIME_PROOFS = ('pair', 'environment_capabilities', 'subscribe_thread', 'resume_thread',
+                  'subscribe_shell', 'dispatch_command')
+# Descriptor flags the native client reads (crates/okilum-t3 stream/capabilities.rs).
+CONSUMED_CAPABILITIES = frozenset({'questionAttachments', 'attachmentUploads',
+                                   'fileAttachments.maxUploadBytes'})
 # Only fixed labels emitted by examples/nightly_contract.rs may enter reports.
 NATIVE_STAGES = frozenset({
-    'preflight', 'descriptor', 'native_pair', 'scratch_identity', 'initial_subscribe',
+    'preflight', 'descriptor', 'native_pair', 'environment_profile', 'scratch_identity', 'initial_subscribe',
     'initial_snapshot_decode_and_completion', 'resume_subscribe',
     'resume_decode_and_completion', 'shell_subscribe_and_completion',
     'scratch_dispatch', 'dispatch_snapshot_verification',
@@ -181,9 +185,25 @@ def native_roundtrip(binary, base, env, origin, probe):
         raise ValueError('Real okilum-t3 pair/snapshot/resume probe failed at '
                          + stage + ' (exit ' + str(completed.returncode) + ')')
     result = json.loads(completed.stdout)
-    if not isinstance(result, dict) or not all(result.get(key) is True for key in RUNTIME_PROOFS):
+    # A capability flag the server stopped advertising leaves environment_capabilities
+    # false and names the flag; that receipt is kept so the report shows which one.
+    # Every other proof must hold, or the receipt is incomplete.
+    if (not isinstance(result, dict)
+            or not all(result.get(key) is True for key in RUNTIME_PROOFS
+                       if key != 'environment_capabilities')
+            or capability_unknown(result) is None
+            or (result.get('environment_capabilities') is True) != (capability_unknown(result) == [])):
         raise ValueError('Incomplete real-client round-trip receipt')
     return result
+
+
+def capability_unknown(native):
+    """Names of consumed flags the native client could not read, or None if malformed."""
+    unknown = native.get('capability_unknown') if isinstance(native, dict) else None
+    if (not isinstance(unknown, list)
+            or not all(isinstance(name, str) and name in CONSUMED_CAPABILITIES for name in unknown)):
+        return None
+    return unknown
 
 
 def bootstrap(binary, version, directory, probe):
@@ -296,7 +316,8 @@ def run(output):
     token = os.environ.pop('GITHUB_TOKEN', None) or None
     if os.environ.get('GITHUB_ACTIONS') != 'true' or os.environ.get('RUNNER_ENVIRONMENT') != 'github-hosted':
         raise RuntimeError('Server contract probe runs only on GitHub-hosted Actions')
-    receipt = {'enabled_operations': ['NativeToken::pair', 'subscribeThread snapshot', 'subscribeThread resume',
+    receipt = {'enabled_operations': ['NativeToken::pair', 'server.getConfig capability flags',
+                                      'subscribeThread snapshot', 'subscribeThread resume',
                                       'subscribeShell snapshot/completion', 'dispatchCommand title update'],
                'deferred_operations': []}
     output.mkdir(parents=True, exist_ok=True)
@@ -337,6 +358,11 @@ def run(output):
                 if len(binaries) != 1:
                     raise ValueError('Expected one official T3 executable')
                 receipt['bootstrap'] = bootstrap(binaries[0], release['tag_name'], root, probe)
+                unknown = capability_unknown(receipt['bootstrap']['native_client'])
+                if unknown:
+                    receipt['capability_error'] = ('Server no longer advertises capability flags the '
+                                                   'native client reads (feature degraded): '
+                                                   + ', '.join(sorted(unknown)))
             except Exception as error:
                 receipt['bootstrap_error'] = safe_error(error)
         receipt['status'] = contract_status(receipt)
@@ -364,7 +390,7 @@ def report(output):
         raise ValueError('Multiple T3 contract incident issues; refusing another')
     delta = (output / 'schema.diff').read_text() if (output / 'schema.diff').exists() else '(schema generation unavailable)'
     run_url = f"https://github.com/{repository}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
-    body = (MARKER + '\nNightly T3 protocol contract observation (#1789). Real-client pair, thread snapshot/resume, shell snapshot/completion and harmless scratch-thread title dispatch are required. Schema additions are informational; breaking or unknown changes fail.\n\n'
+    body = (MARKER + '\nNightly T3 protocol contract observation (#1789). Real-client pair, descriptor capability flags the client reads, thread snapshot/resume, shell snapshot/completion and harmless scratch-thread title dispatch are required. Schema additions are informational; breaking or unknown changes fail.\n\n'
             + '```json\n' + json.dumps(result, indent=2) + '\n```\n\n' + run_url
             + '\n\n```diff\n' + delta[:45000] + '\n```\nFull diff and actual schema: workflow artifact.\n')
     if matches:

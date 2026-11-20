@@ -28,9 +28,10 @@ of using it. The corpus note is `fixtures/reader/obsidian-syntax.md`.
 - **Unreferenced footnote definitions are not shown**, as in Obsidian and GFM.
   A reference whose label nothing defines stays literal (`[^x]`), which is
   visible and therefore not a silent guess.
-- **Math falls back to its source.** Rendering TeX needs a renderer that passes
-  the rendering bar; until one does, the formula's source is the honest
-  fallback, and inline math is never mistaken for prose. A currency pair such
+- **Unsupported math keeps its source.** Read and Live Preview draw the TeX
+  the native renderer supports ([math](live-preview-inline-math.md)); a
+  formula it cannot draw stays as its source with a visible reason, and
+  inline math is never mistaken for prose. A currency pair such
   as `$5 and $10` is not math (Pandoc's rule: no space inside the delimiters,
   no digit after the closing `$`). Conservatively, the closing `$` must be the
   next one and a bare amount such as `$2$` stays text, so

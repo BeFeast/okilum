@@ -672,17 +672,19 @@ fn code2809_warning_badge_consumes_breadcrumb_spare_width(cx: &mut TestAppContex
             .unwrap()
     });
     code.update(visual, |code, cx| {
-        code.source_bytes_for_layout_test(5_200_000);
+        // JSON has no 4 MiB size lock (#2804); a folder that failed Edit
+        // admission is the real read-only state that pairs with the warning.
+        code.mark_folder_unwritable_for_test(cx);
         cx.notify();
     });
     visual.run_until_parked();
     reader.update_in(visual, |reader, window, cx| {
         let chrome = reader.viewer_chrome(cx);
-        assert!(chrome.state.is_some());
+        assert_eq!(chrome.state.as_ref().unwrap().id, "code-readonly");
         assert_eq!(
             chrome.badges.len(),
             1,
-            "real invalid/oversize state has lock plus warning"
+            "real invalid/read-only state has lock plus warning"
         );
         let mut without_warning = reader.viewer_chrome(cx);
         without_warning.badges.clear();
