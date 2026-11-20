@@ -1,0 +1,407 @@
+gpui_macos: accept drags of text, HTML, RTF, URLs and image data
+
+Registers the window for plain text, HTML, RTF/RTFD, URL and common image
+types next to file names. A drag without file names is announced as
+`FileDropEvent::DataEntered` with the pasteboard's types; at the drop the
+accepted flavors are read and handed over as `DataSubmit`: every accepted
+text type, small metadata (a link's title, the source page, an editor's
+language hint) and one image: the first offered image type, in preference
+order, that can be read within its limit (PNG before JPEG, GIF, WebP, HEIC,
+TIFF). Private and dynamic types and file promises are never read.
+Each representation has a byte limit (text 32 MiB, image 64 MiB, metadata
+64 KiB) and all reads together 128 MiB; a representation over its limit is
+skipped and released at once. File drags are unchanged. Depends on the
+gpui change that adds `ExternalData`.
+
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -25,11 +25,11 @@
+ };
+ use dispatch2::DispatchQueue;
+ use gpui::{
+-    AnyWindowHandle, BackgroundExecutor, Bounds, Capslock, CursorStyle, ExternalDragPayload,
+-    ExternalPaths, FileDropEvent, ForegroundExecutor, KeyDownEvent, Keystroke, Modifiers,
+-    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+-    PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
+-    PromptButton, PromptLevel, RequestFrameOptions, SharedString, Size, SystemWindowTab,
++    AnyWindowHandle, BackgroundExecutor, Bounds, Capslock, CursorStyle, ExternalData,
++    ExternalDragPayload, ExternalPaths, FileDropEvent, ForegroundExecutor, KeyDownEvent, Keystroke,
++    Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
++    Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow,
++    Point, PromptButton, PromptLevel, RequestFrameOptions, SharedString, Size, SystemWindowTab,
+     WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowKind,
+     WindowParams, point, px, size,
+ };
+@@ -1018,11 +1018,12 @@
+                 target_screen,
+             );
+             assert!(!native_window.is_null());
+-            let () = msg_send![
+-                native_window,
+-                registerForDraggedTypes:
+-                    NSArray::arrayWithObject(nil, NSFilenamesPboardType)
+-            ];
++            let dragged_types: id = msg_send![class!(NSMutableArray), array];
++            let () = msg_send![dragged_types, addObject: NSFilenamesPboardType];
++            for kind in DROPPED_TEXT_TYPES.iter().chain(&DROPPED_IMAGE_TYPES) {
++                let () = msg_send![dragged_types, addObject: ns_string(kind)];
++            }
++            let () = msg_send![native_window, registerForDraggedTypes: dragged_types];
+             let () = msg_send![
+                 native_window,
+                 setReleasedWhenClosed: NO
+@@ -3269,8 +3270,19 @@
+     let is_source_window = is_drag_from_this_window(this, dragging_info);
+     let window_state = unsafe { get_window_state(this) };
+     let position = drag_event_position(&window_state, dragging_info);
+-    let paths = external_paths_from_event(dragging_info);
+-    if let Some(event) = paths.map(|paths| FileDropEvent::Entered { position, paths })
++    let event = match external_paths_from_event(dragging_info) {
++        Some(paths) => Some(FileDropEvent::Entered { position, paths }),
++        // Text, rich text, a URL or image data: its types until the drop.
++        None => {
++            let pasteboard: id = unsafe { msg_send![dragging_info, draggingPasteboard] };
++            let types = unsafe { pasteboard_types(pasteboard) };
++            is_dragged_data(&types).then(|| FileDropEvent::DataEntered {
++                position,
++                data: ExternalData::new(types),
++            })
++        }
++    };
++    if let Some(event) = event
+         && send_file_drop_event(window_state, event)
+     {
+         if is_source_window {
+@@ -3304,7 +3316,169 @@
+ extern "C" fn perform_drag_operation(this: &Object, _: Sel, dragging_info: id) -> BOOL {
+     let window_state = unsafe { get_window_state(this) };
+     let position = drag_event_position(&window_state, dragging_info);
+-    send_file_drop_event(window_state, FileDropEvent::Submit { position }).to_objc()
++    let event = if external_paths_from_event(dragging_info).is_some() {
++        FileDropEvent::Submit { position }
++    } else {
++        // A data drop hands over the contents read now, while AppKit still
++        // owns the dragging pasteboard for this drop.
++        let pasteboard: id = unsafe { msg_send![dragging_info, draggingPasteboard] };
++        match unsafe { external_data_from_pasteboard(pasteboard) } {
++            Some(data) => FileDropEvent::DataSubmit { position, data },
++            None => FileDropEvent::Submit { position },
++        }
++    };
++    send_file_drop_event(window_state, event).to_objc()
++}
++
++/// Text representations a window accepts from a drag, read at the drop.
++const DROPPED_TEXT_TYPES: [&str; 6] = [
++    "public.utf8-plain-text",
++    "public.utf16-plain-text",
++    "public.html",
++    "public.rtf",
++    "com.apple.flat-rtfd",
++    "public.url",
++];
++
++/// Image types a window accepts from a drag, most faithful and compact
++/// first. Only one image is read: the first offered one that can be read
++/// within its limit (a browser image often comes as PNG and as a far larger
++/// TIFF of the same pixels; the TIFF is read only when the PNG cannot be).
++const DROPPED_IMAGE_TYPES: [&str; 6] = [
++    "public.png",
++    "public.jpeg",
++    "com.compuserve.gif",
++    "org.webmproject.webp",
++    "public.heic",
++    "public.tiff",
++];
++
++/// Small descriptions read next to accepted data when offered: a link's
++/// title, the page it came from, an editor's language hint.
++const DROPPED_METADATA_TYPES: [&str; 3] = [
++    "public.url-name",
++    "org.chromium.source-url",
++    "vscode-editor-data",
++];
++
++/// Byte limits for what a drop reads. A representation above its limit, or
++/// one that would take all reads past `total`, is skipped, not truncated.
++struct DropLimits {
++    text: usize,
++    image: usize,
++    metadata: usize,
++    total: usize,
++}
++
++const DROP_LIMITS: DropLimits = DropLimits {
++    text: 32 << 20,
++    image: 64 << 20,
++    metadata: 64 << 10,
++    total: 128 << 20,
++};
++
++/// Whether a drag offering `types` is a data drag a window accepts.
++fn is_dragged_data(types: &[SharedString]) -> bool {
++    types.iter().any(|kind| {
++        DROPPED_TEXT_TYPES.contains(&kind.as_ref()) || DROPPED_IMAGE_TYPES.contains(&kind.as_ref())
++    })
++}
++
++/// One representation a drop may read.
++struct DroppedRead {
++    kind: SharedString,
++    limit: usize,
++    /// An image flavor: once one image is read, the others are skipped.
++    image: bool,
++}
++
++/// The offered types a drop may read, each with its byte limit, in reading
++/// order: every accepted text type, small metadata, then the offered image
++/// types in preference order (only the first that can be read is). Anything
++/// else the source offered (private and dynamic types, file promises) is
++/// never read.
++fn dropped_reads(types: &[SharedString], limits: &DropLimits) -> Vec<DroppedRead> {
++    let offered = |wanted: &str| types.iter().find(|kind| kind.as_ref() == wanted).cloned();
++    let read =
++        |limit: usize, image: bool| move |kind: SharedString| DroppedRead { kind, limit, image };
++    DROPPED_TEXT_TYPES
++        .iter()
++        .filter_map(|kind| offered(kind).map(read(limits.text, false)))
++        .chain(
++            DROPPED_METADATA_TYPES
++                .iter()
++                .filter_map(|kind| offered(kind).map(read(limits.metadata, false))),
++        )
++        .chain(
++            DROPPED_IMAGE_TYPES
++                .iter()
++                .filter_map(|kind| offered(kind).map(read(limits.image, true))),
++        )
++        .collect()
++}
++
++/// The types on `pasteboard`, in the order the drag source offered them.
++unsafe fn pasteboard_types(pasteboard: id) -> Vec<SharedString> {
++    let types: id = unsafe { msg_send![pasteboard, types] };
++    if types == nil {
++        return Vec::new();
++    }
++    let count: NSUInteger = unsafe { msg_send![types, count] };
++    (0..count)
++        .filter_map(|index| {
++            let kind: id = unsafe { msg_send![types, objectAtIndex: index] };
++            let utf8 = unsafe { NSString::UTF8String(kind) };
++            (!utf8.is_null()).then(|| {
++                SharedString::from(
++                    unsafe { CStr::from_ptr(utf8) }
++                        .to_string_lossy()
++                        .into_owned(),
++                )
++            })
++        })
++        .collect()
++}
++
++/// The data on `pasteboard` with its readable contents, if it is a data drag.
++unsafe fn external_data_from_pasteboard(pasteboard: id) -> Option<ExternalData> {
++    unsafe { external_data_with_limits(pasteboard, &DROP_LIMITS) }
++}
++
++unsafe fn external_data_with_limits(pasteboard: id, limits: &DropLimits) -> Option<ExternalData> {
++    let types = unsafe { pasteboard_types(pasteboard) };
++    if !is_dragged_data(&types) {
++        return None;
++    }
++    let mut total = 0;
++    let mut contents = Vec::new();
++    let mut image_read = false;
++    for DroppedRead { kind, limit, image } in dropped_reads(&types, limits) {
++        if image && image_read {
++            continue;
++        }
++        // A skipped representation is released with this pool right away.
++        let pool = unsafe { NSAutoreleasePool::new(nil) };
++        let data: id = unsafe { msg_send![pasteboard, dataForType: ns_string(&kind)] };
++        if data != nil {
++            let length: NSUInteger = unsafe { msg_send![data, length] };
++            let length = length as usize;
++            if length <= limit && total + length <= limits.total {
++                let bytes: *const u8 = unsafe { msg_send![data, bytes] };
++                let bytes: Arc<[u8]> = if length == 0 || bytes.is_null() {
++                    Arc::from(&[][..])
++                } else {
++                    Arc::from(unsafe { std::slice::from_raw_parts(bytes, length) })
++                };
++                total += length;
++                image_read |= image;
++                contents.push((kind, bytes));
++            } else {
++                log::warn!("data drop: skipped {kind} ({length} bytes) over the read limit");
++            }
++        }
++        unsafe { pool.drain() };
++    }
++    Some(ExternalData::with_contents(types, contents))
+ }
+ 
+ fn external_paths_from_event(dragging_info: *mut Object) -> Option<ExternalPaths> {
+@@ -3397,7 +3571,7 @@
+     file_drop_event: FileDropEvent,
+ ) -> bool {
+     let external_files_dragged = match file_drop_event {
+-        FileDropEvent::Entered { .. } => Some(true),
++        FileDropEvent::Entered { .. } | FileDropEvent::DataEntered { .. } => Some(true),
+         FileDropEvent::Exited | FileDropEvent::Ended => Some(false),
+         _ => None,
+     };
+@@ -3630,4 +3804,152 @@
+         note_tabbing_may_be_active();
+         assert!(TABBING_MAY_BE_ACTIVE.load(Ordering::Acquire));
+     }
++
++    fn shared(kinds: &[&str]) -> Vec<SharedString> {
++        kinds
++            .iter()
++            .map(|kind| SharedString::from(kind.to_string()))
++            .collect()
++    }
++
++    #[test]
++    fn data_drags_are_told_by_type_and_only_accepted_flavors_are_read() {
++        assert!(is_dragged_data(&shared(&[
++            "org.chromium.source-url",
++            "public.html"
++        ])));
++        assert!(is_dragged_data(&shared(&["public.tiff"])));
++        assert!(!is_dragged_data(&shared(&["org.chromium.source-url"])));
++        let reads = dropped_reads(
++            &shared(&[
++                "org.example.private",
++                "dyn.ah62d4rv4gu8y63n2nuuhg5pbsm4ca6dbsr4gnkduqf31k3pcr7u1e3basv61a3k",
++                "com.apple.pasteboard.promised-file-url",
++                "public.tiff",
++                "public.url-name",
++                "public.png",
++                "public.utf8-plain-text",
++            ]),
++            &DROP_LIMITS,
++        );
++        let reads: Vec<(&str, usize, bool)> = reads
++            .iter()
++            .map(|read| (read.kind.as_ref(), read.limit, read.image))
++            .collect();
++        // Text, then metadata, then the images in preference order (the
++        // TIFF only if the PNG cannot be read); never private or dynamic
++        // types, or promises.
++        assert_eq!(
++            reads,
++            [
++                ("public.utf8-plain-text", DROP_LIMITS.text, false),
++                ("public.url-name", DROP_LIMITS.metadata, false),
++                ("public.png", DROP_LIMITS.image, true),
++                ("public.tiff", DROP_LIMITS.image, true),
++            ]
++        );
++    }
++
++    unsafe fn set_data(pasteboard: id, kind: &str, bytes: &[u8]) {
++        unsafe {
++            let data: id = msg_send![
++                class!(NSData),
++                dataWithBytes: bytes.as_ptr()
++                length: bytes.len() as NSUInteger
++            ];
++            let set: BOOL = msg_send![pasteboard, setData: data forType: ns_string(kind)];
++            assert_eq!(set, YES, "{kind}");
++        }
++    }
++
++    #[test]
++    fn a_data_drop_reads_the_dragging_pasteboard_within_its_limits() {
++        unsafe {
++            let pool = NSAutoreleasePool::new(nil);
++            let pasteboard: id = msg_send![class!(NSPasteboard), pasteboardWithUniqueName];
++            let _: NSInteger = msg_send![pasteboard, clearContents];
++            let text_set: BOOL = msg_send![
++                pasteboard,
++                setString: ns_string("dropped text")
++                forType: ns_string("public.utf8-plain-text")
++            ];
++            assert_eq!(text_set, YES);
++            set_data(pasteboard, "public.html", b"<b>dropped</b>");
++            set_data(pasteboard, "public.rtf", &[b'r'; 64]);
++            set_data(pasteboard, "public.png", b"\x89PNG\r\n\x1a\n");
++            set_data(pasteboard, "public.tiff", b"II*\0");
++            set_data(pasteboard, "org.example.private", b"private");
++            let limits = DropLimits {
++                text: 32,
++                image: 32,
++                metadata: 32,
++                total: 1024,
++            };
++            let data = external_data_with_limits(pasteboard, &limits).expect("a text drag is data");
++            assert!(
++                data.types()
++                    .iter()
++                    .any(|kind| kind.as_ref() == "public.tiff")
++            );
++            assert_eq!(
++                data.contents("public.utf8-plain-text"),
++                Some(&b"dropped text"[..])
++            );
++            assert_eq!(data.contents("public.html"), Some(&b"<b>dropped</b>"[..]));
++            assert_eq!(data.contents("public.png"), Some(&b"\x89PNG\r\n\x1a\n"[..]));
++            assert_eq!(
++                data.contents("public.rtf"),
++                None,
++                "over its limit: not copied"
++            );
++            assert_eq!(
++                data.contents("public.tiff"),
++                None,
++                "a second image: not read"
++            );
++            assert_eq!(
++                data.contents("org.example.private"),
++                None,
++                "unused: not read"
++            );
++
++            // The aggregate limit: what would take all reads past it is skipped.
++            let tight = DropLimits {
++                total: 20,
++                ..limits
++            };
++            let data = external_data_with_limits(pasteboard, &tight).unwrap();
++            assert_eq!(
++                data.contents("public.utf8-plain-text"),
++                Some(&b"dropped text"[..])
++            );
++            assert_eq!(data.contents("public.html"), None, "12 + 14 bytes > 20");
++            assert_eq!(data.contents("public.png"), Some(&b"\x89PNG\r\n\x1a\n"[..]));
++            let () = msg_send![pasteboard, releaseGlobally];
++
++            // The preferred image over its limit: the next offered one that
++            // fits is read instead, and only that one.
++            let images: id = msg_send![class!(NSPasteboard), pasteboardWithUniqueName];
++            let _: NSInteger = msg_send![images, clearContents];
++            set_data(images, "public.png", &[0x89; 64]);
++            set_data(images, "public.jpeg", b"\xff\xd8\xff\xe0jpeg");
++            set_data(images, "public.tiff", b"II*\0");
++            let data = external_data_with_limits(images, &limits).expect("an image drag is data");
++            assert_eq!(data.contents("public.png"), None, "over its limit");
++            assert_eq!(
++                data.contents("public.jpeg"),
++                Some(&b"\xff\xd8\xff\xe0jpeg"[..])
++            );
++            assert_eq!(data.contents("public.tiff"), None, "one image only");
++            let () = msg_send![images, releaseGlobally];
++
++            // A drag of private data only is not a data drop.
++            let private: id = msg_send![class!(NSPasteboard), pasteboardWithUniqueName];
++            let _: NSInteger = msg_send![private, clearContents];
++            set_data(private, "org.example.private", b"private");
++            assert!(external_data_from_pasteboard(private).is_none());
++            let () = msg_send![private, releaseGlobally];
++            pool.drain();
++        }
++    }
+ }
