@@ -1,5 +1,5 @@
 diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
-index 16c31524..3fcc1118 100644
+index 8d52031b..d3957cd8 100644
 --- a/crates/base/src/input/base/element.rs
 +++ b/crates/base/src/input/base/element.rs
 @@ -3028,6 +3028,77 @@ impl<M: InputModeKind> Element for TextElement<M> {
@@ -163,18 +163,18 @@ index 16c31524..3fcc1118 100644
 +            }
 +        });
          let mut painted_tasks = Vec::new();
-         for (line_index, (line, &buffer_line)) in prepaint
-             .last_layout
-@@ -3162,7 +3304,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+         // A toggle animation runs for its duration, then is dropped (#3155).
+         let task_animation = {
+@@ -3173,7 +3315,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                      let row_origin = p + point(x, row_top);
                      if let Some(Some(paint)) = rows.get(row_index) {
-                         painted_tasks.extend(paint.paint(row_origin, row_height,
--                            content_width - x, editor_style.foreground, window, cx));
-+                            content_width - x, editor_style.foreground, Some(&slots), window, cx));
+                         let (tasks, animated) = paint.paint(row_origin, row_height,
+-                            content_width - x, editor_style.foreground, task_animation, window, cx);
++                            content_width - x, editor_style.foreground, task_animation, Some(&slots), window, cx);
+                         painted_tasks.extend(tasks);
+                         task_animated |= animated;
                      } else {
-                         let _ = row.paint(row_origin, row_height, align, align_width, window, cx);
-                     }
-@@ -3170,6 +3312,32 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -3183,6 +3325,32 @@ impl<M: InputModeKind> Element for TextElement<M> {
              } else {
                  line.paint(p, &prepaint.last_layout.rows, text_align, Some(prepaint.last_layout.content_width), window, cx);
              }
@@ -207,7 +207,7 @@ index 16c31524..3fcc1118 100644
              offset_y += line.size(&prepaint.last_layout.rows).height;
  
              if Some(row) == prepaint.current_row {
-@@ -4573,3 +4741,12 @@ mod projection_run_tests {
+@@ -4593,3 +4761,12 @@ mod projection_run_tests {
          assert_eq!(runs_for_range(&tail, 4, &(0..1))[0].font, font);
      }
  }
@@ -221,23 +221,23 @@ index 16c31524..3fcc1118 100644
 +    }
 +}
 diff --git a/crates/base/src/input/base/marker_paint.rs b/crates/base/src/input/base/marker_paint.rs
-index c0ce6186..f00dc99e 100644
+index 7adcf6b5..bf2ee115 100644
 --- a/crates/base/src/input/base/marker_paint.rs
 +++ b/crates/base/src/input/base/marker_paint.rs
-@@ -344,9 +344,12 @@ impl RowPaint {
-         height: Pixels,
+@@ -397,9 +397,12 @@ impl RowPaint {
          content_width: Pixels,
          color: Hsla,
+         animation: Option<(TaskAnimation, std::time::Duration)>,
 +        decorations: Option<&crate::text::TextDecorations>,
          window: &mut Window,
          cx: &mut App,
-     ) -> Vec<PaintedTask> {
+     ) -> (Vec<PaintedTask>, bool) {
 +        let quote_border = decorations.and_then(|d| d.blockquote).and_then(|q| q.border);
 +        let rule = decorations.and_then(|d| d.horizontal_rule);
          let mut tasks = Vec::new();
+         let mut animated = false;
          match &self.foreground {
-             Foreground::Pieces(pieces) => {
-@@ -418,7 +421,8 @@ impl RowPaint {
+@@ -472,7 +475,8 @@ impl RowPaint {
                              origin + point(shape.x + shape.width / 2., px(0.)),
                              size(px(2.).min(shape.width), height),
                          ),
@@ -247,7 +247,7 @@ index c0ce6186..f00dc99e 100644
                      )),
                      MarkerKind::Task { checked } => {
                          let side = (height * 0.62).min(shape.width).min(px(16.));
-@@ -455,13 +459,21 @@ impl RowPaint {
+@@ -528,13 +532,21 @@ impl RowPaint {
                      size((content_width - shape.x).max(px(0.)), height),
                  );
                  window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
@@ -275,7 +275,7 @@ index c0ce6186..f00dc99e 100644
                  });
              }
          }
-@@ -469,6 +481,17 @@ impl RowPaint {
+@@ -542,6 +554,17 @@ impl RowPaint {
      }
  }
  
@@ -293,7 +293,7 @@ index c0ce6186..f00dc99e 100644
  #[cfg(test)]
  impl RowPaint {
      /// The x of each quote bar this continuation row draws in its gutter.
-@@ -481,6 +504,20 @@ impl RowPaint {
+@@ -554,6 +577,20 @@ impl RowPaint {
      }
  }
  
@@ -314,7 +314,7 @@ index c0ce6186..f00dc99e 100644
  /// The visual span of `range` on a right-to-left row, if it is one contiguous
  /// run of whole cells that no other cell overlaps; otherwise the marker stays raw.
  fn rtl_span(geometry: &Geometry, range: &Range<usize>) -> Option<Range<Pixels>> {
-@@ -845,6 +882,40 @@ mod tests {
+@@ -964,6 +1001,40 @@ mod tests {
          );
      }
  
@@ -372,7 +372,7 @@ index 4e7a3d02..56902ed1 100644
          -> Vec<gpui::Bounds<Pixels>> {
          let mut result = Vec::new();
 diff --git a/crates/base/src/input/projection.rs b/crates/base/src/input/projection.rs
-index e72cb01b..ef7f433a 100644
+index 96d4a6fa..bd0af86c 100644
 --- a/crates/base/src/input/projection.rs
 +++ b/crates/base/src/input/projection.rs
 @@ -110,6 +110,21 @@ pub struct ProjectionStyle {
@@ -397,7 +397,7 @@ index e72cb01b..ef7f433a 100644
  /// Source-anchored, revision-bound paint metadata. Never changes text layout.
  #[derive(Clone, Debug)]
  pub enum MarkerKind {
-@@ -274,6 +289,10 @@ pub trait SourceProjection: Send + Sync {
+@@ -325,6 +340,10 @@ pub trait SourceProjection: Send + Sync {
          super::projection_layout::clip_hit_offset(self.text(), offset, bias)
      }
      fn styles(&self) -> &[ProjectionStyle];

@@ -440,7 +440,7 @@ every rule it could not carry over.
 
 **Decoration slots** (#3154). Besides colours, a theme may fill up to five
 decoration slots under `decorations.light` / `decorations.dark`. Each slot is
-drawn by one renderer path in the Reader (vendor patch 0154, `TextDecorations`
+drawn by one renderer path in the Reader (vendor patch 0155, `TextDecorations`
 on the TextView style) and the same values in Live Preview (the projection's
 `decorations()`, painted by the editor). A slot a theme leaves out draws
 exactly what Okilum drew before; today only Obsidianite fills them.
@@ -469,6 +469,21 @@ while a colour run per letter (the control) reshapes. Every slot is
 paint-only: no text, run or layout changes, no animation, and a theme switch
 recomposes Live Preview from the existing classification without parsing.
 A unit test rejects unknown slot names and checks bold endpoints at AA.
+
+**Motion slots** (#3151): a theme file may set optional animations in a
+top-level `motion` object, apart from colours and the per-mode `decorations`;
+they do not depend on light or dark. An absent slot means no motion. Motion is
+paint-only: no text shaping, relayout or re-parse, and a theme switch only
+repaints.
+
+- `motion.taskCheck` (#3155) — `{"durationMs": 1..=600, "bounce": 0..=0.5}`.
+  A click on a Live Preview task box plays the toggle: the box bounces to
+  `1 + bounce` of its size and back within the first 60 % of the duration
+  while the checkmark draws in (checking) or out (unchecking), easing out. The
+  click target does not move. It runs only after a click (not the ⌘L/Ctrl+L
+  shortcut, opening a note or a theme switch), never with the OS reduce-motion
+  setting, and requests frames only while it runs. Reader checkboxes are
+  read-only and never animate. Obsidianite: 300 ms, bounce 0.15.
 
 **Theme picker** (`theme_picker.rs`): a self-contained row of compact swatch
 cards (120 px). Each card previews the theme's sidebar, surface, text, muted

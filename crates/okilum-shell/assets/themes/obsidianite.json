@@ -4,6 +4,9 @@
   "id": "obsidianite",
   "name": "Obsidianite",
   "basis": "Dark mode after the Obsidianite theme for Obsidian (github.com/bennyxguo/Obsidian-Obsidianite, MIT, (c) 2020 Guo Xiang): its .theme-dark canvas, text, cyan accent and H1, slate H2-H6, Dracula-style code and status colours, pink highlight. Obsidianite ships no light mode; the light variant here is derived, keeping the accent and heading hues. Links use Obsidianite's periwinkle so they never share the heading's cyan. Code syntax: Obsidianite's Prism Dracula palette in dark (comment lifted from #6272a4 to pass AA on the code background), Dracula's light Alucard palette in light. Tuned to WCAG AA.",
+  "motion": {
+    "taskCheck": { "durationMs": 300, "bounce": 0.15 }
+  },
   "modes": {
     "light": {
       "canvas": "#fbfafd",
