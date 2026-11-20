@@ -319,6 +319,8 @@ impl Reader {
                     self.close_project(window, cx);
                 }
                 self.project_navigation.section = reader_project_navigation::Section::Reader;
+                // Quick Look draws over the editor; close it like opening does.
+                self.tree_preview.close();
                 self.show_created_note(rel, source, window, cx);
             }
             Err(error) => {
