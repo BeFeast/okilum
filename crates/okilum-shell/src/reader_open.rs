@@ -1508,7 +1508,13 @@ impl Render for VaultDestination {
                                 )),
                             ),
                     )
-                    .child(h_flex().flex_grow().justify_end().gap_2().children(buttons)),
+                    .child(
+                        h_flex()
+                            .flex_grow(1.)
+                            .justify_end()
+                            .gap_2()
+                            .children(buttons),
+                    ),
             )
     }
 }
