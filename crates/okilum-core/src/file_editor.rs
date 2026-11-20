@@ -482,6 +482,33 @@ impl FileEditor {
         ))
     }
 
+    /// Keep `path`'s unsaved recovery draft in recovery, but free the path
+    /// for a new note (#3182). The journal moves to another name in the same
+    /// folder: Recover notes still lists it under its own note path, clean-
+    /// journal pruning skips it (its name is not the path's key), and a note
+    /// created at `path` opens clean instead of adopting the old draft. Done
+    /// under the path's editor lock, so no editor adopts it meanwhile. Nothing
+    /// is deleted; a path without a journal is left alone.
+    pub fn set_aside_draft(path: &Path, state: &Path) -> Result<()> {
+        let key = Self::journal_key(path)?;
+        let Some(_lock) = Self::claim_idle(path, state)? else {
+            bail!(BEING_EDITED);
+        };
+        let journal = state.join(format!("{key}.json"));
+        let bytes = match fs::read(&journal) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        // Only a readable journal is moved; anything else stays where it is.
+        let _: Draft = serde_json::from_slice(&bytes).context("Unreadable recovery draft; kept")?;
+        let aside = state.join(format!("{key}-set-aside-{}.json", uuid::Uuid::new_v4()));
+        fs::rename(&journal, &aside)?;
+        #[cfg(unix)]
+        File::open(state)?.sync_all()?;
+        Ok(())
+    }
+
     /// Reserve a not-yet-existing destination without adopting an old draft.
     /// The caller holds this lock through rename, then releases it before opening
     /// the moved note in a new editor. No journal is deleted or rewritten.
