@@ -73,6 +73,12 @@ pub(super) struct Removal {
     /// learned later re-establishes it (#3079).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     undo: Option<Undo>,
+    /// A received removal relayed onward: for each relay recipient, the
+    /// vaults this computer shared with it, the only ones it is that
+    /// recipient's owner for. Captured before applying the removal revokes
+    /// those grants (#3105).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    relayed: BTreeMap<Uuid, BTreeSet<String>>,
 }
 /// An admission epoch: raised by every readmission. Ordered by counter, then
 /// by the readmitting computer's device, so two computers that readmit the
@@ -170,7 +176,7 @@ pub(super) fn requests(db: &Database, scope: Uuid) -> Vec<Request> {
         .map(|r| {
             let peer = &r.pending[&scope];
             let vaults: BTreeSet<_> = r
-                .vaults
+                .vaults_for(scope)
                 .iter()
                 .filter(|v| {
                     peer.allowed.contains(v)
@@ -554,6 +560,14 @@ pub(super) fn revoked_operation_allowed(db: &Database, scope: Uuid, operation: &
     }
 }
 impl Removal {
+    /// The vaults delivered to `scope`: a relay recipient gets only the
+    /// vaults it received from here (#3105), every other receiver all of them.
+    fn vaults_for(&self, scope: Uuid) -> BTreeSet<String> {
+        self.relayed
+            .get(&scope)
+            .map(|relayed| self.vaults.intersection(relayed).cloned().collect())
+            .unwrap_or_else(|| self.vaults.clone())
+    }
     pub(super) fn matches(&self, id: Uuid, device: &str) -> bool {
         self.id == id && self.device == device
     }
@@ -607,6 +621,7 @@ impl Removal {
             epoch: None,
             delivered: BTreeMap::new(),
             undo: None,
+            relayed: BTreeMap::new(),
         }
     }
 }
@@ -998,29 +1013,35 @@ fn knows(db: &Database, peer: Uuid, vault: &str) -> bool {
         .is_some_and(|p| p.allowed.iter().any(|v| v == vault))
         || db.transfers.iter().any(|t| t.removal_binding(peer, vault))
 }
-/// The pairings through which this computer shared one of `vaults` onward to
-/// the removed `device`: its own durable share grant names that device. They
-/// received the vault from here, so this computer is their vault owner and
-/// they accept the relayed decision. The sender and every other peer get
-/// nothing, and a computer without such a grant waits for no one (#3105).
+/// The pairings through which this computer shared some of `vaults` onward
+/// to the removed `device`, each with exactly those vaults: its own durable
+/// share grant names that device. For those vaults only, this computer is
+/// the recipient's vault owner, so the recipient accepts the relayed
+/// decision; a vault it received from another computer is not named. The
+/// sender and every other peer get nothing, and a computer without such a
+/// grant waits for no one (#3105).
 fn onward_to_removed(
     db: &Database,
     sender: Uuid,
     device: &str,
     vaults: &BTreeSet<String>,
-) -> BTreeMap<Uuid, Paired> {
+) -> BTreeMap<Uuid, BTreeSet<String>> {
     db.peers
         .iter()
         .filter(|(peer, paired)| {
-            **peer != sender
-                && paired.syncthing_device.as_deref() == Some(device)
-                && db.share_grants.iter().any(|grant| {
-                    grant.for_peer(**peer)
-                        && grant.receives(device)
-                        && vaults.contains(&grant.vault)
-                })
+            **peer != sender && paired.syncthing_device.as_deref() == Some(device)
         })
-        .map(|(peer, paired)| (*peer, paired.clone()))
+        .filter_map(|(peer, _)| {
+            let shared: BTreeSet<String> = db
+                .share_grants
+                .iter()
+                .filter(|grant| {
+                    grant.for_peer(*peer) && grant.receives(device) && vaults.contains(&grant.vault)
+                })
+                .map(|grant| grant.vault.clone())
+                .collect();
+            (!shared.is_empty()).then_some((*peer, shared))
+        })
         .collect()
 }
 fn device_of(db: &Database, peer: Uuid) -> Option<String> {
@@ -1364,8 +1385,14 @@ impl Controller {
         // One exception: when this computer shared the vault onward to the
         // removed computer itself, it is that computer's vault owner and the
         // only route for the decision, so it relays it there (#3105).
-        let pending = if let Some(sender) = sender {
-            onward_to_removed(&db, sender, device, &vaults)
+        let relayed = sender
+            .map(|sender| onward_to_removed(&db, sender, device, &vaults))
+            .unwrap_or_default();
+        let pending = if sender.is_some() {
+            relayed
+                .keys()
+                .filter_map(|peer| db.peers.get(peer).map(|paired| (*peer, paired.clone())))
+                .collect()
         } else {
             db.peers
                 .iter()
@@ -1395,6 +1422,7 @@ impl Controller {
             epoch,
             delivered: BTreeMap::new(),
             undo: None,
+            relayed,
         });
         if older {
             if let Some(added) = db.removals.last_mut() {
@@ -2108,7 +2136,7 @@ impl Controller {
                 // Deliver the current version, not the copy (#3079). Its epoch
                 // lets a receiver that already knows a newer admission close it
                 // instead of applying it, whenever it arrives.
-                let Some((superseded, local_applied, prepared, epoch, admission)) = ({
+                let Some((superseded, local_applied, prepared, epoch, vaults, admission)) = ({
                     let db = self.shared.db.lock().unwrap();
                     db.removals
                         .iter()
@@ -2119,7 +2147,8 @@ impl Controller {
                                 r.local_applied,
                                 r.folders.is_some(),
                                 r.epoch.clone(),
-                                known_admission_for(&db, &r.device, &r.vaults),
+                                r.vaults_for(id),
+                                known_admission_for(&db, &r.device, &r.vaults_for(id)),
                             )
                         })
                 }) else {
@@ -2133,7 +2162,7 @@ impl Controller {
                     Operation::RemoveComputer {
                         id: removal.id,
                         device: removal.device.clone(),
-                        vaults: removal.vaults.clone(),
+                        vaults,
                         superseded,
                         epoch,
                         admission,
@@ -2510,6 +2539,7 @@ mod tests {
             epoch: Some(Epoch::default()),
             delivered: BTreeMap::new(),
             undo: None,
+            relayed: BTreeMap::new(),
         }
     }
     fn existing_vault(own: &str, vault: &str) -> Result<ExistingVault> {
@@ -4578,6 +4608,66 @@ mod tests {
         assert!(onward_to_removed(&db, a, &["EEEEEEE"; 8].join("-"), &vaults).is_empty());
         drop(db);
         computer.shutdown();
+        Ok(())
+    }
+
+    /// #3105 review: C received V1 and V2 from A, and shared only V1 onward
+    /// to B; B received V2 from D. A removes B from both. C relays only V1 to
+    /// B, on the pull and the push path, so B accepts it as from V1's owner;
+    /// B gets no V2 decision from C, which it would refuse as a whole.
+    #[test]
+    fn issue3105_relay_names_only_the_vaults_shared_onward() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let receiver = Controller::open(root.path().join("c"), vec![])?;
+        let carol = ["CCCCCCC"; 8].join("-");
+        let bob = ["BBBBBBB"; 8].join("-");
+        let owner = pairing(&["AAAAAAA"; 8].join("-"), wire::public(&wire::random()?)?)?;
+        let mut onward = pairing(&bob, wire::public(&wire::random()?)?)?;
+        // Approval exposes every attached vault in the catalog scope.
+        onward.allowed = vec!["v1".into(), "v2".into()];
+        let (a, b) = (owner.peer.id, onward.peer.id);
+        let both = BTreeSet::from(["v1".to_string(), "v2".to_string()]);
+        let v1 = BTreeSet::from(["v1".to_string()]);
+        let mut db = receiver.shared.db.lock().unwrap();
+        db.peers.insert(a, owner);
+        db.peers.insert(b, onward.clone());
+        db.share_grants.push(transfer::ShareGrant::new(
+            b,
+            &existing_vault(&carol, "v1")?,
+            &bob,
+        ));
+        let relayed = onward_to_removed(&db, a, &bob, &both);
+        assert_eq!(relayed, BTreeMap::from([(b, v1.clone())]));
+        let mut decision = removal(Uuid::new_v4(), &bob);
+        decision.vaults = both.clone();
+        decision.pending.insert(b, onward);
+        decision.relayed = relayed;
+        // Push path payload and its admission scope.
+        assert_eq!(decision.vaults_for(b), v1);
+        assert_eq!(decision.vaults_for(Uuid::new_v4()), both);
+        db.removals.push(decision);
+        // Pull path payload.
+        let pulled = requests(&db, b);
+        assert_eq!(pulled.len(), 1);
+        assert_eq!(pulled[0].vaults, v1);
+        drop(db);
+        receiver.shutdown();
+
+        // On B, C owns V1 and D owns V2: C's V1 decision is accepted, the
+        // unscoped one would be refused for V2.
+        let removed = Controller::open(root.path().join("b"), vec![])?;
+        let via_c = pairing(&carol, wire::public(&wire::random()?)?)?;
+        let via_d = pairing(&["DDDDDDD"; 8].join("-"), wire::public(&wire::random()?)?)?;
+        let (c, d) = (via_c.peer.id, via_d.peer.id);
+        let mut db = removed.shared.db.lock().unwrap();
+        db.peers.insert(c, via_c);
+        db.peers.insert(d, via_d);
+        db.transfers.push(received(c, "v1", &bob, true)?);
+        db.transfers.push(received(d, "v2", &bob, true)?);
+        assert!(removal_from_owner(&db, c, &v1));
+        assert!(!removal_from_owner(&db, c, &both));
+        drop(db);
+        removed.shutdown();
         Ok(())
     }
 }
