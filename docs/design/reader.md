@@ -165,8 +165,9 @@ original combined titlebar and document controls:
   live in the bottom line.
   A standalone image's Copy menu offers the same checked Copy image command as
   an embedded image. Video retains its card and Open with default app button.
-  Drawing files contribute Expand/details, Open in Excalidraw and Copy drawing
-  details through their loaded drawing handle. Drawing details opens the full
+  Drawing files contribute Expand/details, Edit drawing (#478, the offline
+  editor in docs/excalidraw-reader.md), Copy drawing details and Copy scene
+  through their loaded drawing handle. Drawing details opens the full
   diagnostics in a dialog, including from overflow; embedded rows stay intact.
 - **Logs (#2808).** Find in records is the same header field, with no count,
   case toggle or stepping; Enter retains the filter and focuses records, Esc
@@ -371,6 +372,8 @@ Reader tokens (new `reader-tokens.json`, loaded the same way):
 | Token | Light | Dark | Use |
 | --- | --- | --- | --- |
 | `text-faint` | `#8d929a` | `#7c818a` | section labels, counts, kbd hints |
+| `heading` | `#5034a8` | `#b9a9f5` | heading text in Reader and Live Preview (#3147); links inside keep `link` |
+| `heading1`..`heading6` | — | — | optional per-level heading colour (#3153); a missing level uses `heading`. Reader and Live Preview read the same values |
 | `link-underline` | `#0969e8` @ 28 % | `#71acff` @ 30 % | resting underline |
 | `missing-link` | `#9a5b00` | `#e2b25c` | unresolved wikilink text, dashed underline @ 50 % |
 | `code-bg` | `#f6f7f8` | `#26292e` | inline code, code blocks |
@@ -416,14 +419,73 @@ too. Status colors may fall back to the brand tokens; no other role inherits.
 | Paper | `paper` | warm off-white, ink-blue links, rust accent; sepia dark |
 | High contrast | `high-contrast` | black/white surfaces, AAA (7:1) reading text |
 | Nord | `nord` | cool arctic blues after the Nord palette |
+| Obsidianite | `obsidianite` | after Obsidianite (MIT): near-black violet canvas, cyan accent and H1, slate `#cbdbe5` H2–H6 (`heading2`..`heading6`), periwinkle links, Dracula code syntax; derived light variant |
 
 Token files live in `crates/okilum-shell/assets/themes/<key>.json`
 (`okilum-theme/v1`). A unit test checks every theme in both variants: `text`
-and `text-muted` on `surface`, `canvas` and `sidebar`; `link` and `missing-link`
-on `surface` and `canvas`; `text` on `code-bg`, `surface-raised`, `selected` and
+and `text-muted` on `surface`, `canvas` and `sidebar`; `link`, `missing-link` and
+`heading` and every heading level on `surface` and `canvas`; `text` on `code-bg`, `surface-raised`, `selected` and
 `hover`; status colors on `surface` and `on-status` on them — WCAG AA (4.5:1),
 AAA (7:1) for High contrast. `on-accent` on `accent` is 4.5:1 and `text-faint`
 3:1 (4.5:1 for High contrast). A new theme that fails is fixed, not exempted.
+Each theme's `heading` is a hue at least 25° from its `link`, so a heading
+never reads as clickable. A per-level colour differs from `text` and either
+keeps the same 25° or is a quiet tint under half the link's chroma, as
+Obsidianite's H2–H6 are.
+
+Obsidian community themes are ported offline with
+`scripts/themes/obsidian-theme-convert.py` (#3157, see
+[obsidian-theme-converter.md](obsidian-theme-converter.md)): it writes a theme
+file that already passes these gates, plus a report of every adjustment and
+every rule it could not carry over.
+
+**Decoration slots** (#3154). Besides colours, a theme may fill up to five
+decoration slots under `decorations.light` / `decorations.dark`. Each slot is
+drawn by one renderer path in the Reader (vendor patch 0155, `TextDecorations`
+on the TextView style) and the same values in Live Preview (the projection's
+`decorations()`, painted by the editor). A slot a theme leaves out draws
+exactly what Okilum drew before; today only Obsidianite fills them.
+
+| Slot | Keys | Drawn as |
+| --- | --- | --- |
+| `headingRule` | `from`, `to`, `length` (share of width), `thickness` px | 1 px line under H2–H6, `from` fading into `to` (the canvas) |
+| `hr` | `edge`, `middle`, `thickness` px | `edge → middle → edge`, two two-stop halves |
+| `blockquote` | `background` {`angle`, `from`, `to`}, `border`, `topBar` / `bottomBar` {`from`, `to`, `length`, `thickness`} | angled background, left border colour, short bars along the top and bottom edges; in Live Preview one background per run of quoted lines |
+| `linkMarker` | `from`, `to`, `height`, `bottom` (shares of the line height) | a band under the lower part of each link line, never the full line height |
+| `bold` | `from`, `to` | bold text coloured letter by letter along the span |
+
+Gradients are GPUI's two-stop `linear_gradient` (angles in CSS degrees);
+colours interpolate in sRGB with alpha. The bold gradient needs no GPUI patch:
+a bold span already is its own font run, so it takes one run colour (no new
+font-run split, so shaping and the line-layout cache key are unchanged) and
+its glyphs are painted again letter by letter at paint time. A span is
+coloured only when its edges already are font-run boundaries (checked with the
+resolved fonts in the Reader); bold inside a heading, links, code, syntax
+colours and bold right-to-left text keep their solid colours (decided per
+span: Latin bold in a mixed-direction paragraph keeps the gradient). Reader slots paint
+inside the block's existing box (the heading rule sits in the heading's bottom
+padding, quote bars and background over the quote, `hr` halves inside the 2 px
+rule), so no block height or text position changes. A vendor test
+counts real shaping calls: the gradient adds none and reuses the cached line,
+while a colour run per letter (the control) reshapes. Every slot is
+paint-only: no text, run or layout changes, no animation, and a theme switch
+recomposes Live Preview from the existing classification without parsing.
+A unit test rejects unknown slot names and checks bold endpoints at AA.
+
+**Motion slots** (#3151): a theme file may set optional animations in a
+top-level `motion` object, apart from colours and the per-mode `decorations`;
+they do not depend on light or dark. An absent slot means no motion. Motion is
+paint-only: no text shaping, relayout or re-parse, and a theme switch only
+repaints.
+
+- `motion.taskCheck` (#3155) — `{"durationMs": 1..=600, "bounce": 0..=0.5}`.
+  A click on a Live Preview task box plays the toggle: the box bounces to
+  `1 + bounce` of its size and back within the first 60 % of the duration
+  while the checkmark draws in (checking) or out (unchecking), easing out. The
+  click target does not move. It runs only after a click (not the ⌘L/Ctrl+L
+  shortcut, opening a note or a theme switch), never with the OS reduce-motion
+  setting, and requests frames only while it runs. Reader checkboxes are
+  read-only and never animate. Obsidianite: 300 ms, bounce 0.15.
 
 **Theme picker** (`theme_picker.rs`): a self-contained row of compact swatch
 cards (120 px). Each card previews the theme's sidebar, surface, text, muted
@@ -437,8 +499,48 @@ Legacy `appearance.json` is migration input only.
 
 The brand mark keeps its brand colors under every theme. The `highlight` color
 is resolved when a block is parsed, so an open note picks up a new theme's
-highlight on its next re-parse. The syntax-highlight theme for code blocks stays
-the toolkit's light/dark pair.
+highlight on its next re-parse.
+
+**Code syntax palette** (#3156): a theme may add an optional `syntax` map to
+each mode, keyed by tree-sitter capture name, values `#rrggbb`. A capture
+colours itself and the dotted children the map does not name (`string` also
+colours `string.escape` and `string.special`); a capture the parser emits but
+the palette does not list falls back to its parent (`keyword.modifier` →
+`keyword`). An unknown capture name or a non-colour value fails the unit tests. The map
+changes colours only: font style and weight stay the toolkit's, so a theme adds
+no font run, no shaping and no relayout (colour is not part of GPUI's line
+layout cache key). A theme without `syntax`, and every capture it leaves out,
+keeps the toolkit's light/dark palette, so Okilum, Graphite, Paper, High
+contrast and Nord look as before. Every `syntax` colour is at least 4.5:1 on
+`code-bg`, `canvas` and `surface-raised` (7:1 for High contrast), tested.
+One palette object exists per theme and mode, so re-applying a theme
+re-highlights nothing; a switch takes the same path as a light/dark switch and
+does not re-read the note.
+
+Obsidian themes colour code with CodeMirror (`.cm-<class>`) and Prism
+(`.token.<class>`) classes. Porting one maps them as follows:
+
+| Capture | CodeMirror | Prism |
+| --- | --- | --- |
+| `comment` | `cm-comment` | `comment`, `prolog` |
+| `string` | `cm-string`, `cm-string-2` | `string`, `char`, `attr-value` |
+| `string.escape` / `string.regex` | — | `char` / `regex` |
+| `number` | `cm-number` | `number` |
+| `boolean`, `constant` | `cm-atom` | `boolean`, `constant`, `symbol` |
+| `keyword` | `cm-keyword` | `keyword`, `important` |
+| `operator` | `cm-operator` | `operator` |
+| `function` | `cm-def`, `cm-builtin` | `function` |
+| `variable` / `variable.special` | `cm-variable` / `cm-variable-2` | `variable` |
+| `type`, `constructor` | `cm-type`, `cm-variable-3` | `class-name` |
+| `property` | `cm-property` | `property` |
+| `attribute` | `cm-attribute`, `cm-qualifier` | `atrule`, `attr-name` |
+| `tag` | `cm-tag` | `tag` |
+| `punctuation` | — | `punctuation` |
+| `link_uri` | `cm-url` | `url` |
+
+Obsidianite's dark palette is its Prism Dracula block (comment lifted from
+`#6272a4`, 3.5:1, to `#7f8dbd` for AA); its derived light mode uses Dracula's
+light Alucard colours, the string yellow darkened from `#846e15` for AA.
 
 **Vault colour** (#774, Oleg 2026-10-08): vaults are told apart like Chrome
 profiles while the theme stays app-wide. A vault may have one of eight presets

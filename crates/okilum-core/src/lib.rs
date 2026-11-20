@@ -20,6 +20,8 @@ pub mod canvas;
 pub mod capture;
 mod change_detection;
 pub mod code_language;
+#[cfg(any(unix, windows))]
+pub mod daily_notes;
 #[cfg(all(unix, feature = "brain"))]
 pub mod decision_reuse;
 pub mod deep_link;

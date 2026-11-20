@@ -292,6 +292,11 @@ impl ReadingHistory {
             quick_files: Vec::new(),
         });
         state.hidden_roots.remove(root);
+        // #3123: a root already recorded as a full vault stays one when a
+        // file inside it is opened on its own; only folders never opened as
+        // a vault become quick-viewer roots.
+        let full_vault =
+            state.last_documents.contains_key(root) && !state.quick_roots.contains(root);
         if single_file {
             if !document.is_empty() {
                 let file = root.join(document);
@@ -303,7 +308,9 @@ impl ReadingHistory {
                     .insert(0, (file, crate::reader_sidebar::now()));
                 state.quick_files.truncate(QUICK_FILES);
             }
-            state.quick_roots.insert(root.to_owned());
+            if !full_vault {
+                state.quick_roots.insert(root.to_owned());
+            }
         } else {
             state.quick_roots.remove(root);
         }
@@ -504,6 +511,51 @@ mod tests {
         assert_eq!(isolated_from(Some("relative/state".into())), None);
         assert_eq!(isolated_from(Some("".into())), None);
         assert_eq!(isolated_from(None), None);
+    }
+
+    /// #3123: opening one file inside a known vault on its own does not
+    /// demote the vault to a quick-viewer folder.
+    #[test]
+    fn a_single_file_open_inside_a_known_vault_keeps_it_a_vault() {
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let vault = fixture.path().join("Cline");
+        let quick = fixture.path().join("quick");
+        for (folder, file) in [(&vault, "notes.md"), (&quick, "file.md")] {
+            fs::create_dir(folder).unwrap();
+            fs::write(folder.join(file), "# Note").unwrap();
+        }
+        ReadingHistory::record_document_opened(&state, &vault, "start.md", false, Some(100))
+            .unwrap();
+        ReadingHistory::record_document_mode(&state, &vault, "notes.md", true).unwrap();
+        ReadingHistory::record_document_mode(&state, &quick, "file.md", true).unwrap();
+        assert_eq!(
+            ReadingHistory::known_vault_roots(&state).unwrap(),
+            std::slice::from_ref(&vault)
+        );
+        assert_eq!(
+            ReadingHistory::known_vaults(&state).unwrap()[0].last_opened,
+            Some(100)
+        );
+        assert_eq!(
+            ReadingHistory::quick_document(&state, &vault).unwrap(),
+            None
+        );
+        assert_eq!(
+            ReadingHistory::quick_files(&state)
+                .unwrap()
+                .iter()
+                .map(|(file, _)| file.clone())
+                .collect::<Vec<_>>(),
+            [quick.join("file.md"), vault.join("notes.md")],
+            "the file is still in the quick-file history"
+        );
+        // Control: a quick-viewer folder later opened as a vault is promoted.
+        ReadingHistory::record_document_mode(&state, &quick, "file.md", false).unwrap();
+        ReadingHistory::record_document_mode(&state, &quick, "file.md", true).unwrap();
+        assert!(ReadingHistory::known_vault_roots(&state)
+            .unwrap()
+            .contains(&quick));
     }
 
     #[test]

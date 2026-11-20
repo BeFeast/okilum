@@ -14,8 +14,8 @@ use windows::{
         Foundation::{HANDLE, HWND},
         Security::{
             Cryptography::{
-                CertCompareCertificateName, CertStrToNameW, CERT_NAME_STR_REVERSE_FLAG,
-                CERT_STRING_TYPE, CERT_X500_NAME_STR, CRYPT_INTEGER_BLOB, X509_ASN_ENCODING,
+                CertNameToStrW, CertStrToNameW, CERT_NAME_STR_REVERSE_FLAG, CERT_STRING_TYPE,
+                CERT_X500_NAME_STR, CRYPT_INTEGER_BLOB, X509_ASN_ENCODING,
             },
             WinTrust::*,
         },
@@ -23,24 +23,31 @@ use windows::{
     },
 };
 
+/// Names are held as canonical X.500 text decoded by CryptoAPI, so a policy
+/// matches the certificate regardless of the ASN.1 string type (UTF8String,
+/// PrintableString, BMPString) the CA chose for each attribute value.
 #[derive(Clone)]
 pub struct AuthenticodePolicy {
-    subject: Vec<u8>,
-    issuers: Vec<Vec<u8>>,
+    subject: String,
+    issuers: Vec<String>,
 }
+const NAME_TEXT: CERT_STRING_TYPE =
+    CERT_STRING_TYPE(CERT_X500_NAME_STR.0 | CERT_NAME_STR_REVERSE_FLAG);
 fn name_blob(bytes: &[u8]) -> CRYPT_INTEGER_BLOB {
     CRYPT_INTEGER_BLOB {
         cbData: bytes.len() as u32,
         pbData: bytes.as_ptr().cast_mut(),
     }
 }
-fn parse_name(name: &str) -> Result<Vec<u8>> {
+fn parse_name(name: &str) -> Result<String> {
+    canonical_name(&encode_name(name, NAME_TEXT)?)
+}
+fn encode_name(name: &str, flags: CERT_STRING_TYPE) -> Result<Vec<u8>> {
     ensure!(
         !name.is_empty() && name.len() <= 4096 && !name.chars().any(char::is_control),
         "invalid Authenticode distinguished name"
     );
     let text: Vec<_> = name.encode_utf16().chain(Some(0)).collect();
-    let flags = CERT_STRING_TYPE(CERT_X500_NAME_STR.0 | CERT_NAME_STR_REVERSE_FLAG);
     let mut size = 0;
     unsafe {
         CertStrToNameW(
@@ -72,11 +79,21 @@ fn parse_name(name: &str) -> Result<Vec<u8>> {
     bytes.truncate(size as usize);
     Ok(bytes)
 }
-fn same_name(actual: &[u8], expected: &[u8]) -> bool {
-    unsafe {
-        CertCompareCertificateName(X509_ASN_ENCODING, &name_blob(actual), &name_blob(expected))
-            .as_bool()
-    }
+/// Decodes an encoded X.509 name to its canonical X.500 text; the decoded
+/// value text does not depend on the attribute's ASN.1 string type.
+fn canonical_name(encoded: &[u8]) -> Result<String> {
+    let blob = name_blob(encoded);
+    let size = unsafe { CertNameToStrW(X509_ASN_ENCODING, &blob, NAME_TEXT, None) };
+    ensure!(
+        (2..=16384).contains(&size),
+        "invalid Authenticode name text size"
+    );
+    let mut wide = vec![0; size as usize];
+    ensure!(
+        unsafe { CertNameToStrW(X509_ASN_ENCODING, &blob, NAME_TEXT, Some(&mut wide)) } == size,
+        "Authenticode name text changed"
+    );
+    Ok(String::from_utf16(&wide[..wide.len() - 1])?)
 }
 impl AuthenticodePolicy {
     /// RFC2253 publisher and complete issuer-chain names from release config.
@@ -95,6 +112,17 @@ impl AuthenticodePolicy {
                 .collect::<Result<_>>()?,
         })
     }
+    /// The leaf must be the configured publisher and the configured issuers an
+    /// ordered prefix of the rest: Windows may extend a trusted chain past the
+    /// configured root, for example through a cross-signed root certificate.
+    fn matches_chain(&self, actual: &[String]) -> bool {
+        actual.len() > self.issuers.len()
+            && actual[0] == self.subject
+            && actual[1..]
+                .iter()
+                .zip(&self.issuers)
+                .all(|(actual, expected)| actual == expected)
+    }
     pub fn from_build() -> Result<Self> {
         Self::new(
             option_env!("OKILUM_WINDOWS_SIGN_SUBJECT").context("this build has no Authenticode publisher policy; install the signed beta build before connecting Sync")?,
@@ -104,14 +132,12 @@ impl AuthenticodePolicy {
 }
 impl ImagePolicy for AuthenticodePolicy {
     fn verify_image(&self, image: &Path) -> Result<()> {
-        let actual = verified_names(image)?;
+        let actual = verified_names(image)?
+            .iter()
+            .map(|name| canonical_name(name))
+            .collect::<Result<Vec<_>>>()?;
         ensure!(
-            actual.len() == self.issuers.len() + 1
-                && same_name(&actual[0], &self.subject)
-                && actual[1..]
-                    .iter()
-                    .zip(&self.issuers)
-                    .all(|(actual, expected)| same_name(actual, expected)),
+            self.matches_chain(&actual),
             "Authenticode publisher or issuer chain differs from this build's configured policy"
         );
         Ok(())
@@ -210,7 +236,10 @@ fn verified_names(path: &Path) -> Result<Vec<Vec<u8>>> {
 
 #[cfg(test)]
 pub(super) fn fixture_policy(path: &Path) -> Result<AuthenticodePolicy> {
-    let names = verified_names(path)?;
+    let names = verified_names(path)?
+        .iter()
+        .map(|name| canonical_name(name))
+        .collect::<Result<Vec<_>>>()?;
     ensure!(names.len() > 1, "signed fixture has no issuer chain");
     Ok(AuthenticodePolicy {
         subject: names[0].clone(),
@@ -221,6 +250,75 @@ pub(super) fn fixture_policy(path: &Path) -> Result<AuthenticodePolicy> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows::Win32::Security::Cryptography::{
+        CertCompareCertificateName, CERT_NAME_STR_FORCE_UTF8_DIR_STR_FLAG,
+    };
+    const PUBLISHER: &str = "CN=Open Source Developer Oleg Kossoy,O=Open Source Developer,L=Netanya,ST=Central District,C=IL";
+    const ISSUERS: [&str; 2] = ["CN=Certum Code Signing 2021 CA,OU=Certum Certification Authority,O=Asseco Data Systems S.A.,C=PL", "CN=Certum Trusted Network CA 2,OU=Certum Certification Authority,O=Unizeto Technologies S.A.,C=PL"];
+
+    fn release_policy() -> Result<AuthenticodePolicy> {
+        AuthenticodePolicy::new(PUBLISHER, &serde_json::to_string(&ISSUERS)?)
+    }
+
+    /// #3149: the real Certum leaf encodes CN, O, L and ST as UTF8String,
+    /// while the policy text encodes them as PrintableString by default.
+    #[test]
+    fn windows_authenticode_policy_matches_utf8_encoded_certificate_names() -> Result<()> {
+        let printable = encode_name(PUBLISHER, NAME_TEXT)?;
+        let utf8 = encode_name(
+            PUBLISHER,
+            CERT_STRING_TYPE(NAME_TEXT.0 | CERT_NAME_STR_FORCE_UTF8_DIR_STR_FLAG),
+        )?;
+        // Control: the encodings differ and a binary name compare rejects them.
+        ensure!(printable != utf8, "UTF8String encoding was not produced");
+        assert!(!unsafe {
+            CertCompareCertificateName(X509_ASN_ENCODING, &name_blob(&utf8), &name_blob(&printable))
+                .as_bool()
+        });
+        let policy = release_policy()?;
+        let mut chain = vec![canonical_name(&utf8)?];
+        for issuer in ISSUERS {
+            chain.push(canonical_name(&encode_name(
+                issuer,
+                CERT_STRING_TYPE(NAME_TEXT.0 | CERT_NAME_STR_FORCE_UTF8_DIR_STR_FLAG),
+            )?)?);
+        }
+        assert!(policy.matches_chain(&chain));
+        chain[0] = canonical_name(&encode_name(
+            "CN=Open Source Developer Other,O=Open Source Developer,L=Netanya,ST=Central District,C=IL",
+            CERT_STRING_TYPE(NAME_TEXT.0 | CERT_NAME_STR_FORCE_UTF8_DIR_STR_FLAG),
+        )?)?;
+        assert!(!policy.matches_chain(&chain));
+        Ok(())
+    }
+
+    #[test]
+    fn windows_authenticode_policy_issuers_are_an_ordered_chain_prefix() -> Result<()> {
+        let policy = release_policy()?;
+        let leaf = parse_name(PUBLISHER)?;
+        let issuing = parse_name(ISSUERS[0])?;
+        let root = parse_name(ISSUERS[1])?;
+        let cross = parse_name("CN=Certum Trusted Network CA,OU=Certum Certification Authority,O=Unizeto Technologies S.A.,C=PL")?;
+        assert!(policy.matches_chain(&[leaf.clone(), issuing.clone(), root.clone()]));
+        // Windows may extend the chain through the cross-signed root.
+        assert!(policy.matches_chain(&[
+            leaf.clone(),
+            issuing.clone(),
+            root.clone(),
+            cross.clone()
+        ]));
+        assert!(!policy.matches_chain(&[leaf.clone(), issuing.clone()]));
+        assert!(!policy.matches_chain(&[leaf.clone(), root.clone(), issuing.clone()]));
+        assert!(!policy.matches_chain(&[
+            leaf.clone(),
+            issuing.clone(),
+            cross.clone(),
+            root.clone()
+        ]));
+        assert!(!policy.matches_chain(&[cross, issuing, root]));
+        assert!(!policy.matches_chain(&[leaf]));
+        Ok(())
+    }
     #[test]
     fn windows_authenticode_policy_requires_trust_exact_signer_and_unchanged_bytes() -> Result<()> {
         use sha2::{Digest, Sha256};
@@ -233,24 +331,9 @@ mod tests {
                 == super::super::payload::UPSTREAM_HASH,
             "signed positive fixture differs from the pinned upstream executable"
         );
-        let names = verified_names(&signed)?;
-        let text = |name: &[u8]| -> Result<String> {
-            use windows::Win32::Security::Cryptography::CertNameToStrW;
-            let flags = CERT_STRING_TYPE(CERT_X500_NAME_STR.0 | CERT_NAME_STR_REVERSE_FLAG);
-            let size = unsafe { CertNameToStrW(X509_ASN_ENCODING, &name_blob(name), flags, None) };
-            ensure!(size > 1, "signed fixture name is unavailable");
-            let mut wide = vec![0; size as usize];
-            ensure!(
-                unsafe {
-                    CertNameToStrW(X509_ASN_ENCODING, &name_blob(name), flags, Some(&mut wide))
-                } == size,
-                "signed fixture name changed"
-            );
-            Ok(String::from_utf16(&wide[..wide.len() - 1])?)
-        };
-        let names = names
+        let names = verified_names(&signed)?
             .iter()
-            .map(|name| text(name))
+            .map(|name| canonical_name(name))
             .collect::<Result<Vec<_>>>()?;
         let policy = AuthenticodePolicy::new(&names[0], &serde_json::to_string(&names[1..])?)?;
         policy.verify_image(&signed)?;

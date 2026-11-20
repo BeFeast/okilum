@@ -155,3 +155,14 @@ fn issue2847_executor_bootstrap_uses_existing_at_contract_paths() {
         .contains("resolve and verify these paths on the server"));
     assert!(!request.manager_instructions.contains("_AgentContract.md"));
 }
+
+#[test]
+fn issue1420_request_names_its_exact_marker_line_for_the_launched_thread() {
+    let (area, binding, context, draft) = setup();
+    let request = Request::prepare(&area.0, &binding, &context, &draft).unwrap();
+    let line = format!("{}{}", progress::MARKER, request.request_id);
+    assert!(request.manager_instructions.contains(&format!(
+        "MUST begin with this exact first line, before any bootstrap: {line} "
+    )));
+    assert!(progress::classify("running").is_some() && progress::classify("new-status").is_none());
+}

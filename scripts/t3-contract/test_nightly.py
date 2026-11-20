@@ -100,7 +100,7 @@ class ContractHarness(unittest.TestCase):
                 self.assertEqual(process.wait.call_count, 2)
 
     def test_native_probe_gets_secret_only_on_stdin_and_requires_all_receipts(self):
-        valid = {key: True for key in nightly.RUNTIME_PROOFS}
+        valid = {**{key: True for key in nightly.RUNTIME_PROOFS}, 'capability_unknown': []}
         with patch.object(nightly, 'fixture_thread', return_value='idle-thread') as fixture, \
                 patch.object(nightly, 'command', return_value='{"credential":"one-time-secret"}'), \
                 patch.object(nightly.subprocess, 'run', return_value=Mock(
@@ -319,11 +319,18 @@ class ContractHarness(unittest.TestCase):
                 self.assertTrue(receipt['schema_compatibility']['errors'])
 
     def test_native_probe_rejects_each_missing_proof_and_legacy_only_receipt(self):
-        valid = {key: True for key in nightly.RUNTIME_PROOFS}
+        valid = {**{key: True for key in nightly.RUNTIME_PROOFS}, 'capability_unknown': []}
         with patch.object(nightly, 'fixture_thread', return_value='idle-thread'), \
                 patch.object(nightly, 'command', return_value='{"credential":"secret"}'), \
                 patch.object(nightly.subprocess, 'run') as launch:
-            cases = [{key: True for key in valid if key != absent} for absent in valid]
+            cases = [{key: value for key, value in valid.items() if key != absent} for absent in valid]
+            # Unknown flags must be named from the consumed set and agree with the proof.
+            cases += [{**valid, 'capability_unknown': ['somethingElse']},
+                      {**valid, 'capability_unknown': 'questionAttachments'},
+                      {**valid, 'capability_unknown': ['questionAttachments']},
+                      {**valid, 'environment_capabilities': False},
+                      {**valid, 'environment_capabilities': False,
+                       'capability_unknown': ['questionAttachments'], 'dispatch_command': False}]
             cases += [{'paired': True, 'snapshot': True, 'resume': True,
                        'resume_without_snapshot': True}, []]
             for receipt in cases:
@@ -332,6 +339,48 @@ class ContractHarness(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, 'Incomplete'):
                         nightly.native_roundtrip(Path('/server'), Path('/base'), {},
                                                  'http://127.0.0.1:1', Path('/probe'))
+
+    def test_unadvertised_capability_flag_is_reported_by_name_and_fails(self):
+        degraded = {**{key: True for key in nightly.RUNTIME_PROOFS}, 'environment_capabilities': False,
+                    'capability_unknown': ['questionAttachments']}
+        with patch.object(nightly, 'fixture_thread', return_value='idle-thread'), \
+                patch.object(nightly, 'command', return_value='{"credential":"secret"}'), \
+                patch.object(nightly.subprocess, 'run',
+                             return_value=Mock(returncode=0, stdout=json.dumps(degraded))):
+            native = nightly.native_roundtrip(Path('/server'), Path('/base'), {},
+                                              'http://127.0.0.1:1', Path('/probe'))
+        self.assertEqual(nightly.capability_unknown(native), ['questionAttachments'])
+        receipt = {'schema_compatibility': {'status': 'PASS'}, 'bootstrap': {'native_client': native}}
+        self.assertEqual(nightly.contract_status(receipt), 'FAIL')
+
+    def test_run_names_degraded_capability_flags_in_the_receipt(self):
+        release = {'tag_name': 'vtest', 'html_url': 'https://example.invalid/release',
+                   'assets': [{'name': 't3-test-linux-x64.tar.gz', 'browser_download_url': 'u',
+                               'digest': 'sha256:' + nightly.hashlib.sha256(b'asset').hexdigest()}]}
+        native = {**{key: True for key in nightly.RUNTIME_PROOFS}, 'environment_capabilities': False,
+                  'capability_unknown': ['fileAttachments.maxUploadBytes', 'attachmentUploads']}
+        def unpack(data, destination):
+            destination.mkdir(parents=True, exist_ok=True)
+            executable = destination / 't3'
+            executable.write_text('')
+            executable.chmod(0o700)
+        def schema(release, root, output, receipt):
+            receipt['schema_compatibility'] = {'status': 'PASS'}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, GITHUB_TOKEN='t', GITHUB_ACTIONS='true',
+                           RUNNER_ENVIRONMENT='github-hosted'), \
+                patch.object(nightly, 'command', return_value='sha\n'), \
+                patch.object(nightly, 'upstream_releases', return_value=[release]), \
+                patch.object(nightly, 'latest', return_value=release), \
+                patch.object(nightly, 'observe_schema', side_effect=schema), \
+                patch.object(nightly, 'build_client', return_value=Path(__file__)), \
+                patch.object(nightly, 'request', return_value=b'asset'), \
+                patch.object(nightly, 'extract', side_effect=unpack), \
+                patch.object(nightly, 'bootstrap', return_value={'native_client': native}):
+            receipt = nightly.run(Path(directory))
+        self.assertEqual(receipt['status'], 'FAIL')
+        self.assertIn('attachmentUploads, fileAttachments.maxUploadBytes', receipt['capability_error'])
+        self.assertIn('server.getConfig capability flags', receipt['enabled_operations'])
 
     def test_schema_snapshot_covers_all_deferred_wire_directions_and_auth(self):
         value = json.loads((Path(__file__).parent / 'snapshot.json').read_text())
