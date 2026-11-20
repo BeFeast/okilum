@@ -1397,7 +1397,9 @@ impl Controller {
             );
         }
         #[cfg(test)]
-        if let Some(hook) = self.shared.removal_hook.lock().unwrap().clone() {
+        let hook = self.shared.removal_hook.lock().unwrap().clone();
+        #[cfg(test)]
+        if let Some(hook) = hook {
             hook("queue", id);
         }
         let mut db = self.shared.db.lock().unwrap();
@@ -1765,7 +1767,9 @@ impl Controller {
             }
         }
         #[cfg(test)]
-        if let Some(hook) = self.shared.removal_hook.lock().unwrap().clone() {
+        let hook = self.shared.removal_hook.lock().unwrap().clone();
+        #[cfg(test)]
+        if let Some(hook) = hook {
             hook("apply", id);
         }
         {
@@ -2223,7 +2227,9 @@ impl Controller {
         }
         let removals = self.shared.db.lock().unwrap().removals.clone();
         #[cfg(test)]
-        if let Some(hook) = self.shared.removal_hook.lock().unwrap().clone() {
+        let hook = self.shared.removal_hook.lock().unwrap().clone();
+        #[cfg(test)]
+        if let Some(hook) = hook {
             hook("push", Uuid::nil());
         }
         for removal in removals {
