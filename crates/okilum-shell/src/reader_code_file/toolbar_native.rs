@@ -32,6 +32,11 @@ const WALL_BUDGET_MS: f64 = 16.;
 /// then at most one miss per job, 38.8 ms). No such source is established on
 /// macOS: one frame there missed once at 20.1 ms. A regression that waits
 /// longer, or in more frames, still fails.
+///
+/// Accepted residual risk: without kernel tracing the gate cannot tell why a
+/// frame waited. A new UI-thread wait (lock, synchronous I/O) that stays within
+/// these counts and ceilings passes, as scheduler waits do. The old rule
+/// (every frame <=16 ms wall) caught it but failed on runner scheduling alone.
 #[cfg(target_os = "windows")]
 const WALL_MISSES_ALLOWED: usize = 2;
 #[cfg(target_os = "windows")]
@@ -43,7 +48,9 @@ const WALL_CEILING_MS: f64 = 25.;
 
 /// Thread CPU clock with sub-millisecond resolution. GetThreadTimes ticks at
 /// 15.6 ms on Windows, too coarse for a 16 ms budget, so Windows counts thread
-/// cycles and converts them with a rate calibrated on this thread.
+/// cycles and converts them with a rate calibrated on this thread. Windows
+/// counts those cycles with the time-stamp counter, so the rate is constant
+/// only on a CPU with an invariant TSC; `calibrate` requires one.
 #[cfg(target_os = "windows")]
 struct RunningClock {
     cycles_per_ms: f64,
@@ -63,11 +70,34 @@ impl RunningClock {
         cycles
     }
 
+    /// An invariant TSC (CPUID 0x8000_0007, EDX bit 8) ticks at one rate in
+    /// every P-, C- and T-state, so one calibrated rate converts every frame.
+    /// Without it the counter may slow inside a frame and read short.
+    #[cfg(target_arch = "x86_64")]
+    fn require_invariant_tsc() {
+        use std::arch::x86_64::__cpuid;
+        // Leaf 0x8000_0007 is read only after the maximum extended leaf
+        // confirms it exists.
+        let max = __cpuid(0x8000_0000).eax;
+        let power = (max >= 0x8000_0007).then(|| __cpuid(0x8000_0007).edx);
+        let invariant = power.is_some_and(|edx| edx & (1 << 8) != 0);
+        diagnostic_println!("CODE2810_INVARIANT_TSC max_leaf={max:#x} invariant={invariant}");
+        assert!(
+            invariant,
+            "thread cycles can only be converted to time with an invariant TSC"
+        );
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    fn require_invariant_tsc() {
+        panic!("the Windows Running meter needs an x86_64 invariant TSC");
+    }
+
     /// Cycles only accrue while the thread runs, so preemption during a spin
     /// lowers the measured rate, and a low rate overstates Running time. The
-    /// highest of several spins is kept. Windows does not promise a constant
-    /// counter rate, so `check_rate` measures it again after the passes.
+    /// highest of several spins is kept.
     fn calibrate() -> Self {
+        Self::require_invariant_tsc();
         let mut best = 0f64;
         for _ in 0..5 {
             let (wall, cycles) = (Instant::now(), Self::cycles());
@@ -86,21 +116,6 @@ impl RunningClock {
     fn now_ms(&self) -> f64 {
         Self::cycles() as f64 / self.cycles_per_ms
     }
-
-    /// A counter that slowed after calibration would make every frame read
-    /// short. Fail when the rate measured after the passes is lower.
-    fn check_rate(&self) {
-        let after = Self::calibrate().cycles_per_ms;
-        diagnostic_println!(
-            "CODE2810_RUNNING_RATE before={} after={after}",
-            self.cycles_per_ms
-        );
-        assert!(
-            after >= self.cycles_per_ms * 0.95,
-            "thread cycle rate fell from {} to {after} cycles/ms during the passes",
-            self.cycles_per_ms
-        );
-    }
 }
 
 #[cfg(unix)]
@@ -111,9 +126,6 @@ impl RunningClock {
     fn calibrate() -> Self {
         Self
     }
-
-    /// The thread CPU clock counts time directly.
-    fn check_rate(&self) {}
 
     fn now_ms(&self) -> f64 {
         let mut t = libc::timespec {
@@ -299,7 +311,6 @@ pub(super) fn entry() -> bool {
                 assert!(wall_misses<=WALL_MISSES_ALLOWED,"{wall_misses} of 48 Tree scroll frames exceeded {WALL_BUDGET_MS} ms wall (marks={marked}); allowed {WALL_MISSES_ALLOWED}");
                 assert!(scroll_rasterizations<=1,"Tree scroll rasterized new glyph variants after warm-up (marks={marked}): {scroll_rasterizations}");
             }
-            if !smoke {running.check_rate();}
             let receipt=serde_json::json!({"real_native_platform":true,"mounted":"Reader","bytes":bytes,"paths_keys":414,"initial_rasterizations":initial_rasterizations,"open_ms":open_ms,"frames":frames,"source_sha":env!("OKILUM_SOURCE_COMMIT"),"running_budget_ms":RUNNING_BUDGET_MS,"wall_budget_ms":WALL_BUDGET_MS,"wall_misses_allowed":WALL_MISSES_ALLOWED,"wall_ceiling_ms":WALL_CEILING_MS,"measurement":if smoke {"debug-smoke"} else {"production-release"}});
             std::fs::write(directory.join("toolbar-receipt.json"),receipt.to_string()).unwrap();
             diagnostic_println!("CODE2810_NATIVE_READER_PASS {receipt}");
