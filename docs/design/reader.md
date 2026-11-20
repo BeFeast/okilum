@@ -432,6 +432,12 @@ never reads as clickable. A per-level colour differs from `text` and either
 keeps the same 25° or is a quiet tint under half the link's chroma, as
 Obsidianite's H2–H6 are.
 
+Obsidian community themes are ported offline with
+`scripts/themes/obsidian-theme-convert.py` (#3157, see
+[obsidian-theme-converter.md](obsidian-theme-converter.md)): it writes a theme
+file that already passes these gates, plus a report of every adjustment and
+every rule it could not carry over.
+
 **Theme picker** (`theme_picker.rs`): a self-contained row of compact swatch
 cards (120 px). Each card previews the theme's sidebar, surface, text, muted
 text, link and accent in the variant currently shown. The selected card has a
