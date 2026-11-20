@@ -48,7 +48,7 @@ index 16c31524..8d52031b 100644
          *self.state.read(cx).painted_tasks.borrow_mut() =
              Some((prepaint.last_layout.source_stamp, painted_tasks));
 diff --git a/crates/base/src/input/base/marker_paint.rs b/crates/base/src/input/base/marker_paint.rs
-index c0ce6186..3c2a9e8d 100644
+index c0ce6186..7adcf6b5 100644
 --- a/crates/base/src/input/base/marker_paint.rs
 +++ b/crates/base/src/input/base/marker_paint.rs
 @@ -46,6 +46,12 @@ thread_local! {
@@ -64,7 +64,7 @@ index c0ce6186..3c2a9e8d 100644
  fn source_boundaries(text: &str) -> Vec<usize> {
      #[cfg(test)]
      SOURCE_INDEX_BUILDS.with(|count| count.set(count.get() + 1));
-@@ -317,6 +323,54 @@ pub(super) fn code_rows(layout: &LastLayout, validated: &MarkerSource) -> Vec<Ve
+@@ -317,6 +323,51 @@ pub(super) fn code_rows(layout: &LastLayout, validated: &MarkerSource) -> Vec<Ve
  /// and the window bounds of the drawn box (the click target).
  pub(super) type PaintedTask = (Range<usize>, bool, Bounds<Pixels>);
  
@@ -96,30 +96,27 @@ index c0ce6186..3c2a9e8d 100644
 +/// The checkmark in box-side units, drawn from its short leg to its tip.
 +const CHECK: [(f32, f32); 3] = [(0.24, 0.52), (0.43, 0.72), (0.78, 0.3)];
 +
-+/// The checkmark's points with only `stroke` (0..=1) of its length drawn.
-+fn check_points(stroke: f32) -> Vec<(f32, f32)> {
++/// The checkmark's points with only `stroke` (0..=1) of its length drawn, and
++/// how many of them are used. No allocation: this runs in paint.
++fn check_points(stroke: f32) -> ([(f32, f32); 3], usize) {
++    if stroke >= 1. {
++        return (CHECK, 3);
++    }
 +    let len = |a: (f32, f32), b: (f32, f32)| (b.0 - a.0).hypot(b.1 - a.1);
 +    let legs = [len(CHECK[0], CHECK[1]), len(CHECK[1], CHECK[2])];
-+    let mut left = stroke.clamp(0., 1.) * (legs[0] + legs[1]);
-+    let mut points = vec![CHECK[0]];
-+    for (i, leg) in legs.into_iter().enumerate() {
-+        let (a, b) = (CHECK[i], CHECK[i + 1]);
-+        if left >= leg {
-+            points.push(b);
-+            left -= leg;
-+        } else {
-+            let f = left / leg;
-+            points.push((a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f));
-+            break;
-+        }
++    let left = stroke.max(0.) * (legs[0] + legs[1]);
++    let along = |a: (f32, f32), b: (f32, f32), f: f32| (a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f);
++    if left < legs[0] {
++        ([CHECK[0], along(CHECK[0], CHECK[1], left / legs[0]), CHECK[2]], 2)
++    } else {
++        ([CHECK[0], CHECK[1], along(CHECK[1], CHECK[2], (left - legs[0]) / legs[1])], 3)
 +    }
-+    points
 +}
 +
  impl RowPaint {
      /// Expose precisely the task shapes admitted by projection validation.
      pub(super) fn task_accessibility_nodes(
-@@ -337,17 +391,20 @@ impl RowPaint {
+@@ -337,17 +388,20 @@ impl RowPaint {
          })
      }
  
@@ -142,7 +139,7 @@ index c0ce6186..3c2a9e8d 100644
          match &self.foreground {
              Foreground::Pieces(pieces) => {
                  for piece in pieces {
-@@ -428,6 +485,23 @@ impl RowPaint {
+@@ -428,6 +482,23 @@ impl RowPaint {
                              size(side, side),
                          );
                          tasks.push((shape.source.clone(), checked, b));
@@ -166,7 +163,7 @@ index c0ce6186..3c2a9e8d 100644
                          window.paint_quad(quad(
                              b,
                              side * 0.2,
-@@ -436,11 +510,12 @@ impl RowPaint {
+@@ -436,11 +507,13 @@ impl RowPaint {
                              color.opacity(if checked { 0.9 } else { 0.6 }),
                              BorderStyle::default(),
                          ));
@@ -176,14 +173,15 @@ index c0ce6186..3c2a9e8d 100644
 -                            check.move_to(b.origin + point(side * 0.24, side * 0.52));
 -                            check.line_to(b.origin + point(side * 0.43, side * 0.72));
 -                            check.line_to(b.origin + point(side * 0.78, side * 0.3));
-+                            for (i, (x, y)) in check_points(stroke).into_iter().enumerate() {
++                            let (points, used) = check_points(stroke);
++                            for (i, &(x, y)) in points[..used].iter().enumerate() {
 +                                let at = b.origin + point(side * x, side * y);
 +                                if i == 0 { check.move_to(at) } else { check.line_to(at) }
 +                            }
                              if let Ok(path) = check.build() {
                                  window.paint_path(path, color);
                              }
-@@ -465,7 +540,7 @@ impl RowPaint {
+@@ -465,7 +538,7 @@ impl RowPaint {
                  });
              }
          }
@@ -192,7 +190,7 @@ index c0ce6186..3c2a9e8d 100644
      }
  }
  
-@@ -607,6 +682,48 @@ mod tests {
+@@ -607,6 +680,52 @@ mod tests {
          assert_eq!(empty.task_accessibility_nodes().count(), 0);
      }
  
@@ -226,16 +224,20 @@ index c0ce6186..3c2a9e8d 100644
 +
 +    #[test]
 +    fn check_points_draw_a_prefix_of_the_checkmark() {
-+        assert_eq!(check_points(1.), CHECK.to_vec());
-+        assert_eq!(check_points(0.), vec![CHECK[0], CHECK[0]]);
-+        let half = check_points(0.5);
++        let drawn = |stroke| {
++            let (points, used) = check_points(stroke);
++            points[..used].to_vec()
++        };
++        assert_eq!(drawn(1.), CHECK.to_vec(), "a checked box draws the whole mark");
++        assert_eq!(drawn(0.), vec![CHECK[0], CHECK[0]]);
++        let half = drawn(0.5);
 +        // The short leg is about a third of the length: half reaches the long leg.
 +        assert_eq!(half.len(), 3);
 +        assert_eq!(half[1], CHECK[1]);
 +        assert!(half[2].0 < CHECK[2].0 && half[2].0 > CHECK[1].0);
-+        let quarter = check_points(0.1);
-+        assert_eq!(quarter.len(), 2);
-+        assert!(quarter[1].0 < CHECK[1].0);
++        let start = drawn(0.1);
++        assert_eq!(start.len(), 2);
++        assert!(start[1].0 < CHECK[1].0);
 +    }
 +
      struct Fixture {
