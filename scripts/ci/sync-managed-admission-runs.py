@@ -4,6 +4,10 @@
 Independent crash checkpoints have separate parent processes and private state
 roots. At most two run together; each remains a subreaper of its own helpers.
 The owning Python process checks and reaps the complete fixture tree on exit.
+
+A HOST_DISCOVERY test runs alone: its product path scans /proc for every
+same-uid Syncthing and correctly refuses any it does not own, so a concurrent
+group's live fixture runtime would fail it (#3069).
 """
 import os
 from pathlib import Path
@@ -40,6 +44,12 @@ TESTS = {
     'issue3079_rejoin_through_another_computer_reuses_the_kept_copy',
     'issue3079_offline_removal_then_rejoin_through_another_computer',
 }
+# linux_bootstrap::connect_with repeats complete host discovery
+# (direct::configuration_paths) before taking lifecycle authority.
+HOST_DISCOVERY = {
+    'issue2582_linux_bootstrap_and_replaced_bindings_fail_closed',
+}
+assert HOST_DISCOVERY <= TESTS
 # #3080: these fill a private tmpfs; scripts/ci/sync-disk-full.sh mounts and runs them.
 DISK_FULL = {
     'issue3080_first_merge_disk_full_keeps_every_version_and_recovers',
@@ -63,10 +73,12 @@ def main():
     assert discovered == TESTS | DISK_FULL | {'issue2582_child'}, discovered
     # The #3079 rejoin controls run inside 'remaining': a further parallel
     # process of multi-runtime fixtures made port reuse hit other tests.
+    # (name, crash checkpoints, exact tests, runs alone)
     groups = [
-        ('crash-even', CHECKPOINTS[::2]),
-        ('crash-odd', CHECKPOINTS[1::2]),
-        ('remaining', ()),
+        ('host-discovery', (), sorted(HOST_DISCOVERY), True),
+        ('crash-even', CHECKPOINTS[::2], [CRASH_TEST], False),
+        ('crash-odd', CHECKPOINTS[1::2], [CRASH_TEST], False),
+        ('remaining', (), None, False),
     ]
     print(f'Managed admission fixture evidence: {work}', flush=True)
     active, all_runs = [], []
@@ -76,7 +88,23 @@ def main():
         raise SystemExit(128 + signum)
     signal.signal(signal.SIGTERM, interrupted)
 
-    def start(name, checkpoints):
+    def foreign_syncthing():
+        # The same scope as direct::configuration_paths: this uid, exe named syncthing.
+        found = []
+        for entry in Path('/proc').iterdir():
+            try:
+                if not entry.name.isdecimal() or entry.stat().st_uid != os.geteuid():
+                    continue
+                if os.readlink(entry / 'exe').removesuffix(' (deleted)').rsplit('/', 1)[-1] == 'syncthing':
+                    found.append(int(entry.name))
+            except (FileNotFoundError, ProcessLookupError, PermissionError):
+                continue
+        return found
+
+    def start(name, checkpoints, selected, alone):
+        if alone:
+            assert not active, (name, [run[0] for run in active])
+            assert not foreign_syncthing(), (name, 'same-uid Syncthing before host discovery', foreign_syncthing())
         root = work / name
         root.mkdir(mode=0o700)
         (root / 'state').mkdir(mode=0o700)
@@ -85,32 +113,37 @@ def main():
         # Never inherit a caller's narrowed selection into the complete gate.
         env.pop('OKILUM_FIRST_SYNC_CRASH_CASE', None)
         command = [executable, '--include-ignored', '--nocapture', '--test-threads=1']
-        if checkpoints:
-            command += [CRASH_TEST, '--exact']
-            env['OKILUM_FIRST_SYNC_CRASH_CASE'] = ','.join(checkpoints)
+        if selected:
+            command += [*selected, '--exact']
         else:
             command += ['--skip', 'issue2582_child', '--skip', CRASH_TEST, '--skip', 'issue3080_']
+            for test in sorted(HOST_DISCOVERY):
+                command += ['--skip', test]
+        if checkpoints:
+            env['OKILUM_FIRST_SYNC_CRASH_CASE'] = ','.join(checkpoints)
         log = root / 'acceptance.log'
         with log.open('w') as output:
             process = subprocess.Popen(command, env=env, stdout=output, stderr=subprocess.STDOUT,
                                        preexec_fn=lifecycle['parent_death_signal']())
-        run = (name, checkpoints, process, log)
+        run = (name, checkpoints, process, log, selected, alone)
         active.append(run)
         all_runs.append(run)
 
     try:
         while groups or active:
-            while groups and len(active) < 2:
+            # A group that runs alone waits for an empty slot set and blocks the rest.
+            while groups and len(active) < 2 and not any(run[5] for run in active) \
+                    and not (active and groups[0][3]):
                 start(*groups.pop(0))
             assert time.monotonic() < deadline, 'managed admission exceeded the unchanged 600s deadline'
             for run in active[:]:
-                name, checkpoints, process, log = run
+                name, checkpoints, process, log, selected, _ = run
                 if process.poll() is None:
                     continue
                 process.wait()
                 output = log.read_text()
                 print(f'=== Managed admission {name} ===\n{output}', flush=True)
-                expected = {CRASH_TEST} if checkpoints else TESTS - {CRASH_TEST}
+                expected = set(selected) if selected else TESTS - {CRASH_TEST} - HOST_DISCOVERY
                 for test in expected:
                     assert f'test {test} ...' in output, (name, test, output)
                 assert process.returncode == 0 and f'test result: ok. {len(expected)} passed; 0 failed;' in output, (name, process.returncode, output)
@@ -125,7 +158,7 @@ def main():
         print(f'MANAGED_ADMISSION_PASS: {len(TESTS)} selected tests and {len(CHECKPOINTS)} crash checkpoints passed; fixture processes=0; children reaped', flush=True)
         return 0
     finally:
-        for name, _, process, log in all_runs:
+        for name, _, process, log, _, _ in all_runs:
             if process.poll() is None:
                 process.kill()
             process.wait()
