@@ -66,6 +66,17 @@ the Xbox Game Bar starts a screen recording on it and the key never reaches
 Okilum. When Explorer can neither select the item nor open its folder, a toast
 says so instead of the action doing nothing.
 
+## Open in the default code editor
+
+**Open in default code editor (#1400):** Option+Command+O on macOS and
+Ctrl+Shift+A on Linux and Windows opens the open document in the default code
+editor, the one the «Open in <Editor>» toolbar button names (the last editor
+used, else the first installed). Command/Ctrl+O stays Open File, and
+Ctrl+Shift+O Open Folder; Linux and Windows get no new Ctrl+Alt+letter (AltGr).
+A dirty draft is saved first, and the caret line is passed where the editor
+takes one. The action is `okilum::OpenInDefaultEditor` in the Reader context
+and can be rebound here.
+
 ## Open in terminal
 
 **Open in terminal (#2837):** Option+Command+T on macOS, Alt+Super+T on Linux

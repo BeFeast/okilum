@@ -108,9 +108,12 @@ fn plan(
     }
 }
 
-fn current_plan(path: &Path) -> Launch {
+/// The «Open in» default editor (#1400) of this run, or none.
+type Preferred = Option<&'static crate::open_in::Editor>;
+
+fn current_plan(preferred: Preferred, path: &Path) -> Launch {
     plan(
-        crate::open_in::preferred().map(|editor| (editor.label, editor.command(path))),
+        preferred.map(|editor| (editor.label, editor.command(path))),
         [std::env::var_os("VISUAL"), std::env::var_os("EDITOR")],
         Os::CURRENT,
         path,
@@ -118,8 +121,8 @@ fn current_plan(path: &Path) -> Launch {
 }
 
 /// The name the context menu and the toasts use for the editor.
-pub(super) fn editor_label() -> String {
-    current_plan(Path::new("block.txt")).label
+pub(super) fn editor_label(cx: &App) -> String {
+    current_plan(crate::open_in::preferred(cx), Path::new("block.txt")).label
 }
 
 fn spawn(launch: &Launch) -> anyhow::Result<()> {
@@ -372,9 +375,10 @@ impl Reader {
 
     /// «Open block in external editor» (the context menu and the command).
     pub(super) fn open_block_externally(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let preferred = crate::open_in::preferred(cx);
         self.start_external_block(
-            |path| {
-                let launch = current_plan(path);
+            move |path| {
+                let launch = current_plan(preferred, path);
                 spawn(&launch)
                     .map(|()| launch.label.clone())
                     .map_err(|error| anyhow::anyhow!("Cannot open in {}: {error:#}", launch.label))

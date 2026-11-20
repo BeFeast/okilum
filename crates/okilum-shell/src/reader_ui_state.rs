@@ -158,6 +158,11 @@ struct Saved {
     note_open_mode: String,
     /// Soft wrap in code files (#998); off means horizontal scroll.
     code_soft_wrap: bool,
+    /// The «Open in» default code editor (#1400): the id of the editor last
+    /// used to open a note. Empty, or an editor that is no longer installed,
+    /// falls back to the first installed one.
+    #[serde(deserialize_with = "lenient_string")]
+    open_in_editor: String,
     /// Focus mode in the note editor (#1643): every block but the caret's
     /// is dimmed. One app-wide toggle, off by default.
     focus_mode: bool,
@@ -242,6 +247,7 @@ impl Default for Saved {
             tree_auto_reveal: false,
             note_open_mode: String::new(),
             code_soft_wrap: false,
+            open_in_editor: String::new(),
             focus_mode: false,
             typewriter_mode: false,
             vault_open: String::new(),
@@ -293,6 +299,7 @@ struct Store {
     tree_auto_reveal_changed: bool,
     note_open_mode_changed: bool,
     code_soft_wrap_changed: bool,
+    open_in_editor_changed: bool,
     writing_modes_changed: bool,
     vault_open_changed: bool,
     settings_section_changed: bool,
@@ -410,6 +417,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         tree_auto_reveal_changed: false,
         note_open_mode_changed: false,
         code_soft_wrap_changed: false,
+        open_in_editor_changed: false,
         writing_modes_changed: false,
         vault_open_changed: false,
         settings_section_changed: false,
@@ -649,6 +657,7 @@ struct WriteJob {
     tree_auto_reveal_changed: bool,
     note_open_mode_changed: bool,
     code_soft_wrap_changed: bool,
+    open_in_editor_changed: bool,
     writing_modes_changed: bool,
     vault_open_changed: bool,
     settings_section_changed: bool,
@@ -763,6 +772,9 @@ impl WriteJob {
         }
         if self.code_soft_wrap_changed {
             latest.code_soft_wrap = self.saved.code_soft_wrap;
+        }
+        if self.open_in_editor_changed {
+            latest.open_in_editor = self.saved.open_in_editor.clone();
         }
         if self.writing_modes_changed {
             latest.focus_mode = self.saved.focus_mode;
@@ -921,6 +933,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.vault_open_changed
             && !state.settings_section_changed
             && !state.code_soft_wrap_changed
+            && !state.open_in_editor_changed
             && !state.writing_modes_changed
             && !state.auto_pair_changed
             && !state.image_import_changed
@@ -964,6 +977,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         tree_auto_reveal_changed: state.tree_auto_reveal_changed,
         note_open_mode_changed: state.note_open_mode_changed,
         code_soft_wrap_changed: state.code_soft_wrap_changed,
+        open_in_editor_changed: state.open_in_editor_changed,
         writing_modes_changed: state.writing_modes_changed,
         vault_open_changed: state.vault_open_changed,
         settings_section_changed: state.settings_section_changed,
@@ -1687,6 +1701,25 @@ pub(crate) fn code_soft_wrap(cx: &App) -> bool {
         .is_some_and(|state| state.saved.code_soft_wrap)
 }
 
+/// The id of the «Open in» default code editor (#1400); empty when none
+/// was chosen yet.
+pub(crate) fn open_in_editor(cx: &App) -> &str {
+    cx.try_global::<Store>()
+        .map_or("", |state| state.saved.open_in_editor.as_str())
+}
+
+/// Remember `id` as the «Open in» default editor, across restarts.
+pub(crate) fn set_open_in_editor(id: &str, cx: &mut App) {
+    if !installed(cx) || open_in_editor(cx) == id {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.open_in_editor = id.to_owned();
+    state.open_in_editor_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
 pub(crate) fn set_code_soft_wrap(value: bool, cx: &mut App) {
     if !installed(cx) || code_soft_wrap(cx) == value {
         return;
@@ -2360,6 +2393,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.tree_auto_reveal_changed = false;
         state.note_open_mode_changed = false;
         state.code_soft_wrap_changed = false;
+        state.open_in_editor_changed = false;
         state.writing_modes_changed = false;
         state.vault_open_changed = false;
         state.settings_section_changed = false;
@@ -3363,6 +3397,7 @@ mod tests {
                 tree_auto_reveal_changed: false,
                 note_open_mode_changed: false,
                 code_soft_wrap_changed: false,
+                open_in_editor_changed: false,
                 writing_modes_changed: false,
                 vault_open_changed: false,
                 settings_section_changed: false,

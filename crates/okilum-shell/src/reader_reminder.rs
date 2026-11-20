@@ -333,7 +333,7 @@ pub(super) fn editor_menu(menu: NativeMenu, facts: &MenuFacts, cx: &App) -> Nati
         date,
         code_block,
     } = facts.0.get();
-    let editor = code_block.map(|_| crate::reader_editor::external_editor_label());
+    let editor = code_block.map(|_| crate::reader_editor::external_editor_label(cx));
     // Rich-text-only and image clipboards paste too (#1602).
     let clipboard = cx.read_from_clipboard().is_some()
         || cx

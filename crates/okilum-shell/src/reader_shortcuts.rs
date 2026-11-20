@@ -154,6 +154,7 @@ fn catalog() -> Vec<Entry> {
         menu_entry::<CopyFilePath>("Copy path", Notes),
         menu_entry::<CopyFileWikilink>("Copy wikilink", Notes),
         menu_entry::<OpenFileDefault>("Open with default app", Notes),
+        entry::<crate::open_in::OpenInDefaultEditor>("Open in default code editor", Notes),
         entry::<reader_read_menu::CopyAsMarkdown>("Copy as Markdown", Notes),
         entry::<reader_read_menu::CopyWithFormatting>("Copy as Rich Text", Notes),
         entry::<reader_log::CopyRawLine>("Copy raw log line", Notes),

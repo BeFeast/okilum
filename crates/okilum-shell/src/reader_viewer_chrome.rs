@@ -965,6 +965,16 @@ impl Reader {
         if editing {
             items.push(LayoutItem::pinned("save", 44., 44.));
         }
+        // «Open in <Editor>» (#1400) yields before «Open with», which still
+        // lists the editors in its «Open in ▸».
+        if let Some((wide, narrow)) = open_in::toolbar_widths(cx, window) {
+            items.push(LayoutItem::optional(
+                "open-in",
+                if labels { wide } else { narrow },
+                narrow,
+                order.open_with,
+            ));
+        }
         items.push(LayoutItem::optional(
             "open-with",
             if labels { 120. } else { 40. },
@@ -1304,6 +1314,14 @@ fn file_actions_slot(reader: &Reader, plan: &HeaderLayout, cx: &mut Context<Read
                 .size_full(),
             ),
         );
+    }
+    if plan.shows("open-in") {
+        row = row.children(open_in::toolbar_button(
+            root.clone(),
+            rel.clone(),
+            plan.labels && !plan.collapsed("open-in"),
+            cx,
+        ));
     }
     if plan.shows("open-with") {
         row = row.child(

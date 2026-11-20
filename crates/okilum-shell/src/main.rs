@@ -652,6 +652,11 @@ fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new(TOGGLE_PROJECT_KEY, ToggleProject, Some(READER_CONTEXT)),
         KeyBinding::new(REVEAL_FILE_KEY, RevealFile, Some(READER_CONTEXT)),
+        KeyBinding::new(
+            open_in::OPEN_IN_EDITOR_KEY,
+            open_in::OpenInDefaultEditor,
+            Some(READER_CONTEXT),
+        ),
         KeyBinding::new("alt-cmd-c", CopyVaultPath, Some(READER_CONTEXT)),
         // Quick Look is a macOS service; elsewhere Space would only report that.
         #[cfg(target_os = "macos")]
@@ -8662,6 +8667,11 @@ impl Reader {
             .on_action(cx.listener(|this, _: &OpenFileDefault, window, cx| {
                 this.file_action(reader_files::FileAction::Open, window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &open_in::OpenInDefaultEditor, window, cx| {
+                    this.open_in_default_editor(window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &QuickLookFile, window, cx| {
                 this.file_action(reader_files::FileAction::QuickLook, window, cx)
             }))
