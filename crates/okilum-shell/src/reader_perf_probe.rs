@@ -45,8 +45,6 @@ pub(crate) enum Step {
     /// `STEP` from a timer, waits `TIMED_SETTLE_MS`, then calls
     /// [`Probe::finish_timed`].
     StartTimed,
-    /// Write the report and quit.
-    Finish,
 }
 
 /// One outline jump: the row opened, its heading's block, the block on top
@@ -334,7 +332,6 @@ mod tests {
                 top = block;
             }
             match step {
-                Step::Finish => panic!("the timed phase comes before the report"),
                 Step::StartTimed => break,
                 Step::Idle => panic!("probe stalled"),
                 Step::Jump(row) => {
@@ -386,7 +383,7 @@ mod tests {
         loop {
             probe.render_started();
             match probe.painted(50, 0, &[], 1.) {
-                Step::Finish => break,
+                Step::StartTimed => break,
                 Step::Jump(_) => panic!("jumped without an outline"),
                 _ => frames += 1,
             }

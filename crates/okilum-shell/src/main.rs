@@ -7029,7 +7029,6 @@ impl Reader {
                 })
                 .detach();
             }
-            reader_perf_probe::Step::Finish => self.finish_perf_probe(targets.len(), cx),
         }
     }
 
