@@ -54,7 +54,7 @@ fn default_time() -> String {
     "HH:mm".into()
 }
 
-fn open_folder(root: &Path, relative: &Path) -> Result<Option<OwnedFd>> {
+pub(crate) fn open_folder(root: &Path, relative: &Path) -> Result<Option<OwnedFd>> {
     ensure!(
         relative
             .components()
@@ -107,7 +107,7 @@ fn open_folder(root: &Path, relative: &Path) -> Result<Option<OwnedFd>> {
     }
 }
 
-fn read_file(folder: &OwnedFd, name: &str) -> Result<Option<String>> {
+pub(crate) fn read_file(folder: &OwnedFd, name: &str) -> Result<Option<String>> {
     #[cfg(windows)]
     let file = match folder.open_file(std::ffi::OsStr::new(name)) {
         Ok(file) => file,
@@ -332,7 +332,7 @@ fn expand(source: &str, title: &str, now: OffsetDateTime, date: &str, time: &str
 }
 
 /// Supported Moment tokens are explicit, so unsupported formats remain literal.
-fn moment(mut format: &str, now: OffsetDateTime) -> Option<String> {
+pub(crate) fn moment(mut format: &str, now: OffsetDateTime) -> Option<String> {
     let mut out = String::new();
     while !format.is_empty() {
         if let Some(literal) = format.strip_prefix('[') {

@@ -184,7 +184,7 @@ impl Render for PolicyEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = brand::palette(cx);
         v_flex().id("sync-policy-editor").debug_selector(||"sync-policy-editor".into()).w_full().gap_4()
-            .child(div().text_sm().whitespace_normal().child(self.path.display().to_string()))
+            .child(div().text_sm().whitespace_normal().child(presentation::vault_path(&self.path)))
             .child("Edit once for this vault. Required service and worktree exclusions stay protected.")
             .child(div().text_sm().text_color(p.text_muted).child("Shared policy · .okilum/sync-ignore"))
             .child(Editor::new(&self.editor).readonly(self.busy || self.preview.is_none()).h(px(240.)))

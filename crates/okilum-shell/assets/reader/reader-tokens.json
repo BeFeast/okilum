@@ -6,6 +6,7 @@
     "light": {
       "warningTint": "#fbf5e6",
       "textFaint": "#8d929a",
+      "heading": "#5034a8",
       "hover": "#eff0f2",
       "missingLink": "#9a5b00",
       "codeBg": "#f6f7f8",
@@ -25,6 +26,7 @@
     "dark": {
       "warningTint": "#3a3220",
       "textFaint": "#7c818a",
+      "heading": "#b9a9f5",
       "hover": "#2a2d33",
       "missingLink": "#e2b25c",
       "codeBg": "#26292e",

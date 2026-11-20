@@ -20,6 +20,7 @@ pub(crate) mod math_preview;
 mod note_open_mode_tests;
 mod open_note_sync;
 mod paste_jobs;
+mod paste_upload;
 mod recovery;
 mod status;
 mod tables;
@@ -1438,11 +1439,48 @@ impl Reader {
                 if let Some(notice) = &pending.notice {
                     paste_jobs::show_notice(notice, window, cx);
                 }
+                // #1073: remote image downloads rewrite text inside this
+                // paste, so its uploads wait for them instead of racing.
+                let downloads = matches!(
+                    pending.follow_up,
+                    Some(crate::note_paste::router::FollowUp::RemoteImages { .. })
+                );
                 if let Some(follow_up) = pending.follow_up {
-                    this.run_paste_follow_up(input.clone(), follow_up, window, cx);
+                    // Decided and tracked at the paste, run after the downloads.
+                    let upload_after = match event {
+                        ClipboardPasteEvent::Applied { bytes, .. } if downloads => {
+                            let caret = input.read(cx).cursor();
+                            let target = this.paste_target(input.clone(), cx);
+                            paste_upload::track(
+                                target,
+                                input,
+                                caret.saturating_sub(*bytes)..caret,
+                                &pending.saved_files,
+                                window,
+                                cx,
+                            )
+                        }
+                        _ => None,
+                    };
+                    this.run_paste_follow_up(input.clone(), follow_up, upload_after, window, cx);
                 }
                 match event {
                     ClipboardPasteEvent::Applied { bytes, .. } => {
+                        // #1073: the pasted text ends at the caret; its links
+                        // to the files this paste saved may be uploaded.
+                        if !pending.saved_files.is_empty() && !downloads {
+                            let caret = input.read(cx).cursor();
+                            let span = caret.saturating_sub(*bytes)..caret;
+                            let target = this.paste_target(input.clone(), cx);
+                            paste_upload::start(
+                                target,
+                                input,
+                                span,
+                                &pending.saved_files,
+                                window,
+                                cx,
+                            );
+                        }
                         if let Some(editing) = this
                             .editing
                             .as_ref()

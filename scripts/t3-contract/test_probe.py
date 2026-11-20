@@ -205,6 +205,18 @@ class ProbeTests(unittest.TestCase):
             self.assertEqual(result['status'], 'FAIL')
             self.assertEqual(result['code'], 'incomplete_native_proof')
 
+    def test_unadvertised_capability_flag_fails_with_allowlisted_names_only(self):
+        result, _ = self.run_fixture(native={**dict.fromkeys(probe.FLAGS, True),
+                                             'environment_capabilities': False,
+                                             'capability_unknown': ['questionAttachments']})
+        self.assertEqual(result['status'], 'FAIL')
+        self.assertEqual(result['code'], 'incomplete_native_proof')
+        self.assertEqual(result['capability_unknown'], ['questionAttachments'])
+        result, _ = self.run_fixture(native={**dict.fromkeys(probe.FLAGS, True),
+                                             'environment_capabilities': False,
+                                             'capability_unknown': ['peer text']})
+        self.assertNotIn('capability_unknown', result)
+
     def test_incompatible_schema_stops_before_any_setup_or_pairing(self):
         result, calls = self.run_fixture(incompatible=True)
         self.assertEqual(result['status'], 'FAIL')

@@ -88,7 +88,7 @@ impl SyncSettings {
             .child(
                 Button::new("sync-fix")
                     .label("Fix")
-                    .disabled(self.busy)
+                    .disabled(self.locked())
                     .on_click(cx.listener(|this, _, window, cx| {
                         #[cfg(target_os = "macos")]
                         this.run(Operation::Restart, cx);
