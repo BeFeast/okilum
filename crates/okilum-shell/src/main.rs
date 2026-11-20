@@ -512,7 +512,19 @@ pub(crate) const VALIDATE_CODE_KEY: &str = windows_key("alt-shift-v", "ctrl-shif
 pub(crate) const REPAIR_CODE_KEY: &str = windows_key("alt-shift-r", "ctrl-shift-r");
 /// Show in Finder/folder/Explorer. Not Win+Alt+R on Windows: the Xbox Game
 /// Bar records the screen there and the key never reaches Okilum (#3110).
-pub(crate) const REVEAL_FILE_KEY: &str = windows_key("alt-cmd-r", "ctrl-shift-s");
+/// Not Ctrl+Shift+S either: that is Save All in Windows apps (#3133), and
+/// Ctrl+Shift+E is Live Preview. U is free in every Okilum context.
+pub(crate) const REVEAL_FILE_KEY_WINDOWS: &str = "ctrl-shift-u";
+pub(crate) const REVEAL_FILE_KEY: &str = windows_key("alt-cmd-r", REVEAL_FILE_KEY_WINDOWS);
+/// Open in terminal (#2837). Not Win+Alt+T on Windows: the Xbox Game Bar
+/// shows or hides its recording timer there and the key never reaches Okilum
+/// (#3134). Not Ctrl+Shift+U, which is Reveal (#3133), nor Ctrl+Shift+T,
+/// which is Paragraph. A is the last Ctrl+Shift letter free in every Okilum
+/// context (gpui-component binds it only on macOS; B is the Pinyin emoji
+/// panel and I the debug inspector).
+pub(crate) const OPEN_IN_TERMINAL_KEY_WINDOWS: &str = "ctrl-shift-a";
+pub(crate) const OPEN_IN_TERMINAL_KEY: &str =
+    windows_key("alt-cmd-t", OPEN_IN_TERMINAL_KEY_WINDOWS);
 
 /// ⌥⌘W / Ctrl+Alt+W (Ctrl+Shift+W on Windows): normal (reading width) or
 /// full note width. Free in every Reader context; W for width.
@@ -1526,7 +1538,8 @@ fn reader_plugins_at(
     .on_link_hover(move |url, active, position, window, cx| {
         let _ = hover_entity.update(cx, |this, cx| {
             if active {
-                this.pointer_link = Some((url.to_string(), this.navigation.preparation_generation));
+                this.pointer_link =
+                    Some((url.to_string(), this.pane.navigation.preparation_generation));
             } else if this
                 .pointer_link
                 .as_ref()
@@ -1864,7 +1877,6 @@ struct Reader {
     layout_signal: Entity<()>,
     #[cfg(target_os = "linux")]
     panel_capture: reader_panel_resize::Capture,
-    navigation: reader_navigation::State,
     ui_state: reader_ui_state::Session,
     single_file: bool,
     tree_preview: reader_tree_preview::Session,
@@ -1878,7 +1890,6 @@ struct Reader {
     project_request: u64,
     project_views: std::collections::BTreeMap<(PathBuf, String), Entity<project::ProjectView>>,
     file_menu: Option<(Entity<gpui_component::menu::PopupMenu>, Point<Pixels>)>,
-    editing: Option<reader_editor::Editing>,
     viewer_save_controls: std::cell::RefCell<Option<Entity<reader_viewer_chrome::SaveControls>>>,
     viewer_header: std::cell::RefCell<Option<Entity<reader_viewer_chrome::Header>>>,
     viewer_save_bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
@@ -1934,16 +1945,7 @@ struct Reader {
     trash_undo: reader_trash::UndoHistory,
     #[cfg(any(unix, windows))]
     move_index: Option<Arc<okilum_core::link_rewrite::CandidateIndex>>,
-    recovery_offer: bool,
-    recovery_checked: bool,
-    recovery_error: bool,
-    recovery_dismissed: bool,
-    recovery_startup: bool,
     loading: Option<reader_loading::Loading>,
-    pending_open_document: Option<reader_loading::PendingDocument>,
-    queued_open_note: Option<String>,
-    /// Where an external link queued with `queued_open_note` lands (#1049).
-    queued_landing: Option<okilum_core::deep_link::Position>,
     queued_edit_note: Option<String>,
     /// An external link opened while editing: once its note is accepted, the
     /// editor returns there with the caret on the link's line (#1049).
@@ -1957,14 +1959,12 @@ struct Reader {
     shared_session: Option<reader_session::Shared>,
     shared_version: u64,
     shared_service_version: u64,
-    usable_document: bool,
     /// When the current note was requested, for the `note_open_*` phases (#1003).
     open_started: Option<std::time::Instant>,
     /// Watches the current note's parse for `note_open_parsed`; replaced per open.
     note_body_trace: Option<Subscription>,
     session_directory: Option<PathBuf>,
     session_records: Option<async_channel::Sender<reader_loading::SessionRecord>>,
-    last_recorded_document: Option<(PathBuf, String, u64)>,
     /// The note part of the native window title; the vault part is added
     /// from its display name, so a rename can retitle the window (#1327).
     title_note: Option<String>,
@@ -2002,8 +2002,6 @@ struct Reader {
     shortcut_sheet: reader_shortcuts::Sheet,
     /// Transient "− 110% + Reset" overlay after a note text zoom (#1652).
     zoom_hud: reader_text_zoom::Hud,
-    content: Entity<TextViewState>,
-    _content_sub: Subscription,
     link_notice: Option<reader_toast::Notice>,
     /// The note on screen was deleted outside Okilum (#1986).
     deleted_note: Option<reader_deleted_note::DeletedNote>,
@@ -2257,12 +2255,8 @@ impl Reader {
             layout_signal,
             #[cfg(target_os = "linux")]
             panel_capture: Default::default(),
-            navigation: Default::default(),
             ui_state: Default::default(),
             loading: None,
-            pending_open_document: None,
-            queued_open_note: None,
-            queued_landing: None,
             queued_edit_note: None,
             pending_link_edit: None,
             side_panels: [None, None],
@@ -2273,12 +2267,10 @@ impl Reader {
             shared_service_version: 0,
             vault_publication_revision: (0, 0),
             source_publication_epoch: 0,
-            usable_document: false,
             open_started: None,
             note_body_trace: None,
             session_directory: opts.session_directory.clone(),
             session_records: None,
-            last_recorded_document: None,
             title_note: None,
             index_dir,
             cache_lease: None,
@@ -2309,8 +2301,6 @@ impl Reader {
             quick_open,
             shortcut_sheet,
             zoom_hud: Default::default(),
-            content,
-            editing: None,
             viewer_save_controls: Default::default(),
             viewer_header: Default::default(),
             viewer_save_bounds: Default::default(),
@@ -2359,13 +2349,6 @@ impl Reader {
             trash_undo: reader_trash::UndoHistory::default(),
             #[cfg(any(unix, windows))]
             move_index: None,
-            recovery_offer: false,
-            recovery_checked: false,
-            recovery_error: false,
-            recovery_dismissed: false,
-            recovery_startup: cx
-                .try_global::<reader_recovery::RecoveryStartup>()
-                .is_some_and(|state| state.0),
             link_notice: None,
             deleted_note: None,
             displayed_deleted_notice: None,
@@ -2383,7 +2366,14 @@ impl Reader {
             history_notice_generation: 0,
             notice_generation: 0,
             toast_subscription: None,
-            pane: reader_pane::Surface::new(find_input, use_html),
+            pane: reader_pane::Surface::new(
+                content,
+                content_sub,
+                find_input,
+                use_html,
+                cx.try_global::<reader_recovery::RecoveryStartup>()
+                    .is_some_and(|state| state.0),
+            ),
             backlinks_list: ListState::new(0, ListAlignment::Top, px(200.)),
             stignore: None,
             stignore_offered: Default::default(),
@@ -2457,7 +2447,6 @@ impl Reader {
             resizing_panel: None,
             refocus_if_lost: false,
             _subs: vec![find_sub],
-            _content_sub: content_sub,
         };
         let weak = cx.weak_entity();
         this._subs
@@ -2639,8 +2628,11 @@ impl Reader {
             self.invalidate_links();
             // A newer source hint revokes an older document reconciliation,
             // including its late attempt to prepare actionable link evidence.
-            self.navigation.reconciliation_generation =
-                self.navigation.reconciliation_generation.wrapping_add(1);
+            self.pane.navigation.reconciliation_generation = self
+                .pane
+                .navigation
+                .reconciliation_generation
+                .wrapping_add(1);
         }
         if self.shared_session.is_some() {
             self.deferred_vault_changes
@@ -2790,7 +2782,7 @@ impl Reader {
                 return;
             }
         }
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             return;
         }
         self.clear_hover(cx);
@@ -2841,28 +2833,35 @@ impl Reader {
         self.pane.link_choices.clear();
         // A root publication clears history before replacing its old document;
         // do not attribute that old viewport to the newly published root.
-        if self.navigation.history.get(self.navigation.history_ix) == Some(&self.pane.current_rel) {
-            self.navigation.places.insert(
+        if self
+            .pane
+            .navigation
+            .history
+            .get(self.pane.navigation.history_ix)
+            == Some(&self.pane.current_rel)
+        {
+            self.pane.navigation.places.insert(
                 (self.vault_root.clone(), self.pane.current_rel.clone()),
-                self.navigation
-                    .pending_landing
-                    .unwrap_or_else(|| self.content.read(cx).list_state().logical_scroll_top()),
+                self.pane.navigation.pending_landing.unwrap_or_else(|| {
+                    self.pane.content.read(cx).list_state().logical_scroll_top()
+                }),
             );
         }
         self.cancel_pending_landing();
-        self.navigation.generation = self.navigation.generation.wrapping_add(1);
+        self.pane.navigation.generation = self.pane.navigation.generation.wrapping_add(1);
         if request.history_index.is_none() {
             if let Some(position) = self
+                .pane
                 .navigation
                 .history_positions
-                .get_mut(self.navigation.history_ix)
+                .get_mut(self.pane.navigation.history_ix)
             {
-                *position = self.content.read(cx).list_state().logical_scroll_top();
+                *position = self.pane.content.read(cx).list_state().logical_scroll_top();
             }
         }
         // Focus inside the table overlay returns to the document when a link
         // in the overlay navigates (#368).
-        let content_had_focus = self.content.read(cx).focus_handle().is_focused(window)
+        let content_had_focus = self.pane.content.read(cx).focus_handle().is_focused(window)
             || self.pane.table_overlay.as_ref().is_some_and(|overlay| {
                 overlay.read(cx).focus_handle().contains_focused(window, cx)
             });
@@ -2876,7 +2875,7 @@ impl Reader {
             && self.focus_handle.is_focused(window);
         // A new state owns this document's parse/list. An old document's list
         // can never satisfy heading/Back readiness while replacement parses.
-        self.content = prepared_content.unwrap_or_else(|| {
+        self.pane.content = prepared_content.unwrap_or_else(|| {
             cx.new(|cx| {
                 let state = if self.pane.use_html {
                     TextViewState::html("", cx)
@@ -2890,13 +2889,13 @@ impl Reader {
                     .retain_selection_on_layout(true)
             })
         });
-        self._content_sub = cx.observe(&self.content, |this, _, cx| {
+        self.pane._content_sub = cx.observe(&self.pane.content, |this, _, cx| {
             this.record_usable_document(cx);
             this.content_changed(cx);
         });
         // Transfer focus only at replacement; asynchronous landing never steals it.
         if content_had_focus || document_focus_held_by_reader {
-            window.focus(&self.content.read(cx).focus_handle().clone(), cx);
+            window.focus(&self.pane.content.read(cx).focus_handle().clone(), cx);
         }
         self.invalidate_links();
         self.pane.link_presentations = Arc::default();
@@ -2905,7 +2904,7 @@ impl Reader {
         self.pane.link_identities = Arc::new(identities);
         let configured = reader_plugins(
             self.vault_root.clone(),
-            TextView::new(&self.content),
+            TextView::new(&self.pane.content),
             cx.entity().downgrade(),
             self.sel_format,
             self.pane.link_presentations.clone(),
@@ -2914,7 +2913,7 @@ impl Reader {
         );
         {
             let _phase = reader_diagnostics::phase(cx, "note_open_set_text");
-            self.content.update(cx, |s, cx| {
+            self.pane.content.update(cx, |s, cx| {
                 configured.prepare_state(s, cx);
                 s.set_search_query("", cx);
                 s.set_text_with_source(&source, original_body.map(SharedString::from), cx);
@@ -2970,7 +2969,7 @@ impl Reader {
         self.pane.table_overlay = None;
         self.discover_source_recovery(cx);
         self.note_opened(cx);
-        self.usable_document = true;
+        self.pane.usable_document = true;
         self.record_usable_document(cx);
         self.refresh_link_preparation(cx);
         self.pane.current_title = self.note_label(rel);
@@ -2979,27 +2978,30 @@ impl Reader {
         if request.history_index.is_none()
             && (heading.is_some()
                 || self
+                    .pane
                     .navigation
                     .history
-                    .get(self.navigation.history_ix)
+                    .get(self.pane.navigation.history_ix)
                     .map(String::as_str)
                     != Some(rel))
         {
             // A new branch: forward entries are dropped, like a browser.
-            if !self.navigation.history.is_empty() {
-                self.navigation
+            if !self.pane.navigation.history.is_empty() {
+                self.pane
+                    .navigation
                     .history
-                    .truncate(self.navigation.history_ix + 1);
-                self.navigation
+                    .truncate(self.pane.navigation.history_ix + 1);
+                self.pane
+                    .navigation
                     .history_positions
-                    .truncate(self.navigation.history_ix + 1);
+                    .truncate(self.pane.navigation.history_ix + 1);
             }
-            self.navigation.history.push(rel.to_string());
-            self.navigation.history_positions.push(ListOffset {
+            self.pane.navigation.history.push(rel.to_string());
+            self.pane.navigation.history_positions.push(ListOffset {
                 item_ix: 0,
                 offset_in_item: px(0.),
             });
-            self.navigation.history_ix = self.navigation.history.len() - 1;
+            self.pane.navigation.history_ix = self.pane.navigation.history.len() - 1;
         }
         if self.pane.find_open {
             self.run_find(window, cx);
@@ -3007,7 +3009,11 @@ impl Reader {
 
         // Scroll to top now; if jumping, scroll again once the new text has
         // been parsed and the block list rebuilt (deferred, best-effort).
-        self.content.read(cx).list_state().scroll_to_reveal_item(0);
+        self.pane
+            .content
+            .read(cx)
+            .list_state()
+            .scroll_to_reveal_item(0);
         // The reader's list has one item per top-level block, in source
         // order, so the heading's block index in the rendered source is its
         // item index. Plugins replace a block, never split or merge one.
@@ -3015,7 +3021,7 @@ impl Reader {
             self.scroll_to_block(ix, cx);
         }
         if let Some(index) = request.history_index {
-            self.navigation.history_ix = index;
+            self.pane.navigation.history_ix = index;
         }
         if let Some(position) = request.restore_position {
             self.scroll_to_position(position, cx);
@@ -3029,13 +3035,13 @@ impl Reader {
     // --- find in note (#48) ---
 
     fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.editing.is_none() || self.pane.file_preview.is_some() {
+        if self.pane.editing.is_none() || self.pane.file_preview.is_some() {
             if let Some(target) = self.viewer_find_target(cx) {
                 target.focus(window, cx);
                 return;
             }
         }
-        if self.pane.file_preview.is_some() && self.editing.is_none() {
+        if self.pane.file_preview.is_some() && self.pane.editing.is_none() {
             if let Some(code) = self
                 .pane
                 .file_preview
@@ -3050,7 +3056,7 @@ impl Reader {
         }
         self.quick_open.open = false;
         self.quick_open.invalidate();
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             self.open_source_find(cx);
             return;
         }
@@ -3069,7 +3075,9 @@ impl Reader {
 
     fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.pane.find_open = false;
-        self.content.update(cx, |s, cx| s.set_search_query("", cx));
+        self.pane
+            .content
+            .update(cx, |s, cx| s.set_search_query("", cx));
         window.focus(&self.focus_handle, cx);
         cx.notify();
     }
@@ -3086,7 +3094,7 @@ impl Reader {
         }
         let term = self.pane.find_input.read(cx).value().trim().to_string();
         let sensitive = reader_ui_state::find_case_sensitive(cx);
-        self.content.update(cx, |s, cx| {
+        self.pane.content.update(cx, |s, cx| {
             s.set_search_case_sensitive(sensitive, cx);
             s.set_search_query(term, cx);
         });
@@ -3098,7 +3106,8 @@ impl Reader {
             cx.notify();
             return;
         }
-        self.content
+        self.pane
+            .content
             .update(cx, |s, cx| s.step_search_match(delta, cx));
         cx.notify();
     }
@@ -3129,16 +3138,17 @@ impl Reader {
 
     fn cancel_pending_landing(&mut self) {
         self.clear_landing_notice();
-        self.navigation.pending_landing = None;
-        self.navigation.landing_generation = self.navigation.landing_generation.wrapping_add(1);
+        self.pane.navigation.pending_landing = None;
+        self.pane.navigation.landing_generation =
+            self.pane.navigation.landing_generation.wrapping_add(1);
     }
 
     fn scroll_to_position(&mut self, position: ListOffset, cx: &mut Context<Self>) {
         self.cancel_pending_landing();
-        self.navigation.pending_landing = Some(position);
-        let landing = self.navigation.landing_generation;
-        let generation = self.navigation.generation;
-        let content = self.content.entity_id();
+        self.pane.navigation.pending_landing = Some(position);
+        let landing = self.pane.navigation.landing_generation;
+        let ticket = self.pane.navigation_ticket();
+        let content = self.pane.content.entity_id();
         cx.spawn(async move |entity, cx| {
             loop {
                 cx.background_executor()
@@ -3146,17 +3156,21 @@ impl Reader {
                     .await;
                 let done = entity
                     .update(cx, |this, cx| {
-                        if landing != this.navigation.landing_generation {
+                        // Started for another pane: leave this one's landing alone.
+                        if !this.pane.owns(ticket) {
                             return true;
                         }
-                        if generation != this.navigation.generation
-                            || content != this.content.entity_id()
+                        if landing != this.pane.navigation.landing_generation {
+                            return true;
+                        }
+                        if !this.pane.holds_navigation(ticket)
+                            || content != this.pane.content.entity_id()
                         {
-                            this.navigation.pending_landing = None;
+                            this.pane.navigation.pending_landing = None;
                             return true;
                         }
                         if this.pane.typed_navigation.active.get() {
-                            this.navigation.pending_landing = None;
+                            this.pane.navigation.pending_landing = None;
                             if let Err(reason) = reader_typed_view::land(this, position.item_ix) {
                                 this.link_notice = Some(reason.into());
                             }
@@ -3167,11 +3181,11 @@ impl Reader {
                         // session restoration) never renders its list, so waiting
                         // for item_count to grow can never finish. Publish the
                         // prepared list's position before its first layout instead.
-                        match this.content.read(cx).preparation_status() {
+                        match this.pane.content.read(cx).preparation_status() {
                             None => false,
                             Some(Err(reason)) => {
-                                this.navigation.pending_landing = None;
-                                if this.editing.is_none() {
+                                this.pane.navigation.pending_landing = None;
+                                if this.pane.editing.is_none() {
                                     this.link_notice = Some(
                                         format!(
                                             "Could not render the requested position: {reason}"
@@ -3183,11 +3197,13 @@ impl Reader {
                                 true
                             }
                             Some(Ok(())) => {
-                                this.content.update(cx, |s, cx| {
+                                this.pane.content.update(cx, |s, cx| {
                                     s.scroll_to_prepared_position(position, cx);
                                 });
-                                this.navigation.pending_landing = None;
-                                if this.navigation.flash_pending.take() == Some(position.item_ix) {
+                                this.pane.navigation.pending_landing = None;
+                                if this.pane.navigation.flash_pending.take()
+                                    == Some(position.item_ix)
+                                {
                                     this.flash_block(position.item_ix, cx);
                                 }
                                 true
@@ -3312,7 +3328,7 @@ impl Reader {
             return;
         }
         #[cfg(any(unix, windows))]
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             self.toggle_source(window, cx);
         }
     }
@@ -3465,12 +3481,13 @@ impl Reader {
             // Nothing that owns focus is drawn there; the Reader's handle
             // keeps its key contexts in the dispatch path.
             self.focus_handle.focus(window, cx);
-        } else if let Some(editing) = &self.editing {
+        } else if let Some(editing) = &self.pane.editing {
             editing.input().focus_handle(cx).focus(window, cx);
         } else if let Some(preview) = &self.pane.file_preview {
             preview.focus(&self.focus_handle, window, cx);
         } else {
-            self.content
+            self.pane
+                .content
                 .read(cx)
                 .focus_handle()
                 .clone()
@@ -3541,14 +3558,14 @@ impl Reader {
             cx.notify();
             return;
         }
-        if self.editing.is_some()
+        if self.pane.editing.is_some()
             || self.pane.file_preview.is_some()
-            || !self.content.read(cx).focus_handle().is_focused(window)
+            || !self.pane.content.read(cx).focus_handle().is_focused(window)
         {
             cx.propagate();
             return;
         }
-        let content = self.content.read(cx);
+        let content = self.pane.content.read(cx);
         let distance = if page {
             (f32::from(content.list_state().viewport_bounds().size.height) * 0.9).max(40.)
         } else {
@@ -4289,16 +4306,16 @@ impl Reader {
     }
 
     fn history_move(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
-        let target = self.navigation.history_ix as isize + delta;
-        if target < 0 || target as usize >= self.navigation.history.len() {
+        let target = self.pane.navigation.history_ix as isize + delta;
+        if target < 0 || target as usize >= self.pane.navigation.history.len() {
             return;
         }
-        self.navigation.history_positions[self.navigation.history_ix] =
-            self.content.read(cx).list_state().logical_scroll_top();
-        let rel = self.navigation.history[target as usize].clone();
-        self.navigation.history_nav = Some(target as usize);
+        self.pane.navigation.history_positions[self.pane.navigation.history_ix] =
+            self.pane.content.read(cx).list_state().logical_scroll_top();
+        let rel = self.pane.navigation.history[target as usize].clone();
+        self.pane.navigation.history_nav = Some(target as usize);
         self.open_note(&rel, None, window, cx);
-        self.navigation.history_nav = None;
+        self.pane.navigation.history_nav = None;
     }
 
     /// Move through the visible folder tree and open the note under the cursor.
@@ -5037,7 +5054,7 @@ impl Reader {
 
     fn render_find_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         let native = self.pane.typed_navigation.active.get();
-        let (current, total) = self.content.read(cx).search_status();
+        let (current, total) = self.pane.content.read(cx).search_status();
         let count = if native {
             "Filter tasks".to_owned()
         } else if total == 0 {
@@ -5906,7 +5923,7 @@ impl Reader {
         if let Some(preview) = &self.pane.file_preview {
             return self.render_file_preview(preview, window, cx);
         }
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             return self.render_source(window, cx);
         }
         if let Some(view) = reader_typed_view::render(self, window, cx) {
@@ -5938,7 +5955,8 @@ impl Reader {
                 let outside_panels = event.position.x >= body.left() + px(widths.notes)
                     && event.position.x < body.right() - px(widths.backlinks);
                 if outside_panels && !column_bounds.get().contains(&event.position) {
-                    this.content
+                    this.pane
+                        .content
                         .read(cx)
                         .list_state()
                         .scroll_by(-event.delta.pixel_delta(px(20.)).y);
@@ -5998,7 +6016,7 @@ impl Reader {
                             .child(
                                 reader_plugins(
                                     self.vault_root.clone(),
-                                    TextView::new(&self.content)
+                                    TextView::new(&self.pane.content)
                                         .font_family(reader_fonts::note(cx))
                                         .scrollable(true)
                                         .selectable(true)
@@ -6058,7 +6076,7 @@ impl Reader {
         let entity = cx.entity().downgrade();
         let configured = reader_plugins(
             self.vault_root.clone(),
-            TextView::new(&self.content),
+            TextView::new(&self.pane.content),
             entity,
             self.sel_format,
             self.pane.link_presentations.clone(),
@@ -6084,7 +6102,7 @@ impl Reader {
 
     fn close_table_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.pane.table_overlay = None;
-        let focus = self.content.read(cx).focus_handle().clone();
+        let focus = self.pane.content.read(cx).focus_handle().clone();
         focus.focus(window, cx);
         cx.notify();
     }
@@ -6970,7 +6988,7 @@ impl Reader {
 
     /// Index into `outline` of the section containing the top visible block.
     fn current_section(&self, cx: &App) -> Option<usize> {
-        if let Some(editing) = &self.editing {
+        if let Some(editing) = &self.pane.editing {
             return editing
                 .input()
                 .read(cx)
@@ -6978,6 +6996,7 @@ impl Reader {
                 .and_then(|line| self.draft_outline.current(line));
         }
         let top = self
+            .pane
             .content
             .read(cx)
             .list_state()
@@ -7001,7 +7020,7 @@ impl Reader {
             return;
         }
         let elapsed_ms = reader_diagnostics::trace(cx).map_or(0., |trace| trace.elapsed_ms());
-        let list = self.content.read(cx).list_state().clone();
+        let list = self.pane.content.read(cx).list_state().clone();
         let blocks = if document_ready { list.item_count() } else { 0 };
         let top = list.logical_scroll_top().item_ix;
         let targets: Vec<usize> = self
@@ -7009,7 +7028,7 @@ impl Reader {
             .iter()
             .map(|heading| heading.target.block)
             .collect();
-        let content = self.content.clone();
+        let content = self.pane.content.clone();
         let reader = cx.entity().downgrade();
         let Some(probe) = self.perf_probe.as_mut() else {
             return;
@@ -8196,7 +8215,7 @@ impl Reader {
 
 impl Render for Reader {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             reader_editor::SOURCE_READER_RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         #[cfg(all(target_os = "linux", feature = "project-ui-harness"))]
@@ -8552,7 +8571,7 @@ impl Reader {
             .key_context(
                 if self.file_editor_active() && !self.quick_open.open && !self.shortcut_sheet.open {
                     "Reader ReaderCode ReaderFileEdit"
-                } else if self.editing.is_none()
+                } else if self.pane.editing.is_none()
                     && !self.quick_open.open
                     && !self.shortcut_sheet.open
                     && self.project_navigation.section == reader_project_navigation::Section::Reader
@@ -8565,7 +8584,7 @@ impl Reader {
                     "Reader ReaderCode"
                 } else if self
                     .active_timeline()
-                    .is_some_and(|t| t.selected.is_some() || self.editing.is_none())
+                    .is_some_and(|t| t.selected.is_some() || self.pane.editing.is_none())
                     && !self.quick_open.open
                     && !self.shortcut_sheet.open
                 {
@@ -8887,11 +8906,15 @@ impl Reader {
             .on_action(cx.listener(|this, _: &ListNext, window, cx| this.list_move(1, window, cx)))
             .on_action(cx.listener(|this, _: &ListPrev, window, cx| this.list_move(-1, window, cx)))
             .on_action(cx.listener(|this, _: &ScrollTop, _, cx| {
-                this.content.read(cx).list_state().scroll_to_reveal_item(0);
+                this.pane
+                    .content
+                    .read(cx)
+                    .list_state()
+                    .scroll_to_reveal_item(0);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ScrollBottom, _, cx| {
-                this.content.read(cx).list_state().scroll_to_end();
+                this.pane.content.read(cx).list_state().scroll_to_end();
                 cx.notify();
             }))
             .bg(cx.theme().background)
@@ -9929,11 +9952,12 @@ mod document_link_landing_tests {
                             "loaded note positive control"
                         );
                         reader.panels.open(panel);
-                        if reader.editing.is_some() != source {
+                        if reader.pane.editing.is_some() != source {
                             reader.toggle_source(window, cx);
                         }
                         if !source {
                             reader
+                                .pane
                                 .content
                                 .read(cx)
                                 .focus_handle()
@@ -9971,7 +9995,7 @@ mod document_link_landing_tests {
                         if !source {
                             assert!(focus.is_focused(window), "Escape preserves Reader focus");
                         }
-                        assert!(reader.editing.is_none(), "Escape returns to Reader");
+                        assert!(reader.pane.editing.is_none(), "Escape returns to Reader");
                     });
                 }
             }
@@ -10036,7 +10060,8 @@ mod document_link_landing_tests {
             document.right() - px(20.),
         ] {
             view.update_in(visual, |v, _, cx| {
-                v.content
+                v.pane
+                    .content
                     .read(cx)
                     .list_state()
                     .scroll_to(ListOffset::default());
@@ -10051,7 +10076,7 @@ mod document_link_landing_tests {
             });
             visual.run_until_parked();
             let offset = view.read_with(visual, |v, cx| {
-                v.content.read(cx).list_state().logical_scroll_top()
+                v.pane.content.read(cx).list_state().logical_scroll_top()
             });
             assert!(
                 offset.item_ix > 0 || offset.offset_in_item > px(0.),
@@ -10079,7 +10104,8 @@ mod document_link_landing_tests {
                     if open {
                         v.panels.open(panel);
                     }
-                    v.content
+                    v.pane
+                        .content
                         .read(cx)
                         .list_state()
                         .scroll_to(ListOffset::default());
@@ -10111,7 +10137,7 @@ mod document_link_landing_tests {
                 });
                 visual.run_until_parked();
                 let offset = view.read_with(visual, |v, cx| {
-                    v.content.read(cx).list_state().logical_scroll_top()
+                    v.pane.content.read(cx).list_state().logical_scroll_top()
                 });
                 let moved = offset.item_ix > 0 || offset.offset_in_item > px(0.);
                 assert_eq!(moved, !open, "overlay {panel:?}, open={open}");
@@ -10311,7 +10337,12 @@ mod document_link_landing_tests {
         visual.run_until_parked();
         view.read_with(visual, |v, cx| {
             assert_eq!(
-                v.content.read(cx).list_state().logical_scroll_top().item_ix,
+                v.pane
+                    .content
+                    .read(cx)
+                    .list_state()
+                    .logical_scroll_top()
+                    .item_ix,
                 block
             );
         });
@@ -10393,7 +10424,12 @@ mod document_link_landing_tests {
         visual.run_until_parked();
         view.read_with(visual, |v, cx| {
             assert_eq!(
-                v.content.read(cx).list_state().logical_scroll_top().item_ix,
+                v.pane
+                    .content
+                    .read(cx)
+                    .list_state()
+                    .logical_scroll_top()
+                    .item_ix,
                 block
             );
             assert_eq!(v.current_section(cx), Some(4));
@@ -10653,7 +10689,7 @@ mod document_link_landing_tests {
         });
         let view = reader.unwrap();
         visual.run_until_parked();
-        let document = view.read_with(visual, |v, _| v.content.entity_id());
+        let document = view.read_with(visual, |v, _| v.pane.content.entity_id());
         view.update_in(visual, |v, window, cx| {
             v.open_table_overlay("| x | y |\n|---|---|\n| 1 | 2 |\n", window, cx);
             assert!(
@@ -10664,7 +10700,7 @@ mod document_link_landing_tests {
             // underneath is the same entity, so its position is untouched.
             v.dismiss(window, cx);
             assert!(v.pane.table_overlay.is_none());
-            assert_eq!(v.content.entity_id(), document);
+            assert_eq!(v.pane.content.entity_id(), document);
             v.open_table_overlay("| x |\n|---|\n| 1 |\n", window, cx);
             v.open_note("b.md", None, window, cx);
         });
@@ -11326,7 +11362,12 @@ mod document_link_landing_tests {
         // Start below the top, with keyboard focus in the document rather
         // than the tree. A mouse subtree action must establish both anchors.
         view.update_in(visual, |v, window, cx| {
-            v.content.read(cx).focus_handle().clone().focus(window, cx);
+            v.pane
+                .content
+                .read(cx)
+                .focus_handle()
+                .clone()
+                .focus(window, cx);
             assert!(!v.tree_focus.is_focused(window));
             v.tree_scroll
                 .scroll_to_item_strict(800, ScrollStrategy::Top);
@@ -11857,7 +11898,12 @@ mod document_link_landing_tests {
         view.read_with(visual, |v, _| assert!(!v.sidebar.show_hidden));
         // The retired «Folders only» key does nothing to the sidebar now.
         view.update_in(visual, |v, window, cx| {
-            v.content.read(cx).focus_handle().clone().focus(window, cx);
+            v.pane
+                .content
+                .read(cx)
+                .focus_handle()
+                .clone()
+                .focus(window, cx);
         });
         visual.simulate_keystrokes(if cfg!(target_os = "macos") {
             "cmd-shift-left"
@@ -12624,7 +12670,7 @@ mod document_link_landing_tests {
         assert!(visual.debug_bounds("reader-notes-panel").is_none());
         view.update_in(visual, |v, window, cx| {
             assert_eq!(v.pane.current_rel, "Work/Projects/Cafe/Menu.md");
-            assert!(v.content.read(cx).focus_handle().is_focused(window));
+            assert!(v.pane.content.read(cx).focus_handle().is_focused(window));
             assert!(v.panels.notes, "wide sidebar preference survives selection");
             v.open_note("Work/Projects/Cafe/Plan.md", None, window, cx);
         });
@@ -12836,12 +12882,12 @@ mod document_link_landing_tests {
         });
         visual.run_until_parked();
         view.update_in(visual, |v, window, cx| {
-            assert!(v.content.read(cx).search_status().1 > 0);
+            assert!(v.pane.content.read(cx).search_status().1 > 0);
             v.pane
                 .find_input
                 .update(cx, |input, cx| input.set_value("", window, cx));
             v.run_find(window, cx);
-            assert_eq!(v.content.read(cx).search_status().1, 0);
+            assert_eq!(v.pane.content.read(cx).search_status().1, 0);
             v.close_find(window, cx);
         });
         let _ = std::fs::remove_dir_all(root);
@@ -12895,17 +12941,17 @@ mod document_link_landing_tests {
         });
         visual.run_until_parked();
         view.update_in(visual, |v, _, cx| {
-            v.content.read(cx).list_state().scroll_by(px(180.));
+            v.pane.content.read(cx).list_state().scroll_by(px(180.));
             cx.notify();
         });
         visual.run_until_parked();
         let before = view.read_with(visual, |v, cx| {
-            let p = v.content.read(cx).list_state().logical_scroll_top();
+            let p = v.pane.content.read(cx).list_state().logical_scroll_top();
             (
-                v.content.entity_id(),
+                v.pane.content.entity_id(),
                 v.pane.current_rel.clone(),
                 v.vault_root.clone(),
-                v.navigation.history.clone(),
+                v.pane.navigation.history.clone(),
                 p.item_ix,
                 p.offset_in_item,
             )
@@ -12929,7 +12975,7 @@ mod document_link_landing_tests {
             px(552.)
         );
         view.read_with(visual, |v, cx| {
-            let position = v.content.read(cx).list_state().logical_scroll_top();
+            let position = v.pane.content.read(cx).list_state().logical_scroll_top();
             assert_eq!(
                 (position.item_ix, position.offset_in_item),
                 (before.4, before.5)
@@ -12941,12 +12987,12 @@ mod document_link_landing_tests {
             assert_eq!(v.panel_widths.notes, 662.8242);
             assert_eq!(v.panel_widths.backlinks, 355.79297);
             assert_eq!(v.pane.note_source, source);
-            let p = v.content.read(cx).list_state().logical_scroll_top();
+            let p = v.pane.content.read(cx).list_state().logical_scroll_top();
             (
-                v.content.entity_id(),
+                v.pane.content.entity_id(),
                 v.pane.current_rel.clone(),
                 v.vault_root.clone(),
-                v.navigation.history.clone(),
+                v.pane.navigation.history.clone(),
                 p.item_ix,
                 p.offset_in_item,
             )
@@ -13016,10 +13062,10 @@ mod document_link_landing_tests {
             visual.run_until_parked();
         };
         select(visual, first);
-        let first_text = view.read_with(visual, |v, cx| v.content.read(cx).selected_text());
+        let first_text = view.read_with(visual, |v, cx| v.pane.content.read(cx).selected_text());
         assert!(!first_text.trim().is_empty());
         select(visual, later);
-        let selected = view.read_with(visual, |v, cx| v.content.read(cx).selected_text());
+        let selected = view.read_with(visual, |v, cx| v.pane.content.read(cx).selected_text());
         assert!(
             !selected.trim().is_empty(),
             "later wrapped-line positive control"
@@ -13036,12 +13082,12 @@ mod document_link_landing_tests {
                 > source.find(first_text.trim()).unwrap() + first_text.trim().len(),
             "selection is on a later visual line"
         );
-        let entity = view.read_with(visual, |v, _| v.content.entity_id());
+        let entity = view.read_with(visual, |v, _| v.pane.content.entity_id());
         let anchor = visual.debug_bounds("reader-notes-splitter-anchor").unwrap();
         let start = point(anchor.left(), anchor.top() + px(140.));
         visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
         view.read_with(visual, |v, cx| {
-            assert_eq!(v.content.read(cx).selected_text(), selected)
+            assert_eq!(v.pane.content.read(cx).selected_text(), selected)
         });
         visual.simulate_mouse_move(
             start + point(px(35.), px(0.)),
@@ -13065,7 +13111,7 @@ mod document_link_landing_tests {
         );
         view.read_with(visual, |v, cx| {
             assert_eq!(
-                v.content.read(cx).selected_text(),
+                v.pane.content.read(cx).selected_text(),
                 selected,
                 "settled wrapped reflow after real Notes resize"
             )
@@ -13075,19 +13121,19 @@ mod document_link_landing_tests {
             visual.simulate_click(control.center(), Modifiers::default());
             visual.run_until_parked();
             view.read_with(visual, |v, cx| {
-                let current = v.content.read(cx).selected_text();
+                let current = v.pane.content.read(cx).selected_text();
                 assert_eq!(current, selected, "settled registration after Notes toggle");
                 assert_eq!(
                     source.find(current.trim()).unwrap()
                         ..source.find(current.trim()).unwrap() + current.trim().len(),
                     selected_range
                 );
-                assert_eq!(v.content.entity_id(), entity);
+                assert_eq!(v.pane.content.entity_id(), entity);
             });
         }
         for distance in [80., -80.] {
             let before = view.update_in(visual, |v, _, cx| {
-                let list = v.content.read(cx).list_state();
+                let list = v.pane.content.read(cx).list_state();
                 let before = list.logical_scroll_top();
                 list.scroll_by(px(distance));
                 cx.notify();
@@ -13095,14 +13141,14 @@ mod document_link_landing_tests {
             });
             visual.run_until_parked();
             view.read_with(visual, |v, cx| {
-                let after = v.content.read(cx).list_state().logical_scroll_top();
+                let after = v.pane.content.read(cx).list_state().logical_scroll_top();
                 assert_ne!(
                     (after.item_ix, after.offset_in_item),
                     (before.item_ix, before.offset_in_item),
                     "scroll positive control"
                 );
                 assert_eq!(
-                    v.content.read(cx).selected_text(),
+                    v.pane.content.read(cx).selected_text(),
                     selected,
                     "settled scroll projection preserves range"
                 );
@@ -13111,7 +13157,7 @@ mod document_link_landing_tests {
         // A new ordinary gesture must replace the settled byte range.
         let document = visual.debug_bounds("reader-column").unwrap();
         select(visual, reader_text_origin(document));
-        let next = view.read_with(visual, |v, cx| v.content.read(cx).selected_text());
+        let next = view.read_with(visual, |v, cx| v.pane.content.read(cx).selected_text());
         assert!(!next.trim().is_empty());
         assert_ne!(next, selected);
         assert_eq!(source.matches(next.trim()).count(), 1);
@@ -13121,7 +13167,7 @@ mod document_link_landing_tests {
         visual.run_until_parked();
         view.read_with(visual, |v, cx| {
             assert!(
-                v.content.read(cx).selected_text().is_empty(),
+                v.pane.content.read(cx).selected_text().is_empty(),
                 "content replacement invalidates selection"
             )
         });
@@ -13177,18 +13223,18 @@ mod document_link_landing_tests {
             offset_in_item: px(7.),
         };
         view.update_in(visual, |v, _, cx| {
-            v.content.read(cx).list_state().scroll_to(origin);
+            v.pane.content.read(cx).list_state().scroll_to(origin);
             cx.notify();
         });
         visual.run_until_parked();
         let (old, origin) = view.update_in(visual, |v, _, cx| {
             assert!(
-                v.content.read(cx).list_state().item_count() > 5,
+                v.pane.content.read(cx).list_state().item_count() > 5,
                 "old-list positive control"
             );
             (
-                v.content.entity_id(),
-                v.content.read(cx).list_state().logical_scroll_top(),
+                v.pane.content.entity_id(),
+                v.pane.content.read(cx).list_state().logical_scroll_top(),
             )
         });
         // The actual rendered topology, both native drag directions, selection
@@ -13208,7 +13254,7 @@ mod document_link_landing_tests {
         // Select a measured visible paragraph, not a fixed y-coordinate that
         // can land in the inter-paragraph gap after layout changes.
         let text_start = view.read_with(visual, |v, cx| {
-            let list = v.content.read(cx).list_state();
+            let list = v.pane.content.read(cx).list_state();
             let block = list
                 .bounds_for_item(list.logical_scroll_top().item_ix + 1)
                 .unwrap();
@@ -13219,7 +13265,7 @@ mod document_link_landing_tests {
         visual.simulate_mouse_move(text_end, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(text_end, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
-        let selection = view.read_with(visual, |v, cx| v.content.read(cx).selected_text());
+        let selection = view.read_with(visual, |v, cx| v.pane.content.read(cx).selected_text());
         assert!(
             !selection.is_empty() && selection.len() < 100,
             "partial-selection positive control: {selection:?}"
@@ -13245,7 +13291,7 @@ mod document_link_landing_tests {
                 visual.simulate_mouse_down(inside, MouseButton::Left, Modifiers::default());
                 view.read_with(visual, |v, cx| {
                     assert_eq!(
-                        v.content.read(cx).selected_text(),
+                        v.pane.content.read(cx).selected_text(),
                         selection,
                         "inside {anchor} {dx}"
                     )
@@ -13257,7 +13303,7 @@ mod document_link_landing_tests {
                 visual.simulate_mouse_down(outside, MouseButton::Left, Modifiers::default());
                 view.read_with(visual, |v, cx| {
                     assert!(
-                        v.content.read(cx).selected_text().is_empty(),
+                        v.pane.content.read(cx).selected_text().is_empty(),
                         "outside live splitter {dx}"
                     )
                 });
@@ -13265,7 +13311,7 @@ mod document_link_landing_tests {
                 // Restore the fixture viewport for the next independent
                 // boundary case; ordinary outside clicks may move focus/scroll.
                 view.update_in(visual, |v, _, cx| {
-                    v.content.read(cx).list_state().scroll_to(origin);
+                    v.pane.content.read(cx).list_state().scroll_to(origin);
                     cx.notify();
                 });
                 visual.run_until_parked();
@@ -13274,7 +13320,7 @@ mod document_link_landing_tests {
                 visual.simulate_mouse_up(text_end, MouseButton::Left, Modifiers::default());
                 view.read_with(visual, |v, cx| {
                     assert_eq!(
-                        v.content.read(cx).selected_text(),
+                        v.pane.content.read(cx).selected_text(),
                         selection,
                         "reselect after {anchor} {dx}"
                     )
@@ -13297,7 +13343,7 @@ mod document_link_landing_tests {
             visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
             view.read_with(visual, |v, cx| {
                 assert_eq!(
-                    v.content.read(cx).selected_text(),
+                    v.pane.content.read(cx).selected_text(),
                     selection,
                     "after MouseDown {panel:?}"
                 )
@@ -13322,7 +13368,7 @@ mod document_link_landing_tests {
             visual.run_until_parked();
             view.read_with(visual, |v, cx| {
                 assert_eq!(
-                    v.content.read(cx).selected_text(),
+                    v.pane.content.read(cx).selected_text(),
                     selection,
                     "selection retained through actual drag"
                 );
@@ -13344,7 +13390,7 @@ mod document_link_landing_tests {
             visual.simulate_mouse_down(control.center(), MouseButton::Left, Modifiers::default());
             view.read_with(visual, |v, cx| {
                 assert_eq!(
-                    v.content.read(cx).selected_text(),
+                    v.pane.content.read(cx).selected_text(),
                     selection,
                     "control MouseDown {id}, {control:?}"
                 )
@@ -13353,7 +13399,7 @@ mod document_link_landing_tests {
             visual.run_until_parked();
             view.read_with(visual, |v, cx| {
                 assert_eq!(
-                    v.content.read(cx).selected_text(),
+                    v.pane.content.read(cx).selected_text(),
                     selection,
                     "mouse control {id}"
                 )
@@ -13381,8 +13427,8 @@ mod document_link_landing_tests {
                 assert!(document.size.width >= px(479.9));
             }
             view.read_with(visual, |v, cx| {
-                assert_eq!(v.content.entity_id(), old);
-                assert_eq!(v.content.read(cx).selected_text(), selection);
+                assert_eq!(v.pane.content.entity_id(), old);
+                assert_eq!(v.pane.content.read(cx).selected_text(), selection);
             });
         }
         // Switch the compact overlay to Notes and verify the opposite edge.
@@ -13395,7 +13441,7 @@ mod document_link_landing_tests {
         assert_eq!(left.left(), document.left());
         assert!(visual.debug_bounds("reader-backlinks-panel").is_none());
         view.read_with(visual, |v, cx| {
-            assert_eq!(v.content.read(cx).selected_text(), selection)
+            assert_eq!(v.pane.content.read(cx).selected_text(), selection)
         });
         visual.simulate_resize(size(px(1366.), px(768.)));
         visual.run_until_parked();
@@ -13406,19 +13452,19 @@ mod document_link_landing_tests {
         assert!(visual.debug_bounds("reader-notes-panel").is_none());
         assert!(visual.debug_bounds("reader-backlinks-panel").is_some());
         view.read_with(visual, |v, cx| {
-            assert_eq!(v.content.read(cx).selected_text(), selection)
+            assert_eq!(v.pane.content.read(cx).selected_text(), selection)
         });
         // Lose the release of a control gesture; a subsequent ordinary press
         // must still clear selection after the panel has been dismissed.
         let close = visual.debug_bounds("reader-backlinks-preserve").unwrap();
         visual.simulate_mouse_down(close.center(), MouseButton::Left, Modifiers::default());
         view.read_with(visual, |v, cx| {
-            assert_eq!(v.content.read(cx).selected_text(), selection)
+            assert_eq!(v.pane.content.read(cx).selected_text(), selection)
         });
         view.update_in(visual, |v, window, cx| {
             v.close_panel(reader_layout::Panel::Backlinks, window, cx);
             v.panel_widths = reader_layout::Widths::default();
-            v.content.read(cx).list_state().scroll_to(origin);
+            v.pane.content.read(cx).list_state().scroll_to(origin);
         });
         visual.run_until_parked();
         // Removed controls leave no stale exemption. An ordinary document
@@ -13430,21 +13476,21 @@ mod document_link_landing_tests {
         visual.run_until_parked();
         view.read_with(visual, |v, cx| {
             assert!(
-                v.content.read(cx).selected_text().is_empty(),
+                v.pane.content.read(cx).selected_text().is_empty(),
                 "ordinary document click clears selection"
             )
         });
         // #321: toggling UI panels must not replace the parsed document or its
         // navigation/scroll state. Closing must not leave focus in a hidden control.
-        let history_before = view.read_with(visual, |v, _| v.navigation.history.clone());
+        let history_before = view.read_with(visual, |v, _| v.pane.navigation.history.clone());
         view.update_in(visual, |v, window, cx| {
             v.toggle_panel(reader_layout::Panel::Notes, window, cx);
         });
         visual.run_until_parked();
         view.update_in(visual, |v, window, _| {
             assert!(v.sidebar_search_focus.is_focused(window));
-            assert_eq!(v.content.entity_id(), old);
-            assert_eq!(v.navigation.history, history_before);
+            assert_eq!(v.pane.content.entity_id(), old);
+            assert_eq!(v.pane.navigation.history, history_before);
         });
         for (width, height) in [(640., 720.), (1366., 768.), (640., 720.)] {
             visual.simulate_resize(size(px(width), px(height)));
@@ -13453,14 +13499,14 @@ mod document_link_landing_tests {
                 view.update_in(visual, |v, window, cx| {
                     assert!(!v.panels.visible(reader_layout::Panel::Notes, width));
                     assert!(!v.sidebar_search_focus.is_focused(window));
-                    assert!(v.content.read(cx).focus_handle().is_focused(window));
+                    assert!(v.pane.content.read(cx).focus_handle().is_focused(window));
                     v.focus_sidebar_search(window, cx);
                 });
                 visual.run_until_parked();
             }
             view.update_in(visual, |v, window, _| {
-                assert_eq!(v.content.entity_id(), old);
-                assert_eq!(v.navigation.history, history_before);
+                assert_eq!(v.pane.content.entity_id(), old);
+                assert_eq!(v.pane.navigation.history, history_before);
                 assert!(v.panels.visible(
                     reader_layout::Panel::Notes,
                     f32::from(v.body_bounds.size.width)
@@ -13512,8 +13558,8 @@ mod document_link_landing_tests {
                 reader_layout::Widths::load(&preference).notes,
                 v.panel_widths.notes
             );
-            assert_eq!(v.content.entity_id(), old);
-            assert_eq!(v.navigation.history, history_before);
+            assert_eq!(v.pane.content.entity_id(), old);
+            assert_eq!(v.pane.navigation.history, history_before);
         });
         // Close during a real drag must not let ordinary motion resize a
         // reopened/different panel after its release was lost.
@@ -13564,9 +13610,9 @@ mod document_link_landing_tests {
                 v.panels.dismiss_target(f32::from(v.body_bounds.size.width)),
                 reader_layout::Panel::Closed
             );
-            assert!(v.content.read(cx).focus_handle().is_focused(window));
-            assert_eq!(v.content.entity_id(), old);
-            let position = v.content.read(cx).list_state().logical_scroll_top();
+            assert!(v.pane.content.read(cx).focus_handle().is_focused(window));
+            assert_eq!(v.pane.content.entity_id(), old);
+            let position = v.pane.content.read(cx).list_state().logical_scroll_top();
             assert_eq!(position.item_ix, origin.item_ix);
             assert_eq!(position.offset_in_item, origin.offset_in_item);
             v.toggle_panel(reader_layout::Panel::Backlinks, window, cx);
@@ -13575,12 +13621,12 @@ mod document_link_landing_tests {
         visual.simulate_keystrokes(crate::BACKLINKS_KEY);
         visual.run_until_parked();
         view.update_in(visual, |v, window, cx| {
-            assert!(v.content.read(cx).focus_handle().is_focused(window));
-            assert_eq!(v.content.entity_id(), old);
-            assert_eq!(v.navigation.history, history_before);
+            assert!(v.pane.content.read(cx).focus_handle().is_focused(window));
+            assert_eq!(v.pane.content.entity_id(), old);
+            assert_eq!(v.pane.navigation.history, history_before);
             v.open_note_at("target.md", None, Some("Landing"), window, cx);
             assert_eq!(
-                v.content.entity_id(),
+                v.pane.content.entity_id(),
                 old,
                 "pending preparation keeps the current document"
             );
@@ -13591,7 +13637,12 @@ mod document_link_landing_tests {
         view.update_in(visual, |v, window, cx| {
             assert_eq!(v.pane.current_rel, "target.md");
             assert_eq!(
-                v.content.read(cx).list_state().logical_scroll_top().item_ix,
+                v.pane
+                    .content
+                    .read(cx)
+                    .list_state()
+                    .logical_scroll_top()
+                    .item_ix,
                 101
             );
             v.open_note_at("start.md", None, Some("Missing"), window, cx);
@@ -13611,7 +13662,7 @@ mod document_link_landing_tests {
         visual.run_until_parked();
         view.update_in(visual, |v, _, cx| {
             assert_eq!(v.pane.current_rel, "start.md");
-            let actual = v.content.read(cx).list_state().logical_scroll_top();
+            let actual = v.pane.content.read(cx).list_state().logical_scroll_top();
             assert_eq!(actual.item_ix, origin.item_ix);
             assert_eq!(actual.offset_in_item, origin.offset_in_item);
         });
@@ -13641,7 +13692,7 @@ mod document_link_landing_tests {
                 v.panels.dismiss_target(f32::from(v.body_bounds.size.width)),
                 reader_layout::Panel::Closed
             );
-            assert!(v.content.read(cx).focus_handle().is_focused(window));
+            assert!(v.pane.content.read(cx).focus_handle().is_focused(window));
         });
         visual.simulate_keystrokes("alt-left");
         visual.run_until_parked();
@@ -13650,7 +13701,12 @@ mod document_link_landing_tests {
         view.update_in(visual, |v, _, cx| {
             assert_eq!(v.pane.current_rel, "target.md");
             assert_eq!(
-                v.content.read(cx).list_state().logical_scroll_top().item_ix,
+                v.pane
+                    .content
+                    .read(cx)
+                    .list_state()
+                    .logical_scroll_top()
+                    .item_ix,
                 101
             );
         });
@@ -13843,7 +13899,7 @@ mod reader_scroll_key_tests {
         let reader = reader.unwrap();
         let position = |visual: &mut gpui::VisualTestContext| {
             reader.read_with(visual, |r, cx| {
-                let top = r.content.read(cx).list_state().logical_scroll_top();
+                let top = r.pane.content.read(cx).list_state().logical_scroll_top();
                 (top.item_ix, f32::from(top.offset_in_item))
             })
         };
@@ -13869,10 +13925,10 @@ mod reader_scroll_key_tests {
                 visual.run_until_parked();
                 reader.update_in(visual, |r, window, cx| {
                     assert!(!r.panels.visible(reader_layout::Panel::Notes, width));
-                    assert!(r.content.read(cx).focus_handle().is_focused(window));
+                    assert!(r.pane.content.read(cx).focus_handle().is_focused(window));
                 });
             } else {
-                let bounds = reader.read_with(visual, |r, cx| r.content.read(cx).bounds());
+                let bounds = reader.read_with(visual, |r, cx| r.pane.content.read(cx).bounds());
                 visual.simulate_click(bounds.center(), Modifiers::default());
                 visual.run_until_parked();
             }
@@ -13882,7 +13938,12 @@ mod reader_scroll_key_tests {
             reader.update_in(visual, |r, window, cx| {
                 r.tree_focus.focus(window, cx);
                 r.scroll_reader_key(1., true, window, cx);
-                r.content.read(cx).focus_handle().clone().focus(window, cx);
+                r.pane
+                    .content
+                    .read(cx)
+                    .focus_handle()
+                    .clone()
+                    .focus(window, cx);
             });
             visual.run_until_parked();
             assert_eq!(

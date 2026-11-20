@@ -190,7 +190,7 @@ fn issue2988_system_quick_look_refusal_falls_back_and_arrows_preview_without_nav
             anyhow::bail!("Quick Look could not load this file")
         }));
     });
-    let history = reader.read_with(visual, |r, _| r.navigation.history.clone());
+    let history = reader.read_with(visual, |r, _| r.pane.navigation.history.clone());
     visual.simulate_keystrokes("space");
     visual.run_until_parked();
     assert_eq!(
@@ -208,7 +208,7 @@ fn issue2988_system_quick_look_refusal_falls_back_and_arrows_preview_without_nav
         assert!(r.tree_focus.is_focused(window));
         assert_eq!(r.pane.current_rel, "Start.md");
         assert!(r.pane.file_preview.is_none());
-        assert_eq!(r.navigation.history, history);
+        assert_eq!(r.pane.navigation.history, history);
         assert!(Root::read(window, cx)
             .notification
             .read(cx)
@@ -221,7 +221,7 @@ fn issue2988_system_quick_look_refusal_falls_back_and_arrows_preview_without_nav
         assert_eq!(r.tree.cursor.as_deref(), Some("Beta.jpg"));
         assert_eq!(r.tree_preview.preview.as_ref().unwrap().0, "Beta.jpg");
         assert_eq!(r.pane.current_rel, "Start.md");
-        assert_eq!(r.navigation.history, history);
+        assert_eq!(r.pane.navigation.history, history);
     });
     assert_eq!(
         calls.get(),

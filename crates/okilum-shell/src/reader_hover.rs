@@ -198,7 +198,7 @@ impl Reader {
             self.leave_hover(url, cx);
             return;
         }
-        if self.quick_open.open || self.editing.is_some() || self.file_menu.is_some() {
+        if self.quick_open.open || self.pane.editing.is_some() || self.file_menu.is_some() {
             return;
         }
         if let Some(target) =
@@ -324,13 +324,15 @@ impl Reader {
             self.pane.hover_preview.leave_generation.wrapping_add(1);
         let leave = self.pane.hover_preview.leave_generation;
         let generation = self.pane.hover_preview.generation;
+        let pane = self.pane.id();
         cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(220))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 let h = &this.pane.hover_preview;
-                if h.generation == generation
+                if this.is_active_pane(pane)
+                    && h.generation == generation
                     && h.leave_generation == leave
                     && !h.over_source
                     && !h.over_preview
@@ -350,12 +352,13 @@ impl Reader {
         };
         let vault = self.vault.clone();
         let root = self.vault_root.clone();
-        let navigation = self.navigation.generation;
+        let ticket = self.pane.navigation_ticket();
         cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(delay).await;
             let proceed = this
                 .update_in_own_window(cx, |this, _, cx| {
-                    if this.pane.hover_preview.generation != generation
+                    if !this.pane.owns(ticket)
+                        || this.pane.hover_preview.generation != generation
                         || !this.pane.hover_preview.over_source
                     {
                         return false;
@@ -408,7 +411,7 @@ impl Reader {
                 .await;
             let _ = this.update_in_own_window(cx, |this, _, cx| {
                 if this.pane.hover_preview.generation != generation
-                    || this.navigation.generation != navigation
+                    || !this.pane.holds_navigation(ticket)
                     || this.vault_root != root
                 {
                     return;
@@ -442,7 +445,7 @@ impl Reader {
                         this.pane.hover_preview.states = states;
                         this.pane.hover_preview.content = Some(state);
                         if let Some(block) = heading {
-                            this.land_hover(block, generation, cx);
+                            this.land_hover(block, generation, ticket, cx);
                         }
                     }
                 }
@@ -452,7 +455,13 @@ impl Reader {
         .detach();
     }
 
-    fn land_hover(&self, block: usize, generation: u64, cx: &mut Context<Self>) {
+    fn land_hover(
+        &self,
+        block: usize,
+        generation: u64,
+        ticket: reader_pane::Ticket,
+        cx: &mut Context<Self>,
+    ) {
         cx.spawn(async move |this, cx| {
             for attempt in 0..100 {
                 cx.background_executor()
@@ -460,7 +469,9 @@ impl Reader {
                     .await;
                 let done = this
                     .update(cx, |this, cx| {
-                        if this.pane.hover_preview.generation != generation {
+                        if !this.pane.owns(ticket)
+                            || this.pane.hover_preview.generation != generation
+                        {
                             return true;
                         }
                         let Some(state) = this.pane.hover_preview.content.clone() else {
@@ -1218,7 +1229,7 @@ mod tests {
     fn delayed_preview_lands_without_navigating_and_closes(cx: &mut gpui::TestAppContext) {
         let (reader, visual, root) = fixture(cx);
         let original = reader.read_with(visual, |v, _| {
-            (v.pane.current_rel.clone(), v.navigation.history.len())
+            (v.pane.current_rel.clone(), v.pane.navigation.history.len())
         });
         reader.update_in(visual, |v, window, cx| {
             let url = v
@@ -1264,7 +1275,7 @@ mod tests {
                 "heading landing"
             );
             assert_eq!(
-                (v.pane.current_rel.clone(), v.navigation.history.len()),
+                (v.pane.current_rel.clone(), v.pane.navigation.history.len()),
                 original
             );
         });
@@ -1323,6 +1334,45 @@ mod tests {
         visual.run_until_parked();
         std::fs::remove_dir_all(root).unwrap();
     }
+    /// #773: a delayed preview started for one pane never opens, loads or
+    /// lands in another. The pane identity is checked before any mutation.
+    #[gpui::test]
+    fn pane773_delayed_preview_for_another_pane_changes_nothing(cx: &mut gpui::TestAppContext) {
+        for reopen in [false, true] {
+            let (reader, visual, root) = fixture(cx);
+            reader.update_in(visual, |v, window, cx| {
+                v.hover_note(
+                    "link".into(),
+                    Target {
+                        path: "sub/Target.md".into(),
+                        heading: Some("Landing".into()),
+                    },
+                    point(px(600.), px(200.)),
+                    window,
+                    cx,
+                );
+                if reopen {
+                    v.pane.reopen_as_new_pane();
+                }
+            });
+            visual.executor().advance_clock(Duration::from_millis(400));
+            visual.run_until_parked();
+            reader.read_with(visual, |v, _| {
+                let h = &v.pane.hover_preview;
+                if reopen {
+                    assert!(!h.visible && !h.loading, "nothing opened in the other pane");
+                    assert!(h.content.is_none() && h.message.is_none());
+                } else {
+                    assert!(h.visible, "positive control: the same pane shows it");
+                    assert!(h.content.is_some());
+                }
+            });
+            reader.update_in(visual, |v, _, cx| v.clear_hover(cx));
+            visual.run_until_parked();
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
     #[gpui::test]
     fn quick_open_hover_is_immediate_with_command_and_escape_preserves_query(
         cx: &mut gpui::TestAppContext,

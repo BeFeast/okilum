@@ -621,7 +621,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.editing.is_some() && !self.leave_source(cx) {
+        if self.pane.editing.is_some() && !self.leave_source(cx) {
             reader_toast::error(
                 "Cannot add to today's note: resolve the current note's save first",
                 window,
@@ -1204,7 +1204,7 @@ mod tests {
         reader.read_with(visual, |r, _| {
             assert!(r.daily_setup.is_none());
             assert_eq!(r.pane.current_rel, rel);
-            assert!(r.editing.is_some());
+            assert!(r.pane.editing.is_some());
             let state = r.session_directory.clone().unwrap();
             let saved = load(&state, &r.vault_root).unwrap();
             assert_eq!(saved.origin, Origin::Okilum);
@@ -1237,7 +1237,7 @@ mod tests {
         );
         reader.read_with(visual, |r, cx| {
             assert_eq!(r.pane.current_rel, rel);
-            let editing = r.editing.as_ref().expect("open for writing");
+            let editing = r.pane.editing.as_ref().expect("open for writing");
             assert_eq!(
                 editing.input().read(cx).cursor(),
                 text.len(),

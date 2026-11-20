@@ -24,9 +24,9 @@ impl Selection {
         Some(Self {
             root: reader.vault_root.clone(),
             rel: reader.pane.current_rel.clone(),
-            navigation: reader.navigation.generation,
+            navigation: reader.pane.navigation.generation,
             watcher: reader.watcher_generation,
-            input: reader.editing.as_ref().map(|e| e.input.entity_id()),
+            input: reader.pane.editing.as_ref().map(|e| e.input.entity_id()),
         })
     }
 }
@@ -324,7 +324,7 @@ mod tests {
     }
 
     fn input(r: &Reader) -> Entity<EditorState> {
-        r.editing.as_ref().unwrap().input.clone()
+        r.pane.editing.as_ref().unwrap().input.clone()
     }
 
     #[test]
@@ -462,7 +462,7 @@ mod tests {
                     assert!((after_y - caret_y).abs() <= px(1.), "profile={profile} live={live}: viewport anchor moved: before={caret_y:?} after={after_y:?}; scroll before={scroll:?} after={:?}", i.scroll_offset());
                 });
                 reader.read_with(visual, |r, _| {
-                    assert!(!r.editing.as_ref().unwrap().conflict_detected)
+                    assert!(!r.pane.editing.as_ref().unwrap().conflict_detected)
                 });
                 replace(&root, &format!("{original}second remote line\n"));
                 settle(visual, &reader, "second clean replacement", |r, cx| {
@@ -470,7 +470,7 @@ mod tests {
                 });
                 reader.read_with(visual, |r, _| {
                     assert!(
-                        !r.editing.as_ref().unwrap().conflict_detected,
+                        !r.pane.editing.as_ref().unwrap().conflict_detected,
                         "a native clean reset is still clean"
                     )
                 });
@@ -501,7 +501,7 @@ mod tests {
                 let remote = "# Note\n\nbase line\nremote incoming line\n";
                 replace(&root, remote);
                 settle(visual, &reader, "dirty editor conflict notice", |r, _| {
-                    r.editing.as_ref().unwrap().conflict_detected
+                    r.pane.editing.as_ref().unwrap().conflict_detected
                         && r.link_notice
                             .as_deref()
                             .is_some_and(|n| n.starts_with(CONFLICT_NOTICE))
@@ -526,7 +526,8 @@ mod tests {
                     )
                 });
                 let copy = reader.read_with(visual, |r, _| {
-                    r.editing
+                    r.pane
+                        .editing
                         .as_ref()
                         .unwrap()
                         .conflict_copy
@@ -546,7 +547,8 @@ mod tests {
                 });
                 reader.read_with(visual, |r, _| {
                     assert_eq!(
-                        r.editing
+                        r.pane
+                            .editing
                             .as_ref()
                             .unwrap()
                             .conflict_copy
@@ -564,7 +566,8 @@ mod tests {
                     r.save_source_explicit(cx);
                 });
                 let newer = reader.read_with(visual, |r, _| {
-                    r.editing
+                    r.pane
+                        .editing
                         .as_ref()
                         .unwrap()
                         .conflict_copy
@@ -611,13 +614,14 @@ mod tests {
                 let remote = "# Note\n\nremote incoming line\n";
                 replace(&root, remote);
                 settle(visual, &reader, "conflict before Keep both", |r, _| {
-                    r.editing.as_ref().unwrap().conflict_detected
+                    r.pane.editing.as_ref().unwrap().conflict_detected
                 });
                 reader.update(visual, |r, cx| {
                     r.save_source_explicit(cx);
                 });
                 let first = reader.read_with(visual, |r, _| {
-                    r.editing
+                    r.pane
+                        .editing
                         .as_ref()
                         .unwrap()
                         .conflict_copy
@@ -649,7 +653,7 @@ mod tests {
                 }
                 visual.run_until_parked();
                 let latest = reader.read_with(visual, |r, cx| {
-                    let e = r.editing.as_ref().unwrap();
+                    let e = r.pane.editing.as_ref().unwrap();
                     assert!(!e.conflict_detected);
                     assert_eq!(input(r).read(cx).value().as_ref(), remote);
                     e.conflict_copy.as_ref().unwrap().1.clone()
@@ -689,13 +693,14 @@ mod tests {
         let remote = "remote incoming line\n";
         replace(&root, remote);
         settle(visual, &reader, "conflict before copy failure", |r, _| {
-            r.editing.as_ref().unwrap().conflict_detected
+            r.pane.editing.as_ref().unwrap().conflict_detected
         });
         reader.update(visual, |r, cx| {
             r.save_source_explicit(cx);
         });
         let first = reader.read_with(visual, |r, _| {
-            r.editing
+            r.pane
+                .editing
                 .as_ref()
                 .unwrap()
                 .conflict_copy
@@ -712,7 +717,7 @@ mod tests {
                 i.replace_text_in_range(Some(0..0), "must survive failed Reload\n", window, cx)
             });
             r.resolve_source(true, window, cx);
-            assert!(r.editing.as_ref().unwrap().conflict_detected);
+            assert!(r.pane.editing.as_ref().unwrap().conflict_detected);
             assert_eq!(
                 input(r).read(cx).value().as_ref(),
                 format!("must survive failed Reload\n{first_text}")
@@ -733,7 +738,7 @@ mod tests {
         );
         std::fs::rename(&moved, &root).unwrap();
         reader.update(visual, |r, _| {
-            r.editing = None;
+            r.pane.editing = None;
         });
         let recovered = FileEditor::open(
             &root.join("note.md"),
@@ -767,7 +772,7 @@ mod tests {
                     let remote = "remote incoming line\n";
                     replace(&root, remote);
                     settle(visual, &reader, "conflict before lifecycle save", |r, _| {
-                        r.editing.as_ref().unwrap().conflict_detected
+                        r.pane.editing.as_ref().unwrap().conflict_detected
                     });
                     if copied {
                         // Exercise the real queued explicit Save entry point.
@@ -777,7 +782,7 @@ mod tests {
                         // publish a copy or swallow the explicit Save request.
                         reader.update(visual, |r, cx| {
                             assert!(!r.save_source(cx));
-                            let e = r.editing.as_ref().unwrap();
+                            let e = r.pane.editing.as_ref().unwrap();
                             assert!(e.conflict_copy.is_none());
                             assert!(e.save_pending);
                         });
@@ -785,7 +790,7 @@ mod tests {
                         visual.run_until_parked();
                     }
                     let before = reader.read_with(visual, |r, _| {
-                        let e = r.editing.as_ref().unwrap();
+                        let e = r.pane.editing.as_ref().unwrap();
                         assert_eq!(
                             e.conflict_copy.is_some(),
                             copied,
@@ -803,7 +808,7 @@ mod tests {
                     });
                     visual.run_until_parked();
                     let saves = reader.read_with(visual, |r, _| {
-                        let e = r.editing.as_ref().unwrap();
+                        let e = r.pane.editing.as_ref().unwrap();
                         e.saves + e.focus_save_requests
                     });
                     let latest = reader.update_in(visual, |r, window, cx| {
@@ -835,7 +840,7 @@ mod tests {
                     }
                     visual.run_until_parked();
                     reader.read_with(visual, |r, cx| {
-                        let e = r.editing.as_ref().unwrap();
+                        let e = r.pane.editing.as_ref().unwrap();
                         assert!(
                             e.saves + e.focus_save_requests > saves,
                             "positive control: lifecycle save actually fired (signal {signal})"
@@ -859,7 +864,7 @@ mod tests {
                         remote
                     );
                     reader.update(visual, |r, _| {
-                        r.editing = None;
+                        r.pane.editing = None;
                     });
                     let recovered = FileEditor::open(
                         &root.join("note.md"),
@@ -897,7 +902,7 @@ mod tests {
             visual,
             &reader,
             "conflict before copy name check",
-            |r, _| r.editing.as_ref().unwrap().conflict_detected,
+            |r, _| r.pane.editing.as_ref().unwrap().conflict_detected,
         );
         let before = chrono::Local::now();
         reader.update(visual, |r, cx| {
@@ -905,7 +910,8 @@ mod tests {
         });
         let after = chrono::Local::now();
         let copy = reader.read_with(visual, |r, _| {
-            r.editing
+            r.pane
+                .editing
                 .as_ref()
                 .unwrap()
                 .conflict_copy

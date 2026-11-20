@@ -66,7 +66,7 @@ impl Fixture<'_> {
     }
     fn focus_text(&mut self) {
         self.reader.update_in(self.visual, |r, window, cx| {
-            let focus = r.content.read(cx).focus_handle().clone();
+            let focus = r.pane.content.read(cx).focus_handle().clone();
             focus.focus(window, cx);
         });
     }
@@ -123,7 +123,8 @@ impl Fixture<'_> {
         // Keyboard and palette copy can retain selection. Start each independent
         // menu scenario on the background, which offers Select all.
         self.reader.update(self.visual, |r, cx| {
-            r.content
+            r.pane
+                .content
                 .update(cx, |content, cx| content.clear_selection(cx));
         });
         self.visual.run_until_parked();
@@ -131,7 +132,10 @@ impl Fixture<'_> {
         self.right_click(at);
         self.pick("read-menu-Select all");
         self.reader.read_with(self.visual, |r, cx| {
-            r.content.read(cx).selected_text_as(SelectionFormat::Plain)
+            r.pane
+                .content
+                .read(cx)
+                .selected_text_as(SelectionFormat::Plain)
         })
     }
     fn clipboard(&mut self) -> String {
@@ -140,7 +144,12 @@ impl Fixture<'_> {
     }
     fn link(&mut self) -> Point<Pixels> {
         let paragraph = self.reader.read_with(self.visual, |r, cx| {
-            r.content.read(cx).list_state().bounds_for_item(1).unwrap()
+            r.pane
+                .content
+                .read(cx)
+                .list_state()
+                .bounds_for_item(1)
+                .unwrap()
         });
         let y = paragraph.top() + px(BODY_FONT_SIZE * 0.8);
         (0..140)
@@ -165,7 +174,12 @@ fn markdown_copy_uses_a_partial_rendered_selection_instead_of_the_document(
 ) {
     let mut f = open(cx);
     let paragraph = f.reader.read_with(f.visual, |r, cx| {
-        r.content.read(cx).list_state().bounds_for_item(1).unwrap()
+        r.pane
+            .content
+            .read(cx)
+            .list_state()
+            .bounds_for_item(1)
+            .unwrap()
     });
     let start = point(
         paragraph.left() + px(2.),
@@ -183,7 +197,7 @@ fn markdown_copy_uses_a_partial_rendered_selection_instead_of_the_document(
     };
     select(&mut f);
     let (plain, markdown) = f.reader.read_with(f.visual, |r, cx| {
-        let content = r.content.read(cx);
+        let content = r.pane.content.read(cx);
         (
             content.selected_text_as(SelectionFormat::Plain),
             content.selected_text_as(SelectionFormat::Source),
@@ -266,14 +280,14 @@ fn source_and_live_markdown_shortcuts_copy_the_exact_selected_source(cx: &mut Te
     let mut f = open(cx);
     for live in [false, true] {
         f.reader.update_in(f.visual, |reader, window, cx| {
-            if reader.editing.is_none() {
+            if reader.pane.editing.is_none() {
                 reader.toggle_source(window, cx);
             }
             reader.set_live_preview(live, window, cx);
         });
         f.visual.run_until_parked();
         let input = f.reader.read_with(f.visual, |reader, _| {
-            reader.editing.as_ref().unwrap().input().clone()
+            reader.pane.editing.as_ref().unwrap().input().clone()
         });
         input.update(f.visual, |input, cx| {
             input.set_selected_range(0..NOTE.len(), cx)
@@ -350,6 +364,7 @@ fn markdown_shortcut_and_palette_without_selection_match_document_menu(cx: &mut 
     f.palette_copy(false);
     assert_eq!(f.clipboard(), markdown);
     assert!(f.reader.read_with(f.visual, |r, cx| r
+        .pane
         .content
         .read(cx)
         .selected_text()
@@ -387,6 +402,7 @@ fn rich_read_menu_publishes_html_and_plain_without_changing_other_copy_formats(
     f.right_click(at);
     assert_eq!(
         f.reader.read_with(f.visual, |r, cx| r
+            .pane
             .content
             .read(cx)
             .selected_text_as(SelectionFormat::Plain)),
@@ -447,7 +463,7 @@ fn rich_link_group_uses_captured_selection_after_the_displayed_revision_changes(
     // A later accepted render cannot replace the clipboard payload already
     // captured for this menu. The source file itself remains read-only.
     f.reader.update(f.visual, |r, cx| {
-        r.content.update(cx, |content, cx| {
+        r.pane.content.update(cx, |content, cx| {
             content.set_text_with_source(
                 "Later **revision**",
                 Some("Later **revision**".into()),

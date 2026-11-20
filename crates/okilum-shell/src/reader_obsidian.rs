@@ -725,17 +725,24 @@ mod tests {
         settle(visual);
         let top = |visual: &mut gpui::VisualTestContext| {
             view.read_with(visual, |v, cx| {
-                v.content.read(cx).list_state().logical_scroll_top().item_ix
+                v.pane
+                    .content
+                    .read(cx)
+                    .list_state()
+                    .logical_scroll_top()
+                    .item_ix
             })
         };
         assert_eq!(top(visual), 0, "positive control: opens at the top");
         // Find-in-note sees rendered text: the block ID is not in it.
         let matches = |visual: &mut gpui::VisualTestContext, query: &'static str| {
             view.update(visual, |v, cx| {
-                v.content.update(cx, |s, cx| s.set_search_query(query, cx));
+                v.pane
+                    .content
+                    .update(cx, |s, cx| s.set_search_query(query, cx));
             });
             visual.run_until_parked();
-            view.read_with(visual, |v, cx| v.content.read(cx).search_status().1)
+            view.read_with(visual, |v, cx| v.pane.content.read(cx).search_status().1)
         };
         assert_eq!(matches(visual, "Target paragraph."), 1, "positive control");
         assert_eq!(matches(visual, "^target"), 0, "the block ID is hidden");

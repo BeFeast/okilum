@@ -1140,7 +1140,7 @@ impl Reader {
             .loading
             .as_ref()
             .is_some_and(|load| load.opts.restore_workspace);
-        if known && (!explicit || replay) && !interacted && self.queued_open_note.is_none() {
+        if known && (!explicit || replay) && !interacted && self.pane.queued_open_note.is_none() {
             self.ui_state.workspace = saved
                 .project
                 .as_ref()
@@ -1170,14 +1170,15 @@ impl Reader {
                     .get(saved.history_index)
                     .is_some_and(|visit| visit.note == self.pane.current_rel)
             {
-                self.navigation.history = visits.iter().map(|visit| visit.note.clone()).collect();
-                self.navigation.history_positions =
+                self.pane.navigation.history =
+                    visits.iter().map(|visit| visit.note.clone()).collect();
+                self.pane.navigation.history_positions =
                     visits.iter().map(|visit| visit.position.list()).collect();
-                self.navigation.history_ix = saved.history_index;
+                self.pane.navigation.history_ix = saved.history_index;
             }
             if !saved.note.is_empty() && !saved.source {
                 self.cancel_pending_landing();
-                let positioned = self.content.update(cx, |content, cx| {
+                let positioned = self.pane.content.update(cx, |content, cx| {
                     content.scroll_to_prepared_position(saved.position.list(), cx)
                 });
                 if !positioned {
@@ -1254,21 +1255,21 @@ impl Reader {
         let Some(offset) = self.ui_state.source.take() else {
             return;
         };
-        if self.editing.is_none()
+        if self.pane.editing.is_none()
             && !self.pane.current_rel.is_empty()
             && self.pane.file_preview.is_none()
         {
             self.cancel_pending_landing();
             self.toggle_source(window, cx);
-            if self.editing.is_none() {
+            if self.pane.editing.is_none() {
                 if let Some(position) = self.ui_state.source_reader_position.take() {
                     // If draft recovery cannot open, preserve the preview landing
                     // as well as the existing error notice.
                     self.scroll_to_position(position, cx);
                 }
             }
-            self.ui_state.source_position_pending = self.editing.is_some();
-            if self.editing.is_some() {
+            self.ui_state.source_position_pending = self.pane.editing.is_some();
+            if self.pane.editing.is_some() {
                 self.ui_state.source_highlight_pending = self.source_highlighting_pending(cx);
             }
             self.restore_source_position(offset, window, cx);
@@ -1298,15 +1299,15 @@ impl Reader {
     pub(crate) fn restoring_source(&self) -> bool {
         self.ui_state.source.is_some()
             || self.ui_state.source_position_pending
-            || (self.editing.is_some() && self.ui_state.source_highlight_pending)
+            || (self.pane.editing.is_some() && self.ui_state.source_highlight_pending)
     }
 
     pub(crate) fn restoring_reader(&self) -> bool {
-        self.ui_state.reader_position_pending && self.navigation.pending_landing.is_some()
+        self.ui_state.reader_position_pending && self.pane.navigation.pending_landing.is_some()
     }
 
     pub(crate) fn record_ui_state(&mut self, active: bool, cx: &mut Context<Self>) {
-        if self.navigation.pending_landing.is_none() {
+        if self.pane.navigation.pending_landing.is_none() {
             self.ui_state.reader_position_pending = false;
         }
         if self.ui_state.workspace.is_some()
@@ -1329,26 +1330,28 @@ impl Reader {
             self.set_ui_active(false, cx);
             return;
         }
-        if self.editing.is_none() && self.ui_state.source.is_none() {
+        if self.pane.editing.is_none() && self.ui_state.source.is_none() {
             self.ui_state.source_reader_position = None;
         }
         let pending = self.ui_state.tree.as_ref();
         let position = self
             .ui_state
             .source_reader_position
-            .or(self.navigation.pending_landing)
-            .unwrap_or_else(|| self.content.read(cx).list_state().logical_scroll_top());
+            .or(self.pane.navigation.pending_landing)
+            .unwrap_or_else(|| self.pane.content.read(cx).list_state().logical_scroll_top());
         let history = self
+            .pane
             .navigation
             .history
             .iter()
             .enumerate()
             .map(|(index, note)| Visit {
                 note: note.clone(),
-                position: if index == self.navigation.history_ix {
+                position: if index == self.pane.navigation.history_ix {
                     position.into()
                 } else {
-                    self.navigation
+                    self.pane
+                        .navigation
                         .history_positions
                         .get(index)
                         .copied()
@@ -1413,14 +1416,14 @@ impl Reader {
                 .filter(|p| p.log.is_some() || reader_delimited::previewable(&p.rel))
                 .map_or_else(|| self.pane.current_rel.clone(), |p| p.rel.clone()),
             history,
-            history_index: self.navigation.history_ix,
+            history_index: self.pane.navigation.history_ix,
             position: position.into(),
             // An automatic Edit is the Settings default, not this session's
             // choice: relaunch applies the setting again, never as a choice
             // that would carry to text, data or code files (#2817).
-            source: (self.editing.is_some() && !self.ui_state.auto_edit)
+            source: (self.pane.editing.is_some() && !self.ui_state.auto_edit)
                 || self.ui_state.source.is_some(),
-            live_preview: if self.editing.is_some() {
+            live_preview: if self.pane.editing.is_some() {
                 self.source_live_preview()
             } else {
                 self.ui_state.live_preview
@@ -3693,6 +3696,7 @@ mod tests {
                 );
                 assert_eq!(
                     reader
+                        .pane
                         .content
                         .read(cx)
                         .list_state()
@@ -3720,7 +3724,10 @@ mod tests {
                 let load = reader.loading.as_ref().unwrap();
                 assert!(load.active && load.published, "search remains unfinished");
                 if source {
-                    assert!(reader.editing.is_some(), "source must not wait for search");
+                    assert!(
+                        reader.pane.editing.is_some(),
+                        "source must not wait for search"
+                    );
                     assert!(
                         !reader.restoring_source(),
                         "source viewport must be visible"
@@ -3732,6 +3739,7 @@ mod tests {
                 } else {
                     assert_eq!(
                         reader
+                            .pane
                             .content
                             .read(cx)
                             .list_state()
@@ -3740,7 +3748,7 @@ mod tests {
                         14
                     );
                     assert!(
-                        reader.navigation.pending_landing.is_none(),
+                        reader.pane.navigation.pending_landing.is_none(),
                         "first reader frame is positioned without a timer"
                     );
                 }
@@ -3774,7 +3782,7 @@ mod tests {
         });
         for _ in 0..5 {
             reader.read_with(visual, |reader, _| {
-                if source && reader.ui_state.ready && reader.editing.is_none() {
+                if source && reader.ui_state.ready && reader.pane.editing.is_none() {
                     assert!(reader.restoring_source(), "preview must remain hidden");
                 }
             });
@@ -3803,14 +3811,17 @@ mod tests {
                 "saved tree scroll must survive the initial selected-note reveal"
             );
             if source {
-                assert!(reader.editing.is_some(), "positive control: source mounted");
+                assert!(
+                    reader.pane.editing.is_some(),
+                    "positive control: source mounted"
+                );
                 assert!(
                     !reader.restoring_source(),
                     "restored source must become visible"
                 );
                 assert_eq!(reader.source_live_preview(), live_preview);
                 if live_preview {
-                    let input = reader.editing.as_ref().unwrap().test_input();
+                    let input = reader.pane.editing.as_ref().unwrap().test_input();
                     assert!(input.read(cx).value().contains("Unsaved draft sentinel"));
                     assert!(!std::fs::read_to_string(root.join("Folder/note.md"))
                         .unwrap()
@@ -3819,13 +3830,17 @@ mod tests {
                     assert_eq!(reader.source_scroll_offset(cx).unwrap().y, px(-400.));
                 }
             }
-            assert_eq!(reader.navigation.history, ["other.md", "Folder/note.md"]);
-            assert_eq!(reader.navigation.history_ix, 1);
+            assert_eq!(
+                reader.pane.navigation.history,
+                ["other.md", "Folder/note.md"]
+            );
+            assert_eq!(reader.pane.navigation.history_ix, 1);
             assert_eq!(
                 if source {
                     reader.ui_state.source_reader_position.unwrap().item_ix
                 } else {
                     reader
+                        .pane
                         .content
                         .read(cx)
                         .list_state()
@@ -3890,7 +3905,12 @@ mod tests {
         {
             for _ in 0..2 {
                 let before = reader.read_with(visual, |reader, cx| {
-                    let position = reader.content.read(cx).list_state().logical_scroll_top();
+                    let position = reader
+                        .pane
+                        .content
+                        .read(cx)
+                        .list_state()
+                        .logical_scroll_top();
                     (
                         reader.source_scroll_offset(cx),
                         position.item_ix,
@@ -3906,7 +3926,12 @@ mod tests {
                 });
                 visual.run_until_parked();
                 let after = reader.read_with(visual, |reader, cx| {
-                    let position = reader.content.read(cx).list_state().logical_scroll_top();
+                    let position = reader
+                        .pane
+                        .content
+                        .read(cx)
+                        .list_state()
+                        .logical_scroll_top();
                     (
                         reader.source_scroll_offset(cx),
                         position.item_ix,

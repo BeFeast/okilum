@@ -660,7 +660,10 @@ mod tests {
         assert_eq!(std::fs::read_to_string(vault.join(&rel)).unwrap(), source);
         reader.read_with(visual, |view, _| {
             assert_eq!(view.pane.current_rel, rel);
-            assert!(view.editing.is_some(), "today's note opens for writing");
+            assert!(
+                view.pane.editing.is_some(),
+                "today's note opens for writing"
+            );
         });
         reader.update_in(visual, |view, window, cx| {
             view.open_note("Other.md", None, window, cx)
@@ -729,7 +732,7 @@ mod tests {
         reader.read_with(visual, |view, _| {
             assert!(view.project_navigation.section == reader_project_navigation::Section::Reader);
             assert_eq!(view.pane.current_rel, rel);
-            assert!(view.editing.is_some());
+            assert!(view.pane.editing.is_some());
         });
         assert!(
             visual.debug_bounds("reader-source").is_some(),
