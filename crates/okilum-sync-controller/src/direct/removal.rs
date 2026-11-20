@@ -1408,13 +1408,15 @@ impl Controller {
                 db.removals[index].device == device,
                 "Removal identity conflicts with its durable request"
             );
-            if !extending || db.removals[index].superseded() {
+            // Another relay's delivery of the same decision may have created
+            // the record during the inspection above: merge this subset into
+            // it rather than dropping it (#3195).
+            let Some(sender) = sender.filter(|_| !db.removals[index].superseded()) else {
                 return Ok(());
-            }
+            };
             // The same decision for further vaults, from their owner: the one
             // record covers them too and applies again, to those folders
             // only. What finished already stays done (#3195).
-            let sender = sender.context("Removal sender missing")?;
             let added: BTreeSet<String> = vaults
                 .difference(&db.removals[index].vaults)
                 .cloned()
@@ -2006,11 +2008,19 @@ impl Controller {
             return Ok(true);
         }
         deny(&mut db, &removal, removed_self);
-        db.removals
-            .iter_mut()
-            .find(|r| r.id == id)
-            .unwrap()
-            .local_applied = true;
+        let saved = db.removals.iter_mut().find(|r| r.id == id).unwrap();
+        if saved.vaults != removal.vaults {
+            // A further subset of this decision was recorded while this
+            // application ran from its snapshot: only the snapshot's vaults
+            // are finished. Apply again for the rest before acknowledging
+            // anything (#3195).
+            saved.done.extend(removal.vaults.iter().cloned());
+            self.save(&db)?;
+            drop(db);
+            drop(_effects);
+            return self.apply_removal(id);
+        }
+        saved.local_applied = true;
         self.save(&db)?;
         Ok(true)
     }
@@ -4843,33 +4853,26 @@ mod tests {
         Ok(())
     }
 
-    /// #3195 (split from #3106 review 87342): A removes B from V1 and V2. B
-    /// received V1 through C and V2 through D, so each relay is the owner of
-    /// one vault on B and delivers only that vault, under the same removal
-    /// id. B applies both subsets whichever arrives first, across a restart
-    /// between them, keeps its files, and a replay of either changes nothing.
+    /// B of #3195: received V1 through C and V2 through D, behind a REST
+    /// double with both folders. The controller is open on `state`.
     #[cfg(target_os = "linux")]
-    #[test]
-    fn issue3195_one_removal_through_two_relays_applies_both_subsets() -> Result<()> {
-        use sha2::{Digest, Sha256};
-        let bob = ["BBBBBBB"; 8].join("-");
-        let carol = ["CCCCCCC"; 8].join("-");
-        let dave = ["DDDDDDD"; 8].join("-");
-        // Restart: the old controller and its worker are gone first.
-        let reopen = |old: Controller, state: &Path, configs: &[PathBuf]| -> Result<Controller> {
-            let worker = std::sync::Arc::downgrade(&old.shared);
-            old.shutdown();
-            drop(old);
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-            while worker.strong_count() != 0 && std::time::Instant::now() < deadline {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            assert_eq!(worker.strong_count(), 0, "worker did not terminate");
-            Controller::open(state.to_path_buf(), configs.to_vec())
-        };
-        for c_first in [true, false] {
-            let root = tempfile::tempdir()?;
-            let base = root.path().canonicalize()?;
+    struct TwoRelays {
+        rest: std::sync::Arc<std::sync::Mutex<serde_json::Value>>,
+        configs: Vec<PathBuf>,
+        state: PathBuf,
+        c: Uuid,
+        d: Uuid,
+        v1: PathBuf,
+        v2: PathBuf,
+        bob: String,
+    }
+    #[cfg(target_os = "linux")]
+    impl TwoRelays {
+        fn new(base: &Path) -> Result<(Self, Controller)> {
+            use sha2::{Digest, Sha256};
+            let bob = ["BBBBBBB"; 8].join("-");
+            let carol = ["CCCCCCC"; 8].join("-");
+            let dave = ["DDDDDDD"; 8].join("-");
             let home = base.join("syncthing");
             private::directory(&home)?;
             let (v1, v2) = (base.join("v1"), base.join("v2"));
@@ -4912,87 +4915,254 @@ mod tests {
                 db.transfers.push(received(d, "v2", &bob, false)?);
                 db.attached.push(inspect_existing(&configs, &v1)?);
                 db.attached.push(inspect_existing(&configs, &v2)?);
-                let identity = &db.attached[0].daemon;
                 assert_eq!(
-                    identity.certificate_hash,
+                    db.attached[0].daemon.certificate_hash,
                     format!("{:x}", Sha256::digest(b"fixture certificate"))
                 );
                 assert!(removal_from_owner(&db, c, &BTreeSet::from(["v1".into()])));
                 assert!(removal_from_owner(&db, d, &BTreeSet::from(["v2".into()])));
                 removed.save(&db)?;
             }
-            let removed = reopen(removed, &state, &configs)?;
-            let id = Uuid::new_v4();
-            let (first, second) = if c_first {
-                ((c, "v1"), (d, "v2"))
-            } else {
-                ((d, "v2"), (c, "v1"))
+            let fixture = Self {
+                rest,
+                configs,
+                state,
+                c,
+                d,
+                v1,
+                v2,
+                bob,
             };
-            let paused = |vault: &str| {
-                rest.lock().unwrap()["folders"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|f| f["id"] == vault && f["paused"] == true)
-            };
-            let patches = || rest.lock().unwrap()["patches"].as_array().unwrap().len();
-            let deliver = |removed: &Controller, (scope, vault): (Uuid, &str)| -> Result<()> {
-                let reply = removed.receive_removal(
-                    scope,
-                    id,
-                    bob.clone(),
-                    BTreeSet::from([vault.to_string()]),
-                    None,
-                    Version::default(),
-                )?;
-                ensure!(
-                    matches!(reply, Reply::RemovalRecorded { id: recorded } if recorded == id),
-                    "delivery of {vault} was not recorded"
-                );
-                Ok(())
-            };
-            deliver(&removed, first)?;
-            assert!(paused(first.1), "first subset applied");
-            assert!(
-                !paused(second.1),
-                "the first relay's subset names one vault"
-            );
-            assert_eq!(patches(), 1);
-            // Restart between the two subsets: the record is durable.
-            let removed = reopen(removed, &state, &configs)?;
-            deliver(&removed, second)?;
-            assert!(
-                paused(second.1),
-                "the second relay's subset of the same removal was acknowledged without pausing its folder (c_first={c_first})"
-            );
-            assert!(paused(first.1));
-            assert_eq!(patches(), 2, "each folder is paused exactly once");
-            // Replays of either subset, also after another restart, change nothing.
-            let removed = reopen(removed, &state, &configs)?;
-            deliver(&removed, first)?;
-            deliver(&removed, second)?;
-            assert_eq!(patches(), 2, "a replay applied the removal again");
-            {
-                let db = removed.shared.db.lock().unwrap();
-                let records: Vec<_> = db.removals.iter().filter(|r| r.id == id).collect();
-                assert_eq!(records.len(), 1, "one decision, one record");
-                assert_eq!(
-                    records[0].vaults,
-                    BTreeSet::from(["v1".into(), "v2".into()])
-                );
-                assert!(records[0].local_applied && !records[0].superseded());
-                assert_eq!(pending(&db), 0);
-                assert!(db.local_removed, "both pairings ended with their vaults");
+            let removed = fixture.reopen(removed)?;
+            Ok((fixture, removed))
+        }
+        /// Restart: the old controller and its worker are gone first.
+        fn reopen(&self, old: Controller) -> Result<Controller> {
+            let worker = std::sync::Arc::downgrade(&old.shared);
+            old.shutdown();
+            drop(old);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while worker.strong_count() != 0 && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            for (dir, name) in [(&v1, "v1"), (&v2, "v2")] {
+            assert_eq!(worker.strong_count(), 0, "worker did not terminate");
+            Controller::open(self.state.clone(), self.configs.clone())
+        }
+        fn paused(&self, vault: &str) -> bool {
+            self.rest.lock().unwrap()["folders"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f["id"] == vault && f["paused"] == true)
+        }
+        fn patches(&self) -> usize {
+            self.rest.lock().unwrap()["patches"]
+                .as_array()
+                .unwrap()
+                .len()
+        }
+        /// One relay's delivery of its own vault; it must be recorded.
+        fn deliver(&self, removed: &Controller, id: Uuid, scope: Uuid, vault: &str) -> Result<()> {
+            let reply = removed.receive_removal(
+                scope,
+                id,
+                self.bob.clone(),
+                BTreeSet::from([vault.to_string()]),
+                None,
+                Version::default(),
+            )?;
+            ensure!(
+                matches!(reply, Reply::RemovalRecorded { id: recorded } if recorded == id),
+                "delivery of {vault} was not recorded"
+            );
+            Ok(())
+        }
+        /// Both folders paused once, one applied record, files kept.
+        fn assert_applied(&self, removed: &Controller, id: Uuid) -> Result<()> {
+            assert!(
+                self.paused("v1") && self.paused("v2"),
+                "both subsets applied"
+            );
+            assert_eq!(self.patches(), 2, "each folder is paused exactly once");
+            let db = removed.shared.db.lock().unwrap();
+            let records: Vec<_> = db.removals.iter().filter(|r| r.id == id).collect();
+            assert_eq!(records.len(), 1, "one decision, one record");
+            assert_eq!(
+                records[0].vaults,
+                BTreeSet::from(["v1".into(), "v2".into()])
+            );
+            assert!(records[0].local_applied && !records[0].superseded());
+            assert_eq!(pending(&db), 0);
+            assert!(db.local_removed, "both pairings ended with their vaults");
+            drop(db);
+            for (dir, name) in [(&self.v1, "v1"), (&self.v2, "v2")] {
                 assert_eq!(
                     std::fs::read_to_string(dir.join("keep.md"))?,
                     format!("kept in {name}"),
                     "removed copy was modified"
                 );
             }
+            Ok(())
+        }
+    }
+
+    /// #3195 (split from #3106 review 87342): A removes B from V1 and V2. B
+    /// received V1 through C and V2 through D, so each relay is the owner of
+    /// one vault on B and delivers only that vault, under the same removal
+    /// id. B applies both subsets whichever arrives first, across a restart
+    /// between them, keeps its files, and a replay of either changes nothing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn issue3195_one_removal_through_two_relays_applies_both_subsets() -> Result<()> {
+        for c_first in [true, false] {
+            let root = tempfile::tempdir()?;
+            let (b, removed) = TwoRelays::new(&root.path().canonicalize()?)?;
+            let id = Uuid::new_v4();
+            let (first, second) = if c_first {
+                ((b.c, "v1"), (b.d, "v2"))
+            } else {
+                ((b.d, "v2"), (b.c, "v1"))
+            };
+            b.deliver(&removed, id, first.0, first.1)?;
+            assert!(b.paused(first.1), "first subset applied");
+            assert!(
+                !b.paused(second.1),
+                "the first relay's subset names one vault"
+            );
+            assert_eq!(b.patches(), 1);
+            // Restart between the two subsets: the record is durable.
+            let removed = b.reopen(removed)?;
+            b.deliver(&removed, id, second.0, second.1)?;
+            assert!(
+                b.paused(second.1),
+                "the second relay's subset of the same removal was acknowledged without pausing its folder (c_first={c_first})"
+            );
+            b.assert_applied(&removed, id)?;
+            // Replays of either subset, also after another restart, change nothing.
+            let removed = b.reopen(removed)?;
+            b.deliver(&removed, id, first.0, first.1)?;
+            b.deliver(&removed, id, second.0, second.1)?;
+            b.assert_applied(&removed, id)?;
             removed.shutdown();
         }
+        Ok(())
+    }
+
+    /// #3196 review 87661, first window: both relays' deliveries find no
+    /// record. C's handler inspects, then waits before inserting while D's
+    /// handler records and applies V2. C's subset is merged into D's record,
+    /// not dropped, and C is acknowledged only once V1 is paused.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn issue3195_concurrent_first_deliveries_merge_into_one_record() -> Result<()> {
+        use std::sync::{atomic::AtomicBool, mpsc};
+        let root = tempfile::tempdir()?;
+        let (b, removed) = TwoRelays::new(&root.path().canonicalize()?)?;
+        let b = Arc::new(b);
+        let id = Uuid::new_v4();
+        let (suspended, waiting) = mpsc::channel::<()>();
+        let (resume, released) = mpsc::channel::<()>();
+        let released = Mutex::new(released);
+        let held = AtomicBool::new(false);
+        *removed.shared.removal_hook.lock().unwrap() = Some(Arc::new(move |stage, _| {
+            if stage == "queue" && !held.swap(true, Ordering::SeqCst) {
+                suspended.send(()).unwrap();
+                released.lock().unwrap().recv().unwrap();
+            }
+        }));
+        let via_c = {
+            let (b, removed) = (b.clone(), removed.clone());
+            std::thread::spawn(move || -> Result<bool> {
+                b.deliver(&removed, id, b.c, "v1")?;
+                Ok(b.paused("v1"))
+            })
+        };
+        waiting.recv_timeout(Duration::from_secs(10))?;
+        // C has inspected and holds before inserting: no record yet.
+        assert!(removed
+            .shared
+            .db
+            .lock()
+            .unwrap()
+            .removals
+            .iter()
+            .all(|r| r.id != id));
+        b.deliver(&removed, id, b.d, "v2")?;
+        assert!(
+            b.paused("v2") && !b.paused("v1"),
+            "D applied its own subset"
+        );
+        resume.send(())?;
+        assert!(
+            via_c.join().unwrap()?,
+            "C was acknowledged before V1 was paused: its subset was dropped"
+        );
+        *removed.shared.removal_hook.lock().unwrap() = None;
+        b.assert_applied(&removed, id)?;
+        removed.shutdown();
+        Ok(())
+    }
+
+    /// #3196 review 87661, second window: C's handler snapshots its {V1}
+    /// record and holds before applying; D's handler extends the record with
+    /// V2 meanwhile and waits for the application lock. C must not mark the
+    /// record applied for V1 alone: V2 is paused before either relay is
+    /// acknowledged.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn issue3195_subset_recorded_during_application_is_applied_too() -> Result<()> {
+        use std::sync::{atomic::AtomicBool, mpsc};
+        let root = tempfile::tempdir()?;
+        let (b, removed) = TwoRelays::new(&root.path().canonicalize()?)?;
+        let b = Arc::new(b);
+        let id = Uuid::new_v4();
+        let (suspended, waiting) = mpsc::channel::<()>();
+        let (resume, released) = mpsc::channel::<()>();
+        let released = Mutex::new(released);
+        let held = AtomicBool::new(false);
+        *removed.shared.removal_hook.lock().unwrap() = Some(Arc::new(move |stage, _| {
+            if stage == "apply" && !held.swap(true, Ordering::SeqCst) {
+                suspended.send(()).unwrap();
+                released.lock().unwrap().recv().unwrap();
+            }
+        }));
+        let relay = |scope: Uuid, vault: &'static str| {
+            let (b, removed) = (b.clone(), removed.clone());
+            std::thread::spawn(move || -> Result<bool> {
+                b.deliver(&removed, id, scope, vault)?;
+                Ok(b.paused("v1") && b.paused("v2"))
+            })
+        };
+        let via_c = relay(b.c, "v1");
+        waiting.recv_timeout(Duration::from_secs(10))?;
+        let via_d = relay(b.d, "v2");
+        // D records its subset into the record C is applying from a snapshot.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !removed
+            .shared
+            .db
+            .lock()
+            .unwrap()
+            .removals
+            .iter()
+            .any(|r| r.id == id && r.vaults.contains("v2"))
+        {
+            assert!(std::time::Instant::now() < deadline, "D never recorded V2");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!b.paused("v1") && !b.paused("v2"));
+        resume.send(())?;
+        assert!(
+            via_c.join().unwrap()?,
+            "C's application finished with V2 still unpaused"
+        );
+        assert!(
+            via_d.join().unwrap()?,
+            "D was acknowledged before V2 was paused"
+        );
+        *removed.shared.removal_hook.lock().unwrap() = None;
+        b.assert_applied(&removed, id)?;
+        removed.shutdown();
         Ok(())
     }
 }
