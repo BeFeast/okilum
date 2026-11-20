@@ -690,8 +690,10 @@ impl Reader {
     ) {
         let preview: String = text.lines().take(8).collect::<Vec<_>>().join("\n");
         let reader = cx.entity().downgrade();
+        // Both answers act on exactly what is shown: this vault, this note.
+        let root = self.vault_root.clone();
         window.open_dialog(cx, move |dialog, _, cx| {
-            draft_dialog(dialog, &rel, &preview, reader.clone(), cx)
+            draft_dialog(dialog, &root, &rel, &preview, reader.clone(), cx)
         });
         cx.notify();
     }
@@ -699,10 +701,14 @@ impl Reader {
     /// «Restore draft»: the draft becomes today's note again.
     pub(super) fn restore_daily_draft(
         &mut self,
+        root: &Path,
         rel: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.daily_choice_still_applies(root, window, cx) {
+            return;
+        }
         let Some(state) = self.session_directory.clone() else {
             return;
         };
@@ -725,8 +731,37 @@ impl Reader {
         cx.notify();
     }
 
-    /// «Start fresh from template»: the draft stays in Recover notes.
-    pub(super) fn start_fresh_daily_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// The vault the choice was shown in is still the one open; else nothing
+    /// is touched and the person presses Today's note again.
+    fn daily_choice_still_applies(
+        &mut self,
+        root: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.vault_root == root {
+            return true;
+        }
+        reader_toast::transient(
+            "Another vault is open now; nothing was changed. Press Today's note again.",
+            window,
+            cx,
+        );
+        false
+    }
+
+    /// «Start fresh from template» for the note the choice was shown for
+    /// (`rel`, not the clock's day): its draft stays in Recover notes.
+    pub(super) fn start_fresh_daily_note(
+        &mut self,
+        root: &Path,
+        rel: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.daily_choice_still_applies(root, window, cx) {
+            return;
+        }
         let Some(state) = self.session_directory.clone() else {
             return;
         };
@@ -735,6 +770,7 @@ impl Reader {
             let templates = self.creation_templates()?;
             okilum_core::daily_notes::start_fresh(
                 &self.vault_root,
+                rel,
                 &prefs.settings,
                 &templates,
                 now(),
@@ -781,6 +817,7 @@ impl Reader {
 /// in recovery. Built from values only; it never reads the Reader.
 fn draft_dialog(
     dialog: gpui_component::dialog::Dialog,
+    root: &Path,
     rel: &str,
     preview: &str,
     reader: WeakEntity<Reader>,
@@ -790,6 +827,8 @@ fn draft_dialog(
     let border = brand::palette(cx).border;
     let (restore, fresh) = (reader.clone(), reader);
     let restore_rel = rel.to_owned();
+    let fresh_rel = rel.to_owned();
+    let (restore_root, fresh_root) = (root.to_path_buf(), root.to_path_buf());
     dialog
         .title("Today's note has an unsaved draft")
         .width(px(460.))
@@ -831,8 +870,9 @@ fn draft_dialog(
                         .label("Start fresh from template")
                         .on_click(move |_, window, cx| {
                             window.close_dialog(cx);
-                            let _ = fresh
-                                .update(cx, |this, cx| this.start_fresh_daily_note(window, cx));
+                            let _ = fresh.update(cx, |this, cx| {
+                                this.start_fresh_daily_note(&fresh_root, &fresh_rel, window, cx)
+                            });
                         }),
                 )
                 .child(
@@ -843,8 +883,9 @@ fn draft_dialog(
                         .on_click(move |_, window, cx| {
                             window.close_dialog(cx);
                             let rel = restore_rel.clone();
-                            let _ = restore
-                                .update(cx, |this, cx| this.restore_daily_draft(rel, window, cx));
+                            let _ = restore.update(cx, |this, cx| {
+                                this.restore_daily_draft(&restore_root, rel, window, cx)
+                            });
                         }),
                 ),
         )
@@ -1553,6 +1594,51 @@ mod tests {
             );
             assert!(r.pane.recovery_offer, "the normal recovery offer");
         });
+    }
+
+    /// #3190 review: the choice was shown for an earlier day (the dialog
+    /// stayed open across midnight) and today's note has a draft of its own.
+    /// Start fresh for the shown day leaves today's journal untouched.
+    #[gpui::test]
+    fn start_fresh_acts_on_the_shown_day_and_keeps_todays_draft(cx: &mut TestAppContext) {
+        let temp = vault_with_daily_template();
+        let (root, today) = waiting_draft(&temp, true);
+        let drafts = temp.path().join("state/editor-drafts");
+        let shown = "Daily/2000-01-01.md";
+        std::fs::write(root.join(shown), "# old\n").unwrap();
+        {
+            let mut editor =
+                okilum_core::file_editor::FileEditor::open(&root.join(shown), &drafts).unwrap();
+            editor.set_text("draft of the shown day\n".into()).unwrap();
+        }
+        std::fs::remove_file(root.join(shown)).unwrap();
+        let (reader, visual) = open_vault(cx, &temp);
+        reader.update_in(visual, |r, window, cx| {
+            let vault = r.vault_root.clone();
+            r.start_fresh_daily_note(&vault, shown, window, cx)
+        });
+        visual.run_until_parked();
+        let text = std::fs::read_to_string(root.join(shown)).unwrap();
+        assert!(text.starts_with("# 2000-01-01\n"), "{text:?}");
+        assert!(!root.join(&today).exists());
+        assert_eq!(
+            okilum_core::file_editor::FileEditor::unsaved_draft_text(&root.join(&today), &drafts)
+                .unwrap()
+                .as_deref(),
+            Some("lost words\n"),
+            "today's draft stays attached to today's note"
+        );
+        // A choice from another vault changes nothing.
+        reader.update_in(visual, |r, window, cx| {
+            r.start_fresh_daily_note(Path::new("/elsewhere"), &today, window, cx)
+        });
+        visual.run_until_parked();
+        assert!(!root.join(&today).exists());
+        assert!(okilum_core::file_editor::FileEditor::has_unsaved_draft(
+            &root.join(&today),
+            &drafts
+        )
+        .unwrap());
     }
 
     fn hhmm(at: time::OffsetDateTime) -> String {

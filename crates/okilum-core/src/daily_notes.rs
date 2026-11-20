@@ -295,19 +295,30 @@ pub fn restore_draft(root: &Path, rel: &str, drafts: &Path) -> Result<String> {
     Ok(text)
 }
 
-/// «Start fresh from template»: the waiting draft is set aside, still in
-/// recovery (Recover notes), and today's note is created as usual.
+/// «Start fresh from template» for the note `rel` the choice was shown for,
+/// never a path worked out again from the clock (a dialog left open across
+/// midnight must not touch the next day's note). Its waiting draft is set
+/// aside, still in recovery (Recover notes), and the note is created from the
+/// template. If the note has come back meanwhile, it is only opened: its
+/// journal is not moved, so its normal recovery offer stays.
 pub fn start_fresh(
     root: &Path,
+    rel: &str,
     settings: &Settings,
     templates: &Catalog,
     now: OffsetDateTime,
     drafts: &Path,
 ) -> Result<Today> {
-    let relative = settings.relative_path(now)?;
-    ensure_real_folders(root, &relative)?;
-    crate::file_editor::FileEditor::set_aside_draft(&root.join(&relative), drafts)?;
-    open_or_create(root, settings, templates, now, drafts)
+    let relative = Path::new(rel);
+    ensure_real_folders(root, relative)?;
+    match std::fs::symlink_metadata(root.join(relative)) {
+        Ok(meta) if meta.is_file() => return Ok(Today::Existing(rel.to_owned())),
+        Ok(_) => bail!("{rel} is already there and is not a note"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).with_context(|| format!("Cannot check {rel}")),
+    }
+    crate::file_editor::FileEditor::set_aside_draft(&root.join(relative), drafts)?;
+    create_at(root, relative, settings, templates, now, drafts)
 }
 
 /// Open today's note, or create it. Without a daily template the note is
@@ -321,9 +332,21 @@ pub fn open_or_create(
     drafts: &Path,
 ) -> Result<Today> {
     let relative = settings.relative_path(now)?;
-    let rel = crate::vault::note_path(&relative);
-    ensure_real_folders(root, &relative)?;
-    let path = root.join(&relative);
+    create_at(root, &relative, settings, templates, now, drafts)
+}
+
+/// Open or create the daily note at `relative` (see [`open_or_create`]).
+fn create_at(
+    root: &Path,
+    relative: &Path,
+    settings: &Settings,
+    templates: &Catalog,
+    now: OffsetDateTime,
+    drafts: &Path,
+) -> Result<Today> {
+    let rel = crate::vault::note_path(relative);
+    ensure_real_folders(root, relative)?;
+    let path = root.join(relative);
     match std::fs::symlink_metadata(&path) {
         Ok(meta) if meta.is_file() => return Ok(Today::Existing(rel)),
         Ok(_) => bail!("{rel} is already there and is not a note"),
@@ -354,7 +377,7 @@ pub fn open_or_create(
     }
     let source = crate::note_files::create_from_template(
         root,
-        &relative,
+        relative,
         now,
         drafts,
         &catalog,
@@ -701,6 +724,7 @@ mod tests {
         ));
         let fresh = start_fresh(
             &root,
+            rel,
             &settings,
             &Catalog::load(&root).unwrap(),
             NOW,
@@ -735,6 +759,47 @@ mod tests {
             .versions
             .iter()
             .any(|v| v.text == "my unsaved morning\n"));
+    }
+
+    /// #3190 review: the choice was shown for day D; the clock is at D+1,
+    /// whose note has a draft of its own. Start fresh works on D only, and
+    /// D+1's journal is untouched; a note that came back is only opened.
+    #[test]
+    fn start_fresh_works_on_the_shown_day_not_the_clock() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+        std::fs::create_dir_all(&root).unwrap();
+        let drafts = dir.path().join("drafts");
+        let shown = "Daily/2026-11-20.md";
+        let next = "Daily/2026-11-21.md";
+        leave_draft(&root, shown, &drafts, "draft of the 20th\n");
+        leave_draft(&root, next, &drafts, "draft of the 21st\n");
+        let tomorrow = time::macros::datetime!(2026-11-21 00:05 +02:00);
+        let settings = Settings::default();
+        let catalog = Catalog::load(&root).unwrap();
+        let fresh = start_fresh(&root, shown, &settings, &catalog, tomorrow, &drafts).unwrap();
+        assert!(
+            matches!(&fresh, Today::Created { rel, .. } if rel == shown),
+            "{fresh:?}"
+        );
+        assert!(!root.join(next).exists());
+        assert_eq!(
+            crate::file_editor::FileEditor::unsaved_draft_text(&root.join(next), &drafts)
+                .unwrap()
+                .as_deref(),
+            Some("draft of the 21st\n"),
+            "the next day's draft stays attached to its note"
+        );
+        // The next day's note came back with unsaved edits: Start fresh for
+        // it only opens it and leaves the journal for the recovery offer.
+        std::fs::write(root.join(next), "# back\n").unwrap();
+        assert_eq!(
+            start_fresh(&root, next, &settings, &catalog, tomorrow, &drafts).unwrap(),
+            Today::Existing(next.into())
+        );
+        assert!(
+            crate::file_editor::FileEditor::has_unsaved_draft(&root.join(next), &drafts).unwrap()
+        );
     }
 
     #[test]
