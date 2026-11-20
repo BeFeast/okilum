@@ -413,8 +413,10 @@ pub struct ReaderPalette {
     /// Quiet warning status-line surface; text uses the theme's AA/AAA text.
     pub warning_tint: Hsla,
     pub text_faint: Hsla,
-    /// Heading text in Reader and Live Preview (#3147); a hue apart from
-    /// `link` so a heading never reads as clickable.
+    /// The theme's `heading` token (#3147), a hue apart from `link` so a
+    /// heading never reads as clickable. Renderers draw `headings`, which
+    /// fall back to it; tests check the token itself.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub heading: Hsla,
     /// H1..H6 (index 0 = H1): the optional `heading1`..`heading6` tokens,
     /// each falling back to `heading` (#3153).
