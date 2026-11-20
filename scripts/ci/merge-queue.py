@@ -19,6 +19,7 @@ action. Forgejo has no native merge queue; this script is the queue.
 """
 import argparse
 import fcntl
+import importlib.util
 import json
 import os
 import re
@@ -61,11 +62,21 @@ def review_verdict(comments, head):
     return found or (None, None)
 
 
-def full_green(runs):
-    """True when the newest full agent-checks run of this commit succeeded.
+def gh_check():
+    """The same verdict the merge rule already uses for a full agent-checks run."""
+    path = Path(__file__).resolve().parents[1] / "agent" / "gh_check.py"
+    spec = importlib.util.spec_from_file_location("okilum_gh_check", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-    A fast or benchmark ref is not the full gate. A newer failure wins over
-    an older success.
+
+def full_green(runs, sha):
+    """True when the newest full agent-checks run passes gh_check.verdict.
+
+    A workflow conclusion of success is not enough: a skipped linux job, or a
+    run missing a required step, must not land. Fast and benchmark refs are
+    not the full gate. A newer failure wins over an older success.
     """
     full = []
     for run in runs or []:
@@ -75,10 +86,10 @@ def full_green(runs):
         if branch.startswith(("agent-checks-fast/", "agent-checks-benchmark/")):
             continue
         full.append(run)
-    if not full:
+    if not full or not sha:
         return False
     newest = max(full, key=lambda item: item.get("createdAt") or item.get("created") or "")
-    return newest.get("status") == "completed" and newest.get("conclusion") == "success"
+    return gh_check().verdict(newest, sha) == 0
 
 
 def eligible(prs, comments_by_number, runs_by_sha):
@@ -88,12 +99,12 @@ def eligible(prs, comments_by_number, runs_by_sha):
     """
     chosen = []
     for pr in prs or []:
-        if pr.get("draft") or not pr.get("head"):
+        if pr.get("draft") or not pr.get("head") or pr.get("base") != "main":
             continue
         verdict, when = review_verdict(comments_by_number.get(pr["number"]) or [], pr["head"])
         if verdict != "PASS":
             continue
-        if not full_green(runs_by_sha.get(pr["head"]) or []):
+        if not full_green(runs_by_sha.get(pr["head"]) or [], pr["head"]):
             continue
         chosen.append({**pr, "passed_at": when, "critical": "critical" in (pr.get("labels") or [])})
     chosen.sort(key=lambda item: (not item["critical"], item["passed_at"] or "", item["number"]))
@@ -106,6 +117,34 @@ def ejection_key(number, head, base):
 
 def is_ejected(state, number, head, base):
     return ejection_key(number, head, base) in (state.get("ejected") or [])
+
+
+def still_landable(batch, prs, comments_by_number, runs_by_sha):
+    """False when any selected PR's head, base, review or full gate moved."""
+    current = {pr["number"]: pr for pr in prs or []}
+    for item in batch:
+        pr = current.get(item["number"])
+        if not pr or pr.get("draft") or pr.get("base") != "main" or pr.get("head") != item["head"]:
+            return False
+        verdict, _when = review_verdict(comments_by_number.get(item["number"]) or [], item["head"])
+        if verdict != "PASS":
+            return False
+        if not full_green(runs_by_sha.get(item["head"]) or [], item["head"]):
+            return False
+    return True
+
+
+def pages(fetch, limit=50, max_pages=40):
+    """Follow Forgejo list pages until a short page. fetch(page) -> list."""
+    out = []
+    for page in range(1, max_pages + 1):
+        batch = fetch(page) or []
+        if not isinstance(batch, list):
+            break
+        out.extend(batch)
+        if len(batch) < limit:
+            break
+    return out
 
 
 def classify_landing(ancestor, main, heads):
@@ -217,6 +256,12 @@ class Queue:
         if current != main:
             print("merge queue: main moved while the suite ran; not fast-forwarding")
             return 0
+        fresh = self.open_prs()
+        fresh_comments = {pr["number"]: self.comments(pr["number"]) for pr in batch}
+        fresh_runs = {pr["head"]: self.github_runs(pr["head"]) for pr in batch}
+        if not still_landable(batch, fresh, fresh_comments, fresh_runs):
+            print("merge queue: review, head or gate changed; not fast-forwarding")
+            return 0
         pushed = self.push(landing, main)
         if pushed != 0:
             print("merge queue: fast-forward refused; main changed")
@@ -266,7 +311,9 @@ class Queue:
         return commit
 
     def suite(self, sha):
-        ship = Path(tempfile.mkdtemp(prefix="okilum-merge-queue-"))
+        root = Path("/home/god/scratch/okilum-pool-receipts")
+        root.mkdir(parents=True, exist_ok=True)
+        ship = Path(tempfile.mkdtemp(prefix="merge-queue-", dir=root))
         receipt = ship / "phases.json"
         label = f"merge-queue-{sha[:12]}"
         command = [
@@ -288,21 +335,24 @@ class Queue:
         return proc.returncode
 
     def open_prs(self):
-        payload = self.api("GET", f"/repos/{REPO}/pulls?state=open&limit=50")
+        payload = pages(lambda page: self.api(
+            "GET", f"/repos/{REPO}/pulls?state=open&limit=50&page={page}"))
         out = []
-        for pr in payload or []:
+        for pr in payload:
             labels = [item.get("name") for item in pr.get("labels") or [] if isinstance(item, dict)]
             out.append({
                 "number": pr["number"],
                 "draft": bool(pr.get("draft")),
                 "head": (pr.get("head") or {}).get("sha") or "",
                 "ref": (pr.get("head") or {}).get("ref") or "",
+                "base": (pr.get("base") or {}).get("ref") or "",
                 "labels": [name for name in labels if name],
             })
         return out
 
     def comments(self, number):
-        return self.api("GET", f"/repos/{REPO}/issues/{number}/comments?limit=50") or []
+        return pages(lambda page: self.api(
+            "GET", f"/repos/{REPO}/issues/{number}/comments?limit=50&page={page}"))
 
     def comment(self, number, body):
         self.api("POST", f"/repos/{REPO}/issues/{number}/comments", {"body": body})
@@ -315,7 +365,22 @@ class Queue:
         if proc.returncode != 0:
             print(proc.stdout[-500:], file=sys.stderr)
             return []
-        return json.loads(proc.stdout or "[]")
+        listed = json.loads(proc.stdout or "[]")
+        details = []
+        fields = "headSha,headBranch,status,conclusion,jobs,url,attempt,createdAt"
+        for run in listed:
+            branch = run.get("headBranch") or ""
+            if not branch.startswith("agent-checks/") or branch.startswith(
+                    ("agent-checks-fast/", "agent-checks-benchmark/")):
+                continue
+            view = subprocess.run(
+                ["gh", "run", "view", str(run["databaseId"]), "-R", GITHUB_REPO, "--json", fields],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60, check=False)
+            if view.returncode != 0:
+                print(view.stdout[-500:], file=sys.stderr)
+                continue
+            details.append(json.loads(view.stdout or "{}"))
+        return details
 
     def api(self, method, path, body=None):
         token = forgejo_token()

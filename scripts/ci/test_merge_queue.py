@@ -18,13 +18,47 @@ def comment(body, user="oklabs-bot", when="2026-11-20T12:00:00Z"):
     return {"body": body, "user": {"login": user}, "created_at": when}
 
 
-def pr(number, head=HEAD, labels=(), draft=False):
-    return {"number": number, "draft": draft, "head": head, "labels": list(labels)}
+def pr(number, head=HEAD, labels=(), draft=False, base="main"):
+    return {"number": number, "draft": draft, "head": head, "labels": list(labels), "base": base}
 
 
-def green(branch="agent-checks/topic"):
-    return [{"headBranch": branch, "status": "completed", "conclusion": "success",
-             "createdAt": "2026-11-20T12:00:00Z"}]
+def detail(sha=HEAD, branch="agent-checks/topic", linux="success", created="2026-11-20T12:00:00Z"):
+    """A run view gh_check.verdict accepts when linux is success."""
+    linux_steps = [
+        "Prepare and verify pinned vendor and comrak", "Lint every workspace target offline",
+        "Build Linux desktop offline", "Run complete okilum-core suite offline",
+        "Run Linux Rust suites offline", "Verify agent helper controls",
+        "Stress private reveal bus (20 runs)", "Run CI, releases and updater Python suites",
+        "Verify per-user AppImage runtime",
+        "Verify pinned Sync fixture lifecycle, source sharing and remote inspection",
+        "Verify managed launch and configuration admission",
+        "Verify real disk-full Sync transfer and first merge",
+        "Reject and reap surviving agent fixture daemons",
+        "Verify additive vault regression controls",
+    ]
+    windows_steps = [
+        "Prepare and verify Windows vendor", "Run native Windows recovery controls",
+        "Run native Windows delta console controls", "Run native Windows Sync identity controls",
+        "Run native Windows atlas upload controls", "Run native Windows terminal console controls",
+        "Run native Windows Kubernetes transport controls",
+        "Run native Windows okilum-cored CLI and MCP suites",
+    ]
+    return {
+        "headSha": sha, "headBranch": branch, "status": "completed",
+        "conclusion": "failure" if linux == "failure" else "success",
+        "createdAt": created,
+        "jobs": [
+            {"name": "linux", "conclusion": linux, "steps": [] if linux == "skipped" else [
+                {"name": name, "conclusion": "success"} for name in linux_steps]},
+            {"name": "windows-recovery", "conclusion": "success", "steps": [
+                {"name": name, "conclusion": "success"} for name in windows_steps]},
+            {"name": "pre-merge", "conclusion": "skipped", "steps": []},
+        ],
+    }
+
+
+def green(branch="agent-checks/topic", sha=HEAD):
+    return [detail(sha, branch)]
 
 
 class ReviewAndGate(unittest.TestCase):
@@ -41,13 +75,38 @@ class ReviewAndGate(unittest.TestCase):
         self.assertEqual(queue.review_verdict([comment(f"CRITICAL-REVIEW PASS {HEAD}")], HEAD)[0], "PASS")
 
     def test_fast_and_failed_runs_are_not_a_full_gate(self):
-        self.assertTrue(queue.full_green(green()))
-        self.assertFalse(queue.full_green(green("agent-checks-fast/topic")))
-        self.assertFalse(queue.full_green(green("agent-checks-benchmark/x/topic")))
-        runs = green() + [{"headBranch": "agent-checks/topic", "status": "completed",
-                           "conclusion": "failure", "createdAt": "2026-11-20T13:00:00Z"}]
-        self.assertFalse(queue.full_green(runs))
-        self.assertFalse(queue.full_green([]))
+        self.assertTrue(queue.full_green(green(), HEAD))
+        self.assertFalse(queue.full_green(green("agent-checks-fast/topic"), HEAD))
+        self.assertFalse(queue.full_green(green("agent-checks-benchmark/x/topic"), HEAD))
+        runs = green() + [detail(HEAD, created="2026-11-20T13:00:00Z", linux="failure")]
+        self.assertFalse(queue.full_green(runs, HEAD))
+        self.assertFalse(queue.full_green([], HEAD))
+        # A green workflow whose linux job was skipped is not a full gate.
+        self.assertFalse(queue.full_green([detail(linux="skipped")], HEAD))
+
+    def test_only_a_pull_into_main_can_enter(self):
+        comments = {7: [comment(f"REVIEW PASS {HEAD}")]}
+        runs = {HEAD: green()}
+        self.assertEqual(queue.eligible([pr(7, base="release")], comments, runs), [])
+        self.assertEqual(queue.eligible([pr(7)], comments, runs)[0]["number"], 7)
+
+    def test_a_fix_that_arrives_during_the_suite_blocks_the_push(self):
+        batch = [pr(7)]
+        comments = {7: [comment(f"REVIEW PASS {HEAD}")]}
+        runs = {HEAD: green()}
+        self.assertTrue(queue.still_landable(batch, [pr(7)], comments, runs))
+        comments = {7: [comment(f"REVIEW PASS {HEAD}", when="2026-11-20T11:00:00Z"),
+                        comment(f"REVIEW FIX {HEAD}", when="2026-11-20T13:00:00Z")]}
+        self.assertFalse(queue.still_landable(batch, [pr(7)], comments, runs))
+        self.assertFalse(queue.still_landable(batch, [pr(7, head=OTHER)], {7: [comment(f"REVIEW PASS {OTHER}")]}, {OTHER: green(sha=OTHER)}))
+
+    def test_a_later_comment_page_can_replace_pass_with_fix(self):
+        pages = [
+            [comment(f"REVIEW PASS {HEAD}", when="2026-11-20T10:00:00Z")],
+            [comment(f"REVIEW FIX {HEAD}", when="2026-11-20T12:00:00Z")],
+        ]
+        loaded = queue.pages(lambda page: pages[page - 1] if page <= len(pages) else [], limit=1)
+        self.assertEqual(queue.review_verdict(loaded, HEAD)[0], "FIX")
 
     def test_eligible_order_is_critical_then_oldest_pass(self):
         prs = [pr(2, HEAD), pr(3, OTHER, labels=["critical"]), pr(4, "d" * 40, draft=True)]
@@ -56,7 +115,7 @@ class ReviewAndGate(unittest.TestCase):
             3: [comment(f"REVIEW PASS {OTHER}", when="2026-11-20T11:00:00Z")],
             4: [comment("REVIEW PASS " + "d" * 40)],
         }
-        runs = {HEAD: green(), OTHER: green(), "d" * 40: green()}
+        runs = {HEAD: green(), OTHER: green(sha=OTHER), "d" * 40: green(sha="d" * 40)}
         chosen = queue.eligible(prs, comments, runs)
         self.assertEqual([item["number"] for item in chosen], [3, 2])
 
@@ -107,6 +166,11 @@ class PoolScripts(unittest.TestCase):
                      "Lint every workspace target offline", "Build Linux desktop offline"):
             self.assertIn(name, script)
         self.assertIn("bash scripts/ci/linux-rust-tests.sh", script)
+        dispatch = (ROOT / "scripts/ci/pool-dispatch.sh").read_text()
+        self.assertIn("/home/god/scratch/okilum-pool-receipts", (ROOT / "scripts/ci/pool-phase-lib.sh").read_text())
+        self.assertIn("pool_receipt_dir", dispatch)
+        self.assertIn("pool_ensure_git", (ROOT / "scripts/ci/pool-linux-gate.sh").read_text())
+        self.assertIn("pool_ensure_git", (ROOT / "scripts/ci/pool-pre-merge.sh").read_text())
 
 
 if __name__ == "__main__":

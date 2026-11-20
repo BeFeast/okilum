@@ -5,6 +5,23 @@ pool_skip=0
 pool_fail=0
 pool_fail_infra=0
 
+# git archive has no repository, and check-vendor-generation.py runs git ls-files.
+pool_ensure_git() {
+    if [[ -d .git ]]; then
+        return 0
+    fi
+    git init -q
+    git add -A
+    git -c user.email=pool@okilum.local -c user.name='okilum pool' commit -q -m 'pool source'
+}
+
+# build-slot only ships directories under these roots back to the caller.
+pool_receipt_dir() {
+    local root=/home/god/scratch/okilum-pool-receipts
+    mkdir -p "$root"
+    mktemp -d "$root/receipt.XXXXXX"
+}
+
 pool_receipt_init() {
     [[ -n ${OKILUM_POOL_RECEIPT:-} ]] || { echo "OKILUM_POOL_RECEIPT is unset" >&2; exit 75; }
     mkdir -p "$(dirname "$OKILUM_POOL_RECEIPT")"

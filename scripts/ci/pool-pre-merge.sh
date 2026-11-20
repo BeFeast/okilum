@@ -6,6 +6,7 @@ set -euo pipefail
 # shellcheck source=scripts/ci/pool-phase-lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/pool-phase-lib.sh"
 pool_receipt_init
+pool_ensure_git
 
 export CARGO_INCREMENTAL=0
 export CARGO_PROFILE_DEV_DEBUG=0

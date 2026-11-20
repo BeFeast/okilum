@@ -14,7 +14,9 @@ sha=${OKILUM_SOURCE_COMMIT:-$(git rev-parse HEAD)}
 export PATH="${HOME}/.local/bin:${HOME}/.cargo/bin:${PATH}"
 command -v build-slot >/dev/null || { echo "build-slot is not on PATH" >&2; exit 75; }
 
-ship=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/okilum-pool.XXXXXX")
+# shellcheck source=scripts/ci/pool-phase-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/pool-phase-lib.sh"
+ship=$(pool_receipt_dir)
 receipt="$ship/phases.json"
 label="ci-${mode}-$(printf '%s' "$sha" | cut -c1-12)"
 args=(

@@ -9,6 +9,22 @@ ROOT = Path(__file__).resolve().parents[2]
 PHASE = ROOT / "scripts/ci/pool-phase.sh"
 
 
+class PoolGit(unittest.TestCase):
+    def test_an_archived_tree_becomes_a_repository_git_ls_files_can_read(self):
+        lib = ROOT / "scripts/ci/pool-phase-lib.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / "tracked.txt").write_text("ok\n")
+            (path / ".gitignore").write_text("ignored.txt\n")
+            (path / "ignored.txt").write_text("no\n")
+            script = f'set -euo pipefail\nsource "{lib}"\npool_ensure_git\ngit ls-files'
+            result = subprocess.run(["bash", "-c", script], cwd=path, capture_output=True,
+                                    text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("tracked.txt", result.stdout)
+            self.assertNotIn("ignored.txt", result.stdout)
+
+
 class PoolPhase(unittest.TestCase):
     def test_only_a_recorded_success_passes(self):
         with tempfile.TemporaryDirectory() as directory:

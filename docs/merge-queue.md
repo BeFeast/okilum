@@ -9,13 +9,15 @@ not keep a second batch beside this script.
 
 All of the following, on the current head:
 
-- the pull request is open and not a draft;
-- the latest trusted comment (`oklabs-bot`, `oleg`, or `BeFeast`) is
-  `REVIEW PASS <sha>` or `CRITICAL-REVIEW PASS <sha>` for this head;
-- the newest full `agent-checks` run for this head (branch
-  `agent-checks/…`, not `agent-checks-fast/` or `agent-checks-benchmark/`)
-  completed with success. That run's `linux` job executed
-  `scripts/ci/pool-linux-gate.sh` on the build-slot pool.
+- the pull request is open, not a draft, and its base is `main`;
+- the latest trusted comment (`oklabs-bot`, `oleg`, or `BeFeast`) on any
+  comment page is `REVIEW PASS <sha>` or `CRITICAL-REVIEW PASS <sha>` for
+  this head;
+- `scripts/agent/gh_check.py` returns exit 0 for the newest full
+  `agent-checks` run of this head (branch `agent-checks/…`, not
+  `agent-checks-fast/` or `agent-checks-benchmark/`). A skipped `linux` job
+  is not green. That job executed `scripts/ci/pool-linux-gate.sh` on the
+  build-slot pool.
 
 A pull request labelled `critical` is taken before the others. Within that,
 the oldest PASS goes first. Up to four clean pulls are merged into one tip.
@@ -34,8 +36,16 @@ the oldest PASS goes first. Up to four clean pulls are merged into one tip.
    124 retries next cycle. A pull request that does not merge cleanly is left
    for the existing rebase action.
 
-The push is `git push --force-with-lease=refs/heads/main:<tested-base>`. A
-moved `main` refuses the push; the next cycle rebuilds.
+Before the push the queue reads the pull requests, comments and the full
+gate again. A new `REVIEW FIX`, a moved head, or a gate that is no longer
+green cancels the fast-forward. The push is
+`git push --force-with-lease=refs/heads/main:<tested-base>`. A moved `main`
+refuses the push; the next cycle rebuilds.
+
+The pool source is a `git archive` (no `.git`). Each gate runs
+`pool_ensure_git` before `check-vendor-generation.py`, which needs
+`git ls-files`. The phase receipt is shipped from
+`/home/god/scratch/okilum-pool-receipts`, a path `build-slot` copies back.
 
 ## How it is started
 
