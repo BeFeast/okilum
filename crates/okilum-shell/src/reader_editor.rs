@@ -3263,7 +3263,14 @@ impl Reader {
                 style.bg(brand::palette(cx).selected.opacity(0.12))
             })
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
-                this.drop_on_editor(paths, window, cx)
+                this.drop_on_editor(paths.into(), window, cx)
+            }))
+            // #1615: text, rich text, URLs and image data from other apps.
+            .drag_over::<ExternalData>(|style, _, _, cx| {
+                style.bg(brand::palette(cx).selected.opacity(0.12))
+            })
+            .on_drop(cx.listener(|this, data: &ExternalData, window, cx| {
+                this.drop_on_editor(data.into(), window, cx)
             }))
             .when(
                 editing.markdown && (editing.save_failed || editing.conflict_detected),

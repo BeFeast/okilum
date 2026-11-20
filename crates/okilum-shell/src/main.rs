@@ -5997,6 +5997,21 @@ impl Reader {
                             .flex_1()
                             .min_h_0()
                             .w_full()
+                            // #1615: files and data dropped onto the rendered
+                            // note go into Edit, before the block under the
+                            // pointer.
+                            .drag_over::<ExternalPaths>(|style, _, _, cx| {
+                                style.bg(brand::palette(cx).selected.opacity(0.12))
+                            })
+                            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                                this.drop_on_reader(paths.into(), window, cx)
+                            }))
+                            .drag_over::<ExternalData>(|style, _, _, cx| {
+                                style.bg(brand::palette(cx).selected.opacity(0.12))
+                            })
+                            .on_drop(cx.listener(|this, data: &ExternalData, window, cx| {
+                                this.drop_on_reader(data.into(), window, cx)
+                            }))
                             // The TextView drops link clicks while text is
                             // selected, so a right-click on a link would open
                             // nothing; open the link's menu here (#943).

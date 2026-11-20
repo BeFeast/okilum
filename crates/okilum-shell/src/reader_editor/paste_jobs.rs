@@ -11,16 +11,112 @@
 //! again; never into an editor that was closed.
 use super::*;
 use crate::note_paste::anchor::{Anchor, Region};
+use crate::note_paste::block_drop::BlockSlot;
 use crate::note_paste::download::{self, DownloadError};
 use crate::note_paste::files::{self, FileAction, FilePlan};
 use crate::note_paste::router::{self, FollowUp, RemoteImage, RichJob, RouteContext, Routed};
-use crate::note_paste::{attachments, fetch, title, DroppedFiles};
+use crate::note_paste::{attachments, fetch, title, DroppedData, DroppedFiles};
 use gpui_component::input::clipboard::PasteMode;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 /// A background paste job shows its progress toast after this long.
 const PROGRESS_AFTER: Duration = Duration::from_millis(300);
+
+/// What was dropped onto a note: files, or (#1615) text, rich text, a URL or
+/// image data from another application.
+pub(crate) enum Dropped {
+    Files(Vec<PathBuf>),
+    Data(gpui::ExternalData),
+}
+
+impl From<&ExternalPaths> for Dropped {
+    fn from(paths: &ExternalPaths) -> Self {
+        Self::Files(paths.0.to_vec())
+    }
+}
+
+impl From<&gpui::ExternalData> for Dropped {
+    fn from(data: &gpui::ExternalData) -> Self {
+        Self::Data(data.clone())
+    }
+}
+
+impl Dropped {
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::Files(paths) => paths.is_empty(),
+            Self::Data(data) => data.types().is_empty(),
+        }
+    }
+}
+
+/// Where a drop goes in the note's source.
+#[derive(Clone, Copy, Debug)]
+enum DropAt {
+    /// At this offset, as a paste there (a drop onto the editor).
+    Inline(usize),
+    /// Before the block starting at this offset, as its own paragraph (a
+    /// drop onto the rendered note, #1615).
+    Block(usize),
+}
+
+/// Point a background result at `anchor` (#1615: a block drop's result
+/// goes before the block in the note as it is, not into a slot).
+fn retarget(follow_up: &mut FollowUp, anchor: Anchor) {
+    match follow_up {
+        FollowUp::Files { anchor: at, .. }
+        | FollowUp::Title { anchor: at, .. }
+        | FollowUp::Image { anchor: at, .. }
+        | FollowUp::Rich { anchor: at, .. } => *at = anchor,
+        // Remote images replace text inserted now; they never come alone.
+        FollowUp::RemoteImages { .. } => {}
+    }
+}
+
+/// Where a drop onto rendered block `block` goes in the editor's text
+/// `opened`: placed in the revision the Reader showed (`shown`), then found
+/// in `opened` by the block's unique text. `None` when the block cannot be
+/// placed, or is not in the opened text as it was shown (a recovered draft
+/// that changed it).
+fn shown_block_offset(
+    shown: Option<&str>,
+    opened: &str,
+    rendered: &str,
+    block: Option<usize>,
+) -> Option<usize> {
+    let Some(shown) = shown.filter(|shown| *shown != opened) else {
+        return block_drop_offset(opened, rendered, block);
+    };
+    if block.is_none() {
+        // Below the last block: the end of the note.
+        return Some(opened.len());
+    }
+    let at = block_drop_offset(shown, rendered, block)?;
+    Anchor::at_block(shown, at).locate_block(opened)
+}
+
+/// Where a drop onto rendered block `block` goes in the editor's `source`:
+/// the start of the block's first line, the end of the note below the last
+/// block (`block == None`), or `None` when the Reader's blocks and the
+/// note's do not match and the block cannot be placed.
+fn block_drop_offset(source: &str, rendered: &str, block: Option<usize>) -> Option<usize> {
+    match block {
+        None => Some(source.len()),
+        Some(block) => okilum_core::deep_link::block_line(source, rendered, block)
+            .and_then(|line| line_start(source, line)),
+    }
+}
+
+/// The byte offset where 1-based `line` starts in `text`; `None` past its
+/// last line.
+fn line_start(text: &str, line: u32) -> Option<usize> {
+    let skip = usize::try_from(line.checked_sub(1)?).ok()?;
+    if skip == 0 {
+        return Some(0);
+    }
+    text.match_indices('\n').nth(skip - 1).map(|(at, _)| at + 1)
+}
 
 /// The note a background paste result belongs to (#1611).
 #[derive(Clone)]
@@ -30,6 +126,16 @@ pub(super) struct Target {
     root: PathBuf,
     /// The note's file, to find its editor again after it was reopened.
     path: Option<PathBuf>,
+    /// #1615: a drop (onto the editor or the rendered note). Its result goes
+    /// only into the editor it was dropped on, and never to the caret when
+    /// its place is gone; a paste may go to a reopened editor or the caret.
+    /// Its remote images are downloaded before its text goes in, so the
+    /// whole drop is one edit (one Undo).
+    drop: bool,
+    /// #1615: a drop onto a rendered block, whose result has not gone in
+    /// yet. It goes in as its own paragraph before the block at the anchor,
+    /// in one edit with its blank lines; until then the note is untouched.
+    slot: bool,
     /// Whether this paste uploads (#1073), decided when it happened.
     upload: Option<reader_ui_state::UploadDecision>,
 }
@@ -58,7 +164,9 @@ impl Target {
             .path
             .as_deref()
             .is_some_and(|path| editing.store.path() == path);
-        (editing.input == self.input || same_note).then(|| editing.input.clone())
+        // A drop's place belongs to the editor it was dropped on (#1615): a
+        // reopened editor of the same note gets nothing.
+        (editing.input == self.input || (same_note && !self.drop)).then(|| editing.input.clone())
     }
 
     pub(super) fn root(&self) -> &std::path::Path {
@@ -100,6 +208,32 @@ impl Target {
             return;
         };
         super::paste_upload::start(self.clone(), &input, span, saved, window, cx);
+    }
+}
+
+/// Why a background result was not inserted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Missed {
+    /// The note is no longer being edited (or its editor is read-only).
+    Closed,
+    /// #1615: a block drop's place in the note could no longer be found.
+    Moved,
+}
+
+/// Say why a background result was not inserted, naming what was saved.
+fn not_inserted(missed: Missed, saved: &str, window: &mut Window, cx: &mut App) {
+    match missed {
+        Missed::Closed => note_closed(saved, window, cx),
+        Missed::Moved => {
+            let text = if saved.is_empty() {
+                "The note changed where the drop went, so nothing was inserted.".to_string()
+            } else {
+                format!(
+                    "The note changed where the drop went, so nothing was inserted. Saved: {saved}"
+                )
+            };
+            reader_toast::error(text, window, cx);
+        }
     }
 }
 
@@ -146,32 +280,175 @@ impl Reader {
 
     /// Files dropped onto the note: the same router as a paste of their
     /// URLs, at the drop point (the caret when the point has no offset).
-    pub(super) fn drop_on_editor(
+    /// Dropped text, rich text, URLs and image data (#1615): the same router
+    /// as a paste of them.
+    pub(crate) fn drop_on_editor(
         &mut self,
-        paths: &ExternalPaths,
+        dropped: Dropped,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(input) = self.source_input() else {
             return;
         };
-        let paths = paths.0.to_vec();
-        if paths.is_empty() {
+        if dropped.is_empty() {
             return;
         }
+        let position = window.mouse_position();
+        let offset = {
+            let state = input.read(cx);
+            state
+                .source_offset_for_point(position)
+                .unwrap_or_else(|| state.cursor())
+        };
+        self.route_dropped(input, dropped, DropAt::Inline(offset), window, cx);
+    }
+
+    /// #1615: files dropped onto the rendered note. The note switches to
+    /// Edit and they go in at the start of the block under the pointer, as
+    /// their own paragraph (the end of the note below the last block). A
+    /// note that cannot be edited explains why, as Edit does.
+    pub(crate) fn drop_on_reader(
+        &mut self,
+        dropped: Dropped,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if dropped.is_empty() || self.pane.editing.is_some() {
+            return;
+        }
+        let block = self.reader_block_at(window.mouse_position(), cx);
+        let rendered = self.pane.note_source.clone();
+        // The revision the Reader showed: the editor may open a recovered
+        // draft that differs from it.
+        let shown = self.pane.note_canonical_source.clone();
+        self.toggle_source(window, cx);
+        let Some(input) = self.source_input() else {
+            return;
+        };
+        diagnostic_error!("Drop: onto the Reader, block={block:?}");
+        // The block is placed in the revision the Reader showed, then found
+        // in the editor's text by its own unique text (a recovered draft may
+        // have the sections moved). Mapping parses the note, so it runs off
+        // the UI thread (as place_editor_at_reader does); text edited
+        // meanwhile is followed by an anchor, never by the old line number.
+        let (snapshot, stamp) = {
+            let state = input.read(cx);
+            (state.value().to_string(), state.source_stamp())
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            let (snapshot, offset) = cx
+                .background_executor()
+                .spawn(async move {
+                    let offset = shown_block_offset(shown.as_deref(), &snapshot, &rendered, block);
+                    (snapshot, offset)
+                })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this
+                    .pane
+                    .editing
+                    .as_ref()
+                    .is_none_or(|editing| editing.input != input)
+                {
+                    diagnostic_error!("Drop: not inserted (the editor closed first)");
+                    return;
+                }
+                let Some(offset) = offset else {
+                    // The Reader's blocks and the note's no longer match (a
+                    // rewritten note): the block cannot be told reliably.
+                    diagnostic_error!("Drop: not inserted (block {block:?} has no source line)");
+                    reader_toast::error(
+                        "Okilum couldn’t tell where that block starts in the note, so nothing \
+                         was inserted. Drop it in Edit at the place you want.",
+                        window,
+                        cx,
+                    );
+                    return;
+                };
+                let offset = {
+                    let state = input.read(cx);
+                    if state.source_stamp() == stamp {
+                        Some(offset)
+                    } else {
+                        Anchor::at_block(&snapshot, offset).locate_block(state.value().as_ref())
+                    }
+                };
+                let Some(offset) = offset else {
+                    diagnostic_error!("Drop: not inserted (the note changed at the drop point)");
+                    reader_toast::error(
+                        "The note changed where the drop went, so nothing was inserted.",
+                        window,
+                        cx,
+                    );
+                    return;
+                };
+                this.route_dropped(input, dropped, DropAt::Block(offset), window, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// The rendered block under `position`: the first laid-out block that
+    /// ends below it. `None` below the last block.
+    fn reader_block_at(&self, position: Point<Pixels>, cx: &App) -> Option<usize> {
+        let content = self.pane.content.read(cx);
+        let list = content.list_state();
+        let count = list.item_count();
+        (list.logical_scroll_top().item_ix..count)
+            .map_while(|ix| list.bounds_for_item(ix).map(|bounds| (ix, bounds)))
+            .find(|(_, bounds)| position.y < bounds.bottom())
+            .map(|(ix, _)| ix)
+    }
+
+    fn route_dropped(
+        &mut self,
+        input: Entity<EditorState>,
+        dropped: Dropped,
+        at: DropAt,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match dropped {
+            Dropped::Files(paths) => {
+                let failure = "The dropped files couldn’t be read.";
+                self.route_drop(input, &DroppedFiles(paths), at, failure, window, cx)
+            }
+            Dropped::Data(data) => {
+                let failure = "The dropped content couldn’t be read.";
+                self.route_drop(input, &DroppedData(data), at, failure, window, cx)
+            }
+        }
+    }
+
+    /// Route a drop through the paste router and insert it.
+    fn route_drop(
+        &mut self,
+        input: Entity<EditorState>,
+        board: &impl crate::note_paste::offer::Pasteboard,
+        at: DropAt,
+        failure: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let plain_file = self
             .pane
             .file_preview
             .as_ref()
             .is_some_and(|p| reader_delimited::editable(&p.rel));
         let note_rel = (!plain_file).then(|| self.selected_file().to_owned());
-        let position = window.mouse_position();
-        let (source, offset) = {
-            let state = input.read(cx);
-            let offset = state
-                .source_offset_for_point(position)
-                .unwrap_or_else(|| state.cursor());
-            (state.value().to_string(), offset)
+        let original = input.read(cx).value().to_string();
+        let source = original.clone();
+        let (source, offset, slot) = match at {
+            DropAt::Inline(offset) => (source, offset, None),
+            DropAt::Block(offset) => {
+                let slot = BlockSlot::new(&source, offset);
+                (
+                    slot.routing_source(&source),
+                    slot.route_offset(),
+                    Some(slot),
+                )
+            }
         };
         let stamp = attachments::stamp_now();
         let context = RouteContext {
@@ -190,31 +467,101 @@ impl Reader {
             ask_above: crate::note_paste::ask_above_bytes(cx),
         };
         let started = std::time::Instant::now();
-        match router::route(&DroppedFiles(paths), &context) {
-            Ok(routed) => {
+        match router::route(board, &context) {
+            Ok(mut routed) => {
                 diagnostic_error!(
-                    "Drop: route={:?} offset={} follow_up={} ms={:.1} {}",
+                    "Drop: route={:?} offset={} block={} follow_up={} ms={:.1} {}",
                     routed.route,
                     offset,
+                    slot.is_some(),
                     routed.follow_up.is_some(),
                     started.elapsed().as_secs_f64() * 1000.0,
                     routed.detail
                 );
-                self.apply_routed(input, routed, offset, window, cx);
+                // Rich text with remote images: they are downloaded first and
+                // the text goes in once, with them, so one Undo restores the
+                // note (a paste replaces them after inserting it).
+                if routed.insert.is_some()
+                    && matches!(routed.follow_up, Some(FollowUp::RemoteImages { .. }))
+                {
+                    let text = routed.insert.take().unwrap_or_default();
+                    let Some(FollowUp::RemoteImages {
+                        images,
+                        folder,
+                        vault_root,
+                        stamp,
+                        image_options,
+                        saved,
+                        admission,
+                        ..
+                    }) = routed.follow_up.take()
+                    else {
+                        return;
+                    };
+                    self.publish_saved_attachments(&routed.saved_files, window, cx);
+                    if let Some(notice) = routed.notice {
+                        show_notice(&notice, window, cx);
+                    }
+                    let (at, is_slot) = slot.map_or((offset, false), |slot| (slot.at, true));
+                    let target = self.follow_up_target(input, is_slot, true, cx);
+                    download_then_insert(
+                        target,
+                        if is_slot {
+                            Anchor::at_block(&original, at)
+                        } else {
+                            Anchor::at(&original, at)
+                        },
+                        Pending::Prepared(text),
+                        images,
+                        Downloads {
+                            folder,
+                            vault_root,
+                            stamp,
+                            image_options,
+                        },
+                        Leftovers::new(admission, saved),
+                        routed.saved_files.clone(),
+                        window,
+                        cx,
+                    );
+                    return;
+                }
+                let (offset, pending_slot) = match slot {
+                    // One edit: the slot's empty line with the routed text in
+                    // it, which is the routing source the anchors were taken on.
+                    Some(slot) if routed.insert.is_some() => {
+                        routed.insert = Some(slot.edit(routed.insert.as_deref().unwrap_or("")));
+                        (slot.at, false)
+                    }
+                    // Only a background result (copied files, a saved image,
+                    // converted rich text): nothing goes in now. The result
+                    // takes the slot in one edit when it is ready; a Cancel
+                    // leaves the note as it was.
+                    Some(slot) => {
+                        if let Some(follow_up) = routed.follow_up.as_mut() {
+                            retarget(follow_up, Anchor::at_block(&original, slot.at));
+                        }
+                        (slot.at, true)
+                    }
+                    None => (offset, false),
+                };
+                self.apply_routed(input, routed, offset, pending_slot, window, cx);
             }
             Err(error) => {
                 diagnostic_error!("Drop: not inserted ({error:?})");
-                reader_toast::error("The dropped files couldn’t be read.", window, cx);
+                reader_toast::error(failure, window, cx);
             }
         }
     }
 
-    /// Insert a routed result at `offset` (a drop) and start its follow-up.
+    /// Insert a routed result at `offset` (a drop) and start its follow-up;
+    /// `slot`: the follow-up's result goes in as a block drop's paragraph.
     fn apply_routed(
         &mut self,
         input: Entity<EditorState>,
         routed: Routed,
         offset: usize,
+        slot: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -229,7 +576,7 @@ impl Reader {
             });
             if inserted {
                 // Exactly the dropped text, in this note.
-                let target = self.paste_target(input.clone(), cx);
+                let target = self.follow_up_target(input.clone(), false, true, cx);
                 let span = offset..offset + text.len();
                 if downloads {
                     upload_after = super::paste_upload::track(
@@ -256,26 +603,14 @@ impl Reader {
             show_notice(&notice, window, cx);
         }
         if let Some(follow_up) = routed.follow_up {
-            self.run_paste_follow_up(input, follow_up, upload_after, window, cx);
+            // Only drops come here.
+            self.run_follow_up(input, follow_up, slot, true, upload_after, window, cx);
         }
     }
 
     /// The note a paste into `input` belongs to, for its background results.
     pub(super) fn paste_target(&self, input: Entity<EditorState>, cx: &Context<Self>) -> Target {
-        let path = self
-            .pane
-            .editing
-            .as_ref()
-            .filter(|editing| editing.input == input)
-            .map(|editing| editing.store.path().to_path_buf());
-        Target {
-            reader: cx.entity().downgrade(),
-            input,
-            root: self.vault_root.clone(),
-            path,
-            // Read at the paste: later background results carry it.
-            upload: reader_ui_state::upload_decision(cx),
-        }
+        self.follow_up_target(input, false, false, cx)
     }
 
     /// Start the background part of a paste. `upload_after` is the paste's
@@ -289,7 +624,47 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let input = self.paste_target(input, cx);
+        self.run_follow_up(input, follow_up, false, false, upload_after, window, cx);
+    }
+
+    /// The editor a background result goes into.
+    fn follow_up_target(
+        &self,
+        input: Entity<EditorState>,
+        slot: bool,
+        drop: bool,
+        cx: &Context<Self>,
+    ) -> Target {
+        let path = self
+            .pane
+            .editing
+            .as_ref()
+            .filter(|editing| editing.input == input)
+            .map(|editing| editing.store.path().to_path_buf());
+        Target {
+            reader: cx.entity().downgrade(),
+            input,
+            root: self.vault_root.clone(),
+            path,
+            drop,
+            slot,
+            // Read at the paste: later background results carry it.
+            upload: reader_ui_state::upload_decision(cx),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_follow_up(
+        &mut self,
+        input: Entity<EditorState>,
+        follow_up: FollowUp,
+        slot: bool,
+        drop: bool,
+        upload_after: Option<super::paste_upload::Pending>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = self.follow_up_target(input, slot, drop, cx);
         match follow_up {
             FollowUp::Files { plan, anchor } => {
                 if plan.ask {
@@ -327,6 +702,7 @@ impl Reader {
                 vault_root,
                 stamp,
                 image_options,
+                ..
             } => download_images(
                 input,
                 images,
@@ -404,8 +780,10 @@ fn ask_then_copy(
                     .collect::<Vec<_>>()
                     .join("\n");
                 let block = plan.items.len() > 1;
-                if insert_at_anchor(&input, &anchor, &text, block, false, window, cx).is_none() {
-                    note_closed("", window, cx);
+                if let Err(missed) =
+                    insert_at_anchor(&input, &anchor, &text, block, false, window, cx)
+                {
+                    not_inserted(missed, "", window, cx);
                 }
             }
             _ => diagnostic_error!("Paste: file copy cancelled"),
@@ -438,7 +816,7 @@ fn copy_files(input: Target, plan: FilePlan, anchor: Anchor, window: &mut Window
                     vec![None; work_plan.copies()],
                     vec![error.to_string()],
                     vec![],
-                )
+                );
             }
         };
         let existing = files::vault_names(&work_plan.vault_root);
@@ -504,8 +882,8 @@ fn copy_files(input: Target, plan: FilePlan, anchor: Anchor, window: &mut Window
                 let block = links.len() > 1;
                 let text = links.join("\n");
                 match insert_at_anchor(&input, &anchor, &text, block, false, window, cx) {
-                    Some(region) => input.upload_inserted(&region, &saved_files, window, cx),
-                    None => note_closed(&links.join("  "), window, cx),
+                    Ok(region) => input.upload_inserted(&region, &saved_files, window, cx),
+                    Err(missed) => not_inserted(missed, &links.join("  "), window, cx),
                 }
             }
             if !errors.is_empty() {
@@ -543,8 +921,8 @@ fn run_job(
             Ok((text, files)) => {
                 input.files_saved(&files, window, cx);
                 match insert_at_anchor(&input, &anchor, &text, false, false, window, cx) {
-                    Some(region) => input.upload_inserted(&region, &files, window, cx),
-                    None => note_closed(&text, window, cx),
+                    Ok(region) => input.upload_inserted(&region, &files, window, cx),
+                    Err(missed) => not_inserted(missed, &text, window, cx),
                 }
             }
             Err(text) => reader_toast::error(text, window, cx),
@@ -595,8 +973,8 @@ fn fetch_title(input: Target, url: String, anchor: Anchor, window: &mut Window, 
 /// Insert finished text where the paste was; at the caret, with a toast,
 /// when that place can no longer be found. `markdown`: converted Markdown,
 /// fitted like a paste of it (blank lines around a block). The region of the
-/// inserted text, if it went in; `None` when the note is no longer being
-/// edited (or its editor is read-only), and the caller says so.
+/// inserted text, if it went in; otherwise why not ([`Missed`]), and the
+/// caller says so.
 fn insert_at_anchor(
     target: &Target,
     anchor: &Anchor,
@@ -605,32 +983,56 @@ fn insert_at_anchor(
     markdown: bool,
     window: &mut Window,
     cx: &mut App,
-) -> Option<Region> {
+) -> Result<Region, Missed> {
     let Some(input) = target.live(cx) else {
         diagnostic_error!(
             "Paste: background result not inserted (the note is no longer being edited)"
         );
-        return None;
+        return Err(Missed::Closed);
     };
+    let current = input.read(cx).value().to_string();
+    // A block drop only while its block is still there (#1615).
+    let located = if target.slot {
+        anchor.locate_block(&current)
+    } else {
+        anchor.locate(&current)
+    };
+    if located.is_none() && target.drop {
+        // A drop never goes to the caret: that could be inside any block of
+        // the note (#1615). A paste does, and says so.
+        diagnostic_error!("Drop: background result not inserted (the drop point is gone)");
+        return Err(Missed::Moved);
+    }
     let (moved, region) = input.update(cx, |state, cx| {
         let current = state.value().to_string();
-        let (at, moved) = match anchor.locate(&current) {
+        let (at, moved) = match located {
             Some(at) => (at, false),
             None => (state.cursor(), true),
         };
         // Typed at the paste position meanwhile: on its own line, not glued
         // to the typed text (`![[clip.mov]]# Trip`).
         let block = block || (!moved && anchor.typed_at(&current, at));
-        let fitted = if markdown {
-            crate::note_paste::context::fit_markdown(text, block, &current, at..at)
-        } else {
-            crate::note_paste::context::fit(text, block, &current, at..at)
+        // A block drop (#1615): fitted to an empty line before the block,
+        // then that line and the text go in as one edit.
+        let slot = target.slot.then(|| BlockSlot::new(&current, at));
+        let (context, fit_at) = match &slot {
+            Some(slot) => (slot.routing_source(&current), slot.route_offset()),
+            None => (current.clone(), at),
         };
-        let inserted = state.replace_source_range(at..at, &fitted, window, cx);
+        let fitted = if markdown {
+            crate::note_paste::context::fit_markdown(text, block, &context, fit_at..fit_at)
+        } else {
+            crate::note_paste::context::fit(text, block, &context, fit_at..fit_at)
+        };
+        let (at, edit, text_at) = match &slot {
+            Some(slot) => (slot.at, slot.edit(&fitted), slot.at + slot.before.len()),
+            None => (at, fitted.clone(), at),
+        };
+        let inserted = state.replace_source_range(at..at, &edit, window, cx);
         if !inserted {
             diagnostic_error!("Paste: background result not inserted (the editor is read-only)");
         }
-        let region = inserted.then(|| Region::at(state.value().as_ref(), at, fitted.len()));
+        let region = inserted.then(|| Region::at(state.value().as_ref(), text_at, fitted.len()));
         (moved && inserted, region)
     });
     if moved {
@@ -640,7 +1042,7 @@ fn insert_at_anchor(
             cx,
         );
     }
-    region
+    region.ok_or(Missed::Closed)
 }
 
 /// Rich text too large for the UI thread (#1611): converted (and its
@@ -677,7 +1079,7 @@ fn convert_in_background(
         .spawn(async move { router::run_rich_job(job) });
     let handle = window.window_handle();
     cx.spawn(async move |cx| {
-        let done = task.await;
+        let mut done = task.await;
         finished.store(true, Ordering::Relaxed);
         diagnostic_error!(
             "Paste: background rich text bytes={html_bytes} inserted={} convert_ms={:.1} \
@@ -689,8 +1091,46 @@ fn convert_in_background(
             done.remote.len(),
             started.elapsed().as_millis()
         );
-        let _ = cx.update_window(handle, |_, window, cx| {
+        // Its saved images, removed again if the text never goes in: by the
+        // window update, or here when the window is gone.
+        // #1073: the same files upload once the text is in.
+        let files = done.files.clone();
+        let pending_leftovers: PendingLeftovers = std::rc::Rc::new(std::cell::RefCell::new(Some(
+            Leftovers::new(done.admission.take(), std::mem::take(&mut done.files)),
+        )));
+        let taken = pending_leftovers.clone();
+        let shown = cx.update_window(handle, move |_, window, cx| {
+            let leftovers = taken.borrow_mut().take().unwrap_or_default();
             if done.text.is_empty() {
+                return;
+            }
+            if input.drop && !done.remote.is_empty() {
+                // A drop: its remote images first, then the text once.
+                if done.deferred > 0 {
+                    reader_toast::transient(router::DEFERRED_IMAGES_TEXT, window, cx);
+                } else if done.failed > 0 {
+                    reader_toast::transient(router::failed_images_text(done.failed), window, cx);
+                }
+                download_then_insert(
+                    input,
+                    anchor,
+                    Pending::Fit {
+                        text: done.text,
+                        block: done.block,
+                        markdown: done.markdown,
+                    },
+                    done.remote,
+                    Downloads {
+                        folder,
+                        vault_root,
+                        stamp,
+                        image_options,
+                    },
+                    leftovers,
+                    Vec::new(),
+                    window,
+                    cx,
+                );
                 return;
             }
             let region = insert_at_anchor(
@@ -702,26 +1142,27 @@ fn convert_in_background(
                 window,
                 cx,
             );
-            let Some(region) = region else {
-                // Not inserted: its saved images would be linked from nowhere.
-                if let Some(lease) = &done.admission {
-                    if let Ok(_admission) = lease.enter() {
-                        for file in &done.files {
-                            let _ = std::fs::remove_file(file);
-                        }
-                    }
+            let region = match region {
+                // In the note: its saved images stay.
+                Ok(region) => {
+                    drop(leftovers);
+                    region
                 }
-                note_closed("", window, cx);
-                return;
+                Err(missed) => {
+                    // Not inserted: its saved images would be linked from nowhere.
+                    let kept = leftovers.remove();
+                    not_inserted(missed, &kept, window, cx);
+                    return;
+                }
             };
             // #1073: the images saved from `data:`/`file://` sources upload
             // now, or after the remote downloads that rewrite this region;
             // either way their links are tracked from this insert on.
             let upload_after = if done.remote.is_empty() {
-                input.upload_inserted(&region, &done.files, window, cx);
+                input.upload_inserted(&region, &files, window, cx);
                 None
             } else {
-                input.track_inserted(&region, &done.files, window, cx)
+                input.track_inserted(&region, &files, window, cx)
             };
             if done.deferred > 0 {
                 reader_toast::transient(router::DEFERRED_IMAGES_TEXT, window, cx);
@@ -743,6 +1184,9 @@ fn convert_in_background(
                 );
             }
         });
+        if shown.is_err() {
+            window_gone(&pending_leftovers);
+        }
     })
     .detach();
 }
@@ -791,62 +1235,16 @@ fn download_images(
         cx,
     );
     let images = Arc::new(images);
-    let next = Arc::new(AtomicUsize::new(0));
-    // The vault's names before any download (every worker waits for this
-    // scan before its first download): a name also found elsewhere is
-    // linked by its path.
-    let existing = Arc::new(std::sync::OnceLock::new());
-    let folder_rel = folder
-        .strip_prefix(&vault_root)
-        .map(|rel| {
-            rel.components()
-                .map(|c| c.as_os_str().to_string_lossy())
-                .collect::<Vec<_>>()
-                .join("/")
-        })
-        .unwrap_or_default();
-    let (sender, receiver) = async_channel::unbounded::<(
-        usize,
-        Result<(String, crate::note_paste::image_import::Imported), DownloadError>,
-    )>();
-    for _ in 0..total.min(download::PARALLEL) {
-        let images = images.clone();
-        let next = next.clone();
-        let sender = sender.clone();
-        let folder = folder.clone();
-        let stamp = stamp.clone();
-        let existing = existing.clone();
-        let vault_root = vault_root.clone();
-        let folder_rel = folder_rel.clone();
-        cx.background_executor()
-            .spawn(async move {
-                let existing: &std::collections::HashSet<String> =
-                    existing.get_or_init(|| files::vault_names(&vault_root));
-                loop {
-                    let index = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(image) = images.get(index) else {
-                        break;
-                    };
-                    let result = download::save_remote_image_with(
-                        &image.url,
-                        &folder,
-                        &stamp,
-                        image_options,
-                    )
-                    .map(|saved| {
-                        (
-                            files::link_target(&saved.name, &folder_rel, existing),
-                            saved,
-                        )
-                    });
-                    if sender.send((index, result)).await.is_err() {
-                        break;
-                    }
-                }
-            })
-            .detach();
-    }
-    drop(sender);
+    let receiver = spawn_downloads(
+        images.clone(),
+        Downloads {
+            folder,
+            vault_root,
+            stamp,
+            image_options,
+        },
+        cx,
+    );
     let handle = window.window_handle();
     let started = std::time::Instant::now();
     cx.spawn(async move |cx| {
@@ -978,6 +1376,319 @@ pub(super) fn progress_toast(
         });
     })
     .detach();
+}
+
+/// Files saved for text that may never go in (#1615): a background paste's
+/// or drop's `data:`, `file://` and downloaded images. When the text does
+/// not go in they are removed under their writer lease, also when the
+/// window is gone; the ones that cannot be (the lease is held by a writer
+/// drain, or the removal failed) are named instead of left unnamed.
+#[derive(Default)]
+struct Leftovers(Vec<(Option<okilum_write_authority::WriterLease>, Vec<PathBuf>)>);
+
+impl Leftovers {
+    fn new(lease: Option<okilum_write_authority::WriterLease>, files: Vec<PathBuf>) -> Self {
+        let mut leftovers = Self::default();
+        leftovers.add(lease, files);
+        leftovers
+    }
+
+    fn add(&mut self, lease: Option<okilum_write_authority::WriterLease>, files: Vec<PathBuf>) {
+        if !files.is_empty() {
+            self.0.push((lease, files));
+        }
+    }
+
+    /// Every file held, in order.
+    fn paths(&self) -> Vec<PathBuf> {
+        self.0
+            .iter()
+            .flat_map(|(_, files)| files.iter().cloned())
+            .collect()
+    }
+
+    /// Remove the files; the names of those still there.
+    fn remove(self) -> String {
+        let mut kept = Vec::new();
+        for (lease, files) in self.0 {
+            let entered = match &lease {
+                Some(lease) => lease.enter().map(Some),
+                None => Ok(None),
+            };
+            match entered {
+                Ok(_guard) => {
+                    for file in files {
+                        if std::fs::remove_file(&file).is_err() && file.exists() {
+                            kept.push(file);
+                        }
+                    }
+                }
+                Err(error) => {
+                    diagnostic_error!("Paste: saved files not removed ({error:#})");
+                    kept.extend(files);
+                }
+            }
+        }
+        kept.iter()
+            .filter_map(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("  ")
+    }
+}
+
+/// What a background result's window update leaves to clean up: taken by
+/// the update when it runs, else by the task itself (the window is gone).
+type PendingLeftovers = std::rc::Rc<std::cell::RefCell<Option<Leftovers>>>;
+
+/// The window is gone: no editor took the text and no toast can name what
+/// is left, so remove it here and log what could not be.
+fn window_gone(leftovers: &PendingLeftovers) {
+    if let Some(leftovers) = leftovers.borrow_mut().take() {
+        let kept = leftovers.remove();
+        diagnostic_error!("Paste: the window closed before the result went in; kept: {kept:?}");
+    }
+}
+
+/// Where and how remote images are saved.
+struct Downloads {
+    folder: PathBuf,
+    vault_root: PathBuf,
+    stamp: String,
+    image_options: crate::note_paste::image_import::Options,
+}
+
+type DownloadResult = Result<(String, crate::note_paste::image_import::Imported), DownloadError>;
+
+/// Download `images` in the background, [`download::PARALLEL`] at a time;
+/// each result (its index, its link target and saved file) as it is done.
+fn spawn_downloads(
+    images: Arc<Vec<RemoteImage>>,
+    downloads: Downloads,
+    cx: &App,
+) -> async_channel::Receiver<(usize, DownloadResult)> {
+    let Downloads {
+        folder,
+        vault_root,
+        stamp,
+        image_options,
+    } = downloads;
+    let total = images.len();
+    let next = Arc::new(AtomicUsize::new(0));
+    // The vault's names before any download (every worker waits for this
+    // scan before its first download): a name also found elsewhere is
+    // linked by its path.
+    let existing = Arc::new(std::sync::OnceLock::new());
+    let folder_rel = folder
+        .strip_prefix(&vault_root)
+        .map(|rel| {
+            rel.components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .unwrap_or_default();
+    let (sender, receiver) = async_channel::unbounded::<(usize, DownloadResult)>();
+    for _ in 0..total.min(download::PARALLEL) {
+        let images = images.clone();
+        let next = next.clone();
+        let sender = sender.clone();
+        let folder = folder.clone();
+        let stamp = stamp.clone();
+        let existing = existing.clone();
+        let vault_root = vault_root.clone();
+        let folder_rel = folder_rel.clone();
+        cx.background_executor()
+            .spawn(async move {
+                let existing: &std::collections::HashSet<String> =
+                    existing.get_or_init(|| files::vault_names(&vault_root));
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(image) = images.get(index) else {
+                        break;
+                    };
+                    let result = download::save_remote_image_with(
+                        &image.url,
+                        &folder,
+                        &stamp,
+                        image_options,
+                    )
+                    .map(|saved| {
+                        (
+                            files::link_target(&saved.name, &folder_rel, existing),
+                            saved,
+                        )
+                    });
+                    if sender.send((index, result)).await.is_err() {
+                        break;
+                    }
+                }
+            })
+            .detach();
+    }
+    drop(sender);
+    receiver
+}
+
+/// A drop's text waiting for its remote images (#1615).
+enum Pending {
+    /// Already fitted where it goes (routed at the drop point).
+    Prepared(String),
+    /// Converted in the background; fitted when it goes in.
+    Fit {
+        text: String,
+        block: bool,
+        markdown: bool,
+    },
+}
+
+/// A drop's remote images are downloaded first; then its text goes in once,
+/// each downloaded image's `![alt](url)` already replaced by its embed, so
+/// the drop is one edit (one Undo). A failed download keeps its remote link.
+/// Not inserted (note closed, drop point gone): the downloaded files and
+/// `on_missed`'s are removed, and the toast says so. Inserted: they and
+/// `saved_files` upload when the paste's upload setting says so (#1073).
+#[allow(clippy::too_many_arguments)]
+fn download_then_insert(
+    input: Target,
+    anchor: Anchor,
+    pending: Pending,
+    images: Vec<RemoteImage>,
+    downloads: Downloads,
+    leftovers: Leftovers,
+    saved_files: Vec<PathBuf>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let total = images.len();
+    let done = Arc::new(AtomicU64::new(0));
+    let finished = Arc::new(AtomicBool::new(false));
+    let label = if total == 1 {
+        "Downloading the dropped image".to_string()
+    } else {
+        format!("Downloading {total} dropped images")
+    };
+    progress_toast(
+        label,
+        done.clone(),
+        total as u64,
+        finished.clone(),
+        window,
+        cx,
+    );
+    let images = Arc::new(images);
+    let receiver = spawn_downloads(images.clone(), downloads, cx);
+    let handle = window.window_handle();
+    cx.spawn(async move |cx| {
+        let mut replacements = Vec::new();
+        let mut saved = Vec::new();
+        let mut failed = 0usize;
+        while let Ok((index, result)) = receiver.recv().await {
+            done.fetch_add(1, Ordering::Relaxed);
+            match result {
+                Ok((target, name)) => {
+                    replacements
+                        .push((images[index].placeholder.clone(), files::wikilink(&target)));
+                    saved.push(name);
+                }
+                Err(error) => {
+                    failed += 1;
+                    diagnostic_error!("Drop: image download failed ({error})");
+                }
+            }
+        }
+        finished.store(true, Ordering::Relaxed);
+        diagnostic_error!(
+            "Drop: images downloaded={} failed={failed} before one insert",
+            saved.len()
+        );
+        let replace = |text: String| {
+            replacements
+                .iter()
+                .fold(text, |text, (placeholder, embed)| {
+                    text.replace(placeholder, embed)
+                })
+        };
+        let mut leftovers = leftovers;
+        for name in saved {
+            leftovers.add(Some(name.admission), name.paths);
+        }
+        let pending_leftovers: PendingLeftovers =
+            std::rc::Rc::new(std::cell::RefCell::new(Some(leftovers)));
+        let taken = pending_leftovers.clone();
+        let shown = cx.update_window(handle, move |_, window, cx| {
+            let leftovers = taken.borrow_mut().take().unwrap_or_default();
+            let result = match pending {
+                Pending::Prepared(text) => {
+                    insert_prepared(&input, &anchor, &replace(text), window, cx)
+                }
+                Pending::Fit {
+                    text,
+                    block,
+                    markdown,
+                } => insert_at_anchor(&input, &anchor, &replace(text), block, markdown, window, cx),
+            };
+            match result {
+                Err(missed) => {
+                    let kept = leftovers.remove();
+                    not_inserted(missed, &kept, window, cx);
+                }
+                // In the note: its files stay, and upload (#1073).
+                Ok(region) => {
+                    let mut files = saved_files;
+                    files.extend(leftovers.paths());
+                    drop(leftovers);
+                    input.upload_inserted(&region, &files, window, cx);
+                    if failed > 0 {
+                        reader_toast::transient(router::failed_images_text(failed), window, cx);
+                    }
+                }
+            }
+        });
+        if shown.is_err() {
+            window_gone(&pending_leftovers);
+        }
+    })
+    .detach();
+}
+
+/// Insert text already fitted for the drop point at `anchor`: as the
+/// block's own paragraph for a block drop, as it is otherwise. A drop never
+/// goes to the caret when its point is gone.
+fn insert_prepared(
+    target: &Target,
+    anchor: &Anchor,
+    text: &str,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<Region, Missed> {
+    let Some(input) = target.live(cx) else {
+        return Err(Missed::Closed);
+    };
+    input.update(cx, |state, cx| {
+        let current = state.value().to_string();
+        // A block drop only while its block is still there.
+        let located = if target.slot {
+            anchor.locate_block(&current)
+        } else {
+            anchor.locate(&current)
+        };
+        let Some(at) = located else {
+            diagnostic_error!("Drop: not inserted (the drop point is gone)");
+            return Err(Missed::Moved);
+        };
+        let (at, edit, text_at) = if target.slot {
+            let slot = BlockSlot::new(&current, at);
+            (slot.at, slot.edit(text), slot.at + slot.before.len())
+        } else {
+            (at, text.to_string(), at)
+        };
+        if state.replace_source_range(at..at, &edit, window, cx) {
+            Ok(Region::at(state.value().as_ref(), text_at, text.len()))
+        } else {
+            Err(Missed::Closed)
+        }
+    })
 }
 
 #[cfg(test)]
@@ -1183,7 +1894,11 @@ mod attachment_refresh_tests {
             // Withhold OS delivery: a completed local write must publish its
             // known endpoints, even if Syncthing/native notifications lag.
             reader.open_live_preview(window, cx);
-            reader.drop_on_editor(&ExternalPaths(vec![original.clone()].into()), window, cx);
+            reader.drop_on_editor(
+                (&ExternalPaths(vec![original.clone()].into())).into(),
+                window,
+                cx,
+            );
             watcher
         });
         visual.run_until_parked();
@@ -1242,5 +1957,1008 @@ mod attachment_refresh_tests {
             assert_eq!(reader.pane.current_rel, "note.md");
         });
         drop(held_watcher);
+    }
+}
+
+#[cfg(test)]
+mod reader_drop_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    const NOTE: &str = "# Title\n\nFirst paragraph.\n\n## Next\n\nBody.\n";
+
+    fn reader_on_note(
+        cx: &mut TestAppContext,
+    ) -> (Entity<Reader>, &mut VisualTestContext, tempfile::TempDir) {
+        reader_on(cx, NOTE)
+    }
+
+    fn reader_on<'a>(
+        cx: &'a mut TestAppContext,
+        note: &str,
+    ) -> (Entity<Reader>, &'a mut VisualTestContext, tempfile::TempDir) {
+        cx.update(|cx| {
+            crate::test_init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::write(root.join("note.md"), note).unwrap();
+        std::fs::write(root.join("docs/spec.txt"), "spec").unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("note.md".into()),
+                        index_dir: Some(temp.path().join("index")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        visual.simulate_resize(size(px(1000.), px(700.)));
+        visual.run_until_parked();
+        (entity.unwrap(), visual, temp)
+    }
+
+    /// A native drop at `position`: the real FileDropEvent path.
+    fn drop_at(visual: &mut VisualTestContext, position: Point<Pixels>, path: PathBuf) {
+        visual.simulate_event(gpui::FileDropEvent::Entered {
+            position,
+            paths: ExternalPaths(vec![path].into_iter().collect()),
+        });
+        visual.simulate_event(gpui::FileDropEvent::Submit { position });
+        visual.run_until_parked();
+    }
+
+    /// #1615: a file dropped onto a rendered block in Read switches the note
+    /// to Edit and goes in at that block's start, as its own paragraph.
+    #[gpui::test]
+    fn a_drop_in_read_opens_edit_before_the_block_under_the_pointer(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = reader_on_note(cx);
+        let (next, first) = reader.read_with(visual, |r, cx| {
+            assert!(
+                r.pane.editing.is_none(),
+                "positive control: the note opens in Read"
+            );
+            let list = r.pane.content.read(cx).list_state();
+            (
+                list.bounds_for_item(2)
+                    .expect("the `## Next` block is laid out"),
+                list.bounds_for_item(0)
+                    .expect("the title block is laid out"),
+            )
+        });
+        assert!(
+            next.top() > first.bottom(),
+            "positive control: distinct blocks"
+        );
+        let spec = temp.path().join("vault/docs/spec.txt");
+        drop_at(visual, next.center(), spec);
+        reader.read_with(visual, |r, cx| {
+            let source = r
+                .source_input()
+                .expect("the drop switched the note to Edit")
+                .read(cx)
+                .value()
+                .to_string();
+            let link = source
+                .lines()
+                .find(|line| line.contains("spec.txt"))
+                .unwrap_or_else(|| panic!("the dropped file's link is in the note: {source:?}"))
+                .to_string();
+            assert_eq!(
+                source,
+                format!("# Title\n\nFirst paragraph.\n\n{link}\n\n## Next\n\nBody.\n"),
+                "before the block under the pointer, on its own paragraph"
+            );
+        });
+    }
+
+    /// Below the last block, the drop goes to the end of the note.
+    #[gpui::test]
+    fn a_drop_below_the_last_block_appends(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = reader_on_note(cx);
+        let below = reader.read_with(visual, |r, cx| {
+            let list = r.pane.content.read(cx).list_state();
+            let last = list.bounds_for_item(3).expect("the last block is laid out");
+            let viewport = list.viewport_bounds();
+            assert!(
+                viewport.bottom() > last.bottom() + px(8.),
+                "positive control: room below the last block"
+            );
+            point(last.center().x, last.bottom() + px(4.))
+        });
+        drop_at(visual, below, temp.path().join("vault/docs/spec.txt"));
+        reader.read_with(visual, |r, cx| {
+            let source = r.source_input().unwrap().read(cx).value().to_string();
+            assert!(
+                source.starts_with(NOTE) && source.contains("spec.txt"),
+                "appended after the last block: {source:?}"
+            );
+        });
+    }
+
+    /// Lines typed above the target while the block mapping still runs move
+    /// the drop with its block; the old line number would now be another
+    /// block (here the title).
+    #[gpui::test]
+    fn edits_during_the_block_mapping_do_not_move_the_drop(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = reader_on_note(cx);
+        let next = reader.read_with(visual, |r, cx| {
+            r.pane
+                .content
+                .read(cx)
+                .list_state()
+                .bounds_for_item(2)
+                .unwrap()
+        });
+        visual.simulate_mouse_move(next.center(), None, Modifiers::default());
+        let spec = temp.path().join("vault/docs/spec.txt");
+        let typed = "Typed above.\n\nMore typed.\n\n";
+        reader.update_in(visual, |r, window, cx| {
+            r.drop_on_reader(
+                (&ExternalPaths(vec![spec].into_iter().collect())).into(),
+                window,
+                cx,
+            );
+            let input = r.source_input().expect("Edit opens at the drop");
+            assert_eq!(
+                input.read(cx).value().as_ref(),
+                NOTE,
+                "positive control: the block mapping has not finished"
+            );
+            input.update(cx, |state, cx| {
+                assert!(state.replace_source_range(0..0, typed, window, cx));
+            });
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| {
+            let source = r.source_input().unwrap().read(cx).value().to_string();
+            let link = source
+                .lines()
+                .find(|line| line.contains("spec.txt"))
+                .unwrap_or_else(|| panic!("the dropped file's link is in the note: {source:?}"))
+                .to_string();
+            assert_eq!(
+                source,
+                format!("{typed}# Title\n\nFirst paragraph.\n\n{link}\n\n## Next\n\nBody.\n"),
+                "still before the block under the pointer"
+            );
+        });
+    }
+
+    /// The note's source, and the line of it that holds `needle`.
+    fn source_and_line(
+        reader: &Entity<Reader>,
+        visual: &mut VisualTestContext,
+        needle: &str,
+    ) -> (String, Option<String>) {
+        reader.read_with(visual, |r, cx| {
+            let source = r.source_input().unwrap().read(cx).value().to_string();
+            let line = source
+                .lines()
+                .find(|line| line.contains(needle))
+                .map(str::to_string);
+            (source, line)
+        })
+    }
+
+    /// Review of #3074: a file copied into the vault in the background goes
+    /// in only when the copy is done, in one edit with its blank lines; one
+    /// Undo restores the note byte for byte.
+    #[gpui::test]
+    fn a_copied_drop_goes_in_once_and_one_undo_restores_the_note(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = reader_on_note(cx);
+        let next = reader.read_with(visual, |r, cx| {
+            r.pane
+                .content
+                .read(cx)
+                .list_state()
+                .bounds_for_item(2)
+                .unwrap()
+        });
+        let outside = temp.path().join("outside.pdf");
+        std::fs::write(&outside, b"%PDF-1.4 dropped").unwrap();
+        drop_at(visual, next.center(), outside);
+        let (source, link) = source_and_line(&reader, visual, "outside");
+        let link = link.unwrap_or_else(|| panic!("the copied file is linked: {source:?}"));
+        assert_eq!(
+            source,
+            format!("# Title\n\nFirst paragraph.\n\n{link}\n\n## Next\n\nBody.\n")
+        );
+        fn copied(dir: &std::path::Path) -> bool {
+            std::fs::read_dir(dir).unwrap().flatten().any(|entry| {
+                let path = entry.path();
+                if path.is_dir() {
+                    copied(&path)
+                } else {
+                    entry.file_name().to_string_lossy().starts_with("outside")
+                }
+            })
+        }
+        assert!(
+            copied(&temp.path().join("vault")),
+            "positive control: the file was copied into the vault"
+        );
+        visual.dispatch_action(gpui_component::input::Undo);
+        visual.run_until_parked();
+        let (source, _) = source_and_line(&reader, visual, "outside");
+        assert_eq!(source, NOTE, "one Undo: byte-identical, no empty slot left");
+    }
+
+    /// Review of #3074: above the ask threshold, the note is untouched while
+    /// the question is open, and Cancel leaves it byte-identical.
+    #[gpui::test]
+    fn a_cancelled_drop_leaves_the_note_byte_identical(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = reader_on_note(cx);
+        let ui_state = temp.path().join("ui-state");
+        std::fs::create_dir_all(&ui_state).unwrap();
+        visual.update(|_, cx| {
+            crate::reader_ui_state::install(&ui_state, cx);
+            crate::reader_ui_state::set_paste_ask_above_mb(1, cx);
+        });
+        let next = reader.read_with(visual, |r, cx| {
+            r.pane
+                .content
+                .read(cx)
+                .list_state()
+                .bounds_for_item(2)
+                .unwrap()
+        });
+        let large = temp.path().join("large.bin");
+        std::fs::write(&large, vec![7u8; 2 * 1024 * 1024]).unwrap();
+        drop_at(visual, next.center(), large);
+        assert!(
+            visual.has_pending_prompt(),
+            "positive control: Copy into Vault? is asked"
+        );
+        let (source, _) = source_and_line(&reader, visual, "large");
+        assert_eq!(source, NOTE, "no edit while the question is open");
+        visual.simulate_prompt_answer("Cancel");
+        visual.run_until_parked();
+        let (source, _) = source_and_line(&reader, visual, "large");
+        assert_eq!(source, NOTE, "Cancel: byte-identical");
+        assert!(
+            reader.read_with(visual, |r, _| r.pane.editing.is_some()),
+            "the note stays in Edit"
+        );
+    }
+
+    /// A drop onto a rendered block whose source line cannot be told: the
+    /// Reader's blocks no longer match the note's (here, the rendered text
+    /// is replaced by a one-block document). Nothing is inserted; the note
+    /// is not appended to.
+    #[gpui::test]
+    fn an_unmappable_block_refuses_instead_of_appending(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = reader_on_note(cx);
+        let next = reader.update(visual, |r, cx| {
+            let bounds = r
+                .pane
+                .content
+                .read(cx)
+                .list_state()
+                .bounds_for_item(2)
+                .unwrap();
+            r.pane.note_source = "# Only one block\n".to_string();
+            bounds
+        });
+        drop_at(
+            visual,
+            next.center(),
+            temp.path().join("vault/docs/spec.txt"),
+        );
+        let (source, link) = source_and_line(&reader, visual, "spec.txt");
+        assert!(link.is_none(), "nothing was inserted: {source:?}");
+        assert_eq!(source, NOTE, "and nothing was appended");
+    }
+
+    /// Open the copy question for a drop onto block 2 (ask threshold 1 MB,
+    /// a 2 MB file): the result is still pending.
+    fn pending_copy(
+        reader: &Entity<Reader>,
+        visual: &mut VisualTestContext,
+        temp: &tempfile::TempDir,
+    ) {
+        let next = reader.read_with(visual, |r, cx| {
+            r.pane
+                .content
+                .read(cx)
+                .list_state()
+                .bounds_for_item(2)
+                .unwrap()
+        });
+        pending_copy_at(visual, temp, next.center());
+    }
+
+    /// The same question for a drop at `position` (in Edit: onto the editor).
+    fn pending_copy_at(
+        visual: &mut VisualTestContext,
+        temp: &tempfile::TempDir,
+        position: Point<Pixels>,
+    ) {
+        let ui_state = temp.path().join("ui-state");
+        std::fs::create_dir_all(&ui_state).unwrap();
+        visual.update(|_, cx| {
+            crate::reader_ui_state::install(&ui_state, cx);
+            crate::reader_ui_state::set_paste_ask_above_mb(1, cx);
+        });
+        let large = temp.path().join("large.bin");
+        std::fs::write(&large, vec![7u8; 2 * 1024 * 1024]).unwrap();
+        drop_at(visual, position, large);
+        assert!(
+            visual.has_pending_prompt(),
+            "positive control: Copy into Vault? is asked"
+        );
+    }
+
+    fn copied_into_vault(temp: &tempfile::TempDir) -> bool {
+        fn walk(dir: &std::path::Path) -> bool {
+            std::fs::read_dir(dir).unwrap().flatten().any(|entry| {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path)
+                } else {
+                    entry.file_name().to_string_lossy().starts_with("large")
+                }
+            })
+        }
+        walk(&temp.path().join("vault"))
+    }
+
+    /// The note was rewritten while the copy question was open: the drop
+    /// point is gone, so the copied file is not inserted anywhere (never at
+    /// the caret, which could be inside any block); it stays saved.
+    #[gpui::test]
+    fn a_lost_drop_point_inserts_nothing(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = reader_on_note(cx);
+        pending_copy(&reader, visual, &temp);
+        let rewritten = "Rewritten.\n\nAnother paragraph.\n";
+        reader.update_in(visual, |r, window, cx| {
+            let input = r.source_input().unwrap();
+            input.update(cx, |state, cx| {
+                let end = state.value().len();
+                assert!(state.replace_source_range(0..end, rewritten, window, cx));
+            });
+        });
+        visual.simulate_prompt_answer("Copy into Vault");
+        visual.run_until_parked();
+        let (source, _) = source_and_line(&reader, visual, "large");
+        assert_eq!(source, rewritten, "nothing was inserted");
+        assert!(
+            copied_into_vault(&temp),
+            "the file was saved (the toast names it)"
+        );
+    }
+
+    /// The note left Edit and came back while the copy question was open:
+    /// the result belonged to the closed editor and goes nowhere.
+    #[gpui::test]
+    fn a_reopened_editor_does_not_take_a_pending_drop(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = reader_on_note(cx);
+        pending_copy(&reader, visual, &temp);
+        let first = reader.read_with(visual, |r, _| r.source_input().unwrap());
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        let second = reader.read_with(visual, |r, _| r.source_input().unwrap());
+        assert!(
+            first != second,
+            "positive control: a new editor of the same note"
+        );
+        visual.simulate_prompt_answer("Copy into Vault");
+        visual.run_until_parked();
+        let (source, _) = source_and_line(&reader, visual, "large");
+        assert_eq!(source, NOTE, "the reopened editor got nothing");
+    }
+
+    /// The target block was deleted while the copy question was open: the
+    /// text before it is still there, but the file must not go before the
+    /// next block.
+    #[gpui::test]
+    fn a_deleted_target_block_inserts_nothing(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = reader_on_note(cx);
+        pending_copy(&reader, visual, &temp);
+        let without = "# Title\n\nFirst paragraph.\n\nBody.\n";
+        reader.update_in(visual, |r, window, cx| {
+            let input = r.source_input().unwrap();
+            input.update(cx, |state, cx| {
+                let at = state.value().find("## Next\n\n").unwrap();
+                assert!(state.replace_source_range(at..at + 9, "", window, cx));
+                assert_eq!(state.value().as_ref(), without);
+            });
+        });
+        visual.simulate_prompt_answer("Copy into Vault");
+        visual.run_until_parked();
+        let (source, _) = source_and_line(&reader, visual, "large");
+        assert_eq!(source, without, "not before another block");
+        assert!(
+            copied_into_vault(&temp),
+            "the file was saved (the toast names it)"
+        );
+    }
+
+    /// In Edit, the drop point of the editor (not the Reader).
+    fn editor_point(reader: &Entity<Reader>, visual: &mut VisualTestContext) -> Point<Pixels> {
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| {
+            assert_eq!(
+                r.source_input()
+                    .expect("positive control: Edit")
+                    .read(cx)
+                    .value()
+                    .as_ref(),
+                NOTE
+            );
+            r.body_bounds.center()
+        })
+    }
+
+    /// A drop in Edit, pending in the copy question, while the note leaves
+    /// Edit and comes back: the reopened editor gets nothing.
+    #[gpui::test]
+    fn an_edit_drop_does_not_go_to_a_reopened_editor(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = reader_on_note(cx);
+        let point = editor_point(&reader, visual);
+        pending_copy_at(visual, &temp, point);
+        let first = reader.read_with(visual, |r, _| r.source_input().unwrap());
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        let second = reader.read_with(visual, |r, _| r.source_input().unwrap());
+        assert!(
+            first != second,
+            "positive control: a new editor of the same note"
+        );
+        visual.simulate_prompt_answer("Copy into Vault");
+        visual.run_until_parked();
+        let (source, _) = source_and_line(&reader, visual, "large");
+        assert_eq!(source, NOTE, "the reopened editor got nothing");
+    }
+
+    /// A drop in Edit whose place is gone when its file is copied: nothing
+    /// goes in at the caret (a paste would, with a notice).
+    #[gpui::test]
+    fn an_edit_drop_that_lost_its_place_inserts_nothing(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = reader_on_note(cx);
+        let point = editor_point(&reader, visual);
+        pending_copy_at(visual, &temp, point);
+        let rewritten = "Rewritten.\n\nAnother paragraph.\n";
+        reader.update_in(visual, |r, window, cx| {
+            let input = r.source_input().unwrap();
+            input.update(cx, |state, cx| {
+                let end = state.value().len();
+                assert!(state.replace_source_range(0..end, rewritten, window, cx));
+            });
+        });
+        visual.simulate_prompt_answer("Copy into Vault");
+        visual.run_until_parked();
+        let (source, _) = source_and_line(&reader, visual, "large");
+        assert_eq!(source, rewritten, "nothing at the caret");
+        assert!(
+            copied_into_vault(&temp),
+            "the file was saved (the toast names it)"
+        );
+    }
+
+    /// Review of #3074: the Reader showed one revision (A) while the editor
+    /// opens another with the two sections swapped (B; as a recovered draft
+    /// would be), same block count. A drop onto heading B as shown goes
+    /// before heading B in the opened text, not before heading A.
+    #[gpui::test]
+    fn a_reader_drop_follows_the_shown_block_into_the_opened_text(cx: &mut TestAppContext) {
+        let shown = "# A\n\nParagraph A.\n\n# B\n\nParagraph B.\n";
+        let opened = "# B\n\nParagraph B.\n\n# A\n\nParagraph A.\n";
+        let (reader, visual, temp) = reader_on(cx, opened);
+        let heading = reader.update(visual, |r, cx| {
+            let bounds = r
+                .pane
+                .content
+                .read(cx)
+                .list_state()
+                .bounds_for_item(2)
+                .unwrap();
+            // What the Reader showed differs from what the editor opens.
+            r.pane.note_canonical_source = Some(std::sync::Arc::from(shown));
+            r.pane.note_source = shown.to_string();
+            bounds
+        });
+        drop_at(
+            visual,
+            heading.center(),
+            temp.path().join("vault/docs/spec.txt"),
+        );
+        let (source, link) = source_and_line(&reader, visual, "spec.txt");
+        let link = link.unwrap_or_else(|| panic!("the link is in the note: {source:?}"));
+        assert_eq!(
+            source,
+            format!("{link}\n\n{opened}"),
+            "before heading B, its start"
+        );
+    }
+
+    /// Review of #3074: the editor opened a recovered draft with the two
+    /// sections swapped (same block count). A drop onto heading B as the
+    /// Reader showed it goes before heading B in the draft, not before the
+    /// block at the same ordinal (heading A).
+    #[test]
+    fn a_drop_follows_the_shown_block_into_a_reordered_draft() {
+        let shown = "# A\n\nParagraph A.\n\n# B\n\nParagraph B.\n";
+        let draft = "# B\n\nParagraph B.\n\n# A\n\nParagraph A.\n";
+        assert_eq!(
+            block_drop_offset(draft, shown, Some(2)),
+            draft.find("# A"),
+            "positive control: the ordinal alone lands before heading A"
+        );
+        assert_eq!(
+            shown_block_offset(Some(shown), draft, shown, Some(2)),
+            Some(0)
+        );
+        assert_eq!(
+            shown_block_offset(Some(shown), draft, shown, Some(0)),
+            draft.find("# A")
+        );
+        assert_eq!(
+            shown_block_offset(Some(shown), draft, shown, None),
+            Some(draft.len())
+        );
+        // The shown block is gone from the draft: refused, not guessed.
+        let without_b = "# A\n\nParagraph A.\n\nOther.\n\nMore.\n";
+        assert_eq!(
+            shown_block_offset(Some(shown), without_b, shown, Some(2)),
+            None
+        );
+        // No draft: the editor's text is the shown one.
+        assert_eq!(
+            shown_block_offset(Some(shown), shown, shown, Some(2)),
+            shown.find("# B")
+        );
+        assert_eq!(
+            shown_block_offset(None, shown, shown, Some(2)),
+            shown.find("# B")
+        );
+    }
+
+    #[test]
+    fn block_drop_offset_places_or_refuses() {
+        let source = "---\ntags: [a]\n---\n# Title\n\nPara.\n";
+        let rendered = "# Title\n\nPara.\n";
+        assert_eq!(
+            block_drop_offset(source, rendered, Some(0)),
+            source.find("# Title")
+        );
+        assert_eq!(
+            block_drop_offset(source, rendered, Some(1)),
+            source.find("Para.")
+        );
+        assert_eq!(
+            block_drop_offset(source, rendered, None),
+            Some(source.len())
+        );
+        // Rendered blocks that do not match the note's: refused, not the end.
+        assert_eq!(block_drop_offset(source, "# Title\n", Some(1)), None);
+        assert_eq!(block_drop_offset(source, rendered, Some(9)), None);
+    }
+
+    /// Review of #3078: image data dropped onto a rendered block is saved
+    /// in the background (converted to WebP) and goes in once, as its own
+    /// paragraph; one Undo restores the note byte for byte.
+    #[gpui::test]
+    fn a_dropped_image_goes_in_once_and_one_undo_restores_the_note(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = reader_on_note(cx);
+        let next = reader.read_with(visual, |r, cx| {
+            r.pane
+                .content
+                .read(cx)
+                .list_state()
+                .bounds_for_item(2)
+                .unwrap()
+        });
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let png = png.into_inner();
+        drop_data_at(visual, next.center(), &[("public.png", &png)]);
+        let (source, embed) = source_and_line(&reader, visual, "![[");
+        let embed = embed.unwrap_or_else(|| panic!("the saved image is embedded: {source:?}"));
+        assert_eq!(
+            source,
+            format!("# Title\n\nFirst paragraph.\n\n{embed}\n\n## Next\n\nBody.\n")
+        );
+        fn webp(dir: &std::path::Path) -> bool {
+            std::fs::read_dir(dir).unwrap().flatten().any(|entry| {
+                let path = entry.path();
+                if path.is_dir() {
+                    webp(&path)
+                } else {
+                    path.extension().is_some_and(|e| e == "webp")
+                }
+            })
+        }
+        assert!(
+            webp(&temp.path().join("vault")),
+            "positive control: the background image import saved a WebP"
+        );
+        visual.dispatch_action(gpui_component::input::Undo);
+        visual.run_until_parked();
+        let (source, _) = source_and_line(&reader, visual, "![[");
+        assert_eq!(source, NOTE, "one Undo: byte-identical, no empty slot left");
+    }
+
+    /// Review of #3078: HTML with a remote image dropped onto a rendered
+    /// block. The image is downloaded first and the text goes in once with
+    /// its embed; one Undo restores the note byte for byte.
+    #[gpui::test]
+    fn a_dropped_remote_image_goes_in_once_with_the_text(cx: &mut TestAppContext) {
+        use std::io::{Read as _, Write as _};
+        let (reader, visual, temp) = reader_on_note(cx);
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let png = png.into_inner();
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = server.local_addr().unwrap();
+        let responder = std::thread::spawn(move || {
+            let (mut stream, _) = server.accept().unwrap();
+            let mut request = [0; 4096];
+            assert!(
+                stream.read(&mut request).unwrap() > 0,
+                "actual HTTP request"
+            );
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                png.len()
+            )
+            .unwrap();
+            stream.write_all(&png).unwrap();
+        });
+        let next = reader.read_with(visual, |r, cx| {
+            r.pane
+                .content
+                .read(cx)
+                .list_state()
+                .bounds_for_item(2)
+                .unwrap()
+        });
+        let html = format!("<p>Look <img alt=\"cat\" src=\"http://{address}/cat.png\"></p>");
+        drop_data_at(
+            visual,
+            next.center(),
+            &[
+                ("public.html", html.as_bytes()),
+                ("public.utf8-plain-text", b"Look"),
+            ],
+        );
+        responder.join().unwrap();
+        visual.run_until_parked();
+        let (source, line) = source_and_line(&reader, visual, "Look");
+        let line = line.unwrap_or_else(|| panic!("the dropped text is in the note: {source:?}"));
+        assert!(
+            line.contains("![[") && !line.contains("http://"),
+            "the downloaded image's embed, not the remote link: {line:?}"
+        );
+        assert_eq!(
+            source,
+            format!("# Title\n\nFirst paragraph.\n\n{line}\n\n## Next\n\nBody.\n")
+        );
+        fn saved(dir: &std::path::Path) -> bool {
+            std::fs::read_dir(dir).unwrap().flatten().any(|entry| {
+                let path = entry.path();
+                if path.is_dir() {
+                    saved(&path)
+                } else {
+                    entry.file_name().to_string_lossy().starts_with("cat")
+                }
+            })
+        }
+        assert!(
+            saved(&temp.path().join("vault")),
+            "positive control: the image was saved into the vault"
+        );
+        visual.dispatch_action(gpui_component::input::Undo);
+        visual.run_until_parked();
+        let (source, _) = source_and_line(&reader, visual, "Look");
+        assert_eq!(source, NOTE, "one Undo: byte-identical");
+    }
+
+    /// Review of #3078: HTML with a `data:` image and a remote one. Its
+    /// `data:` image is saved while the text is converted, before the remote
+    /// download. A drop that never goes in (here: the note left Edit before
+    /// the conversion and download were done) removes it again instead of
+    /// leaving it unlinked in the vault.
+    #[gpui::test]
+    fn a_closed_note_removes_the_images_its_drop_saved(cx: &mut TestAppContext) {
+        use base64::Engine as _;
+        let (reader, visual, temp) = reader_on_note(cx);
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let data = base64::engine::general_purpose::STANDARD.encode(png.into_inner());
+        // Port 1 refuses at once: the remote download fails fast.
+        let html = format!(
+            "<p>Two <img alt=\"local\" src=\"data:image/png;base64,{data}\"> \
+             <img alt=\"remote\" src=\"http://127.0.0.1:1/remote.png\"></p>"
+        );
+        let dropped = gpui::ExternalData::with_contents(
+            [
+                SharedString::from("public.html"),
+                SharedString::from("public.utf8-plain-text"),
+            ],
+            [
+                (SharedString::from("public.html"), html.as_bytes().into()),
+                (
+                    SharedString::from("public.utf8-plain-text"),
+                    b"Two"[..].into(),
+                ),
+            ],
+        );
+        fn images(dir: &std::path::Path) -> usize {
+            std::fs::read_dir(dir)
+                .unwrap()
+                .flatten()
+                .map(|entry| {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        images(&path)
+                    } else {
+                        usize::from(path.extension().is_some_and(|e| e == "png" || e == "webp"))
+                    }
+                })
+                .sum()
+        }
+        let vault = temp.path().join("vault");
+        // Positive control: with the note open, the same drop saves its
+        // data: image and goes in with its embed.
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            r.drop_on_editor((&dropped).into(), window, cx)
+        });
+        visual.run_until_parked();
+        let saved = images(&vault);
+        let (source, line) = source_and_line(&reader, visual, "Two");
+        assert!(saved >= 1, "positive control: the data: image was saved");
+        assert!(
+            line.is_some_and(|line| line.contains("![[")),
+            "positive control: the drop went in with its embed: {source:?}"
+        );
+        // The same drop, and the note leaves Edit before it is done.
+        reader.update_in(visual, |r, window, cx| {
+            r.drop_on_editor((&dropped).into(), window, cx);
+            r.toggle_source(window, cx);
+            assert!(r.pane.editing.is_none());
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            images(&vault),
+            saved,
+            "the second drop never went in: no image of it is left behind"
+        );
+    }
+
+    /// Review of #3078: the window closes while the drop's text is converted
+    /// and its remote image downloaded. No editor takes the text, and the
+    /// image its conversion saved is removed, not left unnamed in the vault.
+    #[gpui::test]
+    fn a_closed_window_removes_the_images_its_drop_saved(cx: &mut TestAppContext) {
+        use base64::Engine as _;
+        let (reader, visual, temp) = reader_on_note(cx);
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let data = base64::engine::general_purpose::STANDARD.encode(png.into_inner());
+        let html = format!(
+            "<p>Two <img alt=\"local\" src=\"data:image/png;base64,{data}\"> \
+             <img alt=\"remote\" src=\"http://127.0.0.1:1/remote.png\"></p>"
+        );
+        let dropped = gpui::ExternalData::with_contents(
+            [
+                SharedString::from("public.html"),
+                SharedString::from("public.utf8-plain-text"),
+            ],
+            [
+                (SharedString::from("public.html"), html.as_bytes().into()),
+                (
+                    SharedString::from("public.utf8-plain-text"),
+                    b"Two"[..].into(),
+                ),
+            ],
+        );
+        fn images(dir: &std::path::Path) -> usize {
+            std::fs::read_dir(dir)
+                .unwrap()
+                .flatten()
+                .map(|entry| {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        images(&path)
+                    } else {
+                        usize::from(path.extension().is_some_and(|e| e == "png" || e == "webp"))
+                    }
+                })
+                .sum()
+        }
+        let vault = temp.path().join("vault");
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        // Positive control: with the window open the drop saves its image.
+        reader.update_in(visual, |r, window, cx| {
+            r.drop_on_editor((&dropped).into(), window, cx)
+        });
+        visual.run_until_parked();
+        let saved = images(&vault);
+        assert!(saved >= 1, "positive control: the data: image was saved");
+        let on_disk = std::fs::read_to_string(vault.join("note.md")).unwrap();
+        // The same drop, and the window closes before it is done.
+        reader.update_in(visual, |r, window, cx| {
+            r.drop_on_editor((&dropped).into(), window, cx);
+            window.remove_window();
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            images(&vault),
+            saved,
+            "the second drop never went in: no image of it is left behind"
+        );
+        assert_eq!(
+            std::fs::read_to_string(vault.join("note.md")).unwrap(),
+            on_disk,
+            "and the note on disk is as it was"
+        );
+    }
+
+    /// Review of #3078: a missed drop's saved files are removed under their
+    /// writer lease. When the lease cannot be entered (here: the vault folder
+    /// was replaced at its path), they stay and are named, never left
+    /// unnamed.
+    #[test]
+    fn leftovers_are_removed_or_named_when_the_lease_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let vault = temp.path().join("vault");
+        std::fs::create_dir(&vault).unwrap();
+        let authority = okilum_write_authority::Authority::for_root(&vault).unwrap();
+        let lease = authority.admit().unwrap();
+        let removed = vault.join("removed.png");
+        std::fs::write(&removed, b"png").unwrap();
+        assert_eq!(
+            Leftovers::new(Some(lease.clone()), vec![removed.clone()]).remove(),
+            ""
+        );
+        assert!(
+            !removed.exists(),
+            "positive control: removed under the lease"
+        );
+        // The folder replaced at the same path: the lease is refused.
+        std::fs::rename(&vault, temp.path().join("vault.old")).unwrap();
+        std::fs::create_dir(&vault).unwrap();
+        let kept = vault.join("kept.png");
+        std::fs::write(&kept, b"png").unwrap();
+        assert!(
+            lease.enter().is_err(),
+            "positive control: the lease is refused"
+        );
+        assert_eq!(
+            Leftovers::new(Some(lease), vec![kept.clone()]).remove(),
+            "kept.png",
+            "a refused lease: kept and named"
+        );
+        assert!(kept.exists());
+    }
+
+    #[test]
+    fn line_start_is_the_offset_of_a_one_based_line() {
+        let text = "a\nbc\r\n\nd";
+        assert_eq!(line_start(text, 1), Some(0));
+        assert_eq!(line_start(text, 2), Some(2));
+        assert_eq!(line_start(text, 3), Some(6));
+        assert_eq!(line_start(text, 4), Some(7));
+        assert_eq!(line_start(text, 5), None);
+        assert_eq!(line_start(text, 0), None);
+    }
+
+    /// A native drop of data at `position`: the real DataEntered/DataSubmit
+    /// path (#1615), types first, contents at the drop.
+    fn drop_data_at(
+        visual: &mut VisualTestContext,
+        position: Point<Pixels>,
+        items: &[(&str, &[u8])],
+    ) {
+        let types: Vec<SharedString> = items
+            .iter()
+            .map(|(kind, _)| SharedString::from(kind.to_string()))
+            .collect();
+        visual.simulate_event(gpui::FileDropEvent::DataEntered {
+            position,
+            data: gpui::ExternalData::new(types.clone()),
+        });
+        visual.simulate_event(gpui::FileDropEvent::DataSubmit {
+            position,
+            data: gpui::ExternalData::with_contents(
+                types,
+                items
+                    .iter()
+                    .map(|(kind, bytes)| (SharedString::from(kind.to_string()), (*bytes).into())),
+            ),
+        });
+        visual.run_until_parked();
+    }
+
+    /// #1615: HTML dragged from a browser onto a rendered block in Read goes
+    /// in as Markdown before that block, as its own paragraph.
+    #[gpui::test]
+    fn dropped_html_in_read_goes_before_the_block_as_markdown(cx: &mut TestAppContext) {
+        let (reader, visual, _temp) = reader_on_note(cx);
+        let next = reader.read_with(visual, |r, cx| {
+            assert!(
+                r.pane.editing.is_none(),
+                "positive control: the note opens in Read"
+            );
+            r.pane
+                .content
+                .read(cx)
+                .list_state()
+                .bounds_for_item(2)
+                .unwrap()
+        });
+        drop_data_at(
+            visual,
+            next.center(),
+            &[
+                ("public.html", b"<p><b>Dropped</b> text</p>"),
+                ("public.utf8-plain-text", b"Dropped text"),
+            ],
+        );
+        reader.read_with(visual, |r, cx| {
+            let source = r
+                .source_input()
+                .expect("the drop switched the note to Edit")
+                .read(cx)
+                .value()
+                .to_string();
+            let middle = source
+                .strip_prefix("# Title\n\nFirst paragraph.\n\n")
+                .and_then(|rest| rest.strip_suffix("\n\n## Next\n\nBody.\n"))
+                .unwrap_or_else(|| panic!("dropped between the blocks: {source:?}"));
+            assert_eq!(middle.trim(), "**Dropped** text", "{source:?}");
+        });
+    }
+
+    /// #1615: plain text dropped onto the editor goes in at the drop point
+    /// like a paste; nothing else changes.
+    #[gpui::test]
+    fn dropped_text_in_edit_is_inserted(cx: &mut TestAppContext) {
+        let (reader, visual, _temp) = reader_on_note(cx);
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        let center = reader.read_with(visual, |r, cx| {
+            let input = r.source_input().expect("positive control: Edit");
+            assert_eq!(input.read(cx).value().as_ref(), NOTE);
+            r.body_bounds.center()
+        });
+        drop_data_at(visual, center, &[("public.utf8-plain-text", b"XYZ")]);
+        reader.read_with(visual, |r, cx| {
+            let source = r.source_input().unwrap().read(cx).value().to_string();
+            assert!(
+                source.contains("XYZ"),
+                "the text was dropped in: {source:?}"
+            );
+            assert_eq!(source.replacen("XYZ", "", 1), NOTE);
+        });
     }
 }
