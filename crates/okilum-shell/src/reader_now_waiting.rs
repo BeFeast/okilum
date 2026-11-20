@@ -211,6 +211,25 @@ impl Reader {
             .unwrap_or_default()
     }
 
+    /// Title and second line of a question row: the question as T3 states
+    /// it, then its project and freshness.
+    pub(super) fn waiting_question_lines(&self, row: &waiting::Row) -> (String, String) {
+        let title = row
+            .text
+            .clone()
+            .unwrap_or_else(|| "Question · text unavailable".to_owned());
+        let project = self.waiting_title(&row.source.folder);
+        let secondary = if row.stale {
+            format!(
+                "{project} · stale, last confirmed {}",
+                self.waiting.time(row.observed_at)
+            )
+        } else {
+            format!("{project} · open the manager thread")
+        };
+        (title, secondary)
+    }
+
     fn waiting_row(&self, row: WaitingRow, cx: &mut Context<Self>) -> AnyElement {
         let WaitingRow {
             selector,
@@ -330,16 +349,10 @@ impl Reader {
             } else {
                 "now-waiting-row"
             };
-            let secondary = if row.stale {
-                format!(
-                    "Question · stale, last confirmed {}",
-                    waiting.time(row.observed_at)
-                )
-            } else {
-                "Question · open the manager thread".to_owned()
-            };
+            let (title, secondary) = self.waiting_question_lines(row);
             let tooltip = format!(
-                "{}\nManager thread {} · T3 {} / {}\nPending request {}",
+                "{}\n{}\nManager thread {} · T3 {} / {}\nPending request {}",
+                title,
                 self.waiting_location(&row.source.folder),
                 row.source.thread_id,
                 row.source.environment,
@@ -354,7 +367,7 @@ impl Reader {
                         row.source.folder.display(),
                         row.request_id
                     ),
-                    title: self.waiting_title(&row.source.folder),
+                    title,
                     secondary,
                     tooltip,
                     warning: false,

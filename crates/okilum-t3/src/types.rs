@@ -26,6 +26,17 @@ impl ServerIdentity {
     }
 }
 
+/// One question of a pending user-input request, as `t3_pending_request`
+/// `read` returns it. Options and answer rules are not read here.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingQuestion {
+    #[serde(default)]
+    pub header: String,
+    #[serde(default)]
+    pub question: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
