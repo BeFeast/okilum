@@ -109,10 +109,23 @@ automatic calibration loop or runner selection is performed.
 Under schema 1, EPYC calibration run `40223917116` produced five valid green
 invocations and forced-red run `40220173487` detected a diagnostic 120 ms
 delay, but Xeon run `40230405638` produced two valid FAIL attempts with
-identical product inputs, in a different scenario per attempt. Required
-activation needs its own decision on schema-2 calibration evidence: at least
-five consecutive valid green unchanged-code invocations and one artificially
-slowed commit that fails with valid measurements.
+identical product inputs, in a different scenario per attempt.
+
+Schema 2 met the acceptance bar on GitHub-hosted runners (#3044): 15
+consecutive valid green unchanged-code invocations (`43995388136` EPYC 7763,
+`44011879910` Xeon 6975P-C, `44011876072` EPYC 7763 A/A of one commit built
+twice) and two artificially slowed commits that failed with valid measurements
+(+15 ms `43995392282` Xeon 6975P-C, +120 ms `43995396631` EPYC 9V74). Given
+that evidence, Oleg chose a strict job that is **not** required (17 November
+2026), which #3065 wired as described above. It is not part of `ci / check`.
+Promoting it to required is a separate decision. It would add two hosted
+release builds (~20 min) to every native-scope admission.
+
+From #3065's merge (17 November 2026, 09:27 UTC) to 20 November 2026, 09:55 UTC,
+the strict job concluded 100 runs as success and 17 as failure. All 17 failed in
+the build step during one red-main hour (17 November, 21:29–22:45 UTC:
+`PreparedDocument` missing `outline`), before any measurement. None was a
+measurement verdict, and none was a false red.
 
 The sections below document the original static collector and measurement
 boundary, retained for diagnostics and historical evidence.
@@ -228,11 +241,10 @@ but a later run on unchanged application/benchmark code exceeded the input
 budgets on both measurements. The single retry does not establish sufficient
 noise protection across hosted runners. Baselines have not been relaxed.
 
-Required activation is deferred to [same-runner A/B #1662](https://git.oklabs.uk/BeFeast/okilum/issues/1662),
-owned by Editing after #1640: measure main
-and PR binaries in one job on the same runner, report CPU model/vCPU count, and
-use a relative delta plus an absolute ceiling. Activation requires at least
-five green unchanged-code runs and a forced-red commit in that A/B mode.
+The regression decision moved to the [same-runner A/B (#1662)](https://git.oklabs.uk/BeFeast/okilum/issues/1662) above.
+It measures main and PR binaries in one job on the same runner, reports the CPU
+model and vCPU count, and applies a relative delta plus an absolute ceiling.
+That A/B is strict and non-required. This static guard remains a diagnostic.
 Draft native checks remain red by the existing repository rule.
 
 Exit status: 0 passes; 1 is a budget regression or rejected relaxation;
