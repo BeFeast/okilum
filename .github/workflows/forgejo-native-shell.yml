@@ -133,6 +133,9 @@ jobs:
         # FIX FIRST on #3112: junctions, 8.3 names and dangling links are resolved or refused.
         foreach ($name in @(
             'windows_hook_stops_sync_first_and_keeps_its_identity_in_the_state_root',
+            'windows_hook_removes_nothing_when_sync_cannot_be_stopped',
+            'windows_hook_removes_nothing_when_a_path_cannot_be_resolved',
+            'windows_hook_refuses_a_dangling_junction_root',
             'windows_junctioned_local_app_data_keeps_sync_identity',
             'windows_junctioned_roots_are_never_followed',
             'windows_dangling_junction_refuses_the_plan',

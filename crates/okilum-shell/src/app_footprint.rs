@@ -359,6 +359,10 @@ impl Plan {
             let step = if within_kept {
                 Step::Leave
             } else if metadata.file_type().is_symlink() {
+                // A link or junction root is never followed by the purge, but
+                // its target must resolve: a dangling one refuses (#3109).
+                std::fs::canonicalize(root)
+                    .with_context(|| format!("cannot resolve the target of {}", root.display()))?;
                 // Removing a link never touches its target; keep the link when
                 // Sync's identity is reached through it.
                 if holds_kept || keep.iter().any(|kept| inside(kept, root, IGNORE_CASE)) {
@@ -596,30 +600,69 @@ pub(crate) fn sweep_stale_search_sessions() {
 }
 
 /// Velopack's before-uninstall hook: everything Okilum created for this user.
-/// Sync goes first (#3109): the purge plan that keeps its identity is decided
-/// canonically, then its task is stopped through the authenticated stop and
-/// unregistered. When Sync's folders or any root cannot be resolved, or the
-/// stop fails, the hook removes nothing.
 #[cfg(windows)]
 pub(crate) fn uninstall() {
-    let state = crate::reader_history::state_directory().ok();
-    let documents = dirs::document_dir()
-        .or_else(dirs::home_dir)
-        .unwrap_or_else(std::env::temp_dir);
-    let outcome = stop_then_remove(windows::stop_sync_for_uninstall, |plan| {
-        crate::markdown_handler::uninstall();
-        okilum_core::folder_registration::uninstall();
-        crate::url_protocol::uninstall();
-        windows::remove_registrations();
-        let report = purge_planned(&plan, state.as_deref(), &std::env::temp_dir(), &documents);
-        windows::remove_crash_dumps();
-        windows::remove_leftovers_after_exit();
-        report
-    });
-    match outcome {
+    match windows_hook(&windows::Installed) {
         Ok(report) => diagnostic_error!("Okilum uninstall: {report:?}"),
         Err(error) => diagnostic_error!("Okilum uninstall removed nothing: {error:#}"),
     }
+}
+
+/// What the Windows hook does to the machine; `windows::Installed` is the
+/// real one, tests inject fakes so they drive `windows_hook` itself.
+#[cfg(any(windows, test))]
+trait WindowsHost {
+    fn roots(&self) -> Vec<PathBuf>;
+    /// `Okilum\Sync` as `sidecar::windows::bootstrap` resolves it.
+    fn sync_state_directory(&self) -> anyhow::Result<PathBuf>;
+    /// An isolated Reader profile never touches the account's Sync task.
+    fn isolated_profile(&self) -> bool;
+    /// The authenticated stop of the account's Sync task, then unregister it.
+    fn stop_sync(&self) -> anyhow::Result<()>;
+    /// File associations, folder and `okilum:` registrations, the AUMID.
+    fn remove_registrations(&self);
+    fn state_directory(&self) -> Option<PathBuf>;
+    fn temp_directory(&self) -> PathBuf;
+    fn documents_directory(&self) -> PathBuf;
+    /// Crash dumps and the detached cleanup that waits for Update.exe.
+    fn remove_leftovers(&self);
+}
+
+/// The Windows hook (#3109). The purge plan that keeps Sync's identity
+/// (`Okilum\Sync`, `Okilum\SyncDirect`; `%LOCALAPPDATA%\okilum` is the same
+/// NTFS folder as their parent) is decided canonically first; then Sync's task
+/// is stopped through the authenticated stop and unregistered; only then are
+/// registrations, state, config and dumps removed. When a path cannot be
+/// resolved or the stop fails, it removes nothing.
+#[cfg(any(windows, test))]
+fn windows_hook(host: &impl WindowsHost) -> anyhow::Result<Report> {
+    stop_then_remove(
+        || {
+            use anyhow::Context as _;
+            let sync = host.sync_state_directory()?;
+            let direct = sync
+                .parent()
+                .context("Sync state parent unavailable")?
+                .join("SyncDirect");
+            let plan = Plan::keeping(&host.roots(), &[sync, direct])?;
+            if !host.isolated_profile() {
+                host.stop_sync()?;
+            }
+            Ok(plan)
+        },
+        |plan| {
+            host.remove_registrations();
+            let state = host.state_directory();
+            let report = purge_planned(
+                &plan,
+                state.as_deref(),
+                &host.temp_directory(),
+                &host.documents_directory(),
+            );
+            host.remove_leftovers();
+            report
+        },
+    )
 }
 
 /// `windows_uninstall_cleanup.ps1` with its install root and local app data.
@@ -1000,26 +1043,44 @@ mod windows {
     /// Notifications register this AUMID (gpui system_notifications).
     const AUMID_KEY: &str = r"HKCU\Software\Classes\AppUserModelId\com.befeast.okilum";
 
-    /// Decide the purge plan that keeps Sync's identity (`Okilum\Sync`,
-    /// `Okilum\SyncDirect`), then stop the account's Sync task through its
-    /// authenticated stop and unregister it (#3109). Identity, configuration
-    /// and journal stay, and the hub is not told. An unresolvable path
-    /// refuses before Sync is touched. An isolated Reader profile never
-    /// touches the task.
-    pub(super) fn stop_sync_for_uninstall() -> anyhow::Result<super::Plan> {
-        use anyhow::Context as _;
-        use okilum_sync_controller::sidecar::windows::bootstrap;
-        let sync = bootstrap::active_state_directory()?;
-        let direct = sync
-            .parent()
-            .context("Sync state parent unavailable")?
-            .join("SyncDirect");
-        let plan = super::Plan::keeping(&super::roots(), &[sync, direct])?;
-        if crate::reader_history::isolated_state_directory().is_none() {
-            // Returns at once when Sync was never set up on this account.
-            bootstrap::disable_current_app()?;
+    /// The installed app's effects for `windows_hook`.
+    pub(super) struct Installed;
+    impl super::WindowsHost for Installed {
+        fn roots(&self) -> Vec<std::path::PathBuf> {
+            super::roots()
         }
-        Ok(plan)
+        fn sync_state_directory(&self) -> anyhow::Result<std::path::PathBuf> {
+            okilum_sync_controller::sidecar::windows::bootstrap::active_state_directory()
+        }
+        fn isolated_profile(&self) -> bool {
+            crate::reader_history::isolated_state_directory().is_some()
+        }
+        fn stop_sync(&self) -> anyhow::Result<()> {
+            // Returns at once when Sync was never set up on this account;
+            // identity, configuration and journal stay, the hub is not told.
+            okilum_sync_controller::sidecar::windows::bootstrap::disable_current_app()
+        }
+        fn remove_registrations(&self) {
+            crate::markdown_handler::uninstall();
+            okilum_core::folder_registration::uninstall();
+            crate::url_protocol::uninstall();
+            remove_registrations();
+        }
+        fn state_directory(&self) -> Option<std::path::PathBuf> {
+            crate::reader_history::state_directory().ok()
+        }
+        fn temp_directory(&self) -> std::path::PathBuf {
+            std::env::temp_dir()
+        }
+        fn documents_directory(&self) -> std::path::PathBuf {
+            dirs::document_dir()
+                .or_else(dirs::home_dir)
+                .unwrap_or_else(std::env::temp_dir)
+        }
+        fn remove_leftovers(&self) {
+            remove_crash_dumps();
+            remove_leftovers_after_exit();
+        }
     }
 
     pub(super) fn remove_registrations() {
@@ -1281,69 +1342,170 @@ mod tests {
         assert!(reason.as_deref().unwrap().contains("have been kept"));
     }
 
-    /// #3109: the Velopack hook decides the plan, stops Sync, and only then
-    /// purges; the state root `%LOCALAPPDATA%\okilum` keeps `Okilum\Sync` and
-    /// `Okilum\SyncDirect`; on Windows both spellings are the same folder.
+    /// Records what `windows_hook` asks of the machine, in order.
+    struct FakeHost {
+        roots: Vec<PathBuf>,
+        sync: PathBuf,
+        state: PathBuf,
+        documents: PathBuf,
+        stop: Result<(), &'static str>,
+        isolated: bool,
+        events: std::cell::RefCell<Vec<&'static str>>,
+    }
+    impl FakeHost {
+        /// `%LOCALAPPDATA%\okilum` with Sync's identity inside it (Sync's own
+        /// spelling `Okilum`) and `%APPDATA%\okilum` with config.
+        fn new(fixture: &Path) -> Self {
+            let local = fixture.join("Local");
+            let state = local.join("okilum");
+            write(&state.join("settings.json"), "{}");
+            write(&state.join("reader/index.bin"), "index");
+            write(&state.join("Sync/config/cert.pem"), "certificate");
+            write(&state.join("Sync/sidecar.json"), "{}");
+            write(&state.join("SyncDirect/direct.json"), "{}");
+            let config = fixture.join("Roaming").join("okilum");
+            write(&config.join("reader-layout.json"), "{}");
+            let spelled = if IGNORE_CASE { "Okilum" } else { "okilum" };
+            Self {
+                roots: vec![state.clone(), config],
+                sync: local.join(spelled).join("Sync"),
+                state,
+                documents: fixture.join("Documents"),
+                stop: Ok(()),
+                isolated: false,
+                events: Default::default(),
+            }
+        }
+        fn event(&self, name: &'static str) {
+            self.events.borrow_mut().push(name);
+        }
+        fn events(&self) -> Vec<&'static str> {
+            self.events.borrow().clone()
+        }
+        /// Nothing of the fixture was removed.
+        fn untouched(&self) -> bool {
+            self.state.join("settings.json").exists()
+                && self.state.join("reader/index.bin").exists()
+                && self.roots[1].join("reader-layout.json").exists()
+                && self.state.join("Sync/config/cert.pem").exists()
+        }
+    }
+    impl WindowsHost for FakeHost {
+        fn roots(&self) -> Vec<PathBuf> {
+            self.event("roots");
+            self.roots.clone()
+        }
+        fn sync_state_directory(&self) -> anyhow::Result<PathBuf> {
+            Ok(self.sync.clone())
+        }
+        fn isolated_profile(&self) -> bool {
+            self.isolated
+        }
+        fn stop_sync(&self) -> anyhow::Result<()> {
+            self.event("stop");
+            assert!(
+                self.untouched(),
+                "Sync is stopped before anything is removed"
+            );
+            self.stop.map_err(anyhow::Error::msg)
+        }
+        fn remove_registrations(&self) {
+            self.event("registrations");
+        }
+        fn state_directory(&self) -> Option<PathBuf> {
+            self.event("purge");
+            Some(self.state.clone())
+        }
+        fn temp_directory(&self) -> PathBuf {
+            self.documents.clone()
+        }
+        fn documents_directory(&self) -> PathBuf {
+            self.documents.clone()
+        }
+        fn remove_leftovers(&self) {
+            self.event("leftovers");
+        }
+    }
+
+    /// #3109, through the production hook `windows_hook`: Sync's task is
+    /// stopped (authenticated stop + unregister) before registrations and
+    /// files go, and the state root `%LOCALAPPDATA%\okilum` keeps
+    /// `Okilum\Sync` and `Okilum\SyncDirect`. The pre-#3109 hook (no stop,
+    /// whole roots removed) fails both the event order and the identity checks.
     #[test]
     fn windows_hook_stops_sync_first_and_keeps_its_identity_in_the_state_root() {
         let fixture = tempfile::tempdir().unwrap();
-        let local = fixture.path().join("Local");
-        // The state root as `roots()` names it on Windows.
-        let state = local.join("okilum");
-        write(&state.join("settings.json"), "{}");
-        write(&state.join("reader/index.bin"), "index");
-        write(&state.join("Sync/config/cert.pem"), "certificate");
-        write(&state.join("Sync/sidecar.json"), "{}");
-        write(&state.join("SyncDirect/direct.json"), "{}");
-        let documents = fixture.path().join("Documents");
-        // Sync's own spelling (`active_state_directory`).
-        let spelled = if IGNORE_CASE { "Okilum" } else { "okilum" };
-        let keep = vec![
-            local.join(spelled).join("Sync"),
-            local.join(spelled).join("SyncDirect"),
-        ];
-        let roots = vec![state.clone()];
-        let remove = |plan: Plan| purge_planned(&plan, Some(&state), &documents, &documents);
-
-        let refused = stop_then_remove(
-            || -> anyhow::Result<Plan> { anyhow::bail!("Sync helper is not answering") },
-            remove,
-        );
-        assert!(refused.is_err());
-        let unresolvable = stop_then_remove(
-            || Plan::keeping(&roots, &[PathBuf::from("Okilum/Sync")]),
-            remove,
-        );
-        assert!(unresolvable.is_err());
-        assert!(state.join("settings.json").exists(), "nothing was purged");
-
-        let stopped = std::cell::Cell::new(false);
-        let report = stop_then_remove(
-            || {
-                let plan = Plan::keeping(&roots, &keep)?;
-                stopped.set(true);
-                Ok(plan)
-            },
-            |plan| {
-                assert!(stopped.get(), "Sync is stopped before the purge");
-                remove(plan)
-            },
-        )
-        .unwrap();
-        assert!(!state.join("settings.json").exists());
-        assert!(!state.join("reader").exists());
+        let host = FakeHost::new(fixture.path());
+        let report = windows_hook(&host).unwrap();
         assert_eq!(
-            std::fs::read_to_string(keep[0].join("config/cert.pem")).unwrap(),
+            host.events(),
+            ["roots", "stop", "registrations", "purge", "leftovers"]
+        );
+        assert!(!host.state.join("settings.json").exists(), "{report:?}");
+        assert!(!host.state.join("reader").exists(), "{report:?}");
+        assert!(!host.roots[1].exists(), "{report:?}");
+        assert_eq!(
+            std::fs::read_to_string(host.sync.join("config/cert.pem")).unwrap(),
             "certificate"
         );
-        assert!(keep[0].join("sidecar.json").exists());
-        assert!(keep[1].join("direct.json").exists());
-        assert_eq!(report.kept_for_sync, vec![state.clone()]);
+        assert!(host.sync.join("sidecar.json").exists());
+        assert!(host.state.join("SyncDirect/direct.json").exists());
+        assert_eq!(report.kept_for_sync, vec![host.state.clone()]);
+        assert!(report.removed.contains(&host.roots[1]), "{report:?}");
         assert!(report.failed.is_empty(), "{report:?}");
-        // Positive control: the hook's purge before #3109 removed the root.
-        let report = purge(&roots, Some(&state), &documents, &documents);
-        assert_eq!(report.removed, vec![state.clone()]);
-        assert!(!keep[0].exists());
+    }
+
+    /// #3109: a failed authenticated stop removes nothing, not even
+    /// registrations.
+    #[test]
+    fn windows_hook_removes_nothing_when_sync_cannot_be_stopped() {
+        let fixture = tempfile::tempdir().unwrap();
+        let mut host = FakeHost::new(fixture.path());
+        host.stop = Err("Sync helper is not answering");
+        let error = windows_hook(&host).unwrap_err();
+        assert!(format!("{error:#}").contains("not answering"), "{error:#}");
+        assert_eq!(host.events(), ["roots", "stop"]);
+        assert!(host.untouched());
+    }
+
+    /// #3109: an unresolvable kept path or root refuses before Sync is
+    /// touched; nothing is stopped or removed.
+    #[test]
+    fn windows_hook_removes_nothing_when_a_path_cannot_be_resolved() {
+        let fixture = tempfile::tempdir().unwrap();
+        let mut host = FakeHost::new(fixture.path());
+        host.sync = PathBuf::from("Okilum").join("Sync");
+        assert!(windows_hook(&host).is_err());
+        assert_eq!(host.events(), ["roots"]);
+        assert!(host.untouched());
+        // A dangling link as the final component of a root (#3112 review).
+        #[cfg(unix)]
+        {
+            let host = FakeHost::new(fixture.path());
+            let config = host.roots[1].clone();
+            std::fs::remove_dir_all(&config).unwrap();
+            std::os::unix::fs::symlink(fixture.path().join("gone"), &config).unwrap();
+            assert!(windows_hook(&host).is_err());
+            assert_eq!(host.events(), ["roots"]);
+            assert!(host.state.join("settings.json").exists());
+            assert!(std::fs::symlink_metadata(&config).is_ok(), "link kept");
+        }
+    }
+
+    /// An isolated Reader profile never touches the account's Sync task, and
+    /// still keeps its identity.
+    #[test]
+    fn windows_hook_in_an_isolated_profile_never_stops_sync() {
+        let fixture = tempfile::tempdir().unwrap();
+        let mut host = FakeHost::new(fixture.path());
+        host.isolated = true;
+        windows_hook(&host).unwrap();
+        assert_eq!(
+            host.events(),
+            ["roots", "registrations", "purge", "leftovers"]
+        );
+        assert!(host.sync.join("config/cert.pem").exists());
+        assert!(!host.state.join("settings.json").exists());
     }
 
     /// `mklink /J`: junctions need no privilege, unlike directory symlinks.
@@ -1484,6 +1646,28 @@ mod tests {
         );
     }
 
+    /// #3112 review: a dangling junction as the final component of a root
+    /// (`%APPDATA%\okilum`) refuses in the production hook before Sync is
+    /// stopped; nothing is removed and the junction stays.
+    #[cfg(windows)]
+    #[test]
+    fn windows_hook_refuses_a_dangling_junction_root() {
+        let fixture = tempfile::tempdir().unwrap();
+        let host = FakeHost::new(fixture.path());
+        let config = host.roots[1].clone();
+        std::fs::remove_dir_all(&config).unwrap();
+        let gone = fixture.path().join("gone");
+        std::fs::create_dir_all(&gone).unwrap();
+        junction(&config, &gone);
+        std::fs::remove_dir(&gone).unwrap();
+        let error = windows_hook(&host).unwrap_err();
+        assert!(format!("{error:#}").contains("cannot resolve"), "{error:#}");
+        assert_eq!(host.events(), ["roots"]);
+        assert!(host.state.join("settings.json").exists());
+        assert!(host.state.join("Sync/config/cert.pem").exists());
+        assert!(is_link(&config), "the junction stays");
+    }
+
     /// #3109 FIX FIRST: 8.3 short names (CI temp is often `RUNNER~1`) and
     /// long names spell the same folder.
     #[cfg(windows)]
@@ -1504,7 +1688,7 @@ mod tests {
             .output()
             .unwrap();
         let short = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
-        eprintln!("short {} long {}", short.display(), long.display());
+        // Where 8.3 names are disabled `short` is the long spelling.
         assert!(short.is_absolute() && short.exists(), "{output:?}");
         let documents = fixture.path().join("Documents");
         for (root_base, keep_base) in [(&short, &long), (&long, &short)] {
