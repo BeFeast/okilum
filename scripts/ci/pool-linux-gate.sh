@@ -7,7 +7,7 @@
 # merge rule still requires; pool-aggregate.py merges the shard receipts.
 #
 #   base       docker   AppImage runtime, Python suites, Help/brand, admission crash checkpoints
-#   admission  sudo     admission remaining-0 + negative controls, real disk-full transfer
+#   admission  tmpfs    admission remaining-0 + negative controls, real disk-full transfer
 #   sync       -        source sharing, admission remaining-1, local writer authority
 #   desktop    -        clippy, fmt + desktop build, sync serve pairing, reveal stress, vault regression
 #   rust-a     userbus  okilum-core suite, Linux Rust groups outside the workspace census
@@ -123,6 +123,9 @@ if has sync; then
         # shellcheck source=scripts/ci/test-nofile.sh
         source scripts/ci/test-nofile.sh
         python3 scripts/ci/fetch-ci-dependency.py syncthing "${XDG_CACHE_HOME:-$HOME/.cache}/okilum-sync-fixture/syncthing-linux-amd64-v2.1.6.tar.gz"
+        # Compile the exact test targets first: on hosted the Actions cache made
+        # this a no-op, and the 600 s deadline below is for the fixtures.
+        cargo test --locked -p okilum-sync-controller --lib --test direct_bidirectional --no-run
         tini -s -- bash scripts/ci/test-group.sh agent-sync-sharing 600 bash scripts/ci/sync-source-sharing.sh --runs 2 --parallel 2
     '
 fi
@@ -142,9 +145,11 @@ if [[ -n $admission_part ]]; then
 fi
 if has admission; then
     # The pool slot is disposable for this mount: a private 16 MiB tmpfs under
-    # the slot TMPDIR, unmounted by the script (needs host capability sudo).
-    pool_phase "Verify real disk-full Sync transfer and first merge" \
-        env OKILUM_POOL_DISK_FULL=1 bash scripts/ci/test-group.sh agent-sync-disk-full 600 bash scripts/ci/sync-disk-full.sh
+    # the slot TMPDIR, unmounted by the script (needs host capability tmpfs).
+    pool_phase "Verify real disk-full Sync transfer and first merge" bash -c '
+        cargo test --locked -p okilum-sync-controller --test managed_launch --no-run &&
+        OKILUM_POOL_DISK_FULL=1 bash scripts/ci/test-group.sh agent-sync-disk-full 600 bash scripts/ci/sync-disk-full.sh
+    '
 fi
 pool_phase "Reject and reap surviving agent fixture daemons" \
     python3 scripts/ci/sync-fixture-processes.py --root "${TMPDIR:-/tmp}" --cleanup
@@ -159,7 +164,7 @@ if has desktop; then
     '
     pool_phase "Pair through a running okilum sync serve" bash -c '
         syncthing=$(python3 scripts/ci/sync-fixture-stage.py)
-        tini -s -- python3 -I scripts/ci/sync-cli-control.py --okilum target/debug/okilum --syncthing "$syncthing"
+        tini -s -- python3 -I scripts/ci/sync-cli-control.py --okilum "${CARGO_TARGET_DIR:-target}/debug/okilum" --syncthing "$syncthing"
     '
     pool_phase "Stress private reveal bus (20 runs)" \
         bash scripts/ci/test-group.sh agent-reveal-stress 1800 python3 scripts/ci/reveal-stress.py --runs 20
@@ -174,12 +179,9 @@ fi
 rust_part=
 case $shard in
     rust-a) rust_part=groups ;;
-    rust-b)
-        rust_part=workspace
-        # The heavy split of the census (workspace-rust-tests.py): four
-        # ordinary processes instead of two, the same exact inventory.
-        export OKILUM_WORKSPACE_ORDINARY_SHARDS=4
-        ;;
+    # Two ordinary census processes as on hosted: four were OOM-killed at the
+    # 8 GiB slot limit (run 44837997588, rust-b on baldr).
+    rust-b) rust_part=workspace ;;
     all) rust_part=all ;;
 esac
 if [[ -n $rust_part ]]; then

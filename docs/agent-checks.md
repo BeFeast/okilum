@@ -21,11 +21,11 @@ coordinator (`--needs`):
 | Shard | Needs | Phases |
 |---|---|---|
 | `base` | `docker` | AppImage runtime image, helper controls, CI/releases/updater Python suites, Sync Help and brand, managed admission crash checkpoints |
-| `admission` | `sudo` | managed admission `remaining-0` and the negative controls, real disk-full transfer (private tmpfs) |
+| `admission` | `tmpfs` | managed admission `remaining-0` and the negative controls, real disk-full transfer (private tmpfs) |
 | `sync` | — | Sync source sharing, managed admission `remaining-1`, local writer authority |
-| `desktop` | — | workspace clippy, `cargo fmt --check` and desktop build, pairing through `okilum sync serve`, reveal stress, vault regression controls |
-| `rust-a` | `userbus` | `okilum-core` suite, Linux Rust groups outside the workspace census |
-| `rust-b` | `userbus` | Linux Rust workspace census (four ordinary processes) |
+| `desktop` | `dbus` | workspace clippy, `cargo fmt --check` and desktop build, pairing through `okilum sync serve`, reveal stress, vault regression controls |
+| `rust-a` | `userbus`, `dbus` | `okilum-core` suite, Linux Rust groups outside the workspace census |
+| `rust-b` | `userbus`, `dbus` | Linux Rust workspace census |
 
 Every shard also verifies the toolchain, vendor, locked dependencies and the
 Python environment, and reaps fixture daemons. `pool-aggregate.py` merges the

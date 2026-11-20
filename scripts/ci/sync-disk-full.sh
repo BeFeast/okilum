@@ -2,7 +2,7 @@
 # #3080: real ENOSPC during a Sync transfer and during the first merge (#2043).
 # Each test fills its own private, small tmpfs; nothing else on the host is
 # filled. Only a disposable GitHub-hosted runner, or a build-slot pool slot
-# (OKILUM_POOL_DISK_FULL=1 from pool-linux-gate.sh, host capability sudo), may
+# (OKILUM_POOL_DISK_FULL=1 from pool-linux-gate.sh, host capability tmpfs), may
 # run this: it mounts with passwordless sudo.
 set -euo pipefail
 if [[ ${OKILUM_POOL_DISK_FULL:-} == 1 && -n ${BUILD_SLOT:-}${OKILUM_POOL_SHARD:-} ]]; then
