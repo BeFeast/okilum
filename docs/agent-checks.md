@@ -1,5 +1,18 @@
 # Agent build/test checks on GitHub
 
+## Where the Linux jobs run (Oleg 20.11)
+
+`pre-merge` and `linux` run on the self-hosted label `okilum-pool`. The runner
+only checks out the commit and calls `build-slot`; the suites run on the shared
+build-slot pool (`scripts/ci/pool-dispatch.sh`, `pool-pre-merge.sh`,
+`pool-linux-gate.sh`). The workflow name stays `agent-checks`, the job names
+stay `pre-merge` and `linux`, and the step names `gh-check.sh` requires are
+unchanged. A pool failure (queue, timeout, missing receipt) fails the dispatch
+step, which the helper counts as infrastructure (exit 75). A failing phase
+fails the step of that name, which is a code verdict (exit 1). Windows and
+macOS jobs are unchanged. Landing of a green, reviewed PR is the merge queue
+in `docs/merge-queue.md`, not a second gate.
+
 ## When which check runs (Oleg 13.11 ~14:20, ~15:10)
 
 - **Before merge:** formatting, script checks and a Linux workspace compile,

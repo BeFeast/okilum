@@ -18,6 +18,8 @@ INFRA_STEPS = {
     "Verify pinned Rust toolchain", "Restore Rust downloads and target cache",
     "Fetch locked public dependencies", "Save Rust downloads and target cache",
     "Prepare isolated Python test dependencies",
+    "Dispatch pre-merge gate to the build-slot pool",
+    "Dispatch Linux full gate to the build-slot pool",
     "Restore Windows core cache", "Preserve vendor patch line endings",
 }
 
