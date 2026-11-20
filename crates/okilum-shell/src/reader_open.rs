@@ -1332,8 +1332,12 @@ struct VaultDestination {
     focus: FocusHandle,
 }
 
-/// The prompt's width; its height follows its content (#3144).
-const DESTINATION_WIDTH: Pixels = px(480.);
+/// The prompt's opening width: the checkbox and the three buttons on one
+/// row with room to spare; its height follows its content (#3144).
+const DESTINATION_WIDTH: Pixels = px(620.);
+/// Narrower windows move the buttons under the checkbox; this keeps the
+/// three buttons (one non-shrinking group) and the padding inside.
+const DESTINATION_MIN_WIDTH: Pixels = px(440.);
 /// A first guess at the content height; the first frame corrects it.
 const DESTINATION_HEIGHT: Pixels = px(160.);
 /// Matches the prompt's `p_4` padding below the button row.
@@ -1367,7 +1371,7 @@ fn ask_vault_destination(source: WeakEntity<super::Reader>, opts: super::Opts, c
             ))),
             // Not the Reader's 600×400 minimum: the prompt is as tall as its
             // controls (#3144).
-            window_min_size: Some(size(px(360.), px(120.))),
+            window_min_size: Some(size(DESTINATION_MIN_WIDTH, px(120.))),
             is_minimizable: false,
             ..window_options(cx)
         },
@@ -1481,8 +1485,10 @@ impl Render for VaultDestination {
             )
             .child(
                 // The checkbox shares the button row, on the left as in
-                // Windows' «Don't ask again» prompts (#3144).
+                // Windows' «Don't ask again» prompts (#3144). A narrow window
+                // wraps the buttons, still right-aligned, under it.
                 h_flex()
+                    .flex_wrap()
                     .gap_2()
                     .items_center()
                     .child(
@@ -1502,8 +1508,7 @@ impl Render for VaultDestination {
                                 )),
                             ),
                     )
-                    .child(div().flex_1())
-                    .children(buttons),
+                    .child(h_flex().flex_grow().justify_end().gap_2().children(buttons)),
             )
     }
 }
@@ -5663,11 +5668,16 @@ mod destination_tests {
 
     /// #3144 (Windows 11, tester screenshot): the prompt was 600×400 around
     /// four controls, Cancel came first and the checkbox sat on its own row.
+    /// The test text system gives every glyph 0.6 em, wider than Segoe UI.
     #[gpui::test]
     fn the_destination_prompt_is_as_tall_as_its_controls_with_the_checkbox_on_the_button_row(
         cx: &mut TestAppContext,
     ) {
-        cx.update(crate::test_init);
+        cx.update(|cx| {
+            crate::test_init(cx);
+            // The app's 14 px chrome font, not gpui-component's 16 px default.
+            super::super::brand::apply_theme(cx);
+        });
         let opts = super::super::Opts {
             vault: Some(PathBuf::from("/vaults/Obsidian Vaults")),
             ..Default::default()
@@ -5677,46 +5687,74 @@ mod destination_tests {
             let view = cx.new(|cx| VaultDestination::new(WeakEntity::new_invalid(), opts, cx));
             Root::new(view, window, cx)
         });
-        // Control: start at the old 600×400 minimum the prompt inherited.
-        visual.simulate_resize(size(px(600.), px(400.)));
-        visual.update(|window, _| window.refresh());
-        visual.run_until_parked();
-        let mut bounds =
-            |id: &'static str| visual.debug_bounds(id).unwrap_or_else(|| panic!("{id}"));
-        let question = bounds("vault-destination-question");
-        let remember = bounds("vault-destination-remember");
-        let [cancel, current, new] = [
-            "vault-destination-cancel",
-            "vault-destination-current",
-            "vault-destination-new",
-        ]
-        .map(bounds);
+        // The opening width and the narrowest the window allows, each from
+        // the old 400 px height the prompt inherited.
+        for width in [DESTINATION_WIDTH, DESTINATION_MIN_WIDTH] {
+            visual.simulate_resize(size(width, px(400.)));
+            visual.update(|window, _| window.refresh());
+            visual.run_until_parked();
+            let mut bounds = |id: &'static str| {
+                visual
+                    .debug_bounds(id)
+                    .unwrap_or_else(|| panic!("{id} at {width:?}"))
+            };
+            let question = bounds("vault-destination-question");
+            let remember = bounds("vault-destination-remember");
+            let [cancel, current, new] = [
+                "vault-destination-cancel",
+                "vault-destination-current",
+                "vault-destination-new",
+            ]
+            .map(&mut bounds);
 
-        // Order follows the platform: on Windows Cancel is the rightmost.
-        let order = destination_order(cfg!(windows));
-        let mut by_x = [
-            (cancel.left(), Destination::Cancel),
-            (current.left(), Destination::Current),
-            (new.left(), Destination::New),
-        ];
-        by_x.sort_by_key(|(x, _)| *x);
-        assert_eq!(by_x.map(|(_, choice)| choice), order);
+            // Every control, label included, stays inside the padding.
+            for control in [question, remember, cancel, current, new] {
+                assert!(
+                    control.left() >= DESTINATION_PADDING
+                        && control.right() <= width - DESTINATION_PADDING,
+                    "{control:?} outside a {width:?} window"
+                );
+            }
 
-        // The checkbox lines up with the text on the left and the buttons
-        // vertically, on their row.
-        assert_eq!(remember.left(), question.left());
-        for button in [cancel, current, new] {
-            assert!(remember.right() < button.left(), "{remember:?} {button:?}");
-            assert!(
-                (remember.center().y - button.center().y).abs() <= px(1.),
-                "checkbox {remember:?} off the button row {button:?}"
+            // Order follows the platform: on Windows Cancel is the rightmost.
+            let mut by_x = [
+                (cancel.left(), Destination::Cancel),
+                (current.left(), Destination::Current),
+                (new.left(), Destination::New),
+            ];
+            by_x.sort_by_key(|(x, _)| *x);
+            assert_eq!(
+                by_x.map(|(_, choice)| choice),
+                destination_order(cfg!(windows))
             );
-        }
+            // The buttons stay one row, right-aligned.
+            for button in [cancel, current] {
+                assert_eq!(button.center().y, new.center().y);
+            }
+            let rightmost = cancel.right().max(current.right()).max(new.right());
+            assert!(
+                rightmost >= width - DESTINATION_PADDING - px(1.),
+                "{rightmost:?}"
+            );
 
-        // The window ends one padding below the button row.
-        let size_now = visual.update(|window, _| window.bounds().size);
-        let bottom = cancel.bottom().max(current.bottom()).max(new.bottom());
-        assert_eq!(size_now.height, (bottom + DESTINATION_PADDING).ceil());
-        assert!(size_now.height < px(260.), "{size_now:?}");
+            // The checkbox lines up with the text on the left.
+            assert_eq!(remember.left(), question.left());
+            if width == DESTINATION_WIDTH {
+                // At the opening width it shares the buttons' row.
+                for button in [cancel, current, new] {
+                    assert!(remember.right() < button.left(), "{remember:?} {button:?}");
+                    assert!(
+                        (remember.center().y - button.center().y).abs() <= px(1.),
+                        "checkbox {remember:?} off the button row {button:?}"
+                    );
+                }
+            }
+
+            // The window ends one padding below the last control.
+            let size_now = visual.update(|window, _| window.bounds().size);
+            let bottom = cancel.bottom().max(current.bottom()).max(new.bottom());
+            assert_eq!(size_now.height, (bottom + DESTINATION_PADDING).ceil());
+            assert!(size_now.height < px(300.), "{size_now:?}");
+        }
     }
 }
