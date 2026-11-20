@@ -1,5 +1,5 @@
 diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
-index 16c31524..79bfdaf0 100644
+index 16c31524..3fcc1118 100644
 --- a/crates/base/src/input/base/element.rs
 +++ b/crates/base/src/input/base/element.rs
 @@ -3028,6 +3028,77 @@ impl<M: InputModeKind> Element for TextElement<M> {
@@ -80,7 +80,7 @@ index 16c31524..79bfdaf0 100644
          // Paint glyph backgrounds
          //
          // gpui's `paint` only draws glyphs, underlines, and strikethroughs, so decoration
-@@ -3069,6 +3140,49 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -3069,6 +3140,51 @@ impl<M: InputModeKind> Element for TextElement<M> {
                      }
                  }
              }
@@ -102,27 +102,29 @@ index 16c31524..79bfdaf0 100644
 +                for (row_index, row) in line.wrapped_lines.iter().enumerate() {
 +                    let row_end = row_start + row.len();
 +                    let first = d.links.partition_point(|link| link.end.0 <= row_start);
-+                    let mut rtl = None;
 +                    for link in d.links[first..].iter().take_while(|l| l.start.0 < row_end) {
 +                        let start = link.start.0.max(row_start) - row_start;
 +                        let end = link.end.0.min(row_end) - row_start;
-+                        if start >= end
-+                            || *rtl.get_or_insert_with(|| {
-+                                unicode_bidi::BidiInfo::new(&row.text, None).has_rtl()
-+                            })
-+                        {
++                        if start >= end {
 +                            continue;
 +                        }
 +                        let (x, align, align_width) =
 +                            line.row_paint(row_index, text_align, Some(content_width));
 +                        let left = p.x + x + aligned_shift(align, align_width, row.width);
-+                        marker.paint(
-+                            left + row.x_for_index(start),
-+                            left + row.x_for_index(end),
-+                            p.y + line_rows.row_top(row_index),
-+                            line_rows.row_height(row_index),
-+                            window,
-+                        );
++                        // Right-to-left rows: the link's drawn cells.
++                        for span in super::marker_paint::row_spans(
++                            line.row_geometry(row_index),
++                            |i| row.x_for_index(i),
++                            start..end,
++                        ) {
++                            marker.paint(
++                                left + span.start,
++                                left + span.end,
++                                p.y + line_rows.row_top(row_index),
++                                line_rows.row_height(row_index),
++                                window,
++                            );
++                        }
 +                    }
 +                    row_start = row_end;
 +                }
@@ -130,7 +132,7 @@ index 16c31524..79bfdaf0 100644
              line.paint_background(
                  p,
                  &prepaint.last_layout.rows,
-@@ -3129,6 +3243,32 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -3129,6 +3245,32 @@ impl<M: InputModeKind> Element for TextElement<M> {
          // Track the y-position of the cursor row for positioning the first line suffix
          let mut cursor_row_y = None;
  
@@ -163,7 +165,7 @@ index 16c31524..79bfdaf0 100644
          let mut painted_tasks = Vec::new();
          for (line_index, (line, &buffer_line)) in prepaint
              .last_layout
-@@ -3162,7 +3302,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -3162,7 +3304,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                      let row_origin = p + point(x, row_top);
                      if let Some(Some(paint)) = rows.get(row_index) {
                          painted_tasks.extend(paint.paint(row_origin, row_height,
@@ -172,7 +174,7 @@ index 16c31524..79bfdaf0 100644
                      } else {
                          let _ = row.paint(row_origin, row_height, align, align_width, window, cx);
                      }
-@@ -3170,6 +3310,32 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -3170,6 +3312,32 @@ impl<M: InputModeKind> Element for TextElement<M> {
              } else {
                  line.paint(p, &prepaint.last_layout.rows, text_align, Some(prepaint.last_layout.content_width), window, cx);
              }
@@ -205,7 +207,7 @@ index 16c31524..79bfdaf0 100644
              offset_y += line.size(&prepaint.last_layout.rows).height;
  
              if Some(row) == prepaint.current_row {
-@@ -4573,3 +4739,12 @@ mod projection_run_tests {
+@@ -4573,3 +4741,12 @@ mod projection_run_tests {
          assert_eq!(runs_for_range(&tail, 4, &(0..1))[0].font, font);
      }
  }
@@ -219,7 +221,7 @@ index 16c31524..79bfdaf0 100644
 +    }
 +}
 diff --git a/crates/base/src/input/base/marker_paint.rs b/crates/base/src/input/base/marker_paint.rs
-index c0ce6186..0b2d4248 100644
+index c0ce6186..f00dc99e 100644
 --- a/crates/base/src/input/base/marker_paint.rs
 +++ b/crates/base/src/input/base/marker_paint.rs
 @@ -344,9 +344,12 @@ impl RowPaint {
@@ -291,6 +293,84 @@ index c0ce6186..0b2d4248 100644
  #[cfg(test)]
  impl RowPaint {
      /// The x of each quote bar this continuation row draws in its gutter.
+@@ -481,6 +504,20 @@ impl RowPaint {
+     }
+ }
+ 
++/// The painted x spans of row-local `range`: with right-to-left text on the
++/// row, the drawn spans of its cells (a link may be split into several);
++/// otherwise its logical x range. The same spans selection paints (#3154).
++pub(super) fn row_spans(
++    geometry: Option<&Geometry>,
++    x_for_index: impl Fn(usize) -> Pixels,
++    range: Range<usize>,
++) -> Vec<Range<Pixels>> {
++    match geometry {
++        Some(geometry) => geometry.selection(range),
++        None => vec![x_for_index(range.start)..x_for_index(range.end)],
++    }
++}
++
+ /// The visual span of `range` on a right-to-left row, if it is one contiguous
+ /// run of whole cells that no other cell overlaps; otherwise the marker stays raw.
+ fn rtl_span(geometry: &Geometry, range: &Range<usize>) -> Option<Range<Pixels>> {
+@@ -845,6 +882,40 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn issue3154_link_spans_follow_the_drawn_cells_on_mixed_rows() {
++        // `שלום link`: the Hebrew word is drawn on the right, the Latin link
++        // (bytes 9..13) on the left. Its marker covers the link's cells.
++        let cell = |source: Range<usize>, left: f32, right: f32, rtl: bool| super::Cell {
++            source,
++            left: px(left),
++            right: px(right),
++            rtl,
++        };
++        let geometry = Geometry {
++            cells: vec![
++                cell(9..10, 0., 6., false),
++                cell(10..11, 6., 12., false),
++                cell(11..12, 12., 18., false),
++                cell(12..13, 18., 24., false),
++                cell(8..9, 24., 28., false),
++                cell(6..8, 28., 36., true),
++                cell(4..6, 36., 44., true),
++                cell(2..4, 44., 52., true),
++                cell(0..2, 52., 60., true),
++            ],
++        };
++        let logical = |i: usize| px(i as f32 * 100.);
++        assert_eq!(row_spans(Some(&geometry), logical, 9..13), vec![px(0.)..px(24.)]);
++        // A range across the direction change is drawn as two spans.
++        assert_eq!(
++            row_spans(Some(&geometry), logical, 6..11),
++            vec![px(0.)..px(12.), px(24.)..px(36.)]
++        );
++        // Control: a left-to-right row keeps its logical x range.
++        assert_eq!(row_spans(None, logical, 9..13), vec![px(900.)..px(1300.)]);
++    }
++
+     #[test]
+     fn rtl_marker_span_is_one_run_of_whole_cells() {
+         // `- [ ] אב` in an RTL paragraph: the marker sits on the right.
+diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/base/src/input/editor/display_map/text_wrapper.rs
+index 4e7a3d02..56902ed1 100644
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -1144,6 +1144,11 @@ impl LineLayout {
+ 
+     pub(crate) fn has_bidi(&self) -> bool { self.bidi.iter().any(Option::is_some) }
+ 
++    /// The bidi cells of visual row `row`, when its line has right-to-left text.
++    pub(crate) fn row_geometry(&self, row: usize) -> Option<&Geometry> {
++        self.bidi.get(row).and_then(|geometry| geometry.as_deref())
++    }
++
+     pub(crate) fn selection_rects(&self, range: Range<usize>, last: &LastLayout)
+         -> Vec<gpui::Bounds<Pixels>> {
+         let mut result = Vec::new();
 diff --git a/crates/base/src/input/projection.rs b/crates/base/src/input/projection.rs
 index e72cb01b..ef7f433a 100644
 --- a/crates/base/src/input/projection.rs
