@@ -1332,23 +1332,48 @@ struct VaultDestination {
     focus: FocusHandle,
 }
 
+/// The prompt's width; its height follows its content (#3144).
+const DESTINATION_WIDTH: Pixels = px(480.);
+/// A first guess at the content height; the first frame corrects it.
+const DESTINATION_HEIGHT: Pixels = px(160.);
+/// Matches the prompt's `p_4` padding below the button row.
+const DESTINATION_PADDING: Pixels = px(16.);
+
+/// Buttons of the vault-destination prompt, left to right.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Destination {
+    Current,
+    New,
+    Cancel,
+}
+
+/// Windows puts Cancel after the commit buttons; macOS and GNOME put it
+/// before them (#3144).
+fn destination_order(cancel_last: bool) -> [Destination; 3] {
+    use Destination::*;
+    if cancel_last {
+        [Current, New, Cancel]
+    } else {
+        [Cancel, Current, New]
+    }
+}
+
 fn ask_vault_destination(source: WeakEntity<super::Reader>, opts: super::Opts, cx: &mut App) {
     let result = cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(super::window_state::default_bounds(
-                size(px(580.), px(250.)),
+                size(DESTINATION_WIDTH, DESTINATION_HEIGHT),
                 cx,
             ))),
+            // Not the Reader's 600×400 minimum: the prompt is as tall as its
+            // controls (#3144).
+            window_min_size: Some(size(px(360.), px(120.))),
+            is_minimizable: false,
             ..window_options(cx)
         },
         |window, cx| {
             window.set_window_title("Okilum — Open another vault");
-            let view = cx.new(|cx| VaultDestination {
-                source,
-                opts,
-                remember: false,
-                focus: cx.focus_handle(),
-            });
+            let view = cx.new(|cx| VaultDestination::new(source, opts, cx));
             view.read(cx).focus.clone().focus(window, cx);
             cx.new(|cx| Root::new(view, window, cx))
         },
@@ -1359,6 +1384,15 @@ fn ask_vault_destination(source: WeakEntity<super::Reader>, opts: super::Opts, c
 }
 
 impl VaultDestination {
+    fn new(source: WeakEntity<super::Reader>, opts: super::Opts, cx: &mut Context<Self>) -> Self {
+        Self {
+            source,
+            opts,
+            remember: false,
+            focus: cx.focus_handle(),
+        }
+    }
+
     fn source_is_open(&self, cx: &App) -> bool {
         self.source
             .upgrade()
@@ -1386,8 +1420,23 @@ impl VaultDestination {
 impl Render for VaultDestination {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let source_is_open = self.source_is_open(cx);
+        let buttons = destination_order(cfg!(windows)).map(|choice| match choice {
+            Destination::Cancel => Button::new("vault-destination-cancel")
+                .debug_selector(|| "vault-destination-cancel".into())
+                .label("Cancel")
+                .on_click(|_, window, _| window.remove_window()),
+            Destination::Current => Button::new("vault-destination-current")
+                .debug_selector(|| "vault-destination-current".into())
+                .label("In this window")
+                .disabled(!source_is_open)
+                .on_click(cx.listener(|this, _, window, cx| this.answer(true, window, cx))),
+            Destination::New => Button::new("vault-destination-new")
+                .debug_selector(|| "vault-destination-new".into())
+                .label("In a new window")
+                .on_click(cx.listener(|this, _, window, cx| this.answer(false, window, cx))),
+        });
         v_flex()
-            .p_4()
+            .p(DESTINATION_PADDING)
             .gap_3()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|_, event: &KeyDownEvent, window, _| {
@@ -1395,53 +1444,66 @@ impl Render for VaultDestination {
                     window.remove_window();
                 }
             }))
+            // The window is as tall as its controls (#3144): a closed source
+            // window adds a line, a long vault name may wrap.
+            .on_children_prepainted(move |children, window, _| {
+                let Some(bottom) = children.iter().map(|child| child.bottom()).max() else {
+                    return;
+                };
+                let height = (bottom + DESTINATION_PADDING).ceil();
+                let viewport = window.viewport_size();
+                if window.is_maximized()
+                    || window.is_fullscreen()
+                    || (height - viewport.height).abs() < px(1.)
+                {
+                    return;
+                }
+                // Asynchronous on Windows; the next frame sees the new size.
+                window.resize(size(viewport.width, height));
+            })
             .child(TitleBar::new().child("Open another vault"))
             .when(!source_is_open, |view| {
                 view.child(
                     "The original window was closed. Open this vault in a new window, or cancel.",
                 )
             })
-            .child(format!(
-                "Where should {} open?",
-                self.opts
-                    .vault
-                    .as_deref()
-                    .map(|root| super::vault_name::shown(root, cx))
-                    .unwrap_or_default()
-            ))
             .child(
-                gpui_component::checkbox::Checkbox::new("remember-vault-destination")
-                    .label("Remember my choice")
-                    .checked(self.remember)
-                    .on_click(cx.listener(|this, value: &bool, _, cx| {
-                        this.remember = *value;
-                        cx.notify();
-                    })),
+                div()
+                    .debug_selector(|| "vault-destination-question".into())
+                    .child(format!(
+                        "Where should {} open?",
+                        self.opts
+                            .vault
+                            .as_deref()
+                            .map(|root| super::vault_name::shown(root, cx))
+                            .unwrap_or_default()
+                    )),
             )
             .child(
+                // The checkbox shares the button row, on the left as in
+                // Windows' «Don't ask again» prompts (#3144).
                 h_flex()
                     .gap_2()
-                    .justify_end()
+                    .items_center()
                     .child(
-                        Button::new("vault-destination-cancel")
-                            .label("Cancel")
-                            .on_click(|_, window, _| window.remove_window()),
-                    )
-                    .child(
-                        Button::new("vault-destination-current")
-                            .label("In this window")
-                            .disabled(!source_is_open)
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.answer(true, window, cx)),
+                        div()
+                            .debug_selector(|| "vault-destination-remember".into())
+                            .child(
+                                gpui_component::checkbox::Checkbox::new(
+                                    "remember-vault-destination",
+                                )
+                                .label("Remember my choice")
+                                .checked(self.remember)
+                                .on_click(cx.listener(
+                                    |this, value: &bool, _, cx| {
+                                        this.remember = *value;
+                                        cx.notify();
+                                    },
+                                )),
                             ),
                     )
-                    .child(
-                        Button::new("vault-destination-new")
-                            .label("In a new window")
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.answer(false, window, cx)),
-                            ),
-                    ),
+                    .child(div().flex_1())
+                    .children(buttons),
             )
     }
 }
@@ -5584,4 +5646,77 @@ pub(crate) fn reader_locations(cx: &App) -> Vec<(PathBuf, String)> {
 #[cfg(any(windows, target_os = "linux", test))]
 pub(crate) fn update_restart_args(cx: &App) -> anyhow::Result<Vec<std::ffi::OsString>> {
     Ok(super::reader_update_restart::arguments(cx))
+}
+
+#[cfg(test)]
+mod destination_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    /// #3144: Windows lists Cancel last; macOS and GNOME list it first.
+    #[test]
+    fn cancel_is_last_only_where_the_platform_puts_it_last() {
+        use Destination::*;
+        assert_eq!(destination_order(true), [Current, New, Cancel]);
+        assert_eq!(destination_order(false), [Cancel, Current, New]);
+    }
+
+    /// #3144 (Windows 11, tester screenshot): the prompt was 600×400 around
+    /// four controls, Cancel came first and the checkbox sat on its own row.
+    #[gpui::test]
+    fn the_destination_prompt_is_as_tall_as_its_controls_with_the_checkbox_on_the_button_row(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        let opts = super::super::Opts {
+            vault: Some(PathBuf::from("/vaults/Obsidian Vaults")),
+            ..Default::default()
+        };
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            // A dropped source: the prompt shows its extra «window was closed» line.
+            let view = cx.new(|cx| VaultDestination::new(WeakEntity::new_invalid(), opts, cx));
+            Root::new(view, window, cx)
+        });
+        // Control: start at the old 600×400 minimum the prompt inherited.
+        visual.simulate_resize(size(px(600.), px(400.)));
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        let mut bounds =
+            |id: &'static str| visual.debug_bounds(id).unwrap_or_else(|| panic!("{id}"));
+        let question = bounds("vault-destination-question");
+        let remember = bounds("vault-destination-remember");
+        let [cancel, current, new] = [
+            "vault-destination-cancel",
+            "vault-destination-current",
+            "vault-destination-new",
+        ]
+        .map(bounds);
+
+        // Order follows the platform: on Windows Cancel is the rightmost.
+        let order = destination_order(cfg!(windows));
+        let mut by_x = [
+            (cancel.left(), Destination::Cancel),
+            (current.left(), Destination::Current),
+            (new.left(), Destination::New),
+        ];
+        by_x.sort_by_key(|(x, _)| *x);
+        assert_eq!(by_x.map(|(_, choice)| choice), order);
+
+        // The checkbox lines up with the text on the left and the buttons
+        // vertically, on their row.
+        assert_eq!(remember.left(), question.left());
+        for button in [cancel, current, new] {
+            assert!(remember.right() < button.left(), "{remember:?} {button:?}");
+            assert!(
+                (remember.center().y - button.center().y).abs() <= px(1.),
+                "checkbox {remember:?} off the button row {button:?}"
+            );
+        }
+
+        // The window ends one padding below the button row.
+        let size_now = visual.update(|window, _| window.bounds().size);
+        let bottom = cancel.bottom().max(current.bottom()).max(new.bottom());
+        assert_eq!(size_now.height, (bottom + DESTINATION_PADDING).ceil());
+        assert!(size_now.height < px(260.), "{size_now:?}");
+    }
 }
