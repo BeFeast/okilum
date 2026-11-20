@@ -54,7 +54,11 @@ BUDGETS = {
 }
 KEYS = ["open_ms", "control_open_ms", "open_over_control_ms", "document_stage_ms",
         "control_document_stage_ms", "first_frame_ms", "scroll.p50_ms", "scroll.p95_ms", "scroll.max_ms",
-        "jump.p50_ms", "jump.p95_ms", "jump.max_ms"]
+        "jump.p50_ms", "jump.p95_ms", "jump.max_ms",
+        # Text layout work per phase, counted by the TextView and its inline
+        # elements (#3154): extra layout passes show here, not in frame counts.
+        "layout.scroll.text_view_layouts", "layout.scroll.inline_layouts", "layout.scroll.inline_prepaints",
+        "layout.jump.text_view_layouts", "layout.jump.inline_layouts", "layout.jump.inline_prepaints"]
 PHASES = {
     "note_open_core_preparation": "worker_ms",
     "note_open_rendered": "since_open_ms",
@@ -183,6 +187,9 @@ def controls(data, counts, theme=None, appearance=None):
                             f"landed on {jump['top_block']}")
     if data["scroll"]["frames"] == 0 or data["jump"]["frames"] == 0:
         problems.append("no timed frames")
+    layout = data.get("layout") or {}
+    if any((layout.get(phase) or {}).get("inline_layouts", 0) == 0 for phase in ("scroll", "jump")):
+        problems.append("the layout counters did not count any inline layout")
     return problems
 
 

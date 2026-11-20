@@ -853,7 +853,7 @@ index 00000000..ebc05b4d
 +    }
 +}
 diff --git a/crates/base/src/text/inline.rs b/crates/base/src/text/inline.rs
-index 2d9cd551..36910e7c 100644
+index 2d9cd551..172c4747 100644
 --- a/crates/base/src/text/inline.rs
 +++ b/crates/base/src/text/inline.rs
 @@ -208,6 +208,205 @@ pub(super) fn text_runs(
@@ -1092,9 +1092,11 @@ index 2d9cd551..36910e7c 100644
      pub(super) fn search_source(mut self, state: &Arc<Mutex<InlineState>>, offset: usize) -> Self {
          self.search_segment = Arc::as_ptr(state) as usize;
          self.search_offset = offset;
-@@ -650,7 +861,22 @@ impl Element for Inline {
+@@ -649,8 +860,24 @@ impl Element for Inline {
+         window: &mut Window,
          cx: &mut App,
      ) -> (LayoutId, Self::RequestLayoutState) {
++        super::layout_counters::bump(&super::layout_counters::INLINE_LAYOUTS);
          let text_style = window.text_style();
 -        let runs = text_runs(&self.text, &text_style, &self.highlights);
 +        let runs = match self.decorations.bold {
@@ -1116,7 +1118,15 @@ index 2d9cd551..36910e7c 100644
  
          self.styled_text = StyledText::new(self.text.clone()).with_runs(runs);
          let (layout_id, _) =
-@@ -749,8 +975,35 @@ impl Element for Inline {
+@@ -669,6 +896,7 @@ impl Element for Inline {
+         window: &mut Window,
+         cx: &mut App,
+     ) -> Self::PrepaintState {
++        super::layout_counters::bump(&super::layout_counters::INLINE_PREPAINTS);
+         self.styled_text
+             .prepaint(id, inspector_id, bounds, &mut (), window, cx);
+ 
+@@ -749,8 +977,35 @@ impl Element for Inline {
  
          let text_layout =
              AlignedLayout::new(self.styled_text.layout().clone(), window.text_style().text_align);
@@ -1152,7 +1162,7 @@ index 2d9cd551..36910e7c 100644
  
          // One transient index serves selection and hit geometry for this paint.
          let geometry = OnceCell::new();
-@@ -2050,3 +2303,199 @@ mod font_presentation_regressions {
+@@ -2050,3 +2305,240 @@ mod font_presentation_regressions {
          );
      }
  }
@@ -1292,6 +1302,47 @@ index 2d9cd551..36910e7c 100644
 +    }
 +
 +    #[test]
++    fn bold_inside_a_bold_heading_adds_no_shaping() {
++        // `# Left **middle** right`: the H1 is bold, so the whole line is one
++        // font run. The Reader pipeline (span guard, then run colours) must
++        // leave its shaping untouched.
++        let text = "Left middle right";
++        let highlights = vec![(5..11, bold())];
++        let heading = TextStyle {
++            font_weight: FontWeight::BOLD,
++            ..Default::default()
++        };
++        let shaped = Arc::new(AtomicUsize::new(0));
++        let system = gpui::WindowTextSystem::new(Arc::new(gpui::TextSystem::new(Arc::new(
++            BoldFace(shaped.clone()),
++        ))));
++        let plain = text_runs(text, &heading, &highlights);
++        let spans = spans_on_font_boundaries(
++            &plain,
++            bold_gradient_spans(text, &highlights),
++            |font| system.resolve_font(font),
++        );
++        let painted = gradient_runs(plain.clone(), &spans);
++        let shape = |runs: &[gpui::TextRun]| {
++            system
++                .shape_text(text.into(), px(16.), runs, Some(px(160.)), None)
++                .unwrap()
++        };
++        let before = shape(&plain);
++        let calls = shaped.load(Ordering::Relaxed);
++        assert!(calls > 0, "positive control: the first layout really shapes");
++        let after = shape(&painted);
++        assert_eq!(shaped.load(Ordering::Relaxed), calls, "no new shaping in a heading");
++        assert!(std::ptr::eq::<gpui::WrappedLineLayout>(&**before[0], &**after[0]));
++
++        // Control: colouring `middle` without the guard splits the heading's
++        // single font run in three and shapes the line again.
++        let unguarded = shape(&gradient_runs(plain.clone(), &[5..11]));
++        assert!(shaped.load(Ordering::Relaxed) > calls, "the unguarded colour reshapes");
++        assert!(!std::ptr::eq::<gpui::WrappedLineLayout>(&**before[0], &**unguarded[0]));
++    }
++
++    #[test]
 +    fn bold_gradient_reuses_the_shaped_line_and_adds_no_shaping() {
 +        let text = "Plain words with a bold phrase inside, then plain words again";
 +        let bold_range = 19..30;
@@ -1409,7 +1460,7 @@ index e4b4da44..da71026d 100644
          self.layout.bounds()
      }
 diff --git a/crates/base/src/text/mod.rs b/crates/base/src/text/mod.rs
-index 6465f8ea..9076b680 100644
+index 6465f8ea..d67ce059 100644
 --- a/crates/base/src/text/mod.rs
 +++ b/crates/base/src/text/mod.rs
 @@ -1,3 +1,4 @@
@@ -1417,11 +1468,52 @@ index 6465f8ea..9076b680 100644
  mod document;
  mod format;
  mod inline;
-@@ -15,6 +16,7 @@ mod text_view;
+@@ -15,6 +16,48 @@ mod text_view;
  mod utils;
  
  use gpui::{App, ElementId, IntoElement, RenderOnce, SharedString, Window};
 +pub use decorations::*;
++
++/// Text layout work counters for performance probes (#3154): how many times
++/// a TextView and its inline text elements were laid out and prepainted.
++/// Counted independently of any probe's frame count; relaxed atomics only.
++pub mod layout_counters {
++    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
++
++    pub(crate) static TEXT_VIEW_LAYOUTS: AtomicU64 = AtomicU64::new(0);
++    pub(crate) static INLINE_LAYOUTS: AtomicU64 = AtomicU64::new(0);
++    pub(crate) static INLINE_PREPAINTS: AtomicU64 = AtomicU64::new(0);
++
++    pub(crate) fn bump(counter: &AtomicU64) {
++        counter.fetch_add(1, Relaxed);
++    }
++
++    /// Totals since launch; subtract two snapshots for one phase.
++    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++    pub struct LayoutCounts {
++        pub text_view_layouts: u64,
++        pub inline_layouts: u64,
++        pub inline_prepaints: u64,
++    }
++
++    impl LayoutCounts {
++        pub fn since(self, earlier: Self) -> Self {
++            Self {
++                text_view_layouts: self.text_view_layouts - earlier.text_view_layouts,
++                inline_layouts: self.inline_layouts - earlier.inline_layouts,
++                inline_prepaints: self.inline_prepaints - earlier.inline_prepaints,
++            }
++        }
++    }
++
++    pub fn snapshot() -> LayoutCounts {
++        LayoutCounts {
++            text_view_layouts: TEXT_VIEW_LAYOUTS.load(Relaxed),
++            inline_layouts: INLINE_LAYOUTS.load(Relaxed),
++            inline_prepaints: INLINE_PREPAINTS.load(Relaxed),
++        }
++    }
++}
  pub use markdown_ext::*;
  pub use node::{CodeBlock, TableData, TextMark};
  pub use state::*;
@@ -1612,6 +1704,18 @@ index 2ffede76..e560c804 100644
      /// The style refinement for code blocks.
      pub fn code_block(&self) -> &StyleRefinement {
          &self.code_block
+diff --git a/crates/base/src/text/text_view.rs b/crates/base/src/text/text_view.rs
+index 390f64aa..bc98dbac 100644
+--- a/crates/base/src/text/text_view.rs
++++ b/crates/base/src/text/text_view.rs
+@@ -768,6 +768,7 @@ impl Element for TextView {
+         window: &mut Window,
+         cx: &mut App,
+     ) -> (LayoutId, Self::RequestLayoutState) {
++        super::layout_counters::bump(&super::layout_counters::TEXT_VIEW_LAYOUTS);
+         let state = if let Some(state) = self.state.clone() {
+             state
+         } else {
 diff --git a/crates/component/src/text/compat.rs b/crates/component/src/text/compat.rs
 index 80436cc6..516a312d 100644
 --- a/crates/component/src/text/compat.rs

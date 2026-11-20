@@ -18,6 +18,8 @@ def run(**overrides):
         "scroll": {"frames": 240, "p50_ms": 5., "p95_ms": 8., "max_ms": 12.},
         "jump": {"frames": 32, "p50_ms": 5., "p95_ms": 9., "max_ms": 15.},
         "jumps": [{"outline_row": r, "target_block": r * 2, "top_block": r * 2, "landed_frame": 1} for r in (999, 1899, 499, 1499)],
+        "layout": {phase: {"text_view_layouts": frames, "inline_layouts": frames * 40, "inline_prepaints": frames * 40}
+                   for phase, frames in (("scroll", 240), ("jump", 32))},
     }
     data.update(overrides)
     return data
@@ -56,6 +58,11 @@ class LargeNote(unittest.TestCase):
             "landed on": run(jumps=[{"outline_row": 999, "target_block": 1998, "top_block": 1500,
                                         "landed_frame": None}] * 4),
             "no timed frames": run(jump={"frames": 0, "p50_ms": 0, "p95_ms": 0, "max_ms": 0}),
+            # #3154: a layout counter that never fired proves nothing.
+            "did not count": run(layout={"scroll": {"text_view_layouts": 0, "inline_layouts": 0,
+                                                    "inline_prepaints": 0},
+                                         "jump": {"text_view_layouts": 32, "inline_layouts": 1280,
+                                                  "inline_prepaints": 1280}}),
         }
         for needle, data in cases.items():
             with self.subTest(needle):

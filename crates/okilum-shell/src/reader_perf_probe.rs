@@ -8,6 +8,7 @@
 //! body's paint. It writes one JSON report and quits. Presentation and GPU time
 //! are not included.
 use gpui::{px, Pixels};
+use gpui_base::text::layout_counters::{self, LayoutCounts};
 use std::{path::PathBuf, time::Instant};
 
 /// Environment variable naming the JSON report the probe writes.
@@ -69,6 +70,11 @@ pub(crate) struct Probe {
     jumps: Vec<Jump>,
     /// (outline row, its target block, first frame with the block on top)
     pending_jump: Option<(usize, usize, Option<usize>)>,
+    /// Text layout work per phase, counted by the TextView and its inline
+    /// elements themselves (#3154), not by this probe's frame count.
+    phase_layout_start: LayoutCounts,
+    scroll_layout: LayoutCounts,
+    jump_layout: LayoutCounts,
 }
 
 impl Probe {
@@ -91,6 +97,9 @@ impl Probe {
             end_item: 0,
             jumps: Vec::new(),
             pending_jump: None,
+            phase_layout_start: LayoutCounts::default(),
+            scroll_layout: LayoutCounts::default(),
+            jump_layout: LayoutCounts::default(),
         }
     }
 
@@ -131,6 +140,7 @@ impl Probe {
                     return Step::ScrollBy(px(0.));
                 }
                 self.start_item = top;
+                self.phase_layout_start = layout_counters::snapshot();
                 self.phase = Phase::Scrolling(0);
                 Step::ScrollBy(STEP)
             }
@@ -141,6 +151,9 @@ impl Probe {
                     return Step::ScrollBy(STEP);
                 }
                 self.end_item = top;
+                let now = layout_counters::snapshot();
+                self.scroll_layout = now.since(self.phase_layout_start);
+                self.phase_layout_start = now;
                 self.phase = Phase::Jumping { jump: 0, frame: 0 };
                 self.jump(0, outline)
             }
@@ -171,6 +184,7 @@ impl Probe {
                     };
                     return self.jump(next, outline);
                 }
+                self.jump_layout = layout_counters::snapshot().since(self.phase_layout_start);
                 self.phase = Phase::Done;
                 Step::Finish
             }
@@ -207,6 +221,10 @@ impl Probe {
             "step_px": f32::from(STEP),
             "scroll": stats(&self.scroll_frames),
             "jump": stats(&self.jump_frames),
+            "layout": {
+                "scroll": counts(self.scroll_layout),
+                "jump": counts(self.jump_layout),
+            },
             "scroll_start_item": self.start_item,
             "scroll_end_item": self.end_item,
             "jumps": self.jumps.iter().map(|jump| serde_json::json!({
@@ -216,6 +234,14 @@ impl Probe {
         });
         std::fs::write(&self.output, serde_json::to_vec_pretty(&report)?)
     }
+}
+
+fn counts(counts: LayoutCounts) -> serde_json::Value {
+    serde_json::json!({
+        "text_view_layouts": counts.text_view_layouts,
+        "inline_layouts": counts.inline_layouts,
+        "inline_prepaints": counts.inline_prepaints,
+    })
 }
 
 fn stats(frames: &[f64]) -> serde_json::Value {
