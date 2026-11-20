@@ -10,6 +10,7 @@ use gpui::ElementId;
 use gpui::{px, rgb, svg, App, AssetSource, Hsla, SharedString, Styled, Svg};
 #[cfg(all(unix, feature = "brain"))]
 use gpui_component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
+use gpui_component::input::projection::TaskCheckAnimation;
 use gpui_component::{highlighter::HighlightTheme, Colorize as _, Theme};
 use okilum_shell::projects_picker;
 
@@ -589,6 +590,32 @@ pub fn reader_palette_current() -> ReaderPalette {
     .1
 }
 
+/// A theme's optional task checkbox animation (#3155): `motion.taskCheck`
+/// in its token file, `{"durationMs": 1..=600, "bounce": 0..=0.5}`. Absent, the
+/// box toggles with no motion. Live Preview runs it only on a click.
+fn task_check_slot(theme: ThemeId) -> Option<TaskCheckAnimation> {
+    let file: serde_json::Value =
+        serde_json::from_str(theme.tokens()?).expect("validated token file");
+    let slot = file.get("motion")?.get("taskCheck")?;
+    let duration = slot["durationMs"]
+        .as_u64()
+        .filter(|ms| (1..=600).contains(ms))
+        .unwrap_or_else(|| panic!("theme {} taskCheck.durationMs must be 1..=600", theme.key()));
+    let bounce = slot["bounce"]
+        .as_f64()
+        .filter(|bounce| (0. ..=0.5).contains(bounce))
+        .unwrap_or_else(|| panic!("theme {} taskCheck.bounce must be 0..=0.5", theme.key()));
+    Some(TaskCheckAnimation::new(
+        std::time::Duration::from_millis(duration),
+        bounce as f32,
+    ))
+}
+
+pub fn task_check_animation(theme: ThemeId) -> Option<TaskCheckAnimation> {
+    static SLOTS: OnceLock<Vec<Option<TaskCheckAnimation>>> = OnceLock::new();
+    SLOTS.get_or_init(|| ThemeId::ALL.map(task_check_slot).to_vec())[theme.index()]
+}
+
 pub fn palette(cx: &App) -> Palette {
     tokens(theme_id(cx), Theme::global(cx).is_dark()).0
 }
@@ -854,6 +881,14 @@ pub fn apply_theme(cx: &mut App) {
     let dark = Theme::global(cx).is_dark();
     APPLIED_DARK.store(dark, std::sync::atomic::Ordering::Relaxed);
     APPLIED_THEME.store(theme_id(cx).index(), std::sync::atomic::Ordering::Relaxed);
+    // Paint-only: editors read it at the next click, nothing re-parses.
+    match task_check_animation(theme_id(cx)) {
+        Some(animation) => cx.set_global(animation),
+        None if cx.has_global::<TaskCheckAnimation>() => {
+            cx.remove_global::<TaskCheckAnimation>();
+        }
+        None => {}
+    }
     let syntax = syntax_theme(theme_id(cx), dark);
     let t = Theme::global_mut(cx);
     t.highlight_theme = syntax;
@@ -1888,6 +1923,40 @@ mod tests {
             file["basis"].as_str().unwrap().contains("MIT"),
             "Obsidianite is credited"
         );
+    }
+
+    #[gpui::test]
+    fn issue3155_task_check_animation_follows_the_theme(cx: &mut gpui::TestAppContext) {
+        // Obsidianite's checkbox: a 300 ms bounce with the check drawn in.
+        let obsidianite = task_check_animation(ThemeId::Obsidianite).expect("slot filled");
+        assert_eq!(
+            obsidianite.duration(),
+            std::time::Duration::from_millis(300)
+        );
+        assert!(obsidianite.bounce() > 0. && obsidianite.bounce() <= 0.5);
+        for theme in ThemeId::ALL {
+            if theme != ThemeId::Obsidianite {
+                assert_eq!(
+                    task_check_animation(theme),
+                    None,
+                    "{} has no slot",
+                    theme.key()
+                );
+            }
+        }
+        cx.update(crate::test_init);
+        cx.update(|cx| {
+            for (theme, expected) in [
+                (ThemeId::Obsidianite, Some(obsidianite)),
+                (ThemeId::Graphite, None),
+                (ThemeId::Obsidianite, Some(obsidianite)),
+                (ThemeId::Okilum, None),
+            ] {
+                cx.set_global(ThemeChoice(theme));
+                apply_theme(cx);
+                assert_eq!(cx.try_global::<TaskCheckAnimation>().copied(), expected);
+            }
+        });
     }
 
     #[test]

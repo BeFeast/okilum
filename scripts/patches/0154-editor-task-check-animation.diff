@@ -1,0 +1,497 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+index 16c31524..8d52031b 100644
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -3130,6 +3130,17 @@ impl<M: InputModeKind> Element for TextElement<M> {
+         let mut cursor_row_y = None;
+ 
+         let mut painted_tasks = Vec::new();
++        // A toggle animation runs for its duration, then is dropped (#3155).
++        let task_animation = {
++            let slot = &self.state.read(cx).task_animation;
++            let running = slot.get().map(|running| (running, running.started.elapsed()));
++            let running = running.filter(|(running, elapsed)| *elapsed < running.spec.duration());
++            if running.is_none() {
++                slot.set(None);
++            }
++            running
++        };
++        let mut task_animated = false;
+         for (line_index, (line, &buffer_line)) in prepaint
+             .last_layout
+             .lines
+@@ -3161,8 +3172,10 @@ impl<M: InputModeKind> Element for TextElement<M> {
+                     let row_height = line_rows.row_height(row_index);
+                     let row_origin = p + point(x, row_top);
+                     if let Some(Some(paint)) = rows.get(row_index) {
+-                        painted_tasks.extend(paint.paint(row_origin, row_height,
+-                            content_width - x, editor_style.foreground, window, cx));
++                        let (tasks, animated) = paint.paint(row_origin, row_height,
++                            content_width - x, editor_style.foreground, task_animation, window, cx);
++                        painted_tasks.extend(tasks);
++                        task_animated |= animated;
+                     } else {
+                         let _ = row.paint(row_origin, row_height, align, align_width, window, cx);
+                     }
+@@ -3243,6 +3256,13 @@ impl<M: InputModeKind> Element for TextElement<M> {
+             });
+         }
+ 
++        // Next frame only while a toggled box is mid-animation (#3155); a
++        // projection that has not caught up yet repaints on its own.
++        if task_animated {
++            #[cfg(test)]
++            super::marker_paint::TASK_ANIMATION_FRAMES.with(|count| count.set(count.get() + 1));
++            window.request_animation_frame();
++        }
+         // Clicks toggle exactly the task boxes drawn here (S5, #1034).
+         *self.state.read(cx).painted_tasks.borrow_mut() =
+             Some((prepaint.last_layout.source_stamp, painted_tasks));
+diff --git a/crates/base/src/input/base/marker_paint.rs b/crates/base/src/input/base/marker_paint.rs
+index c0ce6186..7adcf6b5 100644
+--- a/crates/base/src/input/base/marker_paint.rs
++++ b/crates/base/src/input/base/marker_paint.rs
+@@ -46,6 +46,12 @@ thread_local! {
+     static SOURCE_INDEX_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+ }
+ 
++#[cfg(test)]
++thread_local! {
++    // Frames a running task toggle animation requested (#3155).
++    pub(super) static TASK_ANIMATION_FRAMES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
++}
++
+ fn source_boundaries(text: &str) -> Vec<usize> {
+     #[cfg(test)]
+     SOURCE_INDEX_BUILDS.with(|count| count.set(count.get() + 1));
+@@ -317,6 +323,51 @@ pub(super) fn code_rows(layout: &LastLayout, validated: &MarkerSource) -> Vec<Ve
+ /// and the window bounds of the drawn box (the click target).
+ pub(super) type PaintedTask = (Range<usize>, bool, Bounds<Pixels>);
+ 
++/// A task box a click just toggled (#3155): its marker's source start, the
++/// state it was toggled to and when. Paint animates only a box at `at` that
++/// already shows `checked`; the hit bounds never change.
++#[derive(Clone, Copy, Debug)]
++pub(super) struct TaskAnimation {
++    pub(super) at: usize,
++    pub(super) checked: bool,
++    pub(super) started: std::time::Instant,
++    pub(super) spec: crate::input::projection::TaskCheckAnimation,
++}
++
++impl TaskAnimation {
++    /// The frame for a box at `at` showing `checked`, `elapsed` in; else None.
++    fn frame_for(
++        &self,
++        at: usize,
++        checked: bool,
++        elapsed: std::time::Duration,
++    ) -> Option<crate::input::projection::TaskCheckFrame> {
++        (self.at == at && self.checked == checked)
++            .then(|| self.spec.frame(elapsed, checked))
++            .flatten()
++    }
++}
++
++/// The checkmark in box-side units, drawn from its short leg to its tip.
++const CHECK: [(f32, f32); 3] = [(0.24, 0.52), (0.43, 0.72), (0.78, 0.3)];
++
++/// The checkmark's points with only `stroke` (0..=1) of its length drawn, and
++/// how many of them are used. No allocation: this runs in paint.
++fn check_points(stroke: f32) -> ([(f32, f32); 3], usize) {
++    if stroke >= 1. {
++        return (CHECK, 3);
++    }
++    let len = |a: (f32, f32), b: (f32, f32)| (b.0 - a.0).hypot(b.1 - a.1);
++    let legs = [len(CHECK[0], CHECK[1]), len(CHECK[1], CHECK[2])];
++    let left = stroke.max(0.) * (legs[0] + legs[1]);
++    let along = |a: (f32, f32), b: (f32, f32), f: f32| (a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f);
++    if left < legs[0] {
++        ([CHECK[0], along(CHECK[0], CHECK[1], left / legs[0]), CHECK[2]], 2)
++    } else {
++        ([CHECK[0], CHECK[1], along(CHECK[1], CHECK[2], (left - legs[0]) / legs[1])], 3)
++    }
++}
++
+ impl RowPaint {
+     /// Expose precisely the task shapes admitted by projection validation.
+     pub(super) fn task_accessibility_nodes(
+@@ -337,17 +388,20 @@ impl RowPaint {
+         })
+     }
+ 
+-    /// Paint the row's replacement markers; returns the task boxes it drew.
++    /// Paint the row's replacement markers; returns the task boxes it drew
++    /// and whether one of them drew a frame of `animation` (#3155).
+     pub(super) fn paint(
+         &self,
+         origin: Point<Pixels>,
+         height: Pixels,
+         content_width: Pixels,
+         color: Hsla,
++        animation: Option<(TaskAnimation, std::time::Duration)>,
+         window: &mut Window,
+         cx: &mut App,
+-    ) -> Vec<PaintedTask> {
++    ) -> (Vec<PaintedTask>, bool) {
+         let mut tasks = Vec::new();
++        let mut animated = false;
+         match &self.foreground {
+             Foreground::Pieces(pieces) => {
+                 for piece in pieces {
+@@ -428,6 +482,23 @@ impl RowPaint {
+                             size(side, side),
+                         );
+                         tasks.push((shape.source.clone(), checked, b));
++                        let frame = animation.and_then(|(running, elapsed)| {
++                            running.frame_for(shape.source.start, checked, elapsed)
++                        });
++                        animated |= frame.is_some();
++                        // A running toggle scales the drawn box about its centre
++                        // and draws part of the check; the click target stays `b`.
++                        let (b, side, stroke) = match frame {
++                            Some(frame) => {
++                                let drawn = side * frame.scale;
++                                (
++                                    Bounds::centered_at(b.center(), size(drawn, drawn)),
++                                    drawn,
++                                    frame.stroke,
++                                )
++                            }
++                            None => (b, side, if checked { 1. } else { 0. }),
++                        };
+                         window.paint_quad(quad(
+                             b,
+                             side * 0.2,
+@@ -436,11 +507,13 @@ impl RowPaint {
+                             color.opacity(if checked { 0.9 } else { 0.6 }),
+                             BorderStyle::default(),
+                         ));
+-                        if checked {
++                        if stroke > 0.02 {
+                             let mut check = gpui::PathBuilder::stroke(px(1.6));
+-                            check.move_to(b.origin + point(side * 0.24, side * 0.52));
+-                            check.line_to(b.origin + point(side * 0.43, side * 0.72));
+-                            check.line_to(b.origin + point(side * 0.78, side * 0.3));
++                            let (points, used) = check_points(stroke);
++                            for (i, &(x, y)) in points[..used].iter().enumerate() {
++                                let at = b.origin + point(side * x, side * y);
++                                if i == 0 { check.move_to(at) } else { check.line_to(at) }
++                            }
+                             if let Ok(path) = check.build() {
+                                 window.paint_path(path, color);
+                             }
+@@ -465,7 +538,7 @@ impl RowPaint {
+                 });
+             }
+         }
+-        tasks
++        (tasks, animated)
+     }
+ }
+ 
+@@ -607,6 +680,52 @@ mod tests {
+         assert_eq!(empty.task_accessibility_nodes().count(), 0);
+     }
+ 
++    /// #3155: the bounce peaks and settles, the check draws in on check and
++    /// out on uncheck, and the animation ends at its duration.
++    #[test]
++    fn task_check_animation_bounces_draws_and_ends() {
++        let spec = TaskCheckAnimation::new(std::time::Duration::from_millis(300), 0.2);
++        let at = |ms| spec.frame(std::time::Duration::from_millis(ms), true);
++        let start = at(0).unwrap();
++        assert_eq!((start.scale, start.stroke), (1., 0.));
++        let peak = at(90).unwrap();
++        assert!((peak.scale - 1.2).abs() < 1e-4, "{peak:?}");
++        assert_eq!(at(180).unwrap().scale, 1., "the bounce settles first");
++        assert!(at(150).unwrap().stroke > at(60).unwrap().stroke);
++        assert!(at(299).unwrap().stroke > 0.99);
++        assert_eq!(at(300), None, "ends at its duration");
++        assert_eq!(at(5000), None);
++        let off = spec.frame(std::time::Duration::from_millis(0), false).unwrap();
++        assert_eq!(off.stroke, 1., "unchecking draws the check out");
++        assert!(spec.frame(std::time::Duration::from_millis(299), false).unwrap().stroke < 0.01);
++        assert_eq!(TaskCheckAnimation::new(std::time::Duration::ZERO, 0.2).frame(Default::default(), true), None);
++        assert_eq!(TaskCheckAnimation::new(std::time::Duration::from_millis(1), -1.).bounce(), 0.);
++
++        let running = TaskAnimation { at: 4, checked: true, started: std::time::Instant::now(), spec };
++        let mid = std::time::Duration::from_millis(100);
++        assert!(running.frame_for(4, true, mid).is_some());
++        assert!(running.frame_for(4, false, mid).is_none(), "a box not yet repainted");
++        assert!(running.frame_for(5, true, mid).is_none(), "another box");
++    }
++
++    #[test]
++    fn check_points_draw_a_prefix_of_the_checkmark() {
++        let drawn = |stroke| {
++            let (points, used) = check_points(stroke);
++            points[..used].to_vec()
++        };
++        assert_eq!(drawn(1.), CHECK.to_vec(), "a checked box draws the whole mark");
++        assert_eq!(drawn(0.), vec![CHECK[0], CHECK[0]]);
++        let half = drawn(0.5);
++        // The short leg is about a third of the length: half reaches the long leg.
++        assert_eq!(half.len(), 3);
++        assert_eq!(half[1], CHECK[1]);
++        assert!(half[2].0 < CHECK[2].0 && half[2].0 > CHECK[1].0);
++        let start = drawn(0.1);
++        assert_eq!(start.len(), 2);
++        assert!(start[1].0 < CHECK[1].0);
++    }
++
+     struct Fixture {
+         source: SourceSnapshot,
+         markers: Vec<ProjectionMarker>,
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index 76133304..536c2f2e 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -416,6 +416,9 @@ pub struct InputBaseState<M: InputModeKind> {
+     /// (source range, checked, window bounds of the box).
+     pub(super) painted_tasks:
+         std::cell::RefCell<Option<(SourceStamp, Vec<super::marker_paint::PaintedTask>)>>,
++    /// The task box a click just toggled, animating while the theme has a
++    /// [`crate::input::projection::TaskCheckAnimation`] (#3155).
++    pub(super) task_animation: std::cell::Cell<Option<super::marker_paint::TaskAnimation>>,
+     /// Selection to record as "after" for the next edit, so redo restores it.
+     pending_selection_after: Option<Selection>,
+     /// Right-align right-to-left paragraphs by their first strong character.
+@@ -909,6 +912,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             projection: ProjectionSession::default(),
+             marker_source_cache: Default::default(),
+             painted_tasks: Default::default(),
++            task_animation: Default::default(),
+             pending_selection_after: None,
+             paragraph_direction: false,
+             direction_exempt: Vec::new(),
+@@ -2927,6 +2931,17 @@ impl<M: InputModeKind> InputBaseState<M> {
+                 && stamp == self.source_stamp()
+                 && bounds.dilate(px(2.)).contains(&event.position)
+             {
++                // The box animates to its new state if the theme asks (#3155).
++                self.task_animation.set(
++                    cx.try_global::<crate::input::projection::TaskCheckAnimation>()
++                        .filter(|_| !cx.reduce_motion())
++                        .map(|spec| super::marker_paint::TaskAnimation {
++                            at: range.start,
++                            checked: !checked,
++                            started: std::time::Instant::now(),
++                            spec: *spec,
++                        }),
++                );
+                 cx.emit(crate::input::projection::MarkerClick {
+                     stamp,
+                     range: crate::input::projection::SourceByte(range.start)
+@@ -6696,6 +6711,149 @@ mod tests {
+         assert_eq!(clicks.get(), 1, "a release outside the input cancels");
+     }
+ 
++    /// Identity projection with a task marker over each `- [ ]` / `- [x]`.
++    struct TaskMarkerProvider;
++    struct TaskMarkerProjection(
++        super::super::projection::SourceSnapshot,
++        Vec<super::super::projection::ProjectionMarker>,
++    );
++    impl ProjectionProvider for TaskMarkerProvider {
++        fn compose(
++            &self,
++            source: &super::super::projection::SourceSnapshot,
++            _: &ActiveSource,
++        ) -> Option<Arc<dyn super::super::projection::SourceProjection>> {
++            let text = source.text.to_string();
++            let mut markers = Vec::new();
++            let mut start = 0;
++            for line in text.split_inclusive('\n') {
++                if line.starts_with("- [ ] ") || line.starts_with("- [x] ") {
++                    let range = SourceByte(start)..SourceByte(start + 5);
++                    markers.push(super::super::projection::ProjectionMarker {
++                        scope: range.clone(),
++                        range,
++                        kind: super::super::projection::MarkerKind::Task {
++                            checked: line.as_bytes()[3] == b'x',
++                        },
++                    });
++                }
++                start += line.len();
++            }
++            Some(Arc::new(TaskMarkerProjection(source.clone(), markers)))
++        }
++    }
++    impl super::super::projection::SourceProjection for TaskMarkerProjection {
++        fn source(&self) -> &super::super::projection::SourceSnapshot {
++            &self.0
++        }
++        fn text(&self) -> &str {
++            &self.0.text
++        }
++        fn styles(&self) -> &[super::super::projection::ProjectionStyle] {
++            &[]
++        }
++        fn markers(&self) -> &[super::super::projection::ProjectionMarker] {
++            &self.1
++        }
++        fn marker_scope_is_raw(&self, _: &Range<SourceByte>) -> bool {
++            false
++        }
++        fn to_projected(
++            &self,
++            source: SourceByte,
++            _: ConcealBias,
++        ) -> Option<super::super::projection::ProjectedByte> {
++            (source.0 <= self.0.text.len()).then_some(super::super::projection::ProjectedByte(source.0))
++        }
++        fn to_source(
++            &self,
++            display: super::super::projection::ProjectedByte,
++            _: ConcealBias,
++        ) -> Option<SourceByte> {
++            (display.0 <= self.0.text.len()).then_some(SourceByte(display.0))
++        }
++    }
++
++    /// #3155: a click on a painted task box runs the theme's toggle animation:
++    /// the toggled box requests frames while it runs and none after it ends.
++    /// No theme animation or reduce motion: no animation at all.
++    #[gpui::test]
++    fn task_click_animates_only_with_a_theme_animation_and_stops(cx: &mut TestAppContext) {
++        use super::super::marker_paint::TASK_ANIMATION_FRAMES;
++        use crate::input::projection::TaskCheckAnimation;
++        const TEXT: &str = "- [ ] task\nnext\n";
++        let frames = || TASK_ANIMATION_FRAMES.with(|count| count.get());
++        // (theme animation, reduce motion, expect an animation)
++        for (theme, reduce, animates) in [(true, false, true), (false, false, false), (true, true, false)] {
++            cx.update(crate::init);
++            cx.update(|cx| {
++                cx.set_reduce_motion(reduce);
++                if theme {
++                    cx.set_global(TaskCheckAnimation::new(std::time::Duration::from_millis(400), 0.2));
++                } else if cx.has_global::<TaskCheckAnimation>() {
++                    cx.remove_global::<TaskCheckAnimation>();
++                }
++            });
++            let view = InputView::build_editor(cx, |state| {
++                state
++                    .folding(false)
++                    .searchable(false)
++                    .line_number(false)
++                    .wrapping_indent(super::super::WrappingIndent::None)
++            });
++            let mut v = VisualTestContext::from_window(view.window_handle.into(), cx);
++            v.update(|window, cx| {
++                view.input.update(cx, |state, cx| {
++                    state.set_value(TEXT, window, cx);
++                    state.set_projection_provider(Some(Arc::new(TaskMarkerProvider)), cx);
++                    window.activate_window();
++                    state.focus(window, cx);
++                    state.set_selected_range(TEXT.len()..TEXT.len(), cx);
++                })
++            });
++            let clicks = std::rc::Rc::new(std::cell::Cell::new(0));
++            let _watch = v.update(|_, cx| {
++                let clicks = clicks.clone();
++                cx.subscribe(&view.input, move |_, _: &crate::input::projection::MarkerClick, _| {
++                    clicks.set(clicks.get() + 1)
++                })
++            });
++            v.run_until_parked();
++            let inside = v.update(|_, cx| {
++                let state = view.input.read(cx);
++                let painted = state.painted_tasks.borrow();
++                let (_, tasks) = painted.as_ref().expect("a painted frame");
++                assert_eq!(tasks.len(), 1, "positive control: the task box is painted");
++                tasks[0].2.center()
++            });
++            let before = frames();
++            v.simulate_mouse_down(inside, MouseButton::Left, Default::default());
++            v.simulate_mouse_up(inside, MouseButton::Left, Default::default());
++            assert_eq!(clicks.get(), 1, "positive control: the click hit the box");
++            // The app's edit for the click, as Live Preview makes it.
++            v.update(|window, cx| {
++                view.input.update(cx, |state, cx| state.replace_source_range(3..4, "x", window, cx));
++                window.refresh();
++            });
++            v.run_until_parked();
++            let running = frames() - before;
++            if animates {
++                assert!(running > 0, "the toggled box animates");
++                std::thread::sleep(std::time::Duration::from_millis(450));
++                let ended = frames();
++                v.update(|window, _| window.refresh());
++                v.run_until_parked();
++                v.update(|window, _| window.refresh());
++                v.run_until_parked();
++                assert_eq!(frames(), ended, "no frames after the animation ended");
++                v.update(|_, cx| assert!(view.input.read(cx).task_animation.get().is_none()));
++            } else {
++                assert_eq!(running, 0, "theme {theme} reduce {reduce}: no animation");
++                v.update(|_, cx| assert!(view.input.read(cx).task_animation.get().is_none()));
++            }
++        }
++    }
++
+     #[gpui::test]
+     fn projection_mouse_lease_releases_after_multi_click_window(cx: &mut TestAppContext) {
+         cx.update(crate::init);
+diff --git a/crates/base/src/input/projection.rs b/crates/base/src/input/projection.rs
+index e72cb01b..96d4a6fa 100644
+--- a/crates/base/src/input/projection.rs
++++ b/crates/base/src/input/projection.rs
+@@ -122,6 +122,57 @@ pub enum MarkerKind {
+     Task { checked: bool },
+ }
+ 
++/// A theme's task check/uncheck animation (#3155), installed by the app as a
++/// GPUI global; no global, no animation. It runs only after a click toggles a
++/// painted box, never with reduce motion, and only repaints: the box bounces
++/// and the checkmark draws in (or out). Frames are requested while it runs.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct TaskCheckAnimation {
++    duration: std::time::Duration,
++    bounce: f32,
++}
++
++impl gpui::Global for TaskCheckAnimation {}
++
++/// One frame of a [`TaskCheckAnimation`].
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub(crate) struct TaskCheckFrame {
++    /// Scale of the box around its centre.
++    pub(crate) scale: f32,
++    /// Share of the checkmark drawn, `0.` none to `1.` whole.
++    pub(crate) stroke: f32,
++}
++
++impl TaskCheckAnimation {
++    /// `bounce` is the peak extra scale of the box: `0.2` = 120 % at the top.
++    pub fn new(duration: std::time::Duration, bounce: f32) -> Self {
++        Self { duration, bounce: bounce.max(0.) }
++    }
++
++    pub fn duration(&self) -> std::time::Duration {
++        self.duration
++    }
++
++    pub fn bounce(&self) -> f32 {
++        self.bounce
++    }
++
++    /// The frame `elapsed` after a toggle to `checked`; `None` once it ended.
++    pub(crate) fn frame(&self, elapsed: std::time::Duration, checked: bool) -> Option<TaskCheckFrame> {
++        if self.duration.is_zero() || elapsed >= self.duration {
++            return None;
++        }
++        let t = elapsed.as_secs_f32() / self.duration.as_secs_f32();
++        // The bounce takes the first 60 %, the stroke eases out over all of it.
++        let bounce = (std::f32::consts::PI * (t / 0.6).min(1.)).sin();
++        let drawn = 1. - (1. - t).powi(3);
++        Some(TaskCheckFrame {
++            scale: 1. + self.bounce * bounce,
++            stroke: if checked { drawn } else { 1. - drawn },
++        })
++    }
++}
++
+ /// A plain left click on a painted widget marker (a task checkbox). The editor
+ /// consumes the click, so the caret and selection stay where they were. The
+ /// app decides the edit; compare the stamp before using the range.
