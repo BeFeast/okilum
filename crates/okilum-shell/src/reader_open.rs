@@ -1419,48 +1419,12 @@ impl VaultDestination {
 }
 impl Render for VaultDestination {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Pre-#3144 layout, with selectors added so the test can measure it.
         let source_is_open = self.source_is_open(cx);
-        let buttons = destination_order(cfg!(windows)).map(|choice| match choice {
-            Destination::Cancel => Button::new("vault-destination-cancel")
-                .debug_selector(|| "vault-destination-cancel".into())
-                .label("Cancel")
-                .on_click(|_, window, _| window.remove_window()),
-            Destination::Current => Button::new("vault-destination-current")
-                .debug_selector(|| "vault-destination-current".into())
-                .label("In this window")
-                .disabled(!source_is_open)
-                .on_click(cx.listener(|this, _, window, cx| this.answer(true, window, cx))),
-            Destination::New => Button::new("vault-destination-new")
-                .debug_selector(|| "vault-destination-new".into())
-                .label("In a new window")
-                .on_click(cx.listener(|this, _, window, cx| this.answer(false, window, cx))),
-        });
         v_flex()
-            .p(DESTINATION_PADDING)
+            .p_4()
             .gap_3()
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(|_, event: &KeyDownEvent, window, _| {
-                if event.keystroke.key == "escape" {
-                    window.remove_window();
-                }
-            }))
-            // The window is as tall as its controls (#3144): a closed source
-            // window adds a line, a long vault name may wrap.
-            .on_children_prepainted(move |children, window, _| {
-                let Some(bottom) = children.iter().map(|child| child.bottom()).max() else {
-                    return;
-                };
-                let height = (bottom + DESTINATION_PADDING).ceil();
-                let viewport = window.viewport_size();
-                if window.is_maximized()
-                    || window.is_fullscreen()
-                    || (height - viewport.height).abs() < px(1.)
-                {
-                    return;
-                }
-                // Asynchronous on Windows; the next frame sees the new size.
-                window.resize(size(viewport.width, height));
-            })
             .child(TitleBar::new().child("Open another vault"))
             .when(!source_is_open, |view| {
                 view.child(
@@ -1480,30 +1444,34 @@ impl Render for VaultDestination {
                     )),
             )
             .child(
-                // The checkbox shares the button row, on the left as in
-                // Windows' «Don't ask again» prompts (#3144).
+                div()
+                    .debug_selector(|| "vault-destination-remember".into())
+                    .child(
+                        gpui_component::checkbox::Checkbox::new("remember-vault-destination")
+                            .label("Remember my choice")
+                            .checked(self.remember),
+                    ),
+            )
+            .child(
                 h_flex()
                     .gap_2()
-                    .items_center()
+                    .justify_end()
                     .child(
-                        div()
-                            .debug_selector(|| "vault-destination-remember".into())
-                            .child(
-                                gpui_component::checkbox::Checkbox::new(
-                                    "remember-vault-destination",
-                                )
-                                .label("Remember my choice")
-                                .checked(self.remember)
-                                .on_click(cx.listener(
-                                    |this, value: &bool, _, cx| {
-                                        this.remember = *value;
-                                        cx.notify();
-                                    },
-                                )),
-                            ),
+                        Button::new("vault-destination-cancel")
+                            .debug_selector(|| "vault-destination-cancel".into())
+                            .label("Cancel"),
                     )
-                    .child(div().flex_1())
-                    .children(buttons),
+                    .child(
+                        Button::new("vault-destination-current")
+                            .debug_selector(|| "vault-destination-current".into())
+                            .label("In this window")
+                            .disabled(!source_is_open),
+                    )
+                    .child(
+                        Button::new("vault-destination-new")
+                            .debug_selector(|| "vault-destination-new".into())
+                            .label("In a new window"),
+                    ),
             )
     }
 }
