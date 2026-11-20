@@ -96,7 +96,7 @@ two seconds of resolution. Title: 2048 bytes; description/enum: 8192 bytes each.
 Document validation: 4 MiB, 100000 evaluation steps, depth 64, 100 violations,
 10000 field projections, 4 MiB of projected field text, two seconds of evaluation.
 Bounds are deliberately lower than the ordinary viewer limits. Resource limits
-never produce a valid verdict. The existing 64 MiB preview and 4 MiB editing
+never produce a valid verdict. The existing 64 MiB preview and JSON editing
 limits are unchanged. Tree explanation text is capped at 4 MiB with a notice;
 ordinary tree rows and keys remain available beyond that cap.
 

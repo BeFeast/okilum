@@ -987,7 +987,7 @@ mod tests {
             let reader = readers[0].read(cx);
             assert!(reader.document_ready(), "positive control: document opened");
             assert_eq!(reader.vault_root, folder, "rooted at A, not at B");
-            assert_eq!(reader.current_rel, "B/C.md");
+            assert_eq!(reader.pane.current_rel, "B/C.md");
             assert!(reader.single_file, "still not a vault");
         });
     }

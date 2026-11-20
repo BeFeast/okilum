@@ -18,6 +18,11 @@ def run(**overrides):
         "scroll": {"frames": 240, "p50_ms": 5., "p95_ms": 8., "max_ms": 12.},
         "jump": {"frames": 32, "p50_ms": 5., "p95_ms": 9., "max_ms": 15.},
         "jumps": [{"outline_row": r, "target_block": r * 2, "top_block": r * 2, "landed_frame": 1} for r in (999, 1899, 499, 1499)],
+        "layout": {phase: {"text_view_layouts": frames, "inline_layouts": frames * 40, "inline_prepaints": frames * 40}
+                   for phase, frames in (("scroll", 240), ("jump", 32))},
+        "timed": {"input_steps": 120, "interval_ms": 16, "settle_ms": 1000,
+                  "frame": {"frames": 121, "mean_ms": 5., "p50_ms": 5., "p95_ms": 8., "max_ms": 12.},
+                  "layout": {"text_view_layouts": 121, "inline_layouts": 2400, "inline_prepaints": 2200}},
     }
     data.update(overrides)
     return data
@@ -56,6 +61,13 @@ class LargeNote(unittest.TestCase):
             "landed on": run(jumps=[{"outline_row": 999, "target_block": 1998, "top_block": 1500,
                                         "landed_frame": None}] * 4),
             "no timed frames": run(jump={"frames": 0, "p50_ms": 0, "p95_ms": 0, "max_ms": 0}),
+            # #3154: a timed phase that painted nothing proves nothing.
+            "timed phase": run(timed={"frame": {"frames": 0}, "layout": {"inline_layouts": 0}}),
+            # #3154: a layout counter that never fired proves nothing.
+            "did not count": run(layout={"scroll": {"text_view_layouts": 0, "inline_layouts": 0,
+                                                    "inline_prepaints": 0},
+                                         "jump": {"text_view_layouts": 32, "inline_layouts": 1280,
+                                                  "inline_prepaints": 1280}}),
         }
         for needle, data in cases.items():
             with self.subTest(needle):
@@ -71,6 +83,28 @@ class LargeNote(unittest.TestCase):
         self.assertEqual(summary["over"], ["open_ms", "open_over_control_ms"])
         self.assertIn("OVER", table)
 
+
+    def test_code_note_is_pinned_fenced_code_under_headings(self):
+        data, counts = fixture.code_note()
+        self.assertEqual(hashlib.sha256(data).hexdigest(), fixture.CODE_NOTE_SHA256)
+        self.assertEqual(counts["lines"], 10_000)
+        self.assertEqual(data.count(b"\n```rust\n") + data.count(b"\n```python\n")
+                         + data.count(b"\n```javascript\n") + data.count(b"\n```json\n"), counts["code_blocks"])
+        self.assertGreater(counts["code_blocks"], 400)
+        self.assertEqual(data.count(b"\n## ") + 1, counts["headings"])
+        with tempfile.TemporaryDirectory() as work:
+            fixture.write(Path(work) / "v", check=True)
+            self.assertEqual((Path(work) / "v" / fixture.CODE_NOTE).read_bytes(), data)
+
+    def test_controls_reject_a_run_in_another_theme_or_mode(self):
+        counts = fixture.note()[1]
+        drawn = run(theme={"key": "obsidianite", "dark": True, "syntax": "Okilum Obsidianite dark"})
+        self.assertEqual(bench.controls(drawn, counts, theme="obsidianite", appearance="dark"), [])
+        self.assertTrue(any("theme" in p for p in bench.controls(drawn, counts, theme="graphite")))
+        self.assertTrue(any("dark" in p for p in bench.controls(drawn, counts, appearance="light")))
+        # An older binary reports no theme: a themed run cannot pass on it.
+        self.assertTrue(bench.controls(run(), counts, theme="graphite"))
+        self.assertEqual(bench.ui_state("graphite", "dark"), {"version": 1, "theme": "graphite", "appearance": "dark"})
 
     def test_document_stage_needs_both_diagnostics(self):
         self.assertEqual(bench.document_stage({"first_event_received": 1000., "document_first_paint": 1250.}), 250.)

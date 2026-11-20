@@ -34,3 +34,4 @@ __pycache__/
 /inbox/target/
 
 /web/inbox/node_modules/
+/web/excalidraw-editor/node_modules/

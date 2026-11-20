@@ -49,6 +49,9 @@ use uuid::Uuid;
 const LIFETIME: u64 = 3600;
 const PAIRING_REPLY_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_PEERS: usize = 64;
+/// A removed computer cannot invite; it comes back by an invitation from a
+/// computer that still syncs the vault (#3079).
+const REMOVED_INVITER: &str = "This computer was removed from Sync. To join again, accept a new invitation from a computer that still syncs the vault";
 
 mod overview;
 pub use overview::{ComputerOverview, Overview, VaultOverview};
@@ -108,6 +111,20 @@ struct Request {
     public: Vec<u8>,
     #[serde(default)]
     syncthing_device: Option<String>,
+    /// Removals of this computer it applied, so the approval also closes
+    /// removals the inviter has not received yet (#3079).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    removals: Vec<Uuid>,
+    /// The highest admission/removal counter of itself this computer knows,
+    /// so its approval is minted above it (#3079).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    high_water: u64,
+    /// The vaults each of `removals` covered on this computer (#3079).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    removal_vaults: BTreeMap<Uuid, std::collections::BTreeSet<String>>,
+}
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 impl Request {
     fn validate(&self, signer: &[u8]) -> Result<()> {
@@ -115,6 +132,21 @@ impl Request {
         ensure!(
             !self.id.is_nil() && signer.len() == 32 && self.public == signer,
             "request identity proof differs"
+        );
+        ensure!(
+            self.removals.len() <= 1024
+                && self.high_water < removal::MAX_EPOCH
+                && self.removal_vaults.len() <= 1024
+                && self
+                    .removal_vaults
+                    .keys()
+                    .all(|id| self.removals.contains(id))
+                && self
+                    .removal_vaults
+                    .values()
+                    .all(|vaults| vaults.len() <= 256 && vaults.iter().all(|v| v.len() <= 128))
+                && (self.removals.is_empty() || self.syncthing_device.is_some()),
+            "invalid removal history in pairing request"
         );
         if let Some(device) = &self.syncthing_device {
             ensure!(
@@ -160,6 +192,18 @@ struct Database {
     revoked_peers: BTreeMap<Uuid, Paired>,
     #[serde(default)]
     removals: Vec<removal::Removal>,
+    /// A non-owner's ask that the vault owner remove a computer (#3079).
+    /// It changes nothing here until the owner records the removal.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    removal_requests: Vec<removal::RemovalRequest>,
+    /// Admission epoch per Syncthing device: raised by the vault owner's
+    /// readmission (#3079); removals from an older epoch never take effect.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    admissions: BTreeMap<String, removal::Epoch>,
+    /// Per vault, the admission counter that may close a removal of that
+    /// vault. An owner of vault A does not cover vault B (#3079).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    admission_vaults: BTreeMap<String, BTreeMap<String, u64>>,
     seed: [u8; 32],
     name: String,
     endpoint: Option<SocketAddr>,
@@ -180,6 +224,9 @@ struct Database {
 }
 #[cfg(all(test, any(target_os = "linux", target_os = "macos", windows)))]
 type InspectionHook = Arc<dyn Fn(Uuid) + Send + Sync>;
+/// Test-only barrier inside removal application (#3079).
+#[cfg(test)]
+type RemovalHook = Arc<dyn Fn(&'static str, Uuid) + Send + Sync>;
 
 struct Shared {
     policy_revisions: Mutex<BTreeMap<PathBuf, String>>,
@@ -197,6 +244,12 @@ struct Shared {
     access: okilum_sync::NetworkAccess,
     observation_generation: Uuid,
     transfer_lock: Mutex<()>,
+    /// Serializes each removal effect (preimage, PATCH, revocation) with
+    /// closing that removal by readmission (#3079): once a close is saved, no
+    /// further effect of the closed removal starts.
+    removal_effects: Mutex<()>,
+    #[cfg(test)]
+    removal_hook: Mutex<Option<RemovalHook>>,
     connection_watch: Mutex<addresses::ConnectionWatch>,
     /// Invitation whose approval reply this process has written to the joiner.
     /// In memory only; a headless inviter waits on it before exiting.
@@ -246,8 +299,25 @@ enum Operation {
     PollRemovals {},
     AcknowledgeRemoval {
         id: Uuid,
+        /// The version acknowledged: closed by readmission or not (#3079).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        superseded: bool,
     },
     RemoveComputer {
+        id: Uuid,
+        device: String,
+        vaults: std::collections::BTreeSet<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        superseded: bool,
+        /// Removed admission epoch, and the sender's current one (#3079).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        epoch: Option<removal::Epoch>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        admission: Option<removal::Epoch>,
+    },
+    /// A non-owner asks the vault owner to remove `device` from `vaults`.
+    /// Nothing is removed until the owner records its own decision (#3079).
+    RequestRemoval {
         id: Uuid,
         device: String,
         vaults: std::collections::BTreeSet<String>,
@@ -304,6 +374,12 @@ enum Reply {
     Approved {
         paired: Paired,
         catalog: Vec<Vault>,
+        /// Removals of the joining computer this approval closed (#3079).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        readmitted: Vec<removal::Closed>,
+        /// The joining computer's current admission epoch on the inviter.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        admission: Option<removal::Epoch>,
     },
     Catalog {
         catalog: Vec<Vault>,
@@ -365,6 +441,9 @@ impl Controller {
                 local_removed: false,
                 revoked_peers: BTreeMap::new(),
                 removals: vec![],
+                removal_requests: vec![],
+                admissions: BTreeMap::new(),
+                admission_vaults: BTreeMap::new(),
                 transfers: vec![],
                 share_grants: vec![],
                 sources: vec![],
@@ -385,6 +464,9 @@ impl Controller {
                 access: okilum_sync::NetworkAccess::current(),
                 observation_generation: Uuid::new_v4(),
                 transfer_lock: Mutex::new(()),
+                removal_effects: Mutex::new(()),
+                #[cfg(test)]
+                removal_hook: Mutex::new(None),
                 policy_revisions: Mutex::new(BTreeMap::new()),
                 policy_warnings: Mutex::new(Vec::new()),
                 history_warnings: Mutex::new(Vec::new()),
@@ -546,6 +628,10 @@ impl Controller {
         ensure!(
             !advertised.is_unspecified() && !advertised.is_multicast(),
             "invalid advertised LAN address"
+        );
+        ensure!(
+            !self.shared.db.lock().unwrap().local_removed,
+            "{REMOVED_INVITER}"
         );
         self.listen(bind, advertised)?;
         let mut db = self.shared.db.lock().unwrap();
@@ -771,6 +857,17 @@ impl Controller {
             id: Uuid::new_v4(),
             name: name.to_owned(),
             public: wire::public(&db.seed)?,
+            removals: syncthing_device
+                .as_deref()
+                .map(|device| removal::applied(&db, device))
+                .unwrap_or_default(),
+            high_water: syncthing_device
+                .as_deref()
+                .map_or(0, |device| removal::high_water(&db, device)),
+            removal_vaults: syncthing_device
+                .as_deref()
+                .map(|device| removal::applied_vaults(&db, device))
+                .unwrap_or_default(),
             syncthing_device,
         };
         db.name = name.to_owned();
@@ -791,6 +888,7 @@ impl Controller {
         if self.shared.db.lock().unwrap().local_removed {
             return self.snapshot();
         }
+        self.retire_readmitted_copies()?;
         self.reconcile_peer_addresses()?;
         #[cfg(target_os = "macos")]
         self.reconcile_macos_transfer_identities(false)?;
@@ -823,6 +921,7 @@ impl Controller {
                 anyhow::bail!("pairing invitation expired");
             }
             let request_id = request.id;
+            let own_device = request.syncthing_device.clone();
             let reply = self.call(
                 offer.endpoint,
                 offer.id,
@@ -830,6 +929,7 @@ impl Controller {
                 &offer.public,
                 Operation::Redeem { request },
             )?;
+            let _effects = self.shared.removal_effects.lock().unwrap();
             let mut db = self.shared.db.lock().unwrap();
             ensure!(
                 db.outbound
@@ -844,14 +944,43 @@ impl Controller {
                     self.save(&db)?;
                     anyhow::bail!("pairing request rejected");
                 }
-                Reply::Approved { paired, catalog } => {
+                Reply::Approved {
+                    paired,
+                    catalog,
+                    readmitted,
+                    admission,
+                } => {
                     ensure!(
                         paired.public == offer.public && paired.endpoint == offer.endpoint,
                         "pairing approval scope changed"
                     );
+                    ensure!(
+                        readmitted.is_empty() || own_device.is_some(),
+                        "readmission without a Syncthing identity"
+                    );
+                    // Checked before anything changes here (#3079).
+                    if let (Some(own), false) = (&own_device, readmitted.is_empty()) {
+                        ensure!(
+                            admission
+                                .as_ref()
+                                .is_none_or(|a| removal::admission_in_range(&db, own, a)),
+                            "Invalid admission epoch in approval"
+                        );
+                    }
                     db.catalog = catalog;
                     db.catalog_peer = Some(paired.peer.id);
+                    let (id, public) = (paired.peer.id, paired.public.clone());
                     db.peers.insert(paired.peer.id, paired);
+                    if let Some(own) = &own_device {
+                        removal::accept_readmission(
+                            &mut db,
+                            own,
+                            id,
+                            &public,
+                            &readmitted,
+                            admission,
+                        )?;
+                    }
                     db.outbound = None;
                     self.save(&db)?;
                 }
@@ -863,6 +992,8 @@ impl Controller {
     }
     pub fn approve(&self, request_id: Uuid) -> Result<Snapshot> {
         self.check()?;
+        // Readmission closes removals; no removal effect may run meanwhile.
+        let _effects = self.shared.removal_effects.lock().unwrap();
         let mut db = self.shared.db.lock().unwrap();
         let invitation = db.invitation.as_ref().context("no invitation")?;
         ensure!(
@@ -894,6 +1025,19 @@ impl Controller {
             endpoint: invitation.offer.endpoint,
             allowed: db.attached.iter().map(|v| v.folder_id.clone()).collect(),
         };
+        // Approving a removed computer again readmits it, and only the vault
+        // owner may do that (#3079).
+        if let Some(device) = paired.syncthing_device.clone() {
+            removal::ensure_may_readmit(&db, &device, &request.removals, &request.removal_vaults)?;
+            removal::readmit_with_vaults(
+                &mut db,
+                &device,
+                id,
+                &request.removals,
+                &request.removal_vaults,
+                request.high_water,
+            )?;
+        }
         db.peers.insert(id, paired);
         db.invitation.as_mut().unwrap().approved = Some(id);
         self.save(&db)?;
@@ -1093,9 +1237,31 @@ impl Controller {
         #[cfg(feature = "first-sync-fixture")]
         let first_sync_fixture = message.operation.first_sync();
         let result = match message.operation {
-            Operation::RemoveComputer { id, device, vaults } => {
+            Operation::RemoveComputer {
+                id,
+                device,
+                vaults,
+                superseded,
+                epoch,
+                admission,
+            } => {
                 drop(db);
-                self.receive_removal(scope, id, device, vaults, None)
+                self.receive_removal(
+                    scope,
+                    id,
+                    device,
+                    vaults,
+                    None,
+                    removal::Version {
+                        superseded,
+                        epoch,
+                        admission,
+                    },
+                )
+            }
+            Operation::RequestRemoval { id, device, vaults } => {
+                drop(db);
+                self.accept_removal_request(scope, id, device, vaults)
             }
             #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             Operation::Inspect { request } => {
@@ -1185,13 +1351,16 @@ impl Controller {
                     requests: removal::requests(db, scope),
                 })
             }
-            Operation::AcknowledgeRemoval { id } => {
-                removal::acknowledge(db, scope, id)?;
+            Operation::AcknowledgeRemoval { id, superseded } => {
+                removal::acknowledge(db, scope, id, superseded)?;
                 self.save(db)?;
                 Ok(Reply::RemovalRecorded { id })
             }
             Operation::RemoveComputer { .. } => {
                 anyhow::bail!("removal requires serialized lock-free dispatch")
+            }
+            Operation::RequestRemoval { .. } => {
+                anyhow::bail!("removal request requires serialized lock-free dispatch")
             }
             Operation::Redeem { request } => {
                 request.validate(&signer)?;
@@ -1234,6 +1403,11 @@ impl Controller {
                     Ok(Reply::Approved {
                         paired: remote,
                         catalog: catalog_for(db, &local.allowed),
+                        readmitted: removal::readmitted_by(db, id),
+                        admission: local
+                            .syncthing_device
+                            .as_deref()
+                            .and_then(|device| removal::known_admission(db, device)),
                     })
                 } else {
                     Ok(Reply::Pending)
@@ -1364,7 +1538,10 @@ impl Operation {
     fn removal_only(&self) -> bool {
         matches!(
             self,
-            Self::RemoveComputer { .. } | Self::PollRemovals {} | Self::AcknowledgeRemoval { .. }
+            Self::RemoveComputer { .. }
+                | Self::RequestRemoval { .. }
+                | Self::PollRemovals {}
+                | Self::AcknowledgeRemoval { .. }
         )
     }
     fn read_only(&self) -> bool {
@@ -1641,6 +1818,9 @@ mod tests {
             name: "Олег — מחשב 💻".into(),
             public: signer.clone(),
             syncthing_device: Some(["AAAAAAA"; 8].join("-")),
+            removals: vec![],
+            high_water: 0,
+            removal_vaults: BTreeMap::new(),
         };
         valid.validate(&signer)?;
         let restored: Request = serde_json::from_slice(&serde_json::to_vec(&valid)?)?;
@@ -1945,6 +2125,8 @@ mod tests {
                     id: "private".into(),
                     label: "Private".into(),
                 }],
+                readmitted: vec![],
+                admission: None,
             };
             let response = wire::seal(
                 offer.id,

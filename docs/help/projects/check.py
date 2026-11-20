@@ -180,7 +180,16 @@ def main():
         else:
             raise AssertionError("Unsupported site layout accepted")
         assert not (site_root / "src").exists()
-    print("Projects Help: offline closure, matching steps, bundle list, captions, provenance, saved state and site integration PASS")
+    # Exact-build receipt: frames of the in-app Help taken from a published beta.
+    receipt = json.loads((ROOT / "exact-build/receipt.json").read_text())
+    assert re.fullmatch(r"[0-9a-f]{40}", receipt["source_commit"])
+    assert receipt["build"].rsplit(".", 1)[1] in receipt["artifact_url"]
+    assert re.fullmatch(r"[0-9a-f]{64}", receipt["artifact_sha256"])
+    frames = sorted(p.name for p in (ROOT / "exact-build").glob("*.png"))
+    assert frames and frames == sorted(receipt["files"]) == sorted(s["frame"] for s in receipt["steps"]), frames
+    for name, digest in receipt["files"].items():
+        assert sha256((ROOT / "exact-build" / name).read_bytes()).hexdigest() == digest, name
+    print("Projects Help: offline closure, matching steps, bundle list, captions, provenance, saved state, exact-build receipt and site integration PASS")
 
 
 if __name__ == "__main__":

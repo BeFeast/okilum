@@ -12,6 +12,7 @@ use crate::{
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 
+pub mod progress;
 #[cfg(test)]
 mod tests;
 
@@ -154,12 +155,14 @@ impl Request {
             .or_else(|| context.project.default_model_selection.clone())
             .context("T3 project has no default model. Choose a model from its live catalog.")?;
         validate_selection(&context.catalog, &model)?;
+        let request_id = format!("okilum-launch-{}", uuid::Uuid::new_v4());
+        let marker = format!("{}{request_id}", progress::MARKER);
         Ok(Self {
-            request_id: format!("okilum-launch-{}", uuid::Uuid::new_v4()), role: draft.role.trim().into(),
+            request_id, role: draft.role.trim().into(),
             brief_path: draft.brief_path.clone(), brief_source,
             executor_project_id: context.project.id.clone(), executor_project_root: context.project.workspace_root.clone(),
             worktree_path: draft.worktree_path.clone(), branch: draft.branch.clone(), model_selection: model,
-            manager_instructions: "This is an explicit user request for ONE executor. Recheck your area rules, brief and target project; create/select the requested worktree through t3_thread_launch workspaceStrategy and use the requested model. For a Codex executor, prepend a bootstrap that reads the canonical server absolute paths for the existing vault-root @AgentContract.md (if present), applicable vault/Dev/area AGENTS.md, manifest and brief before work; resolve and verify these paths on the server from your own vault, never from device-local paths. Record the resulting thread in the area's registry. Report actual acceptance, preparing/running/completed state and the exact thread ID in manager chat; a message queue receipt is not launch acceptance. Keep this request_id for reconciliation. t3_thread_launch has no idempotency key: after an ambiguous response reconcile the project thread list before any further launch; NEVER blindly launch again. Scheduled-task model following remains unsupported; do not migrate the production manager.".into(),
+            manager_instructions: format!("This is an explicit user request for ONE executor. Recheck your area rules, brief and target project; create/select the requested worktree through t3_thread_launch workspaceStrategy and use the requested model. The t3_thread_launch message MUST begin with this exact first line, before any bootstrap: {marker} — Okilum follows the launch only through that line and T3's own thread status. For a Codex executor, prepend a bootstrap that reads the canonical server absolute paths for the existing vault-root @AgentContract.md (if present), applicable vault/Dev/area AGENTS.md, manifest and brief before work; resolve and verify these paths on the server from your own vault, never from device-local paths. Record the resulting thread in the area's registry. Report actual acceptance, preparing/running/completed state and the exact thread ID in manager chat; a message queue receipt is not launch acceptance. Keep this request_id for reconciliation. t3_thread_launch has no idempotency key: after an ambiguous response reconcile the project thread list before any further launch; NEVER blindly launch again. Scheduled-task model following remains unsupported; do not migrate the production manager."),
         })
     }
 

@@ -344,6 +344,7 @@ fn local(
         root,
     })
 }
+const UNAVAILABLE: &str = "inspection unavailable or stale; check authorization, unpaused promoted vault, runtime and inventory limits, then refresh";
 impl Controller {
     fn inspection_peer(&self, id: Uuid) -> Result<Paired> {
         self.check()?;
@@ -368,10 +369,13 @@ impl Controller {
             },
         )? {
             Reply::Inspection { response } => Ok(response),
-            Reply::Error { message } if message == PAUSED || message == NOT_PROMOTED => anyhow::bail!(message),
-            _ => anyhow::bail!(
-                "inspection unavailable or stale; check authorization, unpaused promoted vault, runtime and inventory limits, then refresh"
-            ),
+            Reply::Error { message } if message == PAUSED || message == NOT_PROMOTED => {
+                anyhow::bail!(message)
+            }
+            // Keep the other computer's reason as the cause for diagnostics;
+            // the displayed message is unchanged.
+            Reply::Error { message } => Err(anyhow::anyhow!(message).context(UNAVAILABLE)),
+            _ => anyhow::bail!(UNAVAILABLE),
         }
     }
     /// Inspect a remote authorized vault against an existing non-empty ordinary

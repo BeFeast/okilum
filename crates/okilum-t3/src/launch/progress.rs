@@ -1,0 +1,453 @@
+//! Launch progress from T3's own run and thread status (#1420).
+//!
+//! Okilum never calls `t3_thread_launch`. After the manager receives a launch
+//! request, progress is read back from T3: the manager run that received the
+//! message (acceptance), then the executor thread whose first message carries
+//! this request's marker line (preparing → running → completed, or failed /
+//! cancelled). Every observation is a blocking gateway read and runs off the UI
+//! thread; [`Tracker::apply`] drops observations of any other launch or of an
+//! older state of this one.
+use super::Request;
+use crate::{ManagerGateway, SendReceipt, ThreadQuery, ThreadSummary};
+use anyhow::{Context, Result};
+use std::collections::{BTreeMap, BTreeSet};
+
+/// The first line of the `t3_thread_launch` message the manager is asked to
+/// send. Okilum identifies the executor thread only by this line in T3's own
+/// timeline, never by title, registry prose or the manager's chat reply.
+pub const MARKER: &str = "Okilum launch request: ";
+/// New threads read per observation. A thread with a first message is read
+/// once; an empty one stays unchecked and takes its turn again later.
+const MAX_READS_PER_OBSERVATION: usize = 8;
+/// Enough for the marker line; the brief itself is never read back.
+const FIRST_ITEM_CHARS: u32 = 256;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Stage {
+    /// Delivered to the manager conversation; T3 has not started its run yet.
+    Requested,
+    /// T3 started the manager run that received this request.
+    Accepted,
+    /// The executor thread exists; its run has not started yet.
+    Preparing,
+    Running,
+}
+
+impl Stage {
+    const ALL: [Stage; 4] = [
+        Stage::Requested,
+        Stage::Accepted,
+        Stage::Preparing,
+        Stage::Running,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Stage::Requested => "requested",
+            Stage::Accepted => "accepted",
+            Stage::Preparing => "preparing",
+            Stage::Running => "running",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl Outcome {
+    pub fn label(self) -> &'static str {
+        match self {
+            Outcome::Completed => "completed",
+            Outcome::Failed => "failed",
+            Outcome::Cancelled => "cancelled",
+        }
+    }
+}
+
+/// T3's thread status → launch step. Unknown future statuses advance nothing
+/// and stay visible as the raw value.
+pub fn classify(status: &str) -> Option<std::result::Result<Stage, Outcome>> {
+    Some(match status {
+        "idle" | "preparing" | "queued" | "starting" => Ok(Stage::Preparing),
+        "running" | "waiting" => Ok(Stage::Running),
+        "completed" => Err(Outcome::Completed),
+        "failed" | "rolled_back" => Err(Outcome::Failed),
+        "cancelled" | "interrupted" => Err(Outcome::Cancelled),
+        _ => return None,
+    })
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExecutorThread {
+    pub thread_id: String,
+    pub title: String,
+    /// T3's raw thread status, shown beside the step.
+    pub status: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Progress {
+    /// The furthest non-final step T3 has confirmed. Never moves back.
+    pub reached: Stage,
+    pub outcome: Option<Outcome>,
+    /// The outcome is T3's confirmed status of the matched executor, but new
+    /// threads of the listing are still unchecked for a duplicate launch.
+    /// Shown, never final: polling continues.
+    pub provisional: bool,
+    pub executor: Option<ExecutorThread>,
+    /// Facts that do not advance a step: ambiguity, a missing thread, a manager
+    /// run that ended without a matching executor, an unknown status.
+    pub note: Option<String>,
+}
+
+impl Progress {
+    /// `requested → accepted → [preparing] → running → completed`; the current
+    /// step is bracketed. A final outcome replaces the remaining steps, and
+    /// only steps T3 actually confirmed are listed before it.
+    pub fn line(&self) -> String {
+        let mut parts = Vec::new();
+        for stage in Stage::ALL {
+            match self.outcome {
+                Some(_) if stage <= self.reached => parts.push(stage.label().to_owned()),
+                Some(_) => {}
+                None if stage == self.reached => parts.push(format!("[{}]", stage.label())),
+                None => parts.push(stage.label().to_owned()),
+            }
+        }
+        parts.push(match self.outcome {
+            Some(outcome) if self.provisional => format!("[{}, provisional]", outcome.label()),
+            Some(outcome) => format!("[{}]", outcome.label()),
+            None => Outcome::Completed.label().to_owned(),
+        });
+        parts.join(" → ")
+    }
+
+    pub fn finished(&self) -> bool {
+        self.outcome.is_some() && !self.provisional
+    }
+}
+
+/// One read of T3 for one launch. Produced off the UI thread.
+#[derive(Clone, Debug)]
+pub struct Observation {
+    request_id: String,
+    revision: u64,
+    manager_run_active: Option<bool>,
+    manager_status: Option<String>,
+    listed: Vec<ThreadSummary>,
+    inspected: Vec<String>,
+    /// New threads read without a first message yet.
+    empty: Vec<String>,
+    /// New threads whose read failed, with the reason. Like empty threads
+    /// they stay unchecked and take their turn again; other results stand.
+    unreadable: Vec<(String, String)>,
+    matched: Vec<String>,
+    /// New threads of this listing still unchecked after this observation.
+    unchecked: usize,
+}
+
+/// In-memory progress of one delivered launch request.
+#[derive(Clone, Debug)]
+pub struct Tracker {
+    pub request_id: String,
+    /// The journal's `clientRequestId` of the manager message.
+    pub client_request_id: String,
+    manager_thread_id: String,
+    executor_project_id: String,
+    /// Executor-project threads that existed before the request was sent.
+    baseline: Option<BTreeSet<String>>,
+    inspected: BTreeSet<String>,
+    /// Unchecked threads last read empty, with the revision of that read.
+    empty_since: BTreeMap<String, u64>,
+    matched: BTreeSet<String>,
+    manager_run_ended: Option<String>,
+    revision: u64,
+    pub progress: Progress,
+}
+
+impl Tracker {
+    /// `baseline` is the executor project's listing taken before sending; when
+    /// it could not be read, new threads are found by inspection alone.
+    pub fn new(
+        request: &Request,
+        client_request_id: String,
+        manager_thread_id: String,
+        baseline: Option<&[ThreadSummary]>,
+    ) -> Self {
+        Self {
+            request_id: request.request_id.clone(),
+            client_request_id,
+            manager_thread_id,
+            executor_project_id: request.executor_project_id.clone(),
+            baseline: baseline.map(|threads| threads.iter().map(|t| t.thread_id.clone()).collect()),
+            inspected: BTreeSet::new(),
+            empty_since: BTreeMap::new(),
+            matched: BTreeSet::new(),
+            manager_run_ended: None,
+            revision: 0,
+            progress: Progress {
+                reached: Stage::Requested,
+                outcome: None,
+                provisional: false,
+                executor: None,
+                note: None,
+            },
+        }
+    }
+
+    pub fn manager_thread_id(&self) -> &str {
+        &self.manager_thread_id
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Blocking T3 reads for one observation. `receipt` is the manager
+    /// message's send receipt; without it nothing is read (delivery is not
+    /// confirmed, and the journal's Retry owns that state).
+    pub fn observe(
+        &self,
+        gateway: &dyn ManagerGateway,
+        receipt: Option<&SendReceipt>,
+    ) -> Result<Option<Observation>> {
+        let Some(receipt) = receipt else {
+            return Ok(None);
+        };
+        let mut observation = Observation {
+            request_id: self.request_id.clone(),
+            revision: self.revision,
+            manager_run_active: None,
+            manager_status: None,
+            listed: Vec::new(),
+            inspected: Vec::new(),
+            empty: Vec::new(),
+            unreadable: Vec::new(),
+            matched: Vec::new(),
+            unchecked: 0,
+        };
+        if self.matched.is_empty() {
+            let mut query = ThreadQuery::messages(&self.manager_thread_id);
+            query.limit = Some(1);
+            query.max_chars_per_item = Some(1);
+            let manager = gateway
+                .read_thread(&query)
+                .context("Cannot read the manager thread status")?
+                .thread;
+            observation.manager_run_active =
+                Some(manager.active_run_id.as_deref() == Some(receipt.run_id.as_str()));
+            observation.manager_status = Some(manager.status);
+        }
+        let mut listed = gateway
+            .list_threads(&self.executor_project_id)
+            .context("Cannot list the executor project's T3 threads")?;
+        // Newest first, so a fresh launch is inspected before older threads.
+        listed.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        let unchecked = listed
+            .iter()
+            .filter(|t| t.thread_id != self.manager_thread_id)
+            .filter(|t| !self.inspected.contains(&t.thread_id))
+            .filter(|t| {
+                !self
+                    .baseline
+                    .as_ref()
+                    .is_some_and(|ids| ids.contains(&t.thread_id))
+            })
+            .map(|t| t.thread_id.clone())
+            .collect::<Vec<_>>();
+        // Fair rotation over every unchecked new thread: never-read threads
+        // first (newest first), then those read empty longest ago. Empty
+        // threads therefore cannot hold the batch and hide older candidates.
+        let mut candidates = unchecked.clone();
+        candidates.sort_by_key(|id| self.empty_since.get(id).map_or(0, |revision| revision + 1));
+        candidates.truncate(MAX_READS_PER_OBSERVATION);
+        let marker = format!("{MARKER}{}", self.request_id);
+        for id in candidates {
+            // Explicitly from the first item: without a cursor T3 may answer
+            // with the newest message, which is the executor's own reply.
+            let mut query = ThreadQuery::messages(&id).from_start();
+            query.limit = Some(1);
+            query.max_chars_per_item = Some(FIRST_ITEM_CHARS);
+            // One unreadable thread must not discard the whole observation:
+            // the matched executor keeps updating and this one stays unchecked.
+            let page = match gateway.read_thread(&query) {
+                Ok(page) => page,
+                Err(error) => {
+                    observation.unreadable.push((id, error.to_string()));
+                    continue;
+                }
+            };
+            let first = page
+                .items
+                .iter()
+                .min_by_key(|item| item.position)
+                .and_then(|item| item.text.as_deref());
+            // An empty new thread may not have its first message yet: read it
+            // again on the next observation instead of ruling it out.
+            let Some(first) = first else {
+                observation.empty.push(id);
+                continue;
+            };
+            if first.lines().next().map(str::trim_end) == Some(marker.as_str()) {
+                observation.matched.push(id.clone());
+            }
+            observation.inspected.push(id);
+        }
+        observation.unchecked = unchecked.len() - observation.inspected.len();
+        observation.listed = listed;
+        Ok(Some(observation))
+    }
+
+    /// Applies an observation of this launch taken at its current revision.
+    /// Returns whether anything visible changed.
+    pub fn apply(&mut self, observation: Observation) -> bool {
+        if observation.request_id != self.request_id || observation.revision != self.revision {
+            return false;
+        }
+        self.revision += 1;
+        if self.progress.finished() {
+            return false;
+        }
+        let before = self.progress.clone();
+        for id in observation
+            .empty
+            .iter()
+            .chain(observation.unreadable.iter().map(|(id, _)| id))
+        {
+            self.empty_since.insert(id.clone(), observation.revision);
+        }
+        for id in &observation.inspected {
+            self.empty_since.remove(id);
+        }
+        self.inspected.extend(observation.inspected);
+        self.matched.extend(observation.matched);
+        if observation.manager_run_active == Some(true) {
+            self.progress.reached = self.progress.reached.max(Stage::Accepted);
+        }
+        let mut note = None;
+        match self.matched.len() {
+            0 => {
+                if self.progress.reached >= Stage::Accepted
+                    && observation.manager_run_active == Some(false)
+                {
+                    self.manager_run_ended = observation.manager_status.clone();
+                }
+                if let Some(status) = &self.manager_run_ended {
+                    // "No thread carries it" only once every new thread was
+                    // read: an unread one may be this very launch.
+                    note = Some(if observation.unchecked == 0 {
+                        format!(
+                            "The manager's run for this request is no longer active (manager thread: {status}) and no T3 thread carries this request yet. Check the manager chat; do not request another executor."
+                        )
+                    } else {
+                        format!(
+                            "The manager's run for this request is no longer active (manager thread: {status}); {} new T3 threads are not read yet and may carry this request. Do not request another executor.",
+                            observation.unchecked
+                        )
+                    });
+                }
+            }
+            1 => {
+                let id = self.matched.iter().next().unwrap();
+                match observation.listed.iter().find(|t| &t.thread_id == id) {
+                    Some(thread) => {
+                        self.progress.reached = self.progress.reached.max(Stage::Accepted);
+                        match classify(&thread.status) {
+                            Some(Ok(stage)) => {
+                                // A provisional outcome follows T3 back to work.
+                                self.progress.outcome = None;
+                                self.progress.provisional = false;
+                                self.progress.reached = self.progress.reached.max(stage)
+                            }
+                            // Final only once every new thread of this listing
+                            // was checked: a later batch may hold a duplicate.
+                            // Until then T3's outcome is shown as provisional.
+                            Some(Err(outcome)) => {
+                                self.progress.outcome = Some(outcome);
+                                self.progress.provisional = observation.unchecked > 0;
+                                if self.progress.provisional {
+                                    note = Some(format!(
+                                        "T3 reports {} for this executor; still checking {} more new T3 threads for a possible duplicate launch of this request.",
+                                        outcome.label(),
+                                        observation.unchecked
+                                    ));
+                                }
+                            }
+                            None => {
+                                // An unknown status withdraws a provisional outcome.
+                                self.progress.outcome = None;
+                                self.progress.provisional = false;
+                                note = Some(format!(
+                                    "T3 reports an unknown executor status \"{}\".",
+                                    thread.status
+                                ))
+                            }
+                        }
+                        self.progress.executor = Some(ExecutorThread {
+                            thread_id: thread.thread_id.clone(),
+                            title: thread.title.clone(),
+                            status: thread.status.clone(),
+                        });
+                    }
+                    None => {
+                        // So does a matched thread that left the listing; its
+                        // last T3 status is no longer shown (the id is in the note).
+                        self.progress.outcome = None;
+                        self.progress.provisional = false;
+                        self.progress.executor = None;
+                        note = Some(format!(
+                            "Executor thread {id} is missing from the executor project's T3 listing."
+                        ))
+                    }
+                }
+            }
+            _ => {
+                // Never pick a winner between two launches of one request.
+                self.progress.reached = self.progress.reached.max(Stage::Accepted);
+                self.progress.executor = None;
+                self.progress.outcome = None;
+                self.progress.provisional = false;
+                note = Some(format!(
+                    "More than one T3 thread carries this request: {}. Resolve it in the manager chat.",
+                    self.matched.iter().cloned().collect::<Vec<_>>().join(", ")
+                ));
+            }
+        }
+        if let Some((id, error)) = observation.unreadable.first() {
+            let unreadable = format!(
+                "Cannot read new T3 thread {id} ({error}); it stays unchecked and is read again{}.",
+                match observation.unreadable.len() - 1 {
+                    0 => String::new(),
+                    more => format!(", with {more} more"),
+                }
+            );
+            note = Some(match note {
+                Some(note) => format!("{note} {unreadable}"),
+                None => unreadable,
+            });
+        }
+        self.progress.note = note;
+        self.progress != before
+    }
+
+    /// A receipt that started or steered a manager run is T3's own acceptance.
+    pub fn record_receipt(&mut self, receipt: &SendReceipt) -> bool {
+        if matches!(
+            receipt.delivery.as_str(),
+            "started" | "steered" | "restarted"
+        ) && self.progress.reached < Stage::Accepted
+            && !self.progress.finished()
+        {
+            self.progress.reached = Stage::Accepted;
+            return true;
+        }
+        false
+    }
+}
+
+#[cfg(test)]
+#[path = "progress_tests.rs"]
+mod tests;

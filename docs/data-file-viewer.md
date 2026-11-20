@@ -158,9 +158,11 @@ Kubernetes manifests, Cargo and pyproject manifests, Atom, SVG, POM, XSD) must
 show neither.
 
 Files up to 64 MiB load on a worker with a bounded read even when the file grows.
-Parsing, JSON formatting and full-file search run on workers. All CodePreview formats
-above the 4 MiB UI editing cap stay read-only, including JSON and TXT. This is UI admission:
-canonical FileEditor checks and the independent 64 MiB source-tool budget remain unchanged. Large multi-line files start without soft
+Parsing, JSON formatting and full-file search run on workers. CodePreview formats
+above the 4 MiB UI editing cap stay read-only, including TXT, YAML and XML. JSON is the
+exception: its Edit admission is the 64 MiB source-tool budget, so Validate, Format and
+Repair reach the multi-MB files the viewer opens (#2804). CSV/TSV have no cap. This is UI
+admission: canonical FileEditor checks remain unchanged. Large multi-line files start without soft
 wrap; the existing wrap preference continues for smaller files.
 
 A line longer than 64 KiB uses 32 KiB UTF-8-safe pages, with a bottom percentage, Previous/Next part, a toolkit scrubber and whole-file Find with total count and navigation.
@@ -223,6 +225,14 @@ budget. Invalid JSON disables Tree and Formatted without writing any source.
 Its owned serde error survives above the automatic threshold; Go to error maps
 its byte offset to the correct Raw part. Read-only editor diagnostics use the
 same whole-file error, translated into the visible page.
+
+The read-only lock by the name gives its reason: a view-only format, a non-UTF-8
+XML declaration, a folder that failed an Edit attempt, or size. The size lock is
+«Read-only: N MB is over the 4 MB editing limit» for every code format except
+JSON (decision 17.11, #2804 supersedes the original #2809 acceptance line «a
+5.2 MB JSON shows the lock»). A JSON file opens in Edit up to the 64 MiB preview
+and Validate/Format/Repair budget, so a 5.2 MB JSON has no lock and the pencil
+stays. CSV and TSV have no size cap.
 
 The shared 48 px header has a reusable 28 px segmented switch. At narrow width
 it keeps icons and the active label before Fold/Unfold yield into Document
