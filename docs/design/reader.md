@@ -429,6 +429,33 @@ AAA (7:1) for High contrast. `on-accent` on `accent` is 4.5:1 and `text-faint`
 Each theme's `heading` is a hue at least 25° from its `link`, so a heading
 never reads as clickable.
 
+**Decoration slots** (#3154). Besides colours, a theme may fill up to five
+decoration slots under `decorations.light` / `decorations.dark`. Each slot is
+drawn by one renderer path in the Reader (vendor patch 0154, `TextDecorations`
+on the TextView style) and the same values in Live Preview (the projection's
+`decorations()`, painted by the editor). A slot a theme leaves out draws
+exactly what Okilum drew before; today only Obsidianite fills them.
+
+| Slot | Keys | Drawn as |
+| --- | --- | --- |
+| `headingRule` | `from`, `to`, `length` (share of width), `thickness` px | 1 px line under H2–H6, `from` fading into `to` (the canvas) |
+| `hr` | `edge`, `middle`, `thickness` px | `edge → middle → edge`, two two-stop halves |
+| `blockquote` | `background` {`angle`, `from`, `to`}, `border`, `topBar` / `bottomBar` {`from`, `to`, `length`, `thickness`} | angled background, left border colour, short bars along the top and bottom edges; in Live Preview one background per run of quoted lines |
+| `linkMarker` | `from`, `to`, `height`, `bottom` (shares of the line height) | a band under the lower part of each link line, never the full line height |
+| `bold` | `from`, `to` | bold text coloured letter by letter along the span |
+
+Gradients are GPUI's two-stop `linear_gradient` (angles in CSS degrees);
+colours interpolate in sRGB with alpha. The bold gradient needs no GPUI patch:
+a bold span already is its own font run, so it takes one run colour (no new
+font-run split, so shaping and the line-layout cache key are unchanged) and
+its glyphs are painted again letter by letter at paint time. Links, code,
+syntax colours and right-to-left text keep their solid colours. A vendor test
+counts real shaping calls: the gradient adds none and reuses the cached line,
+while a colour run per letter (the control) reshapes. Every slot is
+paint-only: no text, run or layout changes, no animation, and a theme switch
+recomposes Live Preview from the existing classification without parsing.
+A unit test rejects unknown slot names and checks bold endpoints at AA.
+
 **Theme picker** (`theme_picker.rs`): a self-contained row of compact swatch
 cards (120 px). Each card previews the theme's sidebar, surface, text, muted
 text, link and accent in the variant currently shown. The selected card has a

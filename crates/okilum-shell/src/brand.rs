@@ -433,6 +433,9 @@ pub struct ReaderPalette {
     pub find_mark_track: Hsla,
     /// Dims the document under an overlay.
     pub scrim: Hsla,
+    /// Theme decoration slots (#3154): heading rule, `hr`, blockquote, link
+    /// marker, bold gradient. Empty for themes that fill none.
+    pub decorations: gpui_base::text::TextDecorations,
 }
 
 /// Status roles may fall back to the brand tokens; every other role must be
@@ -532,9 +535,79 @@ fn resolve(theme: ThemeId) -> ThemeTokens {
                 find_mark_current: color("findMarkCurrent"),
                 find_mark_track: color("findMarkTrack"),
                 scrim: color("scrim"),
+                decorations: parse_decorations(
+                    layers
+                        .iter()
+                        .find_map(|layer| layer.get("decorations").and_then(|d| d.get(mode))),
+                ),
             },
         )
     })
+}
+
+/// The slot names a theme's `decorations.<mode>` may fill (#3154); the
+/// theme test rejects any other.
+#[cfg(test)]
+const DECORATION_SLOTS: [&str; 5] = ["headingRule", "hr", "blockquote", "linkMarker", "bold"];
+
+/// Theme decoration slots from a theme file's `decorations.<mode>` (#3154).
+/// A missing slot stays empty, and the renderer then draws as it did before
+/// slots existed. Lengths, heights and bottoms are shares (0..=1) of the box
+/// or line; thicknesses are pixels; angles are CSS degrees.
+fn parse_decorations(json: Option<&serde_json::Value>) -> gpui_base::text::TextDecorations {
+    use gpui_base::text::{
+        BlockquoteDecoration, Gradient, GradientBar, HorizontalRule, LinkMarker, TextDecorations,
+    };
+    let Some(json) = json else {
+        return TextDecorations::default();
+    };
+    let color = |v: &serde_json::Value, key: &str| -> Option<Hsla> {
+        v.get(key)
+            .map(|c| parse_color(c.as_str().expect("validated decoration colour")))
+    };
+    let number = |v: &serde_json::Value, key: &str, default: f32| -> f32 {
+        v.get(key).map_or(default, |n| {
+            n.as_f64().expect("validated decoration number") as f32
+        })
+    };
+    let gradient = |v: &serde_json::Value, angle: f32| -> Option<Gradient> {
+        Some(Gradient::new(
+            number(v, "angle", angle),
+            color(v, "from")?,
+            color(v, "to")?,
+        ))
+    };
+    let bar = |v: &serde_json::Value, length: f32, thickness: f32| -> Option<GradientBar> {
+        Some(GradientBar {
+            gradient: gradient(v, 90.)?,
+            length: number(v, "length", length),
+            thickness: px(number(v, "thickness", thickness)),
+        })
+    };
+    TextDecorations {
+        heading_rule: json.get("headingRule").and_then(|v| bar(v, 1., 1.)),
+        horizontal_rule: json.get("hr").and_then(|v| {
+            Some(HorizontalRule {
+                edge: color(v, "edge")?,
+                middle: color(v, "middle")?,
+                thickness: px(number(v, "thickness", 1.)),
+            })
+        }),
+        blockquote: json.get("blockquote").map(|v| BlockquoteDecoration {
+            background: v.get("background").and_then(|g| gradient(g, 135.)),
+            border: color(v, "border"),
+            top_bar: v.get("topBar").and_then(|b| bar(b, 0.6, 2.)),
+            bottom_bar: v.get("bottomBar").and_then(|b| bar(b, 0.25, 2.)),
+        }),
+        link_marker: json.get("linkMarker").and_then(|v| {
+            Some(LinkMarker {
+                fill: gradient(v, 90.)?,
+                height: number(v, "height", 0.2),
+                bottom: number(v, "bottom", 0.94),
+            })
+        }),
+        bold: json.get("bold").and_then(|v| gradient(v, 90.)),
+    }
 }
 
 fn tokens(theme: ThemeId, dark: bool) -> (Palette, ReaderPalette) {
@@ -1537,6 +1610,82 @@ mod tests {
     }
 
     #[test]
+    fn issue3154_decoration_slots_parse_strictly_and_obsidianite_fills_all_five() {
+        let obsidianite = ThemeId::from_key("obsidianite").expect("built-in theme");
+        for theme in ThemeId::ALL {
+            let file: Option<serde_json::Value> = theme
+                .tokens()
+                .map(|json| serde_json::from_str(json).unwrap());
+            let modes = file.as_ref().and_then(|file| file.get("decorations"));
+            if let Some(modes) = modes {
+                for (mode, slots) in modes.as_object().expect("decorations by mode") {
+                    assert!(["light", "dark"].contains(&mode.as_str()), "mode {mode}");
+                    for key in slots.as_object().expect("slots").keys() {
+                        assert!(
+                            DECORATION_SLOTS.contains(&key.as_str()),
+                            "{} {mode}: unknown slot {key}",
+                            theme.key()
+                        );
+                    }
+                }
+            }
+            for dark in [false, true] {
+                let d = tokens(theme, dark).1.decorations;
+                let named = modes
+                    .and_then(|m| m.get(if dark { "dark" } else { "light" }))
+                    .map_or(0, |m| m.as_object().unwrap().len());
+                let parsed = [
+                    d.heading_rule.is_some(),
+                    d.horizontal_rule.is_some(),
+                    d.blockquote.is_some(),
+                    d.link_marker.is_some(),
+                    d.bold.is_some(),
+                ]
+                .into_iter()
+                .filter(|filled| *filled)
+                .count();
+                assert_eq!(parsed, named, "{}: every named slot parses", theme.key());
+                if theme != obsidianite {
+                    // No slot: the renderer draws exactly as before.
+                    assert!(d.is_empty(), "{} fills no slot", theme.key());
+                }
+            }
+        }
+        for dark in [false, true] {
+            let (p, r) = tokens(obsidianite, dark);
+            let d = r.decorations;
+            assert_eq!(
+                (
+                    d.heading_rule.is_some(),
+                    d.horizontal_rule.is_some(),
+                    d.blockquote.is_some(),
+                    d.link_marker.is_some(),
+                    d.bold.is_some()
+                ),
+                (true, true, true, true, true),
+                "Obsidianite fills all five slots"
+            );
+            // Bold text stays readable letter by letter, ends and middle.
+            let bold = d.bold.unwrap();
+            for c in [bold.from, bold.to, bold.color_at(0.5)] {
+                assert!(contrast(c, p.canvas) >= 4.5, "bold {c:?} on canvas");
+                assert!(contrast(c, p.surface) >= 4.5, "bold {c:?} on surface");
+            }
+            let marker = d.link_marker.unwrap();
+            assert!(
+                marker.height > 0. && marker.height < 0.5,
+                "lower part, not the full line"
+            );
+        }
+        // The Obsidianite strong gradient, #87c2fd -> #dcb9fc.
+        let bold = tokens(obsidianite, true).1.decorations.bold.unwrap();
+        assert_eq!(
+            (bold.from, bold.to),
+            (rgb(0x87c2fd).into(), rgb(0xdcb9fc).into())
+        );
+    }
+
+    #[test]
     fn issue3152_obsidianite_dark_keeps_the_source_theme_colours() {
         // Obsidianite's `.theme-dark`: --background-primary, --text-normal,
         // --text-accent and --text-title-h1 (= accent), --background-secondary.
@@ -1603,6 +1752,11 @@ mod tests {
                     let heading = tokens(theme, mode == ThemeMode::Dark).1.heading;
                     assert_ne!(heading, expected.text);
                     assert_eq!(crate::reader_text_style(t).heading_color, Some(heading));
+                    // #3154: the Reader draws the theme's decoration slots.
+                    assert_eq!(
+                        crate::reader_text_style(t).decorations,
+                        tokens(theme, mode == ThemeMode::Dark).1.decorations
+                    );
                 }
             }
         });

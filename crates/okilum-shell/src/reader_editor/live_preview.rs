@@ -196,6 +196,8 @@ fn projection_colors(cx: &App) -> ProjectionColors {
         heading: brand::reader_palette(cx).heading,
         link: palette.link,
         muted: palette.text_muted,
+        // The same decoration slots as the Reader (#3154).
+        decorations: brand::reader_palette(cx).decorations,
     }
 }
 

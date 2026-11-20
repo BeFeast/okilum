@@ -7,8 +7,8 @@ use std::{
 
 use gpui_component::input::projection::{
     ActiveSource, ConcealBias, LineIndent, LineScale, MarkerKind, ProjectedByte, ProjectionBlock,
-    ProjectionMarker, ProjectionProvider, ProjectionStyle, SourceByte, SourceProjection,
-    SourceSnapshot,
+    ProjectionDecorations, ProjectionMarker, ProjectionProvider, ProjectionStyle, SourceByte,
+    SourceProjection, SourceSnapshot,
 };
 use okilum_core::{
     source_classifier::{self, Classification, RetainedPresentation, Style},
@@ -50,6 +50,8 @@ pub struct ProjectionColors {
     pub link: gpui::Hsla,
     /// Quiet rows such as reference definitions.
     pub muted: gpui::Hsla,
+    /// Theme decoration slots (#3154), the same ones the Reader draws.
+    pub decorations: gpui_base::text::TextDecorations,
 }
 
 // The standalone projection fixture imports this module without app theme colors.
@@ -476,6 +478,7 @@ impl CachedProvider {
                 .project_retained(source, &projection, theme, &mut styles, Some(&retained));
         }
         let line_scales = heading_line_scales(&projection, retained.styles());
+        let heading_rules = || heading_rule_lines(&projection, retained.styles());
         let mut metadata = self.display_metadata.lock().ok()?;
         let metadata = metadata.as_mut()?;
         metadata.advance(
@@ -493,6 +496,7 @@ impl CachedProvider {
         if let Some(math) = &math {
             styles = math.restyle(styles);
         }
+        let decorations = projection_decorations(colors, &styles, heading_rules);
         let line_indents = metadata.indents(&projection);
         let mut blocks = metadata.blocks(&projection, active);
         // A different revision must wait for its worker classification. Never
@@ -527,6 +531,7 @@ impl CachedProvider {
             line_indents,
             blocks,
             math,
+            decorations,
         }))
     }
 }
@@ -1132,6 +1137,73 @@ fn heading_line_scales(
     scales
 }
 
+/// Projected lines of H2-H6 headings, for the heading rule slot (#3154): the
+/// line where each heading ends, so a setext underline carries the rule.
+fn heading_rule_lines(
+    projection: &impl PresentationMap,
+    styles: &[source_classifier::StyleSpan],
+) -> Vec<usize> {
+    let mut lines: Vec<usize> = styles
+        .iter()
+        .filter_map(|style| match style.style {
+            Style::Heading(level) if level >= 2 => {
+                let end = projection.map_source(style.range.end)?;
+                Some(projection.display_line_at(end))
+            }
+            _ => None,
+        })
+        .collect();
+    lines.sort_unstable();
+    lines.dedup();
+    lines
+}
+
+/// The theme decorations of one composition (#3154), read from its final
+/// styles so math and smart punctuation offsets already apply. None when the
+/// theme fills no slot: the editor then paints exactly as before.
+fn projection_decorations(
+    colors: Option<ProjectionColors>,
+    styles: &[ProjectionStyle],
+    heading_lines: impl FnOnce() -> Vec<usize>,
+) -> Option<ProjectionDecorations> {
+    let colors = colors?;
+    let slots = colors.decorations;
+    if slots.is_empty() {
+        return None;
+    }
+    let spans = |keep: &dyn Fn(&ProjectionStyle) -> bool| {
+        let mut ranges: Vec<Range<usize>> = styles
+            .iter()
+            .filter(|style| keep(style))
+            .map(|style| style.range.start.0..style.range.end.0)
+            .collect();
+        ranges.sort_unstable_by_key(|range| range.start);
+        gpui_base::text::merge_touching(ranges)
+            .into_iter()
+            .map(|range| ProjectedByte(range.start)..ProjectedByte(range.end))
+            .collect::<Vec<_>>()
+    };
+    let gradient = gpui_base::text::gradient_run_color();
+    Some(ProjectionDecorations {
+        slots,
+        heading_rule_lines: if slots.heading_rule.is_some() {
+            heading_lines()
+        } else {
+            Vec::new()
+        },
+        links: if slots.link_marker.is_some() {
+            spans(&|style| style.color == Some(colors.link) && style.font_family.is_none())
+        } else {
+            Vec::new()
+        },
+        bold: if slots.bold.is_some() {
+            spans(&|style| style.color == Some(gradient))
+        } else {
+            Vec::new()
+        },
+    })
+}
+
 /// One entry per projected line that starts with container syntax or
 /// indentation: its soft-wrapped rows hang under the text after it, so the
 /// bullet, number, task box or `>` forms a gutter (#1641). Container syntax
@@ -1203,8 +1275,12 @@ struct MappedProjection {
     line_indents: Vec<LineIndent>,
     blocks: Vec<ProjectionBlock>,
     math: Option<MathOverlay>,
+    decorations: Option<ProjectionDecorations>,
 }
 impl SourceProjection for MappedProjection {
+    fn decorations(&self) -> Option<&ProjectionDecorations> {
+        self.decorations.as_ref()
+    }
     fn source_boundary(&self, current: &SourceSnapshot, offset: SourceByte) -> Option<bool> {
         if self.source.stamp != current.stamp
             || (!self.source.text.same(&current.text) && self.source.text != current.text)
@@ -1357,6 +1433,15 @@ fn projected_styles(
                     // Links retain their affordance inside bold headings.
                     if counts[5] > 0 {
                         Some(colors.link)
+                    } else if counts[0] > 0
+                        && counts[2] == 0
+                        && counts[3] == 0
+                        && colors.decorations.bold.is_some()
+                    {
+                        // Bold gradient slot (#3154): the editor paints these
+                        // letters itself; the run keeps its font, so shaping
+                        // and the line-layout cache key do not change.
+                        Some(gpui_base::text::gradient_run_color())
                     } else if counts[4] > 0 {
                         Some(colors.heading)
                     } else if counts[6] > 0 {
@@ -2310,11 +2395,13 @@ mod tests {
                 heading: gpui::rgb(0x18202a).into(),
                 link: gpui::rgb(0x005ca8).into(),
                 muted: gpui::rgb(0x6b7280).into(),
+                decorations: Default::default(),
             },
             ProjectionColors {
                 heading: gpui::rgb(0xf2f4f8).into(),
                 link: gpui::rgb(0x8dc8ff).into(),
                 muted: gpui::rgb(0x6b7280).into(),
+                decorations: Default::default(),
             },
         ] {
             let projection = provider
@@ -2350,6 +2437,7 @@ mod tests {
             heading: gpui::rgb(0x18202a).into(),
             link: gpui::rgb(0x005ca8).into(),
             muted: gpui::rgb(0x6b7280).into(),
+            decorations: Default::default(),
         };
         let projection = Arc::new(CachedProvider::classify(source.clone()))
             .with_colors(colors)
@@ -2359,6 +2447,94 @@ mod tests {
             .styles()
             .iter()
             .any(|style| style.bold && style.color == Some(colors.heading)));
+    }
+
+    #[test]
+    fn issue3154_decoration_slots_reach_live_preview_without_changing_layout() {
+        use gpui_base::text::{Gradient, GradientBar, LinkMarker, TextDecorations};
+        let text =
+            "# One\n\nplain **bold words** and [link](https://example.com)\n## Two\n\n### Three\n";
+        let source = self::source(text);
+        let provider = Arc::new(CachedProvider::classify(source.clone()));
+        let base = ProjectionColors {
+            heading: gpui::rgb(0x18202a).into(),
+            link: gpui::rgb(0x005ca8).into(),
+            muted: gpui::rgb(0x6b7280).into(),
+            decorations: Default::default(),
+        };
+        let gradient = Gradient::horizontal(gpui::rgb(0x87c2fd).into(), gpui::rgb(0xdcb9fc).into());
+        let themed = ProjectionColors {
+            decorations: TextDecorations {
+                heading_rule: Some(GradientBar {
+                    gradient,
+                    length: 0.35,
+                    thickness: gpui::px(1.),
+                }),
+                link_marker: Some(LinkMarker {
+                    fill: gradient,
+                    height: 0.2,
+                    bottom: 0.94,
+                }),
+                bold: Some(gradient),
+                ..Default::default()
+            },
+            ..base
+        };
+        let plain = provider
+            .clone()
+            .with_colors(base)
+            .compose(&source, &inactive(&source))
+            .unwrap();
+        let decorated = provider
+            .with_colors(themed)
+            .compose(&source, &inactive(&source))
+            .unwrap();
+        // A theme without slots composes exactly as before.
+        assert!(plain.decorations().is_none());
+        assert!(!plain
+            .styles()
+            .iter()
+            .any(|style| style.color == Some(gpui_base::text::gradient_run_color())));
+        // Slots are paint-only: same text, rows and runs apart from colour.
+        assert_eq!(plain.text(), decorated.text());
+        assert_eq!(plain.line_scales(), decorated.line_scales());
+        let runs = |p: &dyn SourceProjection| {
+            p.styles()
+                .iter()
+                .map(|s| {
+                    (
+                        s.range.clone(),
+                        s.font_family.clone(),
+                        s.bold,
+                        s.italic,
+                        s.strikethrough,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(runs(plain.as_ref()), runs(decorated.as_ref()));
+
+        let d = decorated.decorations().expect("theme slots");
+        let display = decorated.text();
+        let bold = display.find("bold words").unwrap();
+        assert_eq!(
+            d.bold,
+            vec![ProjectedByte(bold)..ProjectedByte(bold + "bold words".len())]
+        );
+        assert!(decorated.styles().iter().any(|style| {
+            style.range.start == ProjectedByte(bold)
+                && style.color == Some(gpui_base::text::gradient_run_color())
+        }));
+        let link = display.find("link").unwrap();
+        assert_eq!(d.links.len(), 1);
+        assert_eq!(d.links[0].start, ProjectedByte(link));
+        // H2-H6 carry the rule; H1 does not.
+        let line_of = |needle: &str| {
+            display[..display.find(needle).unwrap()]
+                .matches('\n')
+                .count()
+        };
+        assert_eq!(d.heading_rule_lines, vec![line_of("Two"), line_of("Three")]);
     }
 
     #[test]
@@ -2417,6 +2593,7 @@ mod tests {
             heading: gpui::rgb(0x18202a).into(),
             link: gpui::rgb(0x005ca8).into(),
             muted: gpui::rgb(0x6b7280).into(),
+            decorations: Default::default(),
         };
         let projection = Arc::new(CachedProvider::classify(source.clone()))
             .with_colors(colors)
@@ -2467,6 +2644,7 @@ This paragraph remains ordinary Markdown.
                 heading: gpui::black(),
                 link: gpui::rgb(0x005ca8).into(),
                 muted: gpui::rgb(0x6b7280).into(),
+                decorations: Default::default(),
             })
             .compose(&source, &inactive(&source))
             .expect("native fixture must project");

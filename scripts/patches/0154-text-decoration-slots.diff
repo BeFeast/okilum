@@ -1,0 +1,1421 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+index 16c31524..f77de7d6 100644
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -3028,6 +3028,77 @@ impl<M: InputModeKind> Element for TextElement<M> {
+             px(0.)
+         };
+ 
++        // Theme decorations of the pinned projection (#3154). Paint-only.
++        let decoration_pin = prepaint.last_layout.projection.clone();
++        let decorations = decoration_pin.as_ref().and_then(|pin| pin.projection.decorations());
++        let slots = decorations.map(|d| d.slots).unwrap_or_default();
++        let content_width = prepaint.last_layout.content_width;
++
++        // Blockquote slot: one background per run of quoted lines, under
++        // everything else on those rows.
++        if let Some(quote) = slots.blockquote.filter(|q| {
++            marker_source_matches
++                && (q.background.is_some() || q.top_bar.is_some() || q.bottom_bar.is_some())
++        }) {
++            let mut blocks: Vec<Bounds<Pixels>> = Vec::new();
++            let mut offset_y = invisible_top_padding;
++            for (line_index, (line, &buffer_line)) in prepaint
++                .last_layout
++                .lines
++                .iter()
++                .zip(prepaint.last_layout.visible_buffer_lines.iter())
++                .enumerate()
++            {
++                let height = line.size(&prepaint.last_layout.rows).height;
++                let bar_x = prepaint
++                    .marker_rows
++                    .get(line_index)
++                    .and_then(|rows| rows.first())
++                    .and_then(|row| row.as_ref())
++                    .and_then(|row| row.quote_bar_x())
++                    .filter(|_| !prepaint.block_lines.iter().any(|l| l.contains(&buffer_line)));
++                if let Some(bar_x) = bar_x {
++                    let x = origin.x
++                        + prepaint.last_layout.line_number_width
++                        + scroll_offset
++                        + line.row_paint(0, text_align, Some(content_width)).0
++                        + bar_x;
++                    let right = origin.x
++                        + prepaint.last_layout.line_number_width
++                        + scroll_offset
++                        + content_width;
++                    let top = origin.y + offset_y;
++                    match blocks.last_mut() {
++                        Some(block) if (block.bottom() - top).abs() < px(0.5) => {
++                            *block = Bounds::from_corners(
++                                block.origin,
++                                point(block.right().max(right), top + height),
++                            );
++                        }
++                        _ => blocks.push(Bounds::from_corners(
++                            point(x, top),
++                            point(right.max(x), top + height),
++                        )),
++                    }
++                }
++                offset_y += height;
++                if Some(buffer_line) == prepaint.current_row {
++                    offset_y += prepaint.ghost_lines_height;
++                }
++            }
++            for block in blocks {
++                quote.paint(block, window);
++            }
++        }
++        let heading_rule = slots
++            .heading_rule
++            .zip(decorations)
++            .filter(|(_, d)| !d.heading_rule_lines.is_empty());
++        let link_marker = slots
++            .link_marker
++            .zip(decorations)
++            .filter(|(_, d)| !d.links.is_empty());
++
+         // Paint glyph backgrounds
+         //
+         // gpui's `paint` only draws glyphs, underlines, and strikethroughs, so decoration
+@@ -3069,6 +3140,49 @@ impl<M: InputModeKind> Element for TextElement<M> {
+                     }
+                 }
+             }
++            // Heading rule slot: under the heading's last row.
++            if let Some((rule, d)) = heading_rule
++                && d.heading_rule_lines.binary_search(&buffer_line).is_ok()
++            {
++                let height = line.size(&prepaint.last_layout.rows).height;
++                rule.paint(
++                    point(p.x, p.y + height - rule.thickness),
++                    content_width,
++                    window,
++                );
++            }
++            // Link marker slot: a band under the lower part of each link row.
++            if let Some((marker, d)) = link_marker {
++                let line_rows = line.rows(&prepaint.last_layout.rows);
++                let mut row_start = prepaint.last_layout.visible_line_byte_offsets[line_index];
++                for (row_index, row) in line.wrapped_lines.iter().enumerate() {
++                    let row_end = row_start + row.len();
++                    let first = d.links.partition_point(|link| link.end.0 <= row_start);
++                    let mut rtl = None;
++                    for link in d.links[first..].iter().take_while(|l| l.start.0 < row_end) {
++                        let start = link.start.0.max(row_start) - row_start;
++                        let end = link.end.0.min(row_end) - row_start;
++                        if start >= end
++                            || *rtl.get_or_insert_with(|| {
++                                unicode_bidi::BidiInfo::new(&row.text, None).has_rtl()
++                            })
++                        {
++                            continue;
++                        }
++                        let (x, align, align_width) =
++                            line.row_paint(row_index, text_align, Some(content_width));
++                        let left = p.x + x + aligned_shift(align, align_width, row.width);
++                        marker.paint(
++                            left + row.x_for_index(start),
++                            left + row.x_for_index(end),
++                            p.y + line_rows.row_top(row_index),
++                            line_rows.row_height(row_index),
++                            window,
++                        );
++                    }
++                    row_start = row_end;
++                }
++            }
+             line.paint_background(
+                 p,
+                 &prepaint.last_layout.rows,
+@@ -3129,6 +3243,24 @@ impl<M: InputModeKind> Element for TextElement<M> {
+         // Track the y-position of the cursor row for positioning the first line suffix
+         let mut cursor_row_y = None;
+ 
++        // Bold gradient slot: the provider drew these spans in the gradient
++        // run colour; paint each letter in its own colour over them.
++        let bold_gradient = slots.bold.zip(decorations).and_then(|(gradient, d)| {
++            let offsets = &prepaint.last_layout.visible_line_byte_offsets;
++            let first = *offsets.first()?;
++            let last = prepaint
++                .last_layout
++                .lines
++                .last()
++                .map_or(first, |line| offsets.last().copied().unwrap_or(first) + line.len());
++            let spans: Vec<std::ops::Range<usize>> = d
++                .bold
++                .iter()
++                .filter(|span| span.end.0 > first && span.start.0 <= last)
++                .map(|span| span.start.0..span.end.0)
++                .collect();
++            (!spans.is_empty()).then_some((gradient, spans))
++        });
+         let mut painted_tasks = Vec::new();
+         for (line_index, (line, &buffer_line)) in prepaint
+             .last_layout
+@@ -3162,7 +3294,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+                     let row_origin = p + point(x, row_top);
+                     if let Some(Some(paint)) = rows.get(row_index) {
+                         painted_tasks.extend(paint.paint(row_origin, row_height,
+-                            content_width - x, editor_style.foreground, window, cx));
++                            content_width - x, editor_style.foreground, Some(&slots), window, cx));
+                     } else {
+                         let _ = row.paint(row_origin, row_height, align, align_width, window, cx);
+                     }
+@@ -3170,6 +3302,33 @@ impl<M: InputModeKind> Element for TextElement<M> {
+             } else {
+                 line.paint(p, &prepaint.last_layout.rows, text_align, Some(prepaint.last_layout.content_width), window, cx);
+             }
++            if let (Some((gradient, spans)), Some(pin)) = (bold_gradient.as_ref(), decoration_pin.as_ref()) {
++                let letters = crate::text::LetterGradient::new(pin.projection.text(), spans);
++                let line_rows = line.rows(&prepaint.last_layout.rows);
++                let mut row_start = prepaint.last_layout.visible_line_byte_offsets[line_index];
++                for (row_index, row) in line.wrapped_lines.iter().enumerate() {
++                    let row_end = row_start + row.len();
++                    if spans.iter().any(|span| span.start < row_end && span.end > row_start) {
++                        let (x, align, align_width) =
++                            line.row_paint(row_index, text_align, Some(content_width));
++                        let shift = aligned_shift(align, align_width, row.width);
++                        crate::text::paint_gradient_glyphs(
++                            row,
++                            row.runs.iter().flat_map(|run| {
++                                run.glyphs.iter().map(move |glyph| (run.font_id, *glyph))
++                            }),
++                            p + point(x + shift, line_rows.row_top(row_index)),
++                            px(0.),
++                            line_rows.row_height(row_index),
++                            row_start,
++                            gradient,
++                            &letters,
++                            window,
++                        );
++                    }
++                    row_start = row_end;
++                }
++            }
+             offset_y += line.size(&prepaint.last_layout.rows).height;
+ 
+             if Some(row) == prepaint.current_row {
+@@ -4573,3 +4732,12 @@ mod projection_run_tests {
+         assert_eq!(runs_for_range(&tail, 4, &(0..1))[0].font, font);
+     }
+ }
++
++/// Where gpui's `ShapedLine::paint` puts a row `width` wide under `align`.
++fn aligned_shift(align: TextAlign, align_width: Option<Pixels>, width: Pixels) -> Pixels {
++    match (align, align_width) {
++        (TextAlign::Left, _) | (_, None) => px(0.),
++        (TextAlign::Center, Some(edge)) => (edge - width) / 2.,
++        (TextAlign::Right, Some(edge)) => edge - width,
++    }
++}
+diff --git a/crates/base/src/input/base/marker_paint.rs b/crates/base/src/input/base/marker_paint.rs
+index c0ce6186..0b2d4248 100644
+--- a/crates/base/src/input/base/marker_paint.rs
++++ b/crates/base/src/input/base/marker_paint.rs
+@@ -344,9 +344,12 @@ impl RowPaint {
+         height: Pixels,
+         content_width: Pixels,
+         color: Hsla,
++        decorations: Option<&crate::text::TextDecorations>,
+         window: &mut Window,
+         cx: &mut App,
+     ) -> Vec<PaintedTask> {
++        let quote_border = decorations.and_then(|d| d.blockquote).and_then(|q| q.border);
++        let rule = decorations.and_then(|d| d.horizontal_rule);
+         let mut tasks = Vec::new();
+         match &self.foreground {
+             Foreground::Pieces(pieces) => {
+@@ -418,7 +421,8 @@ impl RowPaint {
+                             origin + point(shape.x + shape.width / 2., px(0.)),
+                             size(px(2.).min(shape.width), height),
+                         ),
+-                        color.opacity(0.45),
++                        // Theme slot (#3154): the blockquote border colour.
++                        quote_border.unwrap_or(color.opacity(0.45)),
+                     )),
+                     MarkerKind::Task { checked } => {
+                         let side = (height * 0.62).min(shape.width).min(px(16.));
+@@ -455,13 +459,21 @@ impl RowPaint {
+                     size((content_width - shape.x).max(px(0.)), height),
+                 );
+                 window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+-                    window.paint_quad(fill(
+-                        Bounds::new(
+-                            origin + point(shape.x, height / 2.),
+-                            size(bounds.size.width, px(1.)),
++                    match rule {
++                        // Theme slot (#3154): edge -> middle -> edge.
++                        Some(rule) => rule.paint(
++                            origin + point(shape.x, (height - rule.thickness) / 2.),
++                            bounds.size.width,
++                            window,
+                         ),
+-                        color.opacity(0.45),
+-                    ));
++                        None => window.paint_quad(fill(
++                            Bounds::new(
++                                origin + point(shape.x, height / 2.),
++                                size(bounds.size.width, px(1.)),
++                            ),
++                            color.opacity(0.45),
++                        )),
++                    }
+                 });
+             }
+         }
+@@ -469,6 +481,17 @@ impl RowPaint {
+     }
+ }
+ 
++impl RowPaint {
++    /// The x where this row's outermost quote bar is drawn, if it has one.
++    pub(super) fn quote_bar_x(&self) -> Option<Pixels> {
++        self.shapes
++            .iter()
++            .filter(|shape| matches!(shape.kind, MarkerKind::Quote { .. }))
++            .map(|shape| shape.x + shape.width / 2.)
++            .reduce(|a, b| a.min(b))
++    }
++}
++
+ #[cfg(test)]
+ impl RowPaint {
+     /// The x of each quote bar this continuation row draws in its gutter.
+diff --git a/crates/base/src/input/projection.rs b/crates/base/src/input/projection.rs
+index e72cb01b..ef7f433a 100644
+--- a/crates/base/src/input/projection.rs
++++ b/crates/base/src/input/projection.rs
+@@ -110,6 +110,21 @@ pub struct ProjectionStyle {
+     pub strikethrough: bool,
+ }
+ 
++/// Theme decoration slots for one composition and where they apply (#3154).
++/// Paint-only: none of it changes text, runs or layout.
++#[derive(Clone, Debug, Default, PartialEq)]
++pub struct ProjectionDecorations {
++    pub slots: crate::text::TextDecorations,
++    /// Projected lines of H2-H6 headings, sorted: the heading rule goes
++    /// under each.
++    pub heading_rule_lines: Vec<usize>,
++    /// Projected link ranges, sorted, for the link marker.
++    pub links: Vec<Range<ProjectedByte>>,
++    /// Projected bold ranges painted letter by letter, sorted and disjoint.
++    /// The provider gives their styles [`crate::text::gradient_run_color`].
++    pub bold: Vec<Range<ProjectedByte>>,
++}
++
+ /// Source-anchored, revision-bound paint metadata. Never changes text layout.
+ #[derive(Clone, Debug)]
+ pub enum MarkerKind {
+@@ -274,6 +289,10 @@ pub trait SourceProjection: Send + Sync {
+         super::projection_layout::clip_hit_offset(self.text(), offset, bias)
+     }
+     fn styles(&self) -> &[ProjectionStyle];
++    /// Theme decorations of this composition; None draws none.
++    fn decorations(&self) -> Option<&ProjectionDecorations> {
++        None
++    }
+     fn to_projected(&self, source: SourceByte, bias: ConcealBias) -> Option<ProjectedByte>;
+     fn to_source(&self, projected: ProjectedByte, bias: ConcealBias) -> Option<SourceByte>;
+ }
+diff --git a/crates/base/src/text/decorations.rs b/crates/base/src/text/decorations.rs
+new file mode 100644
+index 00000000..776c5efb
+--- /dev/null
++++ b/crates/base/src/text/decorations.rs
+@@ -0,0 +1,359 @@
++//! Theme decoration slots for rich text and the editor's Live Preview.
++//!
++//! A theme fills these with parameters; the renderer draws each slot in one
++//! place. Every slot is optional, and an empty [`TextDecorations`] draws
++//! exactly what the renderer drew before slots existed. Decorations are
++//! paint-time only: they never change text, font runs or layout, so the
++//! shaped-line cache keeps hitting.
++
++use std::ops::Range;
++
++use gpui::{
++    Background, Bounds, Hsla, Pixels, Point, Rgba, Window, linear_color_stop,
++    linear_gradient, point, px,
++};
++
++/// A two-stop linear gradient. `angle` is in degrees as in CSS
++/// `linear-gradient`: 90 runs left to right, 180 top to bottom.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct Gradient {
++    pub angle: f32,
++    pub from: Hsla,
++    pub to: Hsla,
++}
++
++impl Gradient {
++    pub fn new(angle: f32, from: Hsla, to: Hsla) -> Self {
++        Self { angle, from, to }
++    }
++
++    /// Left to right.
++    pub fn horizontal(from: Hsla, to: Hsla) -> Self {
++        Self::new(90., from, to)
++    }
++
++    /// The quad background for this gradient.
++    pub fn background(&self) -> Background {
++        linear_gradient(
++            self.angle,
++            linear_color_stop(self.from, 0.),
++            linear_color_stop(self.to, 1.),
++        )
++    }
++
++    /// The colour at `t` (0 = `from`, 1 = `to`), interpolated in sRGB with
++    /// alpha, as a two-stop CSS gradient is.
++    pub fn color_at(&self, t: f32) -> Hsla {
++        let t = if t.is_finite() { t.clamp(0., 1.) } else { 0. };
++        let (a, b) = (Rgba::from(self.from), Rgba::from(self.to));
++        let mix = |x: f32, y: f32| x + (y - x) * t;
++        Hsla::from(Rgba {
++            r: mix(a.r, b.r),
++            g: mix(a.g, b.g),
++            b: mix(a.b, b.b),
++            a: mix(a.a, b.a),
++        })
++    }
++}
++
++/// A thin gradient bar covering the first `length` (0..=1) of its width.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct GradientBar {
++    pub gradient: Gradient,
++    pub length: f32,
++    pub thickness: Pixels,
++}
++
++impl GradientBar {
++    /// The bar's width in a box `width` wide.
++    pub fn width_in(&self, width: Pixels) -> Pixels {
++        width * self.length.clamp(0., 1.)
++    }
++
++    /// Paints the bar with its top-left corner at `origin`.
++    pub fn paint(&self, origin: Point<Pixels>, width: Pixels, window: &mut Window) {
++        let width = self.width_in(width);
++        if width <= px(0.) || self.thickness <= px(0.) {
++            return;
++        }
++        window.paint_quad(gpui::fill(
++            Bounds::new(origin, gpui::size(width, self.thickness)),
++            self.gradient.background(),
++        ));
++    }
++}
++
++/// `hr`: `edge → middle → edge`, drawn as two two-stop halves.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct HorizontalRule {
++    pub edge: Hsla,
++    pub middle: Hsla,
++    pub thickness: Pixels,
++}
++
++impl HorizontalRule {
++    /// The left half's gradient; the right half runs the other way.
++    pub fn halves(&self) -> [Gradient; 2] {
++        [
++            Gradient::horizontal(self.edge, self.middle),
++            Gradient::horizontal(self.middle, self.edge),
++        ]
++    }
++
++    /// Paints the rule with its top-left corner at `origin`.
++    pub fn paint(&self, origin: Point<Pixels>, width: Pixels, window: &mut Window) {
++        if width <= px(0.) || self.thickness <= px(0.) {
++            return;
++        }
++        let half = width / 2.;
++        for (ix, gradient) in self.halves().into_iter().enumerate() {
++            window.paint_quad(gpui::fill(
++                Bounds::new(
++                    origin + point(half * ix as f32, px(0.)),
++                    gpui::size(half, self.thickness),
++                ),
++                gradient.background(),
++            ));
++        }
++    }
++}
++
++/// Blockquote: an angled background, a left border colour, and short
++/// gradient bars along the top and bottom edges.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct BlockquoteDecoration {
++    pub background: Option<Gradient>,
++    pub border: Option<Hsla>,
++    pub top_bar: Option<GradientBar>,
++    pub bottom_bar: Option<GradientBar>,
++}
++
++impl BlockquoteDecoration {
++    /// Paints the background and bars over `bounds` (the quote's box).
++    pub fn paint(&self, bounds: Bounds<Pixels>, window: &mut Window) {
++        if let Some(background) = self.background {
++            window.paint_quad(gpui::fill(bounds, background.background()));
++        }
++        if let Some(bar) = self.top_bar {
++            bar.paint(bounds.origin, bounds.size.width, window);
++        }
++        if let Some(bar) = self.bottom_bar {
++            bar.paint(
++                point(bounds.left(), bounds.bottom() - bar.thickness),
++                bounds.size.width,
++                window,
++            );
++        }
++    }
++}
++
++/// A highlight band under the lower part of a link's line, not the full line
++/// height. `height` is the band's share of the line height (0..=1); the band
++/// ends at `bottom`, also a share of the line height measured from its top.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct LinkMarker {
++    pub fill: Gradient,
++    pub height: f32,
++    pub bottom: f32,
++}
++
++impl LinkMarker {
++    /// The band's `(top, bottom)` inside a line that starts at `line_top`.
++    pub fn band(&self, line_top: Pixels, line_height: Pixels) -> (Pixels, Pixels) {
++        let bottom = self.bottom.clamp(0., 1.);
++        let height = self.height.clamp(0., bottom);
++        (
++            line_top + line_height * (bottom - height),
++            line_top + line_height * bottom,
++        )
++    }
++
++    /// Paints the band over `left..right` of the line at `line_top`.
++    pub fn paint(
++        &self,
++        left: Pixels,
++        right: Pixels,
++        line_top: Pixels,
++        line_height: Pixels,
++        window: &mut Window,
++    ) {
++        let (top, bottom) = self.band(line_top, line_height);
++        if right <= left || bottom <= top {
++            return;
++        }
++        window.paint_quad(gpui::fill(
++            Bounds::from_corners(point(left, top), point(right, bottom)),
++            self.fill.background(),
++        ));
++    }
++}
++
++/// The decoration slots a theme can fill. `Default` is no decoration.
++#[derive(Clone, Copy, Debug, Default, PartialEq)]
++pub struct TextDecorations {
++    /// A rule under H2–H6.
++    pub heading_rule: Option<GradientBar>,
++    pub horizontal_rule: Option<HorizontalRule>,
++    pub blockquote: Option<BlockquoteDecoration>,
++    pub link_marker: Option<LinkMarker>,
++    /// Bold text coloured letter by letter along the span.
++    pub bold: Option<Gradient>,
++}
++
++impl TextDecorations {
++    pub fn is_empty(&self) -> bool {
++        *self == Self::default()
++    }
++}
++
++/// The run colour of glyphs that [`paint_gradient_glyphs`] paints itself. A
++/// bold span already is its own font run, so giving it one colour adds no
++/// font-run split and leaves the shaped-line cache key unchanged; the letter
++/// colours come at paint time.
++pub fn gradient_run_color() -> Hsla {
++    gpui::transparent_black()
++}
++
++/// Per-letter colours for byte ranges of a line: the `t` of a byte offset
++/// along its span, counted in characters, so every letter gets its own step.
++pub struct LetterGradient<'a> {
++    text: &'a str,
++    spans: &'a [Range<usize>],
++}
++
++impl<'a> LetterGradient<'a> {
++    pub fn new(text: &'a str, spans: &'a [Range<usize>]) -> Self {
++        Self { text, spans }
++    }
++
++    /// `t` for the character starting at `index`, if it is in a span.
++    pub fn t_at(&self, index: usize) -> Option<f32> {
++        let at = self.spans.partition_point(|span| span.end <= index);
++        let span = self.spans.get(at).filter(|span| span.start <= index)?;
++        // A glyph inside a span always gets a colour: should the text not
++        // cover the span, the step falls back to bytes.
++        let (before, count) = match (self.text.get(span.clone()), self.text.get(span.start..index)) {
++            (Some(text), Some(before)) => (before.chars().count(), text.chars().count()),
++            _ => (index - span.start, span.len()),
++        };
++        if count <= 1 {
++            return Some(0.);
++        }
++        Some(before as f32 / (count - 1) as f32)
++    }
++}
++
++/// Paints the glyphs of one visual row whose byte index lies in a gradient
++/// span, each in its letter's colour. `origin` is the row's painted top-left
++/// and `row_x` the layout x of its first glyph (0 for the first row of a
++/// line); `start` is the line's first byte in the text `letters` indexes. Emoji keep their own colours and are skipped:
++/// the ordinary paint drew them, since an emoji ignores its run colour.
++pub fn paint_gradient_glyphs(
++    layout: &gpui::LineLayout,
++    glyphs: impl Iterator<Item = (gpui::FontId, gpui::ShapedGlyph)>,
++    origin: Point<Pixels>,
++    row_x: Pixels,
++    line_height: Pixels,
++    start: usize,
++    gradient: &Gradient,
++    letters: &LetterGradient,
++    window: &mut Window,
++) {
++    let padding_top = (line_height - layout.ascent - layout.descent) / 2.;
++    let baseline = padding_top + layout.ascent;
++    let mask = window.content_mask().bounds;
++    if origin.y > mask.bottom() || origin.y + line_height < mask.top() {
++        return;
++    }
++    for (font_id, glyph) in glyphs {
++        if glyph.is_emoji {
++            continue;
++        }
++        let Some(t) = letters.t_at(start + glyph.index) else {
++            continue;
++        };
++        let at = origin + point(glyph.position.x - row_x, baseline + glyph.position.y);
++        if at.x > mask.right() + layout.font_size * 2. || at.x < mask.left() - layout.font_size * 2.
++        {
++            continue;
++        }
++        let _ = window.paint_glyph(at, font_id, glyph.id, layout.font_size, gradient.color_at(t));
++    }
++}
++
++/// Merges sorted byte ranges that touch into maximal spans.
++pub fn merge_touching(ranges: impl IntoIterator<Item = Range<usize>>) -> Vec<Range<usize>> {
++    let mut spans: Vec<Range<usize>> = Vec::new();
++    for range in ranges {
++        if range.is_empty() {
++            continue;
++        }
++        match spans.last_mut() {
++            Some(last) if last.end == range.start => last.end = range.end,
++            _ => spans.push(range),
++        }
++    }
++    spans
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn gradient_interpolates_from_end_to_end() {
++        let from: Hsla = gpui::rgb(0x87c2fd).into();
++        let to: Hsla = gpui::rgb(0xdcb9fc).into();
++        let g = Gradient::horizontal(from, to);
++        let close = |a: Hsla, b: Hsla| {
++            let (a, b) = (Rgba::from(a), Rgba::from(b));
++            (a.r - b.r).abs() < 1e-3 && (a.g - b.g).abs() < 1e-3 && (a.b - b.b).abs() < 1e-3
++        };
++        assert!(close(g.color_at(0.), from));
++        assert!(close(g.color_at(1.), to));
++        let mid = Rgba::from(g.color_at(0.5));
++        assert!((mid.r - (0x87 as f32 + 0xdc as f32) / 2. / 255.).abs() < 1e-2);
++        assert!(close(g.color_at(f32::NAN), from));
++    }
++
++    #[test]
++    fn letters_step_once_per_character_and_only_inside_spans() {
++        let text = "a **éclat** b";
++        let start = text.find('é').unwrap();
++        let span = start..start + text[start..].find("**").unwrap();
++        let spans = [span.clone()];
++        let letters = LetterGradient::new(text, &spans);
++        assert_eq!(letters.t_at(0), None);
++        assert_eq!(letters.t_at(span.start), Some(0.));
++        // `é` is two bytes: `c` is the second letter of five.
++        assert_eq!(letters.t_at(span.start + 2), Some(0.25));
++        assert_eq!(letters.t_at(span.end - 1), Some(1.));
++        assert_eq!(letters.t_at(span.end), None);
++    }
++
++    #[test]
++    fn touching_ranges_merge_into_one_span() {
++        assert_eq!(merge_touching([0..2, 2..5, 6..8, 8..8]), vec![0..5, 6..8]);
++    }
++
++    #[test]
++    fn link_marker_band_is_the_lower_part_of_the_line() {
++        let marker = LinkMarker {
++            fill: Gradient::horizontal(gpui::red(), gpui::blue()),
++            height: 0.25,
++            bottom: 0.75,
++        };
++        let (top, bottom) = marker.band(px(100.), px(20.));
++        assert_eq!((top, bottom), (px(110.), px(115.)));
++    }
++
++    #[test]
++    fn empty_decorations_are_the_default() {
++        assert!(TextDecorations::default().is_empty());
++        let bold = TextDecorations {
++            bold: Some(Gradient::horizontal(gpui::red(), gpui::blue())),
++            ..Default::default()
++        };
++        assert!(!bold.is_empty());
++    }
++}
+diff --git a/crates/base/src/text/inline.rs b/crates/base/src/text/inline.rs
+index 2d9cd551..5b50e138 100644
+--- a/crates/base/src/text/inline.rs
++++ b/crates/base/src/text/inline.rs
+@@ -208,6 +208,165 @@ pub(super) fn text_runs(
+     }
+ }
+ 
++/// Bold ranges whose letters take the theme's bold gradient: bold weight, no
++/// colour of their own (links, code and syntax keep theirs), no font family
++/// override. Touching ranges form one span, so the gradient runs along the
++/// whole bold phrase. Right-to-left text keeps its solid colour: its glyph
++/// order does not follow byte order.
++pub(super) fn bold_gradient_spans(
++    text: &str,
++    highlights: &[(Range<usize>, InlineHighlight)],
++) -> Vec<Range<usize>> {
++    if unicode_bidi::BidiInfo::new(text, None).has_rtl() {
++        return Vec::new();
++    }
++    super::merge_touching(
++        highlights
++            .iter()
++            .filter(|(range, h)| {
++                h.style.font_weight == Some(gpui::FontWeight::BOLD)
++                    && h.style.color.is_none()
++                    && h.font_family.is_none()
++                    && text.is_char_boundary(range.start.min(text.len()))
++                    && text.is_char_boundary(range.end.min(text.len()))
++            })
++            .map(|(range, _)| range.clone()),
++    )
++}
++
++/// `runs` with the gradient spans in [`super::gradient_run_color`], set on
++/// the runs themselves: a highlight colour would be blended onto the text
++/// colour, and a transparent one would leave it unchanged. Only the colour
++/// changes: a bold span already is its own font run, so the font runs, and
++/// with them shaping and the line-layout cache key, stay as they were. Lines
++/// drawn through or under the text keep the text colour.
++pub(super) fn gradient_runs(
++    mut runs: Vec<TextRun>,
++    spans: &[Range<usize>],
++) -> Vec<TextRun> {
++    if spans.is_empty() {
++        return runs;
++    }
++    let mut offset = 0;
++    for run in &mut runs {
++        let range = offset..offset + run.len;
++        offset = range.end;
++        if !spans
++            .iter()
++            .any(|span| span.start <= range.start && range.end <= span.end)
++        {
++            continue;
++        }
++        if let Some(strike) = run.strikethrough.as_mut() {
++            strike.color.get_or_insert(run.color);
++        }
++        if let Some(underline) = run.underline.as_mut() {
++            underline.color.get_or_insert(run.color);
++        }
++        run.color = super::gradient_run_color();
++    }
++    runs
++}
++
++/// One visual row of an inline layout, placed as gpui's paint places it.
++pub(super) struct PaintedRow {
++    pub(super) line: Arc<gpui::LineLayout>,
++    /// Byte offset of the row's hard line in the inline text.
++    pub(super) line_start: usize,
++    /// Painted top-left of the row.
++    pub(super) origin: Point<Pixels>,
++    /// Layout x of the row's first glyph and of its end.
++    pub(super) row_x: Pixels,
++    pub(super) end_x: Pixels,
++    pub(super) glyphs: Vec<(gpui::FontId, gpui::ShapedGlyph)>,
++}
++
++/// Every visual row of `layout`, top to bottom, with its glyphs.
++pub(super) fn painted_rows(layout: &AlignedLayout) -> Vec<PaintedRow> {
++    let bounds = layout.bounds();
++    let line_height = layout.line_height();
++    let offsets = layout.row_offsets();
++    let mut rows = Vec::new();
++    let mut top = bounds.origin.y;
++    let mut line_start = 0;
++    for line in layout.line_layouts() {
++        let unwrapped = line.unwrapped_layout.clone();
++        let x_at =
++            |b: &gpui::WrapBoundary| unwrapped.runs[b.run_ix].glyphs[b.glyph_ix].position.x;
++        let starts: Vec<Pixels> = std::iter::once(px(0.))
++            .chain(line.wrap_boundaries.iter().map(x_at))
++            .collect();
++        let mut row_glyphs = vec![Vec::new(); starts.len()];
++        let mut boundaries = line.wrap_boundaries.iter().peekable();
++        let mut row = 0;
++        for (run_ix, run) in unwrapped.runs.iter().enumerate() {
++            for (glyph_ix, glyph) in run.glyphs.iter().enumerate() {
++                if boundaries.peek() == Some(&&gpui::WrapBoundary { run_ix, glyph_ix }) {
++                    boundaries.next();
++                    row = (row + 1).min(starts.len() - 1);
++                }
++                row_glyphs[row].push((run.font_id, *glyph));
++            }
++        }
++        for (ix, glyphs) in row_glyphs.into_iter().enumerate() {
++            let offset = offsets.get(rows.len()).map_or(px(0.), |(_, offset)| *offset);
++            rows.push(PaintedRow {
++                line: unwrapped.clone(),
++                line_start,
++                origin: point(bounds.origin.x + offset, top + line_height * ix as f32),
++                row_x: starts[ix],
++                end_x: starts.get(ix + 1).copied().unwrap_or(unwrapped.width),
++                glyphs,
++            });
++        }
++        top += line.size(line_height).height;
++        line_start += unwrapped.len + 1;
++    }
++    rows
++}
++
++/// The painted `(left, right)` of `range` on `row`, if the row holds any of it.
++fn row_span(row: &PaintedRow, range: &Range<usize>) -> Option<(Pixels, Pixels)> {
++    let index = |glyph: &gpui::ShapedGlyph| row.line_start + glyph.index;
++    let first = row.glyphs.iter().position(|(_, g)| range.contains(&index(g)))?;
++    let left = row.glyphs[first].1.position.x;
++    let right = row.glyphs[first..]
++        .iter()
++        .find(|(_, g)| index(g) >= range.end)
++        .map_or(row.end_x, |(_, g)| g.position.x);
++    let x = |x: Pixels| row.origin.x + x - row.row_x;
++    (right > left).then(|| (x(left), x(right)))
++}
++
++/// The theme's link marker: a band under the lower part of each link's line.
++fn paint_link_markers(
++    marker: &super::LinkMarker,
++    links: &[(Range<usize>, LinkMark)],
++    layout: &AlignedLayout,
++    rows: &[PaintedRow],
++    window: &mut Window,
++) {
++    let line_height = layout.line_height();
++    let mask = window.content_mask().bounds;
++    for (range, _) in links {
++        // Right-to-left lines: the drawn spans of the link's characters.
++        if let Some(rects) = layout.rtl_selection_rects(range.clone()) {
++            for rect in rects {
++                marker.paint(rect.left(), rect.right(), rect.top(), line_height, window);
++            }
++            continue;
++        }
++        for row in rows {
++            if row.origin.y > mask.bottom() || row.origin.y + line_height < mask.top() {
++                continue;
++            }
++            if let Some((left, right)) = row_span(row, range) {
++                marker.paint(left, right, row.origin.y, line_height, window);
++            }
++        }
++    }
++}
++
+ /// A inline element used to render a inline text and support selectable.
+ ///
+ /// All text in TextView (including the CodeBlock) used this for text rendering.
+@@ -222,6 +381,10 @@ pub(super) struct Inline {
+     highlights: Vec<(Range<usize>, InlineHighlight)>,
+     styled_text: StyledText,
+     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
++    /// Theme slots this text paints: the link marker and the bold gradient.
++    decorations: super::TextDecorations,
++    /// Bold byte ranges painted letter by letter, decided in request_layout.
++    gradient_spans: Vec<Range<usize>>,
+ 
+     state: Arc<Mutex<InlineState>>,
+ }
+@@ -275,10 +438,18 @@ impl Inline {
+             text: text.clone(),
+             styled_text: StyledText::new(text),
+             link_click_handler,
++            decorations: Default::default(),
++            gradient_spans: Vec::new(),
+             state,
+         }
+     }
+ 
++    /// The theme decoration slots for this text (link marker, bold gradient).
++    pub(super) fn decorations(mut self, decorations: super::TextDecorations) -> Self {
++        self.decorations = decorations;
++        self
++    }
++
+     pub(super) fn search_source(mut self, state: &Arc<Mutex<InlineState>>, offset: usize) -> Self {
+         self.search_segment = Arc::as_ptr(state) as usize;
+         self.search_offset = offset;
+@@ -650,7 +821,19 @@ impl Element for Inline {
+         cx: &mut App,
+     ) -> (LayoutId, Self::RequestLayoutState) {
+         let text_style = window.text_style();
+-        let runs = text_runs(&self.text, &text_style, &self.highlights);
++        let runs = match self.decorations.bold {
++            Some(_) => {
++                self.gradient_spans = bold_gradient_spans(&self.text, &self.highlights);
++                gradient_runs(
++                    text_runs(&self.text, &text_style, &self.highlights),
++                    &self.gradient_spans,
++                )
++            }
++            None => {
++                self.gradient_spans.clear();
++                text_runs(&self.text, &text_style, &self.highlights)
++            }
++        };
+ 
+         self.styled_text = StyledText::new(self.text.clone()).with_runs(runs);
+         let (layout_id, _) =
+@@ -749,8 +932,35 @@ impl Element for Inline {
+ 
+         let text_layout =
+             AlignedLayout::new(self.styled_text.layout().clone(), window.text_style().text_align);
++        let link_marker = self.decorations.link_marker.filter(|_| !self.links.is_empty());
++        let gradient = self
++            .decorations
++            .bold
++            .filter(|_| !self.gradient_spans.is_empty());
++        let rows = (link_marker.is_some() || gradient.is_some())
++            .then(|| painted_rows(&text_layout));
++        if let (Some(marker), Some(rows)) = (link_marker, rows.as_ref()) {
++            paint_link_markers(&marker, &self.links, &text_layout, rows, window);
++        }
+         self.styled_text
+             .paint(global_id, None, bounds, &mut (), &mut (), window, cx);
++        if let (Some(gradient), Some(rows)) = (gradient, rows.as_ref()) {
++            let letters = super::LetterGradient::new(&self.text, &self.gradient_spans);
++            let line_height = text_layout.line_height();
++            for row in rows {
++                super::paint_gradient_glyphs(
++                    &row.line,
++                    row.glyphs.iter().copied(),
++                    row.origin,
++                    row.row_x,
++                    line_height,
++                    row.line_start,
++                    &gradient,
++                    &letters,
++                    window,
++                );
++            }
++        }
+ 
+         // One transient index serves selection and hit geometry for this paint.
+         let geometry = OnceCell::new();
+@@ -2050,3 +2260,169 @@ mod font_presentation_regressions {
+         );
+     }
+ }
++
++#[cfg(test)]
++mod issue3154_bold_gradient {
++    use super::{InlineHighlight, bold_gradient_spans, gradient_runs, text_runs};
++    use crate::text::Gradient;
++    use gpui::{FontWeight, HighlightStyle, TextStyle, px};
++    use std::sync::{
++        Arc,
++        atomic::{AtomicUsize, Ordering},
++    };
++
++    /// The wide-mono test fonts, with a separate bold face (as Noto Sans 700
++    /// is) and a count of real shaping calls.
++    struct BoldFace(Arc<AtomicUsize>);
++    const BOLD_ID: gpui::FontId = gpui::FontId(3);
++
++    impl gpui::PlatformTextSystem for BoldFace {
++        fn add_fonts(&self, fonts: Vec<std::borrow::Cow<'static, [u8]>>) -> anyhow::Result<()> {
++            super::test_fonts::WideMonoTextSystem.add_fonts(fonts)
++        }
++        fn all_font_names(&self) -> Vec<String> {
++            vec!["Body".into(), "Mono".into()]
++        }
++        fn font_id(&self, descriptor: &gpui::Font) -> anyhow::Result<gpui::FontId> {
++            if descriptor.family.as_ref() != "Mono" && descriptor.weight >= FontWeight::BOLD {
++                return Ok(BOLD_ID);
++            }
++            super::test_fonts::WideMonoTextSystem.font_id(descriptor)
++        }
++        fn font_metrics(&self, id: gpui::FontId) -> gpui::FontMetrics {
++            super::test_fonts::WideMonoTextSystem.font_metrics(id)
++        }
++        fn typographic_bounds(
++            &self,
++            id: gpui::FontId,
++            glyph: gpui::GlyphId,
++        ) -> anyhow::Result<gpui::Bounds<f32>> {
++            super::test_fonts::WideMonoTextSystem.typographic_bounds(id, glyph)
++        }
++        fn advance(
++            &self,
++            id: gpui::FontId,
++            glyph: gpui::GlyphId,
++        ) -> anyhow::Result<gpui::Size<f32>> {
++            super::test_fonts::WideMonoTextSystem.advance(id, glyph)
++        }
++        fn glyph_for_char(&self, id: gpui::FontId, ch: char) -> Option<gpui::GlyphId> {
++            super::test_fonts::WideMonoTextSystem.glyph_for_char(id, ch)
++        }
++        fn glyph_raster_bounds(
++            &self,
++            params: &gpui::RenderGlyphParams,
++        ) -> anyhow::Result<gpui::Bounds<gpui::DevicePixels>> {
++            super::test_fonts::WideMonoTextSystem.glyph_raster_bounds(params)
++        }
++        fn rasterize_glyph(
++            &self,
++            params: &gpui::RenderGlyphParams,
++            bounds: gpui::Bounds<gpui::DevicePixels>,
++        ) -> anyhow::Result<(gpui::Size<gpui::DevicePixels>, Vec<u8>)> {
++            super::test_fonts::WideMonoTextSystem.rasterize_glyph(params, bounds)
++        }
++        fn recommended_rendering_mode(
++            &self,
++            id: gpui::FontId,
++            size: gpui::Pixels,
++        ) -> gpui::TextRenderingMode {
++            super::test_fonts::WideMonoTextSystem.recommended_rendering_mode(id, size)
++        }
++        fn layout_line(
++            &self,
++            text: &str,
++            size: gpui::Pixels,
++            runs: &[gpui::FontRun],
++        ) -> gpui::LineLayout {
++            self.0.fetch_add(1, Ordering::Relaxed);
++            super::test_fonts::WideMonoTextSystem.layout_line(text, size, runs)
++        }
++    }
++
++    fn bold() -> InlineHighlight {
++        InlineHighlight::from(HighlightStyle {
++            font_weight: Some(FontWeight::BOLD),
++            ..Default::default()
++        })
++    }
++
++    #[test]
++    fn gradient_spans_take_plain_bold_only_and_merge_touching_ranges() {
++        let text = "ab bold more link code";
++        let link = InlineHighlight::from(HighlightStyle {
++            font_weight: Some(FontWeight::BOLD),
++            color: Some(gpui::blue()),
++            ..Default::default()
++        });
++        let code = InlineHighlight {
++            font_family: Some("Mono".into()),
++            ..bold()
++        };
++        let highlights = vec![
++            (3..7, bold()),
++            (7..12, bold()),
++            (13..17, link),
++            (18..22, code),
++        ];
++        assert_eq!(bold_gradient_spans(text, &highlights), vec![3..12]);
++        // Right-to-left text keeps its solid colour.
++        assert!(bold_gradient_spans("שלום abc", &[(9..12, bold())]).is_empty());
++    }
++
++    #[test]
++    fn bold_gradient_reuses_the_shaped_line_and_adds_no_shaping() {
++        let text = "Plain words with a bold phrase inside, then plain words again";
++        let bold_range = 19..30;
++        let highlights = vec![(bold_range.clone(), bold())];
++        let style = TextStyle::default();
++        let gradient = Gradient::horizontal(
++            gpui::rgb(0x87c2fd).into(),
++            gpui::rgb(0xdcb9fc).into(),
++        );
++        let spans = bold_gradient_spans(text, &highlights);
++        assert_eq!(spans, vec![bold_range.clone()]);
++        let plain = text_runs(text, &style, &highlights);
++        let painted = gradient_runs(plain.clone(), &spans);
++        assert_eq!(painted.len(), plain.len(), "only colours change");
++        assert!(painted.iter().any(|run| run.color == crate::text::gradient_run_color()));
++
++        let shaped = Arc::new(AtomicUsize::new(0));
++        let system = gpui::WindowTextSystem::new(Arc::new(gpui::TextSystem::new(Arc::new(
++            BoldFace(shaped.clone()),
++        ))));
++        let shape = |runs: &[gpui::TextRun]| {
++            system
++                .shape_text(text.into(), px(16.), runs, Some(px(160.)), None)
++                .unwrap()
++        };
++        let before = shape(&plain);
++        let calls = shaped.load(Ordering::Relaxed);
++        assert!(calls > 0, "positive control: the first layout really shapes");
++        let after = shape(&painted);
++        assert_eq!(
++            shaped.load(Ordering::Relaxed),
++            calls,
++            "the gradient must hit the shaped-line cache"
++        );
++        assert!(std::ptr::eq::<gpui::WrappedLineLayout>(&**before[0], &**after[0]));
++
++        // Control: a colour run per letter splits the bold font run and
++        // shapes the line again.
++        let per_letter: Vec<_> = text[bold_range.clone()]
++            .char_indices()
++            .map(|(i, ch)| {
++                let start = bold_range.start + i;
++                let mut highlight = bold();
++                highlight.style.color = Some(gradient.color_at(i as f32 / 10.));
++                (start..start + ch.len_utf8(), highlight)
++            })
++            .collect();
++        let naive = shape(&text_runs(text, &style, &per_letter));
++        assert!(
++            shaped.load(Ordering::Relaxed) > calls,
++            "per-letter colour runs reshape the line"
++        );
++        assert!(!std::ptr::eq::<gpui::WrappedLineLayout>(&**before[0], &**naive[0]));
++    }
++}
+diff --git a/crates/base/src/text/inline_flow.rs b/crates/base/src/text/inline_flow.rs
+index 5f0ff3f6..4493b699 100644
+--- a/crates/base/src/text/inline_flow.rs
++++ b/crates/base/src/text/inline_flow.rs
+@@ -28,6 +28,7 @@ pub(super) struct InlineFlow {
+     id: ElementId,
+     items: Vec<InlineFlowItem>,
+     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
++    decorations: super::TextDecorations,
+ }
+ 
+ pub(super) enum InlineFlowItem {
+@@ -110,6 +111,11 @@ enum LineFragmentKind {
+ }
+ 
+ impl InlineFlow {
++    /// Theme decoration slots for the text fragments.
++    pub(super) fn decorations(mut self, decorations: super::TextDecorations) -> Self {
++        self.decorations = decorations;
++        self
++    }
+     pub(super) fn table_wrap(mut self, enabled: bool) -> Self {
+         self.table_wrap = enabled;
+         self
+@@ -133,6 +139,7 @@ impl InlineFlow {
+             id: id.into(),
+             items: split_link_markers(items),
+             link_click_handler,
++            decorations: Default::default(),
+         }
+     }
+ 
+@@ -398,6 +405,7 @@ impl Element for InlineFlow {
+                     .selection_source(source_state, source_offset + source_range.start)
+                     .search_source(source_state, source_offset + source_range.start)
+                     .search_scroll(self.search_scroll.clone())
++                    .decorations(self.decorations)
+                     .into_any_element();
+                     // Each fragment already is a complete measured line. Do not
+                     // run the generic glyph-fallback wrapper a second time.
+diff --git a/crates/base/src/text/inline_geometry.rs b/crates/base/src/text/inline_geometry.rs
+index e4b4da44..da71026d 100644
+--- a/crates/base/src/text/inline_geometry.rs
++++ b/crates/base/src/text/inline_geometry.rs
+@@ -174,6 +174,11 @@ impl AlignedLayout {
+         self.layout.line_height()
+     }
+ 
++    /// The hard lines' layouts, top to bottom.
++    pub(crate) fn line_layouts(&self) -> impl Iterator<Item = std::sync::Arc<gpui::WrappedLineLayout>> {
++        self.layout.line_layouts().into_iter()
++    }
++
+     pub(crate) fn bounds(&self) -> Bounds<Pixels> {
+         self.layout.bounds()
+     }
+diff --git a/crates/base/src/text/mod.rs b/crates/base/src/text/mod.rs
+index 6465f8ea..9076b680 100644
+--- a/crates/base/src/text/mod.rs
++++ b/crates/base/src/text/mod.rs
+@@ -1,3 +1,4 @@
++mod decorations;
+ mod document;
+ mod format;
+ mod inline;
+@@ -15,6 +16,7 @@ mod text_view;
+ mod utils;
+ 
+ use gpui::{App, ElementId, IntoElement, RenderOnce, SharedString, Window};
++pub use decorations::*;
+ pub use markdown_ext::*;
+ pub use node::{CodeBlock, TableData, TextMark};
+ pub use state::*;
+diff --git a/crates/base/src/text/node.rs b/crates/base/src/text/node.rs
+index 316cf24f..4b4f751d 100644
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -1842,6 +1842,7 @@ impl Paragraph {
+             )
+             .search_scroll(node_cx.search_scroll.clone())
+             .table_wrap(node_cx.table_wrap)
++            .decorations(*node_cx.style.decorations())
+             .into_any_element();
+         }
+ 
+@@ -1871,6 +1872,7 @@ impl Paragraph {
+                             node_cx.link_click_handler.clone(),
+                         )
+                         .search_scroll(node_cx.search_scroll.clone())
++                        .decorations(*node_cx.style.decorations())
+                         .into_any_element(),
+                     );
+                 }
+@@ -1972,6 +1974,7 @@ impl Paragraph {
+                     node_cx.link_click_handler.clone(),
+                 )
+                 .search_scroll(node_cx.search_scroll.clone())
++                .decorations(*node_cx.style.decorations())
+                 .into_any_element(),
+             );
+         }
+@@ -2990,9 +2993,32 @@ impl BlockNode {
+                     .font_weight(font_weight)
+                     .when_some(node_cx.style.heading_color(), |d, color| d.text_color(color))
+                     .child(children.render(node_cx, window, cx))
++                    // Theme slot: a rule under H2-H6, accent fading out.
++                    .when_some(
++                        node_cx.style.decorations().heading_rule.filter(|_| *level >= 2),
++                        |d, rule| {
++                            d.child(
++                                div()
++                                    .mt(rems(0.3))
++                                    .h(rule.thickness)
++                                    .w(relative(rule.length.clamp(0., 1.)))
++                                    .bg(rule.gradient.background()),
++                            )
++                        },
++                    )
+                     .into_any_element()
+             }
+-            BlockNode::Blockquote { children, .. } => div()
++            BlockNode::Blockquote { children, .. } => {
++                let decoration = node_cx.style.decorations().blockquote;
++                let bar = |bar: crate::text::GradientBar| {
++                    div()
++                        .absolute()
++                        .left_0()
++                        .h(bar.thickness)
++                        .w(relative(bar.length.clamp(0., 1.)))
++                        .bg(bar.gradient.background())
++                };
++                div()
+                 .w_full()
+                 .pb(mb)
+                 .child(
+@@ -3001,8 +3027,24 @@ impl BlockNode {
+                         .w_full()
+                         .text_color(node_cx.style.muted_foreground())
+                         .border_l_3()
+-                        .border_color(node_cx.style.border())
++                        .border_color(
++                            decoration
++                                .and_then(|d| d.border)
++                                .unwrap_or(node_cx.style.border()),
++                        )
+                         .px_4()
++                        // Theme slot: angled background, short gradient bars
++                        // along the top and bottom edges.
++                        .when_some(decoration, |d, decoration| {
++                            d.relative()
++                                .py_3()
++                                .rounded_r(px(5.))
++                                .when_some(decoration.background, |d, g| d.bg(g.background()))
++                                .when_some(decoration.top_bar, |d, b| d.child(bar(b).top_0()))
++                                .when_some(decoration.bottom_bar, |d, b| {
++                                    d.child(bar(b).bottom_0())
++                                })
++                        })
+                         .children({
+                             let children_len = children.len();
+                             children.into_iter().enumerate().map(move |(index, c)| {
+@@ -3011,7 +3053,8 @@ impl BlockNode {
+                             })
+                         }),
+                 )
+-                .into_any_element(),
++                .into_any_element()
++            }
+             BlockNode::List {
+                 children, ordered, ..
+             } => v_flex()
+@@ -3065,12 +3108,23 @@ impl BlockNode {
+             }
+             BlockNode::HorizontalRule { .. } => div()
+                 .pb(mb)
+-                .child(
+-                    div()
++                .child(match node_cx.style.decorations().horizontal_rule {
++                    // Theme slot: edge -> middle -> edge, two two-stop halves.
++                    Some(rule) => {
++                        let [left, right] = rule.halves();
++                        h_flex()
++                            .id("horizontal-rule")
++                            .h(rule.thickness)
++                            .child(div().flex_1().h_full().bg(left.background()))
++                            .child(div().flex_1().h_full().bg(right.background()))
++                            .into_any_element()
++                    }
++                    None => div()
+                         .id("horizontal-rule")
+                         .bg(node_cx.style.border())
+-                        .h(px(2.)),
+-                )
++                        .h(px(2.))
++                        .into_any_element(),
++                })
+                 .into_any_element(),
+             BlockNode::Break { .. } => div().id("break").into_any_element(),
+             BlockNode::Unknown { .. } | BlockNode::Definition { .. } => div().into_any_element(),
+diff --git a/crates/base/src/text/style.rs b/crates/base/src/text/style.rs
+index e1d29dfc..ed48bb4b 100644
+--- a/crates/base/src/text/style.rs
++++ b/crates/base/src/text/style.rs
+@@ -28,6 +28,7 @@ pub struct TextViewStyle {
+     heading_base_font_size: Pixels,
+     heading_font_size: Option<Arc<dyn Fn(u8, Pixels) -> Pixels + Send + Sync + 'static>>,
+     heading_color: Option<Hsla>,
++    decorations: super::TextDecorations,
+     code_block: StyleRefinement,
+     table: StyleRefinement,
+     table_head: StyleRefinement,
+@@ -59,6 +60,7 @@ impl PartialEq for TextViewStyle {
+                 _ => false,
+             }
+             && self.heading_color == other.heading_color
++            && self.decorations == other.decorations
+             && self.code_block == other.code_block
+             && self.table == other.table
+             && self.table_head == other.table_head
+@@ -105,6 +107,7 @@ impl TextViewStyle {
+             heading_base_font_size: px(14.),
+             heading_font_size: None,
+             heading_color: None,
++            decorations: super::TextDecorations::default(),
+             code_block: StyleRefinement::default(),
+             table: StyleRefinement::default(),
+             table_head: StyleRefinement::default(),
+@@ -219,6 +222,13 @@ impl TextViewStyle {
+         self
+     }
+ 
++    /// Sets the theme decoration slots (heading rule, `hr`, blockquote, link
++    /// marker, bold gradient). The default draws no decoration.
++    pub fn with_decorations(mut self, decorations: super::TextDecorations) -> Self {
++        self.decorations = decorations;
++        self
++    }
++
+     /// Sets the style refinement for code blocks.
+     pub fn with_code_block(mut self, style: StyleRefinement) -> Self {
+         self.code_block = style;
+@@ -335,6 +345,11 @@ impl TextViewStyle {
+         self.heading_color
+     }
+ 
++    /// The theme decoration slots.
++    pub fn decorations(&self) -> &super::TextDecorations {
++        &self.decorations
++    }
++
+     /// The style refinement for code blocks.
+     pub fn code_block(&self) -> &StyleRefinement {
+         &self.code_block
+diff --git a/crates/component/src/text/compat.rs b/crates/component/src/text/compat.rs
+index 51126526..a27bd244 100644
+--- a/crates/component/src/text/compat.rs
++++ b/crates/component/src/text/compat.rs
+@@ -369,6 +369,7 @@ pub(super) fn resolve_component_style(
+         .with_bottom_padding(legacy.bottom_padding)
+         .with_heading_base_font_size(legacy.heading_base_font_size)
+         .with_heading_color(heading_color)
++        .with_decorations(legacy.decorations)
+         .with_code_block(code_block)
+         .with_table(table)
+         .with_table_head(table_head)
+diff --git a/crates/component/src/text/style.rs b/crates/component/src/text/style.rs
+index c562ac96..54f6d3e6 100644
+--- a/crates/component/src/text/style.rs
++++ b/crates/component/src/text/style.rs
+@@ -28,6 +28,8 @@ pub struct TextViewStyle {
+     pub heading_font_size: Option<Arc<dyn Fn(u8, Pixels) -> Pixels + Send + Sync + 'static>>,
+     /// Heading text color. `None` keeps headings in the body foreground.
+     pub heading_color: Option<Hsla>,
++    /// Theme decoration slots; the default draws none.
++    pub decorations: gpui_base::text::TextDecorations,
+     /// Highlight theme for code blocks. Default: [`HighlightTheme::default_light()`]
+     pub highlight_theme: Arc<HighlightTheme>,
+     /// The style refinement for code blocks.
+@@ -74,6 +76,7 @@ impl Default for TextViewStyle {
+             heading_base_font_size: px(14.),
+             heading_font_size: None,
+             heading_color: None,
++            decorations: Default::default(),
+             highlight_theme: HighlightTheme::default_light().clone(),
+             code_block: StyleRefinement::default(),
+             table: StyleRefinement::default(),
+@@ -102,6 +105,7 @@ impl PartialEq for TextViewStyle {
+                 _ => false,
+             }
+             && self.heading_color == other.heading_color
++            && self.decorations == other.decorations
+             && self.highlight_theme == other.highlight_theme
+             && self.code_block == other.code_block
+             && self.table == other.table
+@@ -133,6 +137,11 @@ impl TextViewStyle {
+         self.heading_color = Some(color);
+         self
+     }
++    /// Set the theme decoration slots.
++    pub fn decorations(mut self, decorations: gpui_base::text::TextDecorations) -> Self {
++        self.decorations = decorations;
++        self
++    }
+     /// Set style for code blocks.
+     pub fn code_block(mut self, style: StyleRefinement) -> Self {
+         self.code_block = style;

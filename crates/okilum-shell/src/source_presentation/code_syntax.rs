@@ -372,6 +372,7 @@ mod tests {
                     heading: gpui::rgb(0).into(),
                     link: gpui::rgb(0).into(),
                     muted: gpui::rgb(0).into(),
+                    decorations: Default::default(),
                 };
                 let projection = provider
                     .clone()

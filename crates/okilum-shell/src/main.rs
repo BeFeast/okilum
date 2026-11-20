@@ -1054,6 +1054,8 @@ fn reader_text_style(theme: &Theme) -> TextViewStyle {
     // One scale and one colour for Reader and Live Preview (#1076, #3147).
     .heading_font_size(|level, base| base * source_presentation::heading_scale(level))
     .heading_color(tokens.heading)
+    // Theme decoration slots, shared with Live Preview (#3154).
+    .decorations(tokens.decorations)
 }
 
 #[cfg(test)]

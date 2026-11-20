@@ -81,5 +81,93 @@
       "findMark": "#f1fa8c",
       "findMarkCurrent": "#f4569d"
     }
+  },
+  "decorations": {
+    "light": {
+      "headingRule": {
+        "from": "#c2306f",
+        "to": "#fbfafd",
+        "length": 0.35,
+        "thickness": 1
+      },
+      "hr": {
+        "edge": "#087a9100",
+        "middle": "#087a91",
+        "thickness": 1
+      },
+      "blockquote": {
+        "background": {
+          "angle": 135,
+          "from": "#ebe8f2",
+          "to": "#fbfafd"
+        },
+        "border": "#087a9180",
+        "topBar": {
+          "from": "#087a9180",
+          "to": "#fbfafd00",
+          "length": 0.6,
+          "thickness": 2
+        },
+        "bottomBar": {
+          "from": "#087a9180",
+          "to": "#fbfafd00",
+          "length": 0.25,
+          "thickness": 2
+        }
+      },
+      "linkMarker": {
+        "from": "#087a9133",
+        "to": "#087a9133",
+        "height": 0.2,
+        "bottom": 0.94
+      },
+      "bold": {
+        "from": "#245fa6",
+        "to": "#7140b8"
+      }
+    },
+    "dark": {
+      "headingRule": {
+        "from": "#f4569d",
+        "to": "#100e17",
+        "length": 0.35,
+        "thickness": 1
+      },
+      "hr": {
+        "edge": "#0fb6d600",
+        "middle": "#0fb6d6",
+        "thickness": 1
+      },
+      "blockquote": {
+        "background": {
+          "angle": 135,
+          "from": "#201c2973",
+          "to": "#100e17"
+        },
+        "border": "#0ed2f780",
+        "topBar": {
+          "from": "#0db9d780",
+          "to": "#13111a",
+          "length": 0.6,
+          "thickness": 2
+        },
+        "bottomBar": {
+          "from": "#0db9d780",
+          "to": "#15131c",
+          "length": 0.25,
+          "thickness": 2
+        }
+      },
+      "linkMarker": {
+        "from": "#0ed2f78c",
+        "to": "#0ed2f78c",
+        "height": 0.2,
+        "bottom": 0.94
+      },
+      "bold": {
+        "from": "#87c2fd",
+        "to": "#dcb9fc"
+      }
+    }
   }
 }

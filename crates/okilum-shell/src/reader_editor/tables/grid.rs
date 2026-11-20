@@ -400,6 +400,7 @@ impl TableGrid {
                 heading: brand::reader_palette(cx).heading,
                 link: palette.link,
                 muted: palette.text_muted,
+                decorations: Default::default(),
             },
             reader_fonts::code(cx).to_string(),
             cx.theme().highlight_theme.clone(),
