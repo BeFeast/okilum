@@ -1919,6 +1919,12 @@ struct Reader {
     /// Why the last daily notes choice in Settings was not applied.
     #[cfg(any(unix, windows))]
     daily_notes_error: Option<String>,
+    /// Templates offered for daily notes, read with the preference.
+    #[cfg(any(unix, windows))]
+    daily_templates: reader_daily_notes::Templates,
+    /// The first-press daily notes dialog, while it is open.
+    #[cfg(any(unix, windows))]
+    daily_setup: Option<Entity<reader_daily_notes::Setup>>,
     /// Show the reminders note through the native Tasks view (#919).
     #[cfg(any(unix, windows))]
     reminders_view: bool,
@@ -2320,6 +2326,10 @@ impl Reader {
             daily_notes: None,
             #[cfg(any(unix, windows))]
             daily_notes_error: None,
+            #[cfg(any(unix, windows))]
+            daily_templates: Default::default(),
+            #[cfg(any(unix, windows))]
+            daily_setup: None,
             #[cfg(any(unix, windows))]
             reminders_view: false,
             #[cfg(any(unix, windows))]
