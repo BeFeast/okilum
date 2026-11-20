@@ -204,6 +204,8 @@ mod reader_sync_help;
 #[cfg(test)]
 use reader_features::test_init;
 mod reader_batch;
+#[cfg(any(unix, windows))]
+mod reader_daily_notes;
 mod reader_recent;
 #[cfg(any(unix, windows))]
 mod reader_recovery_rows;
@@ -392,6 +394,7 @@ actions!(
     okilum,
     [
         NewNote,
+        OpenDailyNote,
         NewUntitled,
         ShowRecentFiles,
         CloseNote,
@@ -1893,6 +1896,12 @@ struct Reader {
     reminder_prefs: reader_reminder_settings::Preferences,
     #[cfg(any(unix, windows))]
     reminder_prefs_error: Option<String>,
+    /// Daily notes preference per vault root, read on demand (#3182).
+    #[cfg(any(unix, windows))]
+    daily_notes: Option<(PathBuf, Result<reader_daily_notes::Prefs, String>)>,
+    /// Why the last daily notes choice in Settings was not applied.
+    #[cfg(any(unix, windows))]
+    daily_notes_error: Option<String>,
     /// Show the reminders note through the native Tasks view (#919).
     #[cfg(any(unix, windows))]
     reminders_view: bool,
@@ -2311,6 +2320,10 @@ impl Reader {
             reminder_prefs: Default::default(),
             #[cfg(any(unix, windows))]
             reminder_prefs_error: None,
+            #[cfg(any(unix, windows))]
+            daily_notes: None,
+            #[cfg(any(unix, windows))]
+            daily_notes_error: None,
             #[cfg(any(unix, windows))]
             reminders_view: false,
             #[cfg(any(unix, windows))]
@@ -4771,10 +4784,11 @@ impl Reader {
             && !self.single_file
             && project.is_none()
         {
-            &SidebarAction::ALL[..usize::from(cfg!(any(unix, windows)))]
+            // New note and Today's note.
+            &SidebarAction::ALL[..2 * usize::from(cfg!(any(unix, windows)))]
         } else if self.sidebar.left_mode == reader_sidebar::LeftMode::Tree && project.is_none() {
             // Creation and Collapse all have permanent slots beside Vault Index.
-            &SidebarAction::ALL[3..]
+            &SidebarAction::ALL[4..]
         } else {
             SidebarAction::available()
         };
@@ -7316,7 +7330,7 @@ const SIDEBAR_NAME_GAP: f32 = 4.;
 const SIDEBAR_NAME_CHROME: f32 = 30.;
 /// The name keeps at least this much, caret included, before an action
 /// moves into ⋯; a longer name is cut with an ellipsis first (#1512). At the
-/// default 280 px width all four actions fit, vault colour dot included.
+/// default 280 px width all five actions fit, vault colour dot included.
 const SIDEBAR_NAME_MIN: f32 = 80.;
 
 /// The sidebar header's actions, in their fixed order (#1512). The order is
@@ -7324,14 +7338,17 @@ const SIDEBAR_NAME_MIN: f32 = 80.;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SidebarAction {
     NewNote,
+    /// Today's daily note (#3182).
+    DailyNote,
     NewFolder,
     CollapseAll,
     ShowHidden,
 }
 
 impl SidebarAction {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::NewNote,
+        Self::DailyNote,
         Self::NewFolder,
         Self::CollapseAll,
         Self::ShowHidden,
@@ -7357,6 +7374,7 @@ impl SidebarAction {
     fn id(self) -> &'static str {
         match self {
             Self::NewNote => "sidebar-new-note",
+            Self::DailyNote => "sidebar-daily-note",
             Self::NewFolder => "sidebar-new-folder",
             Self::CollapseAll => "sidebar-collapse-all",
             Self::ShowHidden => "sidebar-show-hidden",
@@ -7366,6 +7384,7 @@ impl SidebarAction {
     fn label(self) -> &'static str {
         match self {
             Self::NewNote => "New note",
+            Self::DailyNote => "Today's note",
             Self::NewFolder => "New folder",
             Self::CollapseAll => "Collapse all folders",
             Self::ShowHidden => HIDDEN_FILES_MENU,
@@ -7375,6 +7394,7 @@ impl SidebarAction {
     fn action(self) -> Box<dyn Action> {
         match self {
             Self::NewNote => Box::new(NewNote),
+            Self::DailyNote => Box::new(OpenDailyNote),
             Self::NewFolder => Box::new(NewFolder),
             Self::CollapseAll => Box::new(CollapseFolders),
             Self::ShowHidden => Box::new(ToggleHiddenFiles),
@@ -7389,6 +7409,7 @@ impl SidebarAction {
     fn icon(self, show_hidden: bool) -> Icon {
         match self {
             Self::NewNote => Icon::default().path("icons/square-pen.svg"),
+            Self::DailyNote => Icon::new(IconName::Calendar),
             Self::NewFolder => Icon::default().path("icons/folder-plus.svg"),
             Self::CollapseAll => Icon::default().path(brand::READER_COLLAPSE_ICON),
             Self::ShowHidden if show_hidden => Icon::new(IconName::Eye),
@@ -7401,11 +7422,13 @@ impl SidebarAction {
             #[cfg(any(unix, windows))]
             Self::NewNote => reader.new_note(None, window, cx),
             #[cfg(any(unix, windows))]
+            Self::DailyNote => reader.open_daily_note(window, cx),
+            #[cfg(any(unix, windows))]
             Self::NewFolder => reader.new_folder(None, window, cx),
             Self::CollapseAll => reader.collapse_folders(cx),
             Self::ShowHidden => reader.toggle_hidden_files(cx),
             #[cfg(not(any(unix, windows)))]
-            Self::NewNote | Self::NewFolder => {}
+            Self::NewNote | Self::DailyNote | Self::NewFolder => {}
         }
     }
 }
@@ -7599,6 +7622,7 @@ fn reader_more_menu(
                     .menu("New untitled file", Box::new(NewUntitled))
                     .menu("New Folder", Box::new(NewFolder))
                     .menu("New note from template…", Box::new(NewFromTemplate))
+                    .menu("Today's note", Box::new(OpenDailyNote))
                     .item(reader_capture::menu_item(reader.clone(), vault.clone(), cx))
                     .menu("Recover notes…", Box::new(RecoverUnsavedNotes))
                     .menu("Recover link moves…", Box::new(RecoverLinkMoves))
@@ -8797,6 +8821,12 @@ impl Reader {
             .on_action(cx.listener(|this, _: &NewFromTemplate, window, cx| {
                 #[cfg(any(unix, windows))]
                 this.new_from_template(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &OpenDailyNote, window, cx| {
+                #[cfg(any(unix, windows))]
+                this.open_daily_note(window, cx);
+                #[cfg(not(any(unix, windows)))]
+                let _ = (this, window, cx);
             }))
             .on_action(cx.listener(|_, _: &reader_settings::OpenSettings, _, cx| {
                 reader_settings::show(Some(cx.entity().downgrade()), cx);
@@ -11696,6 +11726,7 @@ mod document_link_landing_tests {
         let ids: &[&str] = if cfg!(any(unix, windows)) {
             &[
                 "sidebar-new-note",
+                "sidebar-daily-note",
                 "sidebar-new-folder",
                 "sidebar-collapse-all",
                 "sidebar-show-hidden",
@@ -11834,15 +11865,15 @@ mod document_link_landing_tests {
         let all = &SidebarAction::ALL;
         let min = SIDEBAR_NAME_MIN;
         let slot = SIDEBAR_ACTION_SLOT;
-        assert_eq!(sidebar_visible_actions(400., 120., all), 4);
-        assert_eq!(sidebar_visible_actions(min + 4. * slot, 300., all), 4);
-        assert_eq!(sidebar_visible_actions(min + 4. * slot - 1., 300., all), 3);
-        assert_eq!(sidebar_visible_actions(60., min, all), 3);
-        assert!(all[3].spills());
-        assert!(!all[..3].iter().any(|action| action.spills()));
+        assert_eq!(sidebar_visible_actions(400., 120., all), 5);
+        assert_eq!(sidebar_visible_actions(min + 5. * slot, 300., all), 5);
+        assert_eq!(sidebar_visible_actions(min + 5. * slot - 1., 300., all), 4);
+        assert_eq!(sidebar_visible_actions(60., min, all), 4);
+        assert!(all[4].spills());
+        assert!(!all[..4].iter().any(|action| action.spills()));
         for dot in [0., VAULT_DOT_SLOT] {
             let room = 280. - 24. - dot - 2. * SIDEBAR_NAME_GAP;
-            assert_eq!(sidebar_visible_actions(room, 200., all), 4, "dot {dot}");
+            assert_eq!(sidebar_visible_actions(room, 200., all), 5, "dot {dot}");
         }
     }
 
