@@ -2094,6 +2094,49 @@ mod reader_drop_tests {
         );
     }
 
+    /// Review of #3074 (83378): the Reader showed a title the recovered
+    /// draft no longer has; its `#` survives only in a YAML comment. The
+    /// drop is refused instead of going into the frontmatter.
+    #[test]
+    fn a_drop_on_a_title_gone_from_the_draft_is_refused() {
+        let shown = "---\ntags: [a]\n---\n# Title\n\nBody.\n";
+        let opened = "---\ntags: [a] # label\n---\nBody.\n";
+        let rendered = "# Title\n\nBody.\n";
+        assert_eq!(
+            block_drop_offset(shown, rendered, Some(0)),
+            shown.find("# Title"),
+            "positive control: the title is placed in the shown revision"
+        );
+        assert_eq!(
+            shown_block_offset(Some(shown), opened, rendered, Some(0)),
+            None
+        );
+    }
+
+    /// The same through a real FileDropEvent: nothing goes in, and the
+    /// opened text stays byte-identical.
+    #[gpui::test]
+    fn a_reader_drop_on_a_title_gone_from_the_draft_leaves_it_untouched(cx: &mut TestAppContext) {
+        let shown = "---\ntags: [a]\n---\n# Title\n\nBody.\n";
+        let opened = "---\ntags: [a] # label\n---\nBody.\n";
+        let (reader, visual, temp) = reader_on(cx, opened);
+        let first = reader.update(visual, |r, cx| {
+            let bounds = r.content.read(cx).list_state().bounds_for_item(0).unwrap();
+            // The Reader showed the title; the editor opens the draft.
+            r.pane.note_canonical_source = Some(std::sync::Arc::from(shown));
+            r.pane.note_source = "# Title\n\nBody.\n".to_string();
+            bounds
+        });
+        drop_at(
+            visual,
+            first.center(),
+            temp.path().join("vault/docs/spec.txt"),
+        );
+        let (source, link) = source_and_line(&reader, visual, "spec.txt");
+        assert!(link.is_none(), "nothing was inserted: {source:?}");
+        assert_eq!(source, opened, "the frontmatter is untouched");
+    }
+
     #[test]
     fn block_drop_offset_places_or_refuses() {
         let source = "---\ntags: [a]\n---\n# Title\n\nPara.\n";
