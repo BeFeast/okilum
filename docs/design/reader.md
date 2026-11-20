@@ -980,7 +980,7 @@ Copy path, Open in new window, Move to Trash and Close note.
 Open in terminal (#2837) follows Reveal in sidebar row menus, breadcrumb and
 title menus, the file header's Open with and note Document actions, and is in
 the palette and shortcut catalog (Option+Command+T / Alt+Super+T, and
-Ctrl+Shift+U on Windows, #3134). It opens the system terminal in the item's
+Ctrl+Shift+A on Windows, #3134). It opens the system terminal in the item's
 folder; a file opens its containing folder.
 Entries inside a ZIP are not files on disk and have no file menu, so the
 action is absent there; the archive file itself opens its own folder.

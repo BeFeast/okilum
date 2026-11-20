@@ -944,13 +944,15 @@ mod tests {
         // Positive control: the action has a default on every OS.
         assert!(!strokes.is_empty(), "RevealFile lost its default");
         if cfg!(windows) {
-            assert_eq!(strokes, ["ctrl-shift-s"]);
+            assert_eq!(strokes, ["ctrl-shift-u"]);
         } else if cfg!(target_os = "macos") {
             assert_eq!(strokes, ["alt-win-r"]);
         }
-        // The Windows chord obeys the AltGr / language-switch rule too.
-        let windows = gpui::Keystroke::parse("ctrl-shift-s").unwrap();
+        // The Windows chord obeys the AltGr / language-switch rule too, and
+        // is not Ctrl+Shift+S, which Windows apps use for Save All (#3133).
+        let windows = gpui::Keystroke::parse(REVEAL_FILE_KEY_WINDOWS).unwrap();
         assert!(altgr_conflict(true, &windows.modifiers, &windows.key).is_none());
+        assert_ne!(REVEAL_FILE_KEY_WINDOWS, "ctrl-shift-s");
     }
 
     /// The Win+Alt chords Windows 11 keeps for itself (Xbox Game Bar and the
@@ -990,13 +992,33 @@ mod tests {
         // Positive control: the action has a default on every OS.
         assert!(!strokes.is_empty(), "OpenInTerminal lost its default");
         if cfg!(windows) {
-            assert_eq!(strokes, ["ctrl-shift-u"]);
+            assert_eq!(strokes, ["ctrl-shift-a"]);
         } else if cfg!(target_os = "macos") {
             assert_eq!(strokes, ["alt-win-t"]);
         }
-        let windows = gpui::Keystroke::parse("ctrl-shift-u").unwrap();
+        let windows = gpui::Keystroke::parse(OPEN_IN_TERMINAL_KEY_WINDOWS).unwrap();
         assert!(altgr_conflict(true, &windows.modifiers, &windows.key).is_none());
         assert!(!windows_reserved(&windows.modifiers, &windows.key));
+        // Reveal and Open in terminal both left Win+Alt on Windows; they must
+        // not land on the same chord there (#3133, #3134).
+        assert_ne!(OPEN_IN_TERMINAL_KEY_WINDOWS, REVEAL_FILE_KEY_WINDOWS);
+        // On Windows nothing else in the Reader keymap shares the chord.
+        if cfg!(windows) {
+            let sharing: Vec<_> = keymap
+                .bindings()
+                .filter(|binding| {
+                    binding.action().name() != project_terminal::OpenInTerminal::name_for_type()
+                        && binding.keystrokes().len() == 1
+                        && binding.keystrokes()[0].modifiers() == &windows.modifiers
+                        && binding.keystrokes()[0].key() == windows.key
+                })
+                .map(|binding| binding.action().name())
+                .collect();
+            assert!(
+                sharing.is_empty(),
+                "{OPEN_IN_TERMINAL_KEY_WINDOWS} is also {sharing:?}"
+            );
+        }
         // Negative controls: the old Windows defaults are reserved chords.
         for old in ["alt-cmd-t", "alt-cmd-r"] {
             let stroke = gpui::Keystroke::parse(old).unwrap();
