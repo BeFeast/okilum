@@ -330,7 +330,7 @@ index e72cb01b..ef7f433a 100644
  }
 diff --git a/crates/base/src/text/decorations.rs b/crates/base/src/text/decorations.rs
 new file mode 100644
-index 00000000..c0d0bd87
+index 00000000..ebc05b4d
 --- /dev/null
 +++ b/crates/base/src/text/decorations.rs
 @@ -0,0 +1,438 @@
@@ -617,11 +617,11 @@ index 00000000..c0d0bd87
 +                ),
 +                None => bytes,
 +            },
-+            Ranks::Rope(rope) if span.end <= rope.len_bytes() => {
-+                let first = rope.byte_to_char(span.start);
++            Ranks::Rope(rope) if span.end <= rope.len() => {
++                let first = rope.byte_to_char_idx(span.start);
 +                (
-+                    rope.byte_to_char(index) - first,
-+                    rope.byte_to_char(span.end) - first,
++                    rope.byte_to_char_idx(index) - first,
++                    rope.byte_to_char_idx(span.end) - first,
 +                )
 +            }
 +            Ranks::Rope(_) => bytes,
