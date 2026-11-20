@@ -244,7 +244,8 @@ mod tests {
             path(settings("Journal", "YYYY/MMMM/dddd D")),
             Path::new("Journal/2026/November/Friday 20.md")
         );
-        assert!(settings("", "dddd").relative_path(NOW).is_err());
+        assert_eq!(path(settings("", "dddd")), Path::new("Daily/Friday.md"));
+        assert!(settings("", "Do").relative_path(NOW).is_err());
         assert!(settings("../out", "").relative_path(NOW).is_err());
     }
 

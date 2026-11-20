@@ -120,24 +120,22 @@ fn folder_in_vault(root: &Path, chosen: &Path) -> Option<String> {
 /// app storage. Leading and trailing `/` are dropped, as in Obsidian.
 fn typed_folder(text: &str) -> Result<String, String> {
     let folder = text.trim().trim_matches('/');
-    let parts: Option<Vec<&str>> = Path::new(folder)
-        .components()
-        .map(|part| match part {
-            std::path::Component::Normal(name) => name.to_str().map(str::trim),
-            _ => None,
-        })
-        .collect();
-    match parts {
-        _ if folder.is_empty() => {
-            Err("Enter a folder for daily notes; they never go into the vault root.".into())
-        }
-        Some(parts)
-            if !parts.iter().any(|part| part.is_empty())
-                && !okilum_core::vault::service_path(Path::new(folder)) =>
-        {
-            Ok(parts.join("/"))
-        }
-        _ => Err("Enter a folder inside the vault, such as Daily or Journal/Days.".into()),
+    if folder.is_empty() {
+        return Err("Enter a folder for daily notes; they never go into the vault root.".into());
+    }
+    // The raw segments, not `Path::components`, which would quietly fold
+    // `a//b` into `a/b` and drop `.`.
+    let parts: Vec<&str> = folder.split('/').map(str::trim).collect();
+    let valid = parts.iter().all(|part| {
+        !part.is_empty()
+            && *part != "."
+            && *part != ".."
+            && !part.chars().any(|c| c.is_control() || c == '\\')
+    }) && !okilum_core::vault::service_path(Path::new(folder));
+    if valid {
+        Ok(parts.join("/"))
+    } else {
+        Err("Enter a folder inside the vault, such as Daily or Journal/Days.".into())
     }
 }
 
@@ -182,13 +180,18 @@ fn effective_settings(prefs: &Prefs, templates: &Templates) -> DailySettings {
     settings
 }
 
+/// A template chosen in a dropdown (`None`: no template).
+type PickTemplate = Rc<dyn Fn(Option<String>, &mut Window, &mut App)>;
+/// «Other file in this vault…»: the native picker.
+type OtherTemplate = Rc<dyn Fn(&mut Window, &mut App)>;
+
 /// A template dropdown: None, the templates folder's notes, another file.
 fn template_menu(
     menu: PopupMenu,
     current: &str,
     candidates: &[String],
-    pick: Rc<dyn Fn(Option<String>, &mut Window, &mut App)>,
-    other: Rc<dyn Fn(&mut Window, &mut App)>,
+    pick: PickTemplate,
+    other: OtherTemplate,
 ) -> PopupMenu {
     let current = current.trim();
     let none = pick.clone();
@@ -621,13 +624,12 @@ fn setup_dialog(
     let candidates = setup.candidates.clone();
     let error = setup.error.clone();
     let pick_reader = reader.clone();
-    let pick: Rc<dyn Fn(Option<String>, &mut Window, &mut App)> =
-        Rc::new(move |template, window, cx| {
-            let _ = pick_reader.update(cx, |this, cx| this.set_setup_template(template, cx));
-            window.refresh();
-        });
+    let pick: PickTemplate = Rc::new(move |template, window, cx| {
+        let _ = pick_reader.update(cx, |this, cx| this.set_setup_template(template, cx));
+        window.refresh();
+    });
     let other_reader = reader.clone();
-    let other: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, cx| {
+    let other: OtherTemplate = Rc::new(move |_, cx| {
         let _ = other_reader.update(cx, |this, cx| this.choose_daily_template_file(true, cx));
     });
     let (create, cancel, close, create_button) =
@@ -776,12 +778,11 @@ pub(super) fn controls(reader: &Entity<Reader>, cx: &App) -> AnyElement {
     };
     let (folder_reader, format_reader) = (reader.clone(), reader.clone());
     let pick_reader = reader.downgrade();
-    let pick: Rc<dyn Fn(Option<String>, &mut Window, &mut App)> =
-        Rc::new(move |template, _, cx| {
-            let _ = pick_reader.update(cx, |this, cx| this.set_daily_template(template, cx));
-        });
+    let pick: PickTemplate = Rc::new(move |template, _, cx| {
+        let _ = pick_reader.update(cx, |this, cx| this.set_daily_template(template, cx));
+    });
     let other_reader = reader.downgrade();
-    let other: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, cx| {
+    let other: OtherTemplate = Rc::new(move |_, cx| {
         let _ = other_reader.update(cx, |this, cx| this.choose_daily_template_file(false, cx));
     });
     v_flex()
