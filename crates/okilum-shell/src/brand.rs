@@ -413,9 +413,14 @@ pub struct ReaderPalette {
     /// Quiet warning status-line surface; text uses the theme's AA/AAA text.
     pub warning_tint: Hsla,
     pub text_faint: Hsla,
-    /// Heading text in Reader and Live Preview (#3147); a hue apart from
-    /// `link` so a heading never reads as clickable.
+    /// The theme's `heading` token (#3147), a hue apart from `link` so a
+    /// heading never reads as clickable. Renderers draw `headings`, which
+    /// fall back to it; tests check the token itself.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub heading: Hsla,
+    /// H1..H6 (index 0 = H1): the optional `heading1`..`heading6` tokens,
+    /// each falling back to `heading` (#3153).
+    pub headings: [Hsla; 6],
     pub hover: Hsla,
     pub missing_link: Hsla,
     pub code_bg: Hsla,
@@ -493,6 +498,14 @@ fn resolve(theme: ThemeId) -> ThemeTokens {
                 .unwrap_or_else(|| panic!("theme {} {mode} lacks {key}", theme.key()));
             parse_color(value.as_str().expect("validated color string"))
         };
+        // Optional per-level heading tokens (#3153) fall back to `heading`.
+        let heading_level = |level: usize| -> Hsla {
+            layers
+                .iter()
+                .find_map(|layer| layer[own][mode].get(format!("heading{level}")))
+                .map(|value| parse_color(value.as_str().expect("validated color string")))
+                .unwrap_or_else(|| color("heading"))
+        };
         (
             Palette {
                 canvas: color("canvas"),
@@ -519,6 +532,7 @@ fn resolve(theme: ThemeId) -> ThemeTokens {
                 warning_tint: color("warningTint"),
                 text_faint: color("textFaint"),
                 heading: color("heading"),
+                headings: std::array::from_fn(|ix| heading_level(ix + 1)),
                 hover: color("hover"),
                 missing_link: color("missingLink"),
                 code_bg: color("codeBg"),
@@ -1447,6 +1461,9 @@ mod tests {
                 for (name, bg) in [("surface", p.surface), ("canvas", p.canvas)] {
                     check(&format!("link on {name}"), p.link, bg, reading);
                     check(&format!("heading on {name}"), r.heading, bg, reading);
+                    for (ix, heading) in r.headings.into_iter().enumerate() {
+                        check(&format!("H{} on {name}", ix + 1), heading, bg, reading);
+                    }
                     check(
                         &format!("missing-link on {name}"),
                         r.missing_link,
@@ -1507,9 +1524,51 @@ mod tests {
                         theme.key()
                     ));
                 }
+                // #3153: every level differs from body text and never reads
+                // as a link. A level may sit near the link hue only when it is
+                // a quiet tint (under half the link's chroma), like
+                // Obsidianite's H2-H6.
+                for (ix, &level) in r.headings.iter().enumerate() {
+                    let h = ix + 1;
+                    if level == p.text {
+                        failures.push(format!("{} {mode}: H{h} is body text", theme.key()));
+                    }
+                    if hue_gap(level, p.link) < 25. && chroma(level) >= chroma(p.link) / 2. {
+                        failures.push(format!("{} {mode}: H{h} reads as a link", theme.key()));
+                    }
+                }
             }
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// HSL chroma, 0..1.
+    fn chroma(c: Hsla) -> f32 {
+        (1. - (2. * c.l - 1.).abs()) * c.s
+    }
+
+    #[test]
+    fn issue3153_heading_levels_fall_back_to_the_heading_token() {
+        for theme in ThemeId::ALL {
+            for dark in [false, true] {
+                let r = tokens(theme, dark).1;
+                let file: serde_json::Value = match theme.tokens() {
+                    Some(json) => serde_json::from_str::<serde_json::Value>(json).unwrap()["modes"]
+                        [if dark { "dark" } else { "light" }]
+                    .clone(),
+                    None => serde_json::Value::Null,
+                };
+                for (ix, &level) in r.headings.iter().enumerate() {
+                    match file.get(format!("heading{}", ix + 1)) {
+                        Some(value) => assert_eq!(level, parse_color(value.as_str().unwrap())),
+                        None => assert_eq!(level, r.heading, "{} H{}", theme.key(), ix + 1),
+                    }
+                }
+            }
+        }
+        // Themes without per-level tokens keep one heading colour.
+        let r = tokens(ThemeId::Graphite, true).1;
+        assert!(r.headings.iter().all(|&level| level == r.heading));
     }
 
     #[test]
@@ -1548,6 +1607,11 @@ mod tests {
         assert_eq!(dark.text, rgb(0xbebebe).into());
         assert_eq!(dark.accent, rgb(0x0fb6d6).into());
         assert_eq!(reader.heading, dark.accent);
+        // #3153: H1 is the accent, H2-H6 Obsidianite's --text-title-h2..h5.
+        assert_eq!(reader.headings[0], dark.accent);
+        for level in &reader.headings[1..] {
+            assert_eq!(*level, rgb(0xcbdbe5).into());
+        }
         assert_eq!(dark.sidebar, rgb(0x191621).into());
         assert_eq!(css_color(reader.highlight), "#f4569d40");
         // The derived light variant keeps the accent and heading hues.
@@ -1555,6 +1619,7 @@ mod tests {
         for (what, a, b) in [
             ("accent", light.accent, dark.accent),
             ("heading", light_reader.heading, reader.heading),
+            ("H2", light_reader.headings[1], reader.headings[1]),
         ] {
             let gap = (a.h - b.h).abs() * 360.;
             assert!(gap.min(360. - gap) < 6., "{what} hue moved {gap:.1}°");
@@ -1587,7 +1652,12 @@ mod tests {
     fn selected_theme_drives_palette_and_native_tokens(cx: &mut gpui::TestAppContext) {
         cx.update(crate::test_init);
         cx.update(|cx| {
-            for theme in [ThemeId::Nord, ThemeId::HighContrast, ThemeId::Okilum] {
+            for theme in [
+                ThemeId::Nord,
+                ThemeId::HighContrast,
+                ThemeId::Okilum,
+                ThemeId::Obsidianite,
+            ] {
                 for mode in [ThemeMode::Light, ThemeMode::Dark] {
                     cx.set_global(ThemeChoice(theme));
                     Theme::change(mode, None, cx);
@@ -1602,7 +1672,9 @@ mod tests {
                     // #3147: Reader headings follow the theme's heading colour.
                     let heading = tokens(theme, mode == ThemeMode::Dark).1.heading;
                     assert_ne!(heading, expected.text);
-                    assert_eq!(crate::reader_text_style(t).heading_color, Some(heading));
+                    // #3153: per level, with `heading` as the fallback.
+                    let levels = tokens(theme, mode == ThemeMode::Dark).1.headings;
+                    assert_eq!(crate::reader_text_style(t).heading_colors, levels.map(Some));
                 }
             }
         });

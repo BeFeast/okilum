@@ -1029,7 +1029,7 @@ fn load_appearance(cx: &App) -> (AppearancePreference, brand::ThemeChoice) {
 /// not set here are refined onto the themed defaults at layout time.
 fn reader_text_style(theme: &Theme) -> TextViewStyle {
     let tokens = brand::reader_palette_for_theme(theme);
-    TextViewStyle {
+    let mut style = TextViewStyle {
         highlight_theme: theme.highlight_theme.clone(),
         is_dark: theme.is_dark(),
         ..TextViewStyle::default()
@@ -1051,9 +1051,13 @@ fn reader_text_style(theme: &Theme) -> TextViewStyle {
         ..Default::default()
     })
     .paragraph_gap(rems(0.75))
-    // One scale and one colour for Reader and Live Preview (#1076, #3147).
-    .heading_font_size(|level, base| base * source_presentation::heading_scale(level))
-    .heading_color(tokens.heading)
+    // One scale and one colour per level for Reader and Live Preview
+    // (#1076, #3147, #3153).
+    .heading_font_size(|level, base| base * source_presentation::heading_scale(level));
+    for (level, color) in (1u8..).zip(tokens.headings) {
+        style = style.heading_level_color(level, color);
+    }
+    style
 }
 
 #[cfg(test)]
