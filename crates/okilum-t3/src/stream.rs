@@ -402,9 +402,18 @@ impl NativeClient {
             okilum_http::SocketRoute::Direct => (host.clone(), port),
             okilum_http::SocketRoute::Proxy { host, port } => (host.clone(), *port),
         };
+        let via_proxy = matches!(route, okilum_http::SocketRoute::Proxy { .. });
+        // A proxy that cannot be resolved or reached is a proxy failure.
+        let unreachable = |phase: &'static str| {
+            if via_proxy {
+                network_failure(phase, &okilum_http::TunnelError::Closed)
+            } else {
+                transport_failure(phase, false)
+            }
+        };
         let addresses = (connect_host.as_str(), connect_port)
             .to_socket_addrs()
-            .map_err(|_| transport_failure("DNS resolution", false))?;
+            .map_err(|_| unreachable("DNS resolution"))?;
         let deadline = Instant::now() + self.timeout;
         let mut connected = None;
         let mut last_error = None;
@@ -429,7 +438,7 @@ impl NativeClient {
                     "TCP connection",
                     &std::io::Error::from(std::io::ErrorKind::TimedOut),
                 ),
-                _ => transport_failure("TCP connection", false),
+                _ => unreachable("TCP connection"),
             });
         };
         stream
@@ -438,7 +447,7 @@ impl NativeClient {
         stream
             .set_write_timeout(Some(self.timeout))
             .map_err(|_| transport_failure("socket write configuration", false))?;
-        if matches!(route, okilum_http::SocketRoute::Proxy { .. }) {
+        if via_proxy {
             if !self.access.allowed() {
                 return Err(StreamError::Closed);
             }
