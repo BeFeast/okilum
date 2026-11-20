@@ -3,4 +3,6 @@ Description=Okilum merge queue, one landing cycle
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/ssh -o BatchMode=yes maestro /bin/bash -lc 'cd /home/god/src/okilum-merge-queue && git fetch --no-tags origin main && git reset --hard origin/main && python3 scripts/ci/merge-queue.py once'
+# One ssh argument. systemd strips quotes before ssh joins words, so
+# `bash -lc cd /path && …` would run only `cd` and leave the rest in $HOME.
+ExecStart=/usr/bin/ssh -o BatchMode=yes maestro "/bin/bash -lc 'cd /home/god/src/okilum-merge-queue && git fetch --no-tags origin main && git reset --hard origin/main && python3 scripts/ci/merge-queue.py once'"

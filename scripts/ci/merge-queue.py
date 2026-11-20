@@ -71,13 +71,8 @@ def gh_check():
     return module
 
 
-def full_green(runs, sha):
-    """True when the newest full agent-checks run passes gh_check.verdict.
-
-    A workflow conclusion of success is not enough: a skipped linux job, or a
-    run missing a required step, must not land. Fast and benchmark refs are
-    not the full gate. A newer failure wins over an older success.
-    """
+def newest_full_run(runs):
+    """Newest agent-checks run that is not a fast or benchmark ref, or None."""
     full = []
     for run in runs or []:
         branch = run.get("headBranch") or run.get("branch") or ""
@@ -86,10 +81,46 @@ def full_green(runs, sha):
         if branch.startswith(("agent-checks-fast/", "agent-checks-benchmark/")):
             continue
         full.append(run)
-    if not full or not sha:
+    if not full:
+        return None
+    return max(full, key=lambda item: item.get("createdAt") or item.get("created") or "")
+
+
+def runs_after_view(listed, view):
+    """Load the newest full run before any older one.
+
+    ``view(run)`` returns the run view, or None when that read fails. A failed
+    read of the newest run blocks landing; an older success must not replace it.
+    """
+    newest = newest_full_run(listed)
+    if newest is None:
+        return {"unreadable": False, "runs": []}
+    detail = view(newest)
+    if detail is None:
+        return {"unreadable": True, "runs": []}
+    return {"unreadable": False, "runs": [detail]}
+
+
+def full_green(runs, sha):
+    """True when the newest full agent-checks run passes gh_check.verdict.
+
+    A workflow conclusion of success is not enough: a skipped linux job, or a
+    run missing a required step, must not land. Fast and benchmark refs are
+    not the full gate. A newer failure wins over an older success.
+    """
+    newest = newest_full_run(runs)
+    if newest is None or not sha:
         return False
-    newest = max(full, key=lambda item: item.get("createdAt") or item.get("created") or "")
     return gh_check().verdict(newest, sha) == 0
+
+
+def gate_ok(record, sha):
+    """False when the newest run could not be read, or its verdict is not green."""
+    if isinstance(record, dict):
+        if record.get("unreadable"):
+            return False
+        record = record.get("runs") or []
+    return full_green(record, sha)
 
 
 def eligible(prs, comments_by_number, runs_by_sha):
@@ -104,7 +135,7 @@ def eligible(prs, comments_by_number, runs_by_sha):
         verdict, when = review_verdict(comments_by_number.get(pr["number"]) or [], pr["head"])
         if verdict != "PASS":
             continue
-        if not full_green(runs_by_sha.get(pr["head"]) or [], pr["head"]):
+        if not gate_ok(runs_by_sha.get(pr["head"]) or [], pr["head"]):
             continue
         chosen.append({**pr, "passed_at": when, "critical": "critical" in (pr.get("labels") or [])})
     chosen.sort(key=lambda item: (not item["critical"], item["passed_at"] or "", item["number"]))
@@ -129,7 +160,7 @@ def still_landable(batch, prs, comments_by_number, runs_by_sha):
         verdict, _when = review_verdict(comments_by_number.get(item["number"]) or [], item["head"])
         if verdict != "PASS":
             return False
-        if not full_green(runs_by_sha.get(item["head"]) or [], item["head"]):
+        if not gate_ok(runs_by_sha.get(item["head"]) or [], item["head"]):
             return False
     return True
 
@@ -364,23 +395,20 @@ class Queue:
             text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60, check=False)
         if proc.returncode != 0:
             print(proc.stdout[-500:], file=sys.stderr)
-            return []
+            return {"unreadable": True, "runs": []}
         listed = json.loads(proc.stdout or "[]")
-        details = []
         fields = "headSha,headBranch,status,conclusion,jobs,url,attempt,createdAt"
-        for run in listed:
-            branch = run.get("headBranch") or ""
-            if not branch.startswith("agent-checks/") or branch.startswith(
-                    ("agent-checks-fast/", "agent-checks-benchmark/")):
-                continue
-            view = subprocess.run(
+
+        def view(run):
+            seen = subprocess.run(
                 ["gh", "run", "view", str(run["databaseId"]), "-R", GITHUB_REPO, "--json", fields],
                 text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60, check=False)
-            if view.returncode != 0:
-                print(view.stdout[-500:], file=sys.stderr)
-                continue
-            details.append(json.loads(view.stdout or "{}"))
-        return details
+            if seen.returncode != 0:
+                print(seen.stdout[-500:], file=sys.stderr)
+                return None
+            return json.loads(seen.stdout or "{}")
+
+        return runs_after_view(listed, view)
 
     def api(self, method, path, body=None):
         token = forgejo_token()

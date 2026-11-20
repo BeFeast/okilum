@@ -100,6 +100,18 @@ class ReviewAndGate(unittest.TestCase):
         self.assertFalse(queue.still_landable(batch, [pr(7)], comments, runs))
         self.assertFalse(queue.still_landable(batch, [pr(7, head=OTHER)], {7: [comment(f"REVIEW PASS {OTHER}")]}, {OTHER: green(sha=OTHER)}))
 
+    def test_a_failed_read_of_the_newest_run_does_not_reuse_an_older_success(self):
+        older = detail(created="2026-11-20T12:00:00Z")
+        newer = {"databaseId": 2, "headBranch": "agent-checks/topic", "headSha": HEAD,
+                 "status": "completed", "conclusion": "failure",
+                 "createdAt": "2026-11-20T13:00:00Z"}
+        listed = [older, newer]
+        self.assertEqual(queue.newest_full_run(listed)["databaseId"], 2)
+        record = queue.runs_after_view(listed, lambda run: None if run["databaseId"] == 2 else run)
+        self.assertTrue(record["unreadable"])
+        self.assertFalse(queue.gate_ok(record, HEAD))
+        self.assertTrue(queue.gate_ok({"unreadable": False, "runs": [older]}, HEAD))
+
     def test_a_later_comment_page_can_replace_pass_with_fix(self):
         pages = [
             [comment(f"REVIEW PASS {HEAD}", when="2026-11-20T10:00:00Z")],
@@ -171,6 +183,11 @@ class PoolScripts(unittest.TestCase):
         self.assertIn("pool_receipt_dir", dispatch)
         self.assertIn("pool_ensure_git", (ROOT / "scripts/ci/pool-linux-gate.sh").read_text())
         self.assertIn("pool_ensure_git", (ROOT / "scripts/ci/pool-pre-merge.sh").read_text())
+        unit = (ROOT / "scripts/ci/systemd/okilum-merge-queue.service").read_text()
+        start = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
+        command = start.split("=", 1)[1]
+        self.assertIn('"/bin/bash -lc \'cd /home/god/src/okilum-merge-queue && ', command)
+        self.assertTrue(command.endswith("'\""))
 
 
 if __name__ == "__main__":
