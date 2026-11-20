@@ -11,8 +11,10 @@ pool_ensure_git() {
         return 0
     fi
     git init -q
-    git add -A
-    git -c user.email=pool@okilum.local -c user.name='okilum pool' commit -q -m 'pool source'
+    # A host excludesFile such as **/credentials.* must not drop archived source.
+    git -c core.excludesFile=/dev/null add -A
+    git -c user.email=pool@okilum.local -c user.name='okilum pool' \
+        -c core.excludesFile=/dev/null commit -q -m 'pool source'
 }
 
 # build-slot only ships directories under these roots back to the caller.

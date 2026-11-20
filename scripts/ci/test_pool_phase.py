@@ -1,5 +1,6 @@
 """Phase receipt reporting. No compiler and no build-slot."""
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -23,6 +24,24 @@ class PoolGit(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("tracked.txt", result.stdout)
             self.assertNotIn("ignored.txt", result.stdout)
+
+    def test_host_excludesfile_cannot_drop_archived_source(self):
+        lib = ROOT / "scripts/ci/pool-phase-lib.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            home = root / "home"
+            work = root / "work"
+            home.mkdir()
+            work.mkdir()
+            (home / ".config/git").mkdir(parents=True)
+            (home / ".config/git/ignore").write_text("**/credentials.*\n")
+            (work / "credentials.rs").write_text("mod credentials;\n")
+            (work / "lib.rs").write_text("ok\n")
+            script = f'set -euo pipefail\nsource "{lib}"\npool_ensure_git\ngit ls-files'
+            result = subprocess.run(["bash", "-c", script], cwd=work, capture_output=True, text=True,
+                                    timeout=30, env={"HOME": str(home), "PATH": os.environ["PATH"]})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("credentials.rs", result.stdout)
 
 
 class PoolPhase(unittest.TestCase):
