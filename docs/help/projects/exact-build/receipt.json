@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "captured_on": "2026-11-20",
+  "platform": "Linux x86_64",
+  "build": "0.1.7911",
+  "source_commit": "ecf83913b12effc11680b09df456d7f8c1f1e96a",
+  "contains_help_merge": "5d7fc2bc1",
+  "artifact_url": "https://updates.befeast.com/okilum/linux/builds/7911/Okilum-x86_64.AppImage",
+  "artifact_sha256": "849695681b55aa5feb204f1241d0498a9b2574030e3eae403315e999510b6b59",
+  "capture": "Published beta AppImage from the Linux beta feed, sha256 checked against latest.json; started by session.sh (isolated HOME/XDG/state, synthetic practice vault, private 1440x960 Xvfb, lavapipe) and driven with xdotool. Full-screen frames from ImageMagick import, lossless optipng. Nothing edited.",
+  "steps": [
+    {
+      "frame": "help-before-first-project.png",
+      "action": "Settings -> Features -> Agents on; app menu -> Projects; no projects yet; click Help in the Projects header. The Projects help sheet opens."
+    },
+    {
+      "frame": "help-limits-and-video.png",
+      "action": "Scroll the sheet to the end: what a local project does not do, troubleshooting, Copy written guide, Open local video guide."
+    },
+    {
+      "frame": "help-with-project.png",
+      "action": "Close Help; New project... from the existing folder Kitchen remodel (Knowledge, T3 unchecked) -> Create project; click Help again with one project listed."
+    },
+    {
+      "frame": "project-tabs.png",
+      "action": "Close Help; open Kitchen remodel: Board, Decisions, Reports and Handovers tabs, Create board, Manager not connected to T3."
+    }
+  ],
+  "vault_unchanged_by_help": true,
+  "files": {
+    "help-before-first-project.png": "f8bd20c38b3ef7d8c59bc9c9ac87f8f42cd08036176d36a27417a56488374355",
+    "help-limits-and-video.png": "c893490986e408cebb3fbebea2d7fbd1bb0d834750a1b0914c7ac350b369722b",
+    "help-with-project.png": "4e86bb502f539151915c32551ad4bd293369e818b2bb278ee6686df2c63e6295",
+    "project-tabs.png": "b09e5281b81ac65d16e296709ea5f4e7634a7bfb0b64c22ae15a3f3a9cc98e99"
+  }
+}

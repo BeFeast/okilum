@@ -159,6 +159,8 @@ fn build(
                     |action: &dyn Action| reader_shortcuts::content_shortcuts(action, editing, cx);
                 h_flex()
                     .debug_selector(move || format!("read-menu-{}", command.label()))
+                    .flex_1()
+                    .gap_3()
                     .child(div().flex_1().child(command.label()))
                     .child(match command {
                         Command::Plain => hints(&gpui_component::input::Copy),

@@ -73,9 +73,12 @@ error, with the same line and column and Go to error; nothing changes. The
 are JSON's. In Read, Format does what it does for JSON. XML declaring a
 non-UTF-8 encoding stays read-only, so Format never reaches it.
 
-Explicit file Edit admission retains the viewer's 4 MiB UI cap. An existing
-editing session can grow beyond that cap and keeps the 64 MiB JSON operations
-budget. The read-only viewer, pagination, Tree, Find, shaping and save pipeline
+Explicit Edit of a JSON file (by extension or a project JSON association)
+admits the same 64 MiB as the viewer and the operations (#2804): a 3.5-5 MB
+file, and the larger saved result of formatting one, open in Edit with
+Validate, Format and Repair. Other code formats keep the viewer's 4 MiB UI cap;
+an editing session can grow beyond it and keeps the 64 MiB operations budget.
+The read-only viewer, pagination, Tree, Find, shaping and save pipeline
 retain their existing limits and behavior.
 Plain-file edit entry and mutation do not schedule the Markdown draft-outline
 parser. Entering a plain file retires the previous note's draft-outline worker

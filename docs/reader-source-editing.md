@@ -654,6 +654,26 @@ Inline creation uses an explicit Settings → Vault template-folder preference w
 present, ahead of the Obsidian folder setting. Unrelated hidden `_Assets` branches
 stay hidden when no template collection exists.
 
+## Daily notes (#3182)
+
+Today's note (the calendar button in the sidebar header, the vault menu and the
+Now menu) opens today's note, or creates it and opens it for writing. Its path is
+the daily notes folder plus the name format; a `/` in the format makes folders,
+so `YYYY/MM/YYYY-MM-DD` gives `Daily/2026/11/2026-11-20.md`. Supported tokens are
+the template ones: `YYYY`, `MM`, `DD`, `HH`, `mm`, `ss`, and `[literal]` text. A
+new note comes from the daily note template, expanded like any template
+(`{{title}}` is the file name, `{{date}}` and `{{time}}` follow the templates
+settings), or is just its title when no template is chosen. An existing note is
+opened as it is and never rewritten; a missing template creates nothing and says
+so.
+
+Settings → Vault sets the folder, the name format and the template. The choice is
+stored with app state per vault, outside the vault. Until one is made, Obsidian's
+`.obsidian/daily-notes.json` (`folder`, `format`, `template`) applies, read only;
+otherwise the vault root, `YYYY-MM-DD` and no template. A template at the vault
+root is refused, and today's note is never created inside the folder its template
+comes from (without one: the templates folder).
+
 ## System Trash and Undo (#466)
 
 Move to Trash is an ordinary Reader action, available in the tree context menu

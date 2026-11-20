@@ -1124,3 +1124,120 @@ fn revoked_module_access_blocks_even_initialized_clients_without_more_http() {
         "a retained initialized client must not send when disabled"
     );
 }
+
+#[test]
+fn issue1420_launch_progress_reads_recorded_t3_status_over_the_real_client() {
+    use crate::launch::progress::{Stage, Tracker};
+    const REQUEST_ID: &str = "okilum-launch-wire";
+    let fixture: Value = serde_json::from_str(
+        &include_str!("../../tests/fixtures/t3-launch-progress-2026-11-17.json")
+            .replace("{{REQUEST_ID}}", REQUEST_ID),
+    )
+    .unwrap();
+    let served = fixture.clone();
+    let server = fake_t3(move |name, args| {
+        // Frame 3: the executor already replied twice before the first poll.
+        let frame = &served["frames"][3];
+        match name {
+            "t3_thread_list" => {
+                assert_eq!(args["projectId"], "fixture-executors");
+                structured(json!({"threads": frame["executors"], "nextCursor": null}))
+            }
+            "t3_thread_read" => {
+                assert_eq!(args["limit"], 1);
+                let id = args["threadId"].as_str().unwrap();
+                let thread = if id == "mcp:fixture-manager" {
+                    frame["manager"].clone()
+                } else {
+                    let row = frame["executors"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|row| row["threadId"] == id)
+                        .unwrap()
+                        .clone();
+                    json!({"threadId": id, "projectId": "fixture-executors", "title": row["title"],
+                        "status": row["status"], "activeRunId": row["activeRunId"],
+                        "providerInstanceId": "codex", "model": "gpt-6.1-sol",
+                        "runtimeMode": "full-access", "linkedPullRequest": null,
+                        "updatedAt": row["updatedAt"]})
+                };
+                // T3 0.1.10-nightly.20261116: `afterPosition` (>= -1) pages
+                // oldest first; without it a thread-scoped read is newest first.
+                let mut items = served["timelines"]
+                    .get(id)
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                match args["afterPosition"].as_i64() {
+                    Some(after) => items.retain(|item| item["position"].as_i64().unwrap() > after),
+                    None => items.reverse(),
+                }
+                items.truncate(args["limit"].as_u64().unwrap_or(100) as usize);
+                let next = items.last().map(|item| item["position"].clone());
+                structured(
+                    json!({"thread": thread, "items": items, "nextPosition": next, "hasMore": false}),
+                )
+            }
+            other => panic!("launch progress must not call {other}"),
+        }
+    });
+    let gateway = gateway(&server, Some(token("good")));
+    let request = crate::launch::Request {
+        request_id: REQUEST_ID.into(),
+        role: "UI".into(),
+        brief_path: "brief.md".into(),
+        brief_source: "brief".into(),
+        executor_project_id: "fixture-executors".into(),
+        executor_project_root: "/server/repo".into(),
+        worktree_path: "/server/worktrees/ui".into(),
+        branch: "feature/ui".into(),
+        model_selection: ModelSelection {
+            instance_id: "codex".into(),
+            model: "gpt-6.1-sol".into(),
+            options: vec![],
+        },
+        manager_instructions: String::new(),
+    };
+    let baseline: Vec<ThreadSummary> =
+        serde_json::from_value(fixture["frames"][0]["executors"].clone()).unwrap();
+    let mut tracker = Tracker::new(
+        &request,
+        "okilum-client".into(),
+        "mcp:fixture-manager".into(),
+        Some(&baseline),
+    );
+    let receipt: SendReceipt = serde_json::from_value(fixture["receipt"].clone()).unwrap();
+    let observation = tracker.observe(&gateway, Some(&receipt)).unwrap().unwrap();
+    assert!(tracker.apply(observation));
+    assert_eq!(tracker.progress.reached, Stage::Running);
+    assert_eq!(
+        tracker.progress.executor.as_ref().unwrap().thread_id,
+        "mcp:fixture-executor-new"
+    );
+    let calls = tool_calls(&server.requests());
+    for call in calls
+        .iter()
+        .filter(|call| call["arguments"]["threadId"] != "mcp:fixture-manager")
+        .filter(|call| call["name"] == "t3_thread_read")
+    {
+        assert_eq!(
+            call["arguments"]["afterPosition"], -1,
+            "executor threads are read from their first item"
+        );
+    }
+    let names = calls
+        .iter()
+        .map(|call| call["name"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        [
+            "t3_thread_read",
+            "t3_thread_list",
+            "t3_thread_read",
+            "t3_thread_read"
+        ],
+        "manager status, listing, then each new thread's first item only"
+    );
+}

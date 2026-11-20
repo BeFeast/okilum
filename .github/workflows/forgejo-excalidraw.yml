@@ -54,6 +54,15 @@ jobs:
       - name: Load writer output with the plugin's own loader
         working-directory: scripts/excalidraw-compat
         run: node check.cjs "$ORACLE_DIR/oracle.cjs" "$OKILUM_EXCALIDRAW_DUMP"
+      # #478: the editor page okilum-shell embeds must be a byte-identical
+      # rebuild from the pinned lockfile; its session client tests run too.
+      - name: Rebuild the drawing editor page and compare with the committed one
+        working-directory: web/excalidraw-editor
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          node build.mjs --check
+          node --test test/
       - name: Remove fetched plugin sources
         if: always()
         run: rm -rf "$ORACLE_DIR/fetch/plugin" "$ORACLE_DIR/oracle.cjs"

@@ -45,7 +45,7 @@ impl SyncSettings {
                                 } else {
                                     "Use connection"
                                 })
-                                .disabled(self.busy || runtime.selected || in_use)
+                                .disabled(self.locked() || runtime.selected || in_use)
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.run(Operation::SelectConnection(path.clone()), cx)
                                 })),
@@ -74,7 +74,7 @@ impl SyncSettings {
                                     gpui_component::switch::Switch::new("sync-network-local-only")
                                         .accessibility_label("Only local network and VPN")
                                         .checked(network.local_only())
-                                        .disabled(self.busy)
+                                        .disabled(self.locked())
                                         .on_click(cx.listener(move |this, checked: &bool, _, cx| {
                                             use okilum_sync_controller::network_policy::Policy;
                                             this.run(Operation::Network(identity.clone(), if *checked {
@@ -104,7 +104,7 @@ impl SyncSettings {
             .child(div().text_sm().text_color(p.text_muted)
                 .child("Choose the existing local vault to inspect its connection, then explicitly allow Okilum to use it."))
             .child(Button::new("sync-inspect-existing")
-                                        .debug_selector(|| "sync-inspect-existing".into()).label("Choose existing synced vault").ghost().disabled(self.busy)
+                                        .debug_selector(|| "sync-inspect-existing".into()).label("Choose existing synced vault").ghost().disabled(self.locked())
                 .on_click(cx.listener(|this, _, _, cx| this.choose_folder(None, cx)))));
         #[cfg(target_os = "linux")]
         {
@@ -158,18 +158,18 @@ impl SyncSettings {
         let p = brand::palette(cx);
         v_flex().w_full().min_w_0().gap_3()
             .child(vault.label.clone())
-            .child(div().w_full().whitespace_normal().text_sm().text_color(p.text_muted).child(vault.path.display().to_string()))
+            .child(div().w_full().whitespace_normal().text_sm().text_color(p.text_muted).child(presentation::vault_path(&vault.path)))
             .child(div().text_sm().child("This folder already uses Syncthing. Allow Okilum to share it with your approved computers using that connection."))
             .child(h_flex().gap_2()
                 .child(Button::new("sync-consent-existing")
-                    .debug_selector(|| "sync-consent-existing".into()).primary().label("Use this connection").disabled(self.busy)
+                    .debug_selector(|| "sync-consent-existing".into()).primary().label("Use this connection").disabled(self.locked())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.inspected = None;
                         this.presentation.wizard = None;
                         this.run(Operation::Consent(Box::new(approved.clone())), cx);
                     })))
                 .child(Button::new("sync-dismiss-existing")
-                    .debug_selector(|| "sync-dismiss-existing".into()).ghost().label("Cancel").disabled(self.busy)
+                    .debug_selector(|| "sync-dismiss-existing".into()).ghost().label("Cancel").disabled(self.locked())
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.inspected = None;
                         this.presentation.wizard = None;
@@ -228,7 +228,7 @@ impl SyncSettings {
                             div()
                                 .text_sm()
                                 .text_color(p.text_muted)
-                                .child(path.display().to_string()),
+                                .child(presentation::vault_path(&path)),
                         )
                         .child(
                             div()
@@ -240,7 +240,7 @@ impl SyncSettings {
                             Button::new(("sync-share-vault", index))
                                 .debug_selector(move || format!("sync-share-vault-{index}"))
                                 .label(label)
-                                .disabled(self.busy || attached.is_some())
+                                .disabled(self.locked() || attached.is_some())
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.run(Operation::Share(path.clone()), cx)
                                 })),
