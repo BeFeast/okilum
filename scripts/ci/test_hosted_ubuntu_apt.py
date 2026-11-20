@@ -173,5 +173,142 @@ class HostedUbuntuAptTests(unittest.TestCase):
         self.assertEqual(workflow.count('timeout-minutes: 10'), 2)
 
 
+
+class HostedUbuntuAptDeadlineTests(unittest.TestCase):
+    """Fake clock: every apt call advances it by its granted timeout or by `took`."""
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location('hosted_apt_clock', ROOT / 'hosted-ubuntu-apt.py')
+        self.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.module)
+
+    @staticmethod
+    def slow(phase):
+        # The 2026-11-18 failure shape: signed update succeeds, download times out.
+        return (0, None) if phase == 'update' else (124, None)
+
+    def timeline(self, outcome):
+        """outcome(original, phase) -> (status, seconds taken or None for the full window)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / 'apt'
+            (source / 'sources.list.d').mkdir(parents=True)
+            (source / 'sources.list.d' / 'ubuntu.sources').write_text(
+                'Types: deb\nURIs: http://us-east-2.ec2.archive.ubuntu.com/ubuntu\n'
+                'Suites: noble\nComponents: main\n'
+                'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n')
+            now = [1000.0]
+            calls = []
+
+            def run(argv, env, check):
+                original = f'Dir::Etc::sourcelist={source / "sources.list"}' in argv
+                phase = ('update' if argv[-1] == 'update' else
+                         'download' if '--download-only' in argv else 'install')
+                granted = int(env['OKILUM_APT_TIMEOUT'].removesuffix('s'))
+                status, took = outcome(original, phase)
+                calls.append({'original': original, 'phase': phase, 'granted': granted,
+                              'start': now[0] - 1000})
+                now[0] += granted if took is None else min(took, granted)
+                return subprocess.CompletedProcess(argv, status)
+
+            result = self.module.provision(['cmake'], source, clock=lambda: now[0], run=run)
+            return result, calls, now[0] - 1000
+
+    def test_wrapper_deadline_matches_budget(self):
+        wrapper = (ROOT / 'hosted-ubuntu-apt.sh').read_text()
+        self.assertIn('--kill-after=15s 9m', wrapper)
+        self.assertEqual(self.module.OUTER_DEADLINE, 9 * 60)
+        self.assertLess(self.module.BUDGET, self.module.OUTER_DEADLINE)
+
+    def test_https_timeouts_leave_fallback_its_reserved_window(self):
+        # Every HTTPS phase uses its whole window; the runner sources then work.
+        result, calls, elapsed = self.timeline(
+            lambda original, phase: (0, 20) if original else self.slow(phase))
+        self.assertEqual(result, 0)
+        self.assertLessEqual(elapsed, self.module.BUDGET)
+        https = [c for c in calls if not c['original']]
+        fallback = [c for c in calls if c['original']]
+        # Positive control: without the reserve these phases alone would take
+        # 3 * (60 + 150) = 630 s, beyond the 540 s outer deadline.
+        self.assertEqual([c['granted'] for c in https[:2]], [60, 150])
+        self.assertLessEqual(sum(c['granted'] for c in https),
+                             self.module.BUDGET - self.module.FALLBACK_RESERVE
+                             - self.module.INSTALL_RESERVE)
+        self.assertEqual([c['phase'] for c in fallback], ['update', 'download', 'install'])
+        self.assertEqual(fallback[0]['granted'], self.module.UPDATE)
+        self.assertGreaterEqual(fallback[1]['granted'], 90)
+        self.assertGreaterEqual(fallback[2]['granted'], self.module.INSTALL_RESERVE)
+
+    def test_exhausted_timeline_stays_inside_outer_deadline(self):
+        result, calls, elapsed = self.timeline(lambda original, phase: self.slow(phase))
+        self.assertNotEqual(result, 0)
+        self.assertLessEqual(elapsed, self.module.BUDGET)
+        self.assertTrue(all(c['granted'] >= self.module.MIN_PHASE for c in calls))
+        self.assertTrue(any(c['original'] and c['phase'] == 'download' for c in calls))
+        self.assertFalse(any(c['phase'] == 'install' for c in calls))
+
+    def test_fast_failures_keep_full_windows_for_every_route(self):
+        # DNS failure: updates fail at once, so later routes keep nominal bounds.
+        result, calls, _ = self.timeline(
+            lambda original, phase: (0, 20) if original else (100, 1))
+        self.assertEqual(result, 0)
+        self.assertEqual([c['granted'] for c in calls], [60, 60, 60, 60, 150, 240])
+
+    def test_kill_grace_leaves_the_promised_fallback_window(self):
+        # HTTPS updates finish in 20s. HTTPS downloads burn the grant and then
+        # the helper's kill grace (137). The fallback must still get 60s to
+        # update, at least 90s to download and the install reserve.
+        kill = self.module.KILL_GRACE
+        self.assertIn(f'--kill-after="${{OKILUM_APT_KILL_AFTER:-{kill}s}}"',
+                      (ROOT / 'apt-bounded.sh').read_text())
+
+        def outcome(original, phase):
+            if not original and phase == 'download':
+                return 137, None
+            need = 60 if original and phase == 'update' else 80 if original and phase == 'download' else 20
+            return 0, need
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / 'apt'
+            (source / 'sources.list.d').mkdir(parents=True)
+            (source / 'sources.list.d' / 'ubuntu.sources').write_text(
+                'Types: deb\nURIs: http://us-east-2.ec2.archive.ubuntu.com/ubuntu\n'
+                'Suites: noble\nComponents: main\n'
+                'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n')
+            now = [1000.0]
+            calls = []
+
+            def run(argv, env, check):
+                original = f'Dir::Etc::sourcelist={source / "sources.list"}' in argv
+                phase = ('update' if argv[-1] == 'update' else
+                         'download' if '--download-only' in argv else 'install')
+                granted = int(env['OKILUM_APT_TIMEOUT'].removesuffix('s'))
+                status, took = outcome(original, phase)
+                calls.append({'original': original, 'phase': phase, 'granted': granted,
+                              'status': status})
+                if took is None or took > granted:
+                    now[0] += granted + kill
+                    return subprocess.CompletedProcess(argv, 137)
+                now[0] += took
+                return subprocess.CompletedProcess(argv, status)
+
+            result = self.module.provision(['cmake'], source, clock=lambda: now[0], run=run)
+
+        self.assertEqual(result, 0)
+        self.assertLessEqual(now[0] - 1000, self.module.BUDGET)
+        fallback = [c for c in calls if c['original']]
+        self.assertEqual([c['phase'] for c in fallback], ['update', 'download', 'install'])
+        self.assertEqual(fallback[0]['granted'], self.module.UPDATE)
+        self.assertGreaterEqual(fallback[1]['granted'], 90)
+        self.assertGreaterEqual(fallback[2]['granted'], self.module.INSTALL_RESERVE)
+        self.assertTrue(all(c['status'] == 137 for c in calls
+                            if not c['original'] and c['phase'] == 'download'))
+
+    def test_https_success_install_keeps_full_bound(self):
+        result, calls, _ = self.timeline(lambda original, phase: (0, 30))
+        self.assertEqual(result, 0)
+        self.assertEqual([(c['phase'], c['granted']) for c in calls],
+                         [('update', 60), ('download', 150), ('install', 240)])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -171,9 +171,24 @@ failures only reflect a runner without IPv6. The pattern now rewrites any
 HTTPS was chosen for throughput, not integrity: apt verifies Release signatures
 and package hashes on HTTP too. So after the three HTTPS routes, one last route
 uses the runner's own sources and mirror lists in place, unchanged, under the
-same per-phase bounds and with the shared package cache. The unchanged
-nine-minute outer deadline still bounds the whole stage. Fake-apt cases cover the ec2 host in the
-mirror list, fallback to the original sources and exhaustion across all four routes.
+same per-phase bounds and with the shared package cache. Fake-apt cases cover
+the ec2 host in the mirror list, fallback to the original sources and exhaustion
+across all four routes.
+
+Three HTTPS routes alone could take 3 x (60 + 150) = 630 seconds, beyond the
+540-second outer deadline, so the runner-sources route might never start. The
+script now keeps its own 525-second budget on a monotonic clock. Each HTTPS
+phase is shortened so that 150 seconds stay reserved for the runner-sources route
+(a full 60-second update plus 90 seconds of download on top of the shared cache)
+and 90 seconds for the final `--no-download` install (about 20 seconds in run
+`44255520770`). A phase whose window would drop below 15 seconds is skipped and
+logged. Fast failures (DNS) keep every route at its nominal bounds, and after a
+successful download the install keeps its full four minutes. While a later
+route is still protected, the clip also subtracts apt-bounded.sh's 15-second
+kill grace, so a SIGKILL cannot eat that reserve. The fallback download keeps
+its promised 90 seconds beside the 90-second install reserve.
+Fake-clock tests cover this timeline, fallback success after HTTPS timeouts,
+fast failures and the unchanged HTTPS-success bounds.
 
 Separate read-only infrastructure evidence: baldr's
 `forgejo-runner-bridge.service` accepted Forgejo task `22335` (job `34758`, API

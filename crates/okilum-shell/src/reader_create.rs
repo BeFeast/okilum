@@ -482,6 +482,70 @@ impl Reader {
         self.tree_focus.focus(window, cx);
         cx.notify();
     }
+    /// A note just created on disk: publish it, open it for editing with the
+    /// cursor in its body, select it in the tree and offer Undo. Shared by
+    /// the inline New note row and Today's note (#3182).
+    pub(super) fn show_created_note(
+        &mut self,
+        rel: String,
+        source: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let created = rel.clone();
+        Arc::make_mut(&mut self.vault).register_created_note(&rel);
+        // Publish the successful create before the watcher catches up.
+        // Its ancestors must exist in the tree for an immediate Cmd-N
+        // in this new folder to render a focused, actionable input row.
+        self.tree
+            .entry_created(&rel, okilum_core::vault::EntryKind::Markdown);
+        // New note opened the sidebar for its name row. In a narrow
+        // window that sidebar covers the note, so it closes like
+        // after any other selection (#1412). The editor takes focus
+        // below.
+        self.dismiss_sidebar_after_selection(window, cx);
+        self.editing = None;
+        self.navigation.preparation_generation =
+            self.navigation.preparation_generation.wrapping_add(1);
+        let document = okilum_core::render::reader_document_from_source(&self.vault, &rel, &source);
+        self.accept_prepared_document(
+            prepared_links::DocumentRequest {
+                rel,
+                jump: None,
+                heading: None,
+                history_index: None,
+                restore_position: None,
+            },
+            Ok(document.into()),
+            window,
+            cx,
+        );
+        self.edit_created_note(window, cx);
+        // Typing starts in the body after the heading, never before
+        // the frontmatter (#1117).
+        let body = okilum_core::note_files::body_start(&source);
+        if let Some(editing) = &self.editing {
+            editing
+                .input()
+                .update(cx, |input, cx| input.set_selected_range(body..body, cx));
+        }
+        // Created from the tree: its row is shown and selected
+        // whether or not auto-reveal is on (#1762), so the next
+        // New note goes beside it.
+        let ix = self.tree.reveal(&created);
+        if let Some(ix) = self.select_index_folder(&created, ix) {
+            self.scroll_tree_to(ix);
+        }
+        self.tree_revealed = created.clone();
+        self.announce_creation(&created, Some(source), window, cx);
+        self.queue_vault_mutation(
+            okilum_core::Changes {
+                changed: std::collections::BTreeSet::from([created]),
+                ..Default::default()
+            },
+            cx,
+        );
+    }
     fn commit_creation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(create) = self.creation.as_ref() else {
             return;
@@ -543,55 +607,9 @@ impl Reader {
         match result {
             Ok((rel, Some(source))) => {
                 self.trace_file_operation("create", "finished", &rel, None, cx);
-                let created = rel.clone();
                 self.creation = None;
                 self.close_creation_folder_picker(cx);
-                Arc::make_mut(&mut self.vault).register_created_note(&rel);
-                // Publish the successful create before the watcher catches up.
-                // Its ancestors must exist in the tree for an immediate Cmd-N
-                // in this new folder to render a focused, actionable input row.
-                self.tree
-                    .entry_created(&rel, okilum_core::vault::EntryKind::Markdown);
-                // New note opened the sidebar for its name row. In a narrow
-                // window that sidebar covers the note, so it closes like
-                // after any other selection (#1412). The editor takes focus
-                // below.
-                self.dismiss_sidebar_after_selection(window, cx);
-                self.editing = None;
-                self.navigation.preparation_generation =
-                    self.navigation.preparation_generation.wrapping_add(1);
-                let document =
-                    okilum_core::render::reader_document_from_source(&self.vault, &rel, &source);
-                self.accept_prepared_document(
-                    prepared_links::DocumentRequest {
-                        rel,
-                        jump: None,
-                        heading: None,
-                        history_index: None,
-                        restore_position: None,
-                    },
-                    Ok(document.into()),
-                    window,
-                    cx,
-                );
-                self.edit_created_note(window, cx);
-                // Typing starts in the body after the heading, never before
-                // the frontmatter (#1117).
-                let body = okilum_core::note_files::body_start(&source);
-                if let Some(editing) = &self.editing {
-                    editing
-                        .input()
-                        .update(cx, |input, cx| input.set_selected_range(body..body, cx));
-                }
-                // Created from the tree: its row is shown and selected
-                // whether or not auto-reveal is on (#1762), so the next
-                // New note goes beside it.
-                let ix = self.tree.reveal(&created);
-                if let Some(ix) = self.select_index_folder(&created, ix) {
-                    self.scroll_tree_to(ix);
-                }
-                self.tree_revealed = created.clone();
-                self.announce_creation(&created, Some(source), window, cx);
+                self.show_created_note(rel, source, window, cx);
                 if let Some(folder) = templates
                     .as_ref()
                     .filter(|catalog| catalog.missing())
@@ -603,13 +621,6 @@ impl Reader {
                         cx,
                     );
                 }
-                self.queue_vault_mutation(
-                    okilum_core::Changes {
-                        changed: std::collections::BTreeSet::from([created]),
-                        ..Default::default()
-                    },
-                    cx,
-                );
             }
             Ok((rel, None)) => {
                 self.trace_file_operation("create", "finished", &rel, None, cx);
