@@ -429,6 +429,19 @@ AAA (7:1) for High contrast. `on-accent` on `accent` is 4.5:1 and `text-faint`
 Each theme's `heading` is a hue at least 25° from its `link`, so a heading
 never reads as clickable.
 
+**Decoration slots** (#3151): a theme file may fill optional slots beside its
+colours; an absent slot renders exactly as before. Slots are paint-only: no
+text shaping, relayout or re-parse, and a theme switch only repaints.
+
+- `decorations.taskCheck` (#3155) — `{"durationMs": 1..=600, "bounce": 0..=0.5}`.
+  A click on a Live Preview task box plays the toggle: the box bounces to
+  `1 + bounce` of its size and back within the first 60 % of the duration
+  while the checkmark draws in (checking) or out (unchecking), easing out. The
+  click target does not move. It runs only after a click (not the ⌘L/Ctrl+L
+  shortcut, opening a note or a theme switch), never with the OS reduce-motion
+  setting, and requests frames only while it runs. Reader checkboxes are
+  read-only and never animate. Obsidianite: 300 ms, bounce 0.15.
+
 **Theme picker** (`theme_picker.rs`): a self-contained row of compact swatch
 cards (120 px). Each card previews the theme's sidebar, surface, text, muted
 text, link and accent in the variant currently shown. The selected card has a
