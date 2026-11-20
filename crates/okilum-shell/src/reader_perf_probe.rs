@@ -3,7 +3,9 @@
 //! `scripts/perf/large-note/bench.py` drives it under Xvfb.
 //!
 //! Once the first document paints, the probe scrolls the Reader one fixed step
-//! per frame, then jumps through «On this page» to far headings, and records
+//! per frame, then jumps through «On this page» to far headings, then (#3154)
+//! scrolls on a wall-clock timer while counting every painted frame and all
+//! text layout work until the scenario settles, and records
 //! the CPU time of every frame from `Reader::render` to the end of the Reader
 //! body's paint. It writes one JSON report and quits. Presentation and GPU time
 //! are not included.
@@ -14,7 +16,7 @@ use std::{path::PathBuf, time::Instant};
 /// Environment variable naming the JSON report the probe writes.
 pub(crate) const ENV: &str = "OKILUM_READER_PERF_PROBE";
 /// Pixels per scripted scroll step: about one mouse-wheel notch.
-const STEP: Pixels = px(96.);
+pub(crate) const STEP: Pixels = px(96.);
 /// Frames after the first document paint that are not timed.
 const SETTLE_FRAMES: usize = 3;
 const SCROLL_FRAMES: usize = 240;
@@ -22,6 +24,13 @@ const SCROLL_FRAMES: usize = 240;
 /// frames without other input; the landing is read on the last of them.
 const JUMPS: [f32; 4] = [0.5, 0.95, 0.25, 0.75];
 const FRAMES_PER_JUMP: usize = 8;
+/// The timed phase (#3154): scroll steps sent by a wall-clock timer, not by
+/// paint callbacks, then a quiet settle. Every frame painted and all text
+/// layout work in that window are counted, so a decoration that caused an
+/// extra repaint or layout pass shows up in the counts.
+pub(crate) const TIMED_STEPS: usize = 120;
+pub(crate) const TIMED_INTERVAL_MS: u64 = 16;
+pub(crate) const TIMED_SETTLE_MS: u64 = 1000;
 
 /// What the Reader does before its next frame.
 #[derive(Debug, PartialEq)]
@@ -32,6 +41,10 @@ pub(crate) enum Step {
     ScrollBy(Pixels),
     /// Open this «On this page» row, as a click on it does.
     Jump(usize),
+    /// Start the timed phase: the Reader sends `TIMED_STEPS` scroll steps of
+    /// `STEP` from a timer, waits `TIMED_SETTLE_MS`, then calls
+    /// [`Probe::finish_timed`].
+    StartTimed,
     /// Write the report and quit.
     Finish,
 }
@@ -53,6 +66,7 @@ enum Phase {
     Settling(usize),
     Scrolling(usize),
     Jumping { jump: usize, frame: usize },
+    Timed,
     Done,
 }
 
@@ -75,6 +89,9 @@ pub(crate) struct Probe {
     phase_layout_start: LayoutCounts,
     scroll_layout: LayoutCounts,
     jump_layout: LayoutCounts,
+    /// Frames painted during the timed phase, whatever caused them.
+    timed_frames: Vec<f64>,
+    timed_layout: LayoutCounts,
 }
 
 impl Probe {
@@ -100,6 +117,17 @@ impl Probe {
             phase_layout_start: LayoutCounts::default(),
             scroll_layout: LayoutCounts::default(),
             jump_layout: LayoutCounts::default(),
+            timed_frames: Vec::new(),
+            timed_layout: LayoutCounts::default(),
+        }
+    }
+
+    /// Ends the timed phase once its last step has settled; the Reader then
+    /// writes the report and quits.
+    pub(crate) fn finish_timed(&mut self) {
+        if self.phase == Phase::Timed {
+            self.timed_layout = layout_counters::snapshot().since(self.phase_layout_start);
+            self.phase = Phase::Done;
         }
     }
 
@@ -184,9 +212,16 @@ impl Probe {
                     };
                     return self.jump(next, outline);
                 }
-                self.jump_layout = layout_counters::snapshot().since(self.phase_layout_start);
-                self.phase = Phase::Done;
-                Step::Finish
+                let now = layout_counters::snapshot();
+                self.jump_layout = now.since(self.phase_layout_start);
+                self.phase_layout_start = now;
+                self.phase = Phase::Timed;
+                Step::StartTimed
+            }
+            Phase::Timed => {
+                // Counted, never driven: input comes from the timer.
+                self.timed_frames.push(frame_ms);
+                Step::Idle
             }
             Phase::Done => Step::Idle,
         }
@@ -224,6 +259,13 @@ impl Probe {
             "layout": {
                 "scroll": counts(self.scroll_layout),
                 "jump": counts(self.jump_layout),
+            },
+            "timed": {
+                "input_steps": TIMED_STEPS,
+                "interval_ms": TIMED_INTERVAL_MS,
+                "settle_ms": TIMED_SETTLE_MS,
+                "frame": stats(&self.timed_frames),
+                "layout": counts(self.timed_layout),
             },
             "scroll_start_item": self.start_item,
             "scroll_end_item": self.end_item,
@@ -292,7 +334,8 @@ mod tests {
                 top = block;
             }
             match step {
-                Step::Finish => break,
+                Step::Finish => panic!("the timed phase comes before the report"),
+                Step::StartTimed => break,
                 Step::Idle => panic!("probe stalled"),
                 Step::Jump(row) => {
                     jumps.push(row);
@@ -323,6 +366,15 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert!(probe.end_item > probe.start_item);
+        // Timed phase: every painted frame is counted, none drives input,
+        // however many the timer's steps cause.
+        for _ in 0..TIMED_STEPS + 7 {
+            probe.render_started();
+            assert_eq!(probe.painted(2000, top, &outline, 60.), Step::Idle);
+        }
+        assert_eq!(probe.timed_frames.len(), TIMED_STEPS + 7);
+        probe.finish_timed();
+        assert_eq!(probe.phase, Phase::Done);
         probe.render_started();
         assert_eq!(probe.painted(2000, 0, &outline, 60.), Step::Idle);
     }

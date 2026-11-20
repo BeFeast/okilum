@@ -79,8 +79,9 @@ def launch(binary, out, theme, mode, live):
     vault, state = work / 'vault', work / 'state'
     vault.mkdir()
     state.mkdir()
-    (vault / 'demo.md').write_text(NOTE, encoding='utf-8')
-    (vault / 'Other note.md').write_text('# Other note\n', encoding='utf-8')
+    # LF on every platform: Windows text mode would write CRLF.
+    (vault / 'demo.md').write_text(NOTE, encoding='utf-8', newline='\n')
+    (vault / 'Other note.md').write_text('# Other note\n', encoding='utf-8', newline='\n')
     (state / 'reader-ui.json').write_text(json.dumps({
         'version': 1,
         'theme': theme,

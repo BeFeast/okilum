@@ -7001,19 +7001,52 @@ impl Reader {
                     cx.notify();
                 });
             }),
-            reader_perf_probe::Step::Finish => {
-                // What the run was drawn with, so a theme A/B can check it (#3156).
-                let theme = serde_json::json!({
-                    "key": brand::theme_id(cx).key(),
-                    "dark": Theme::global(cx).is_dark(),
-                    "syntax": Theme::global(cx).highlight_theme.name,
-                });
-                if let Err(error) = probe.write_report(targets.len(), theme) {
-                    diagnostic_error!("{}: {error}", reader_perf_probe::ENV);
-                }
-                cx.quit();
+            reader_perf_probe::Step::StartTimed => {
+                // Input on a wall-clock schedule, independent of paint (#3154):
+                // the probe only counts the frames these steps cause.
+                cx.spawn(async move |reader, cx| {
+                    let interval = Duration::from_millis(reader_perf_probe::TIMED_INTERVAL_MS);
+                    for _ in 0..reader_perf_probe::TIMED_STEPS {
+                        cx.background_executor().timer(interval).await;
+                        let scrolled = reader.update(cx, |_, cx| {
+                            list.scroll_by(reader_perf_probe::STEP);
+                            content.update(cx, |_, cx| cx.notify());
+                            cx.notify();
+                        });
+                        if scrolled.is_err() {
+                            return;
+                        }
+                    }
+                    cx.background_executor()
+                        .timer(Duration::from_millis(reader_perf_probe::TIMED_SETTLE_MS))
+                        .await;
+                    let _ = reader.update(cx, |this, cx| {
+                        if let Some(probe) = this.perf_probe.as_mut() {
+                            probe.finish_timed();
+                        }
+                        this.finish_perf_probe(targets.len(), cx);
+                    });
+                })
+                .detach();
+            }
+            reader_perf_probe::Step::Finish => self.finish_perf_probe(targets.len(), cx),
+        }
+    }
+
+    /// Write the probe's report and quit.
+    fn finish_perf_probe(&mut self, outline_rows: usize, cx: &mut Context<Self>) {
+        // What the run was drawn with, so a theme A/B can check it (#3156).
+        let theme = serde_json::json!({
+            "key": brand::theme_id(cx).key(),
+            "dark": Theme::global(cx).is_dark(),
+            "syntax": Theme::global(cx).highlight_theme.name,
+        });
+        if let Some(probe) = self.perf_probe.as_ref() {
+            if let Err(error) = probe.write_report(outline_rows, theme) {
+                diagnostic_error!("{}: {error}", reader_perf_probe::ENV);
             }
         }
+        cx.quit();
     }
 
     fn render_outline(&self, cx: &mut Context<Self>) -> AnyElement {

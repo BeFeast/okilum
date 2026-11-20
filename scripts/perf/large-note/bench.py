@@ -58,7 +58,11 @@ KEYS = ["open_ms", "control_open_ms", "open_over_control_ms", "document_stage_ms
         # Text layout work per phase, counted by the TextView and its inline
         # elements (#3154): extra layout passes show here, not in frame counts.
         "layout.scroll.text_view_layouts", "layout.scroll.inline_layouts", "layout.scroll.inline_prepaints",
-        "layout.jump.text_view_layouts", "layout.jump.inline_layouts", "layout.jump.inline_prepaints"]
+        "layout.jump.text_view_layouts", "layout.jump.inline_layouts", "layout.jump.inline_prepaints",
+        # Timed phase (#3154): input on a wall-clock schedule, so these count
+        # every frame and layout pass the same input caused.
+        "timed.frame.frames", "timed.frame.mean_ms", "timed.layout.text_view_layouts",
+        "timed.layout.inline_layouts", "timed.layout.inline_prepaints"]
 PHASES = {
     "note_open_core_preparation": "worker_ms",
     "note_open_rendered": "since_open_ms",
@@ -190,6 +194,9 @@ def controls(data, counts, theme=None, appearance=None):
     layout = data.get("layout") or {}
     if any((layout.get(phase) or {}).get("inline_layouts", 0) == 0 for phase in ("scroll", "jump")):
         problems.append("the layout counters did not count any inline layout")
+    timed = data.get("timed") or {}
+    if (timed.get("frame") or {}).get("frames", 0) == 0 or (timed.get("layout") or {}).get("inline_layouts", 0) == 0:
+        problems.append("the timed phase painted or laid out nothing")
     return problems
 
 
