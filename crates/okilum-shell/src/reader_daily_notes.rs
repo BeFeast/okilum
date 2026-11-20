@@ -41,7 +41,9 @@ pub(super) struct Templates {
     pub suggested: Option<String>,
 }
 
-/// The first-press dialog's choices (#3182).
+/// The first-press dialog's choices (#3182). An entity of its own: the
+/// dialog layer is drawn inside the Reader's render, so its builder reads this,
+/// never the Reader.
 pub(super) struct Setup {
     root: PathBuf,
     folder: Entity<InputState>,
@@ -356,8 +358,11 @@ impl Reader {
                 }
                 let Some(note) = note else {
                     let error = "Choose a Markdown note inside this vault.".to_owned();
-                    match this.daily_setup.as_mut().filter(|_| setup) {
-                        Some(dialog) => dialog.error = Some(error),
+                    match this.daily_setup.clone().filter(|_| setup) {
+                        Some(dialog) => dialog.update(cx, |dialog, cx| {
+                            dialog.error = Some(error);
+                            cx.notify();
+                        }),
                         None => this.daily_notes_error = Some(error),
                     }
                     cx.notify();
@@ -374,18 +379,22 @@ impl Reader {
     }
 
     fn set_setup_template(&mut self, template: Option<String>, cx: &mut Context<Self>) {
-        if let Some(setup) = self.daily_setup.as_mut() {
+        if let Some(setup) = self.daily_setup.clone() {
             let check = DailySettings {
                 template: template.clone().unwrap_or_default(),
                 ..Default::default()
             };
-            match check.template_parts() {
-                Ok(_) => {
-                    setup.template = template;
-                    setup.error = None;
+            let checked = check.template_parts();
+            setup.update(cx, |setup, cx| {
+                match checked {
+                    Ok(_) => {
+                        setup.template = template;
+                        setup.error = None;
+                    }
+                    Err(error) => setup.error = Some(format!("{error:#}")),
                 }
-                Err(error) => setup.error = Some(format!("{error:#}")),
-            }
+                cx.notify();
+            });
             cx.notify();
         }
     }
@@ -398,36 +407,40 @@ impl Reader {
                 .default_value(okilum_core::daily_notes::DEFAULT_FOLDER)
         });
         folder.update(cx, |input, cx| input.focus(window, cx));
-        self.daily_setup = Some(Setup {
+        let setup = cx.new(|_| Setup {
             root: self.vault_root.clone(),
             folder,
             template: self.daily_templates.suggested.clone(),
             candidates: self.daily_templates.candidates.clone(),
             error: None,
         });
+        self.daily_setup = Some(setup.clone());
         let reader = cx.entity().downgrade();
-        // Opening builds the dialog at once, and the builder reads this
-        // Reader: open it after the current update ends.
-        window.defer(cx, move |window, cx| {
-            window.open_dialog(cx, move |dialog, _, cx| {
-                setup_dialog(dialog, reader.clone(), cx)
-            });
+        window.open_dialog(cx, move |dialog, _, cx| {
+            setup_dialog(dialog, &setup, reader.clone(), cx)
         });
         cx.notify();
     }
 
     /// The dialog's Create: save the choice, then make and open today's note.
     pub(super) fn confirm_daily_setup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(setup) = self.daily_setup.as_ref() else {
+        let Some(setup) = self.daily_setup.clone() else {
             return;
         };
-        if setup.root != self.vault_root {
+        let (root, input, template) = {
+            let setup = setup.read(cx);
+            (
+                setup.root.clone(),
+                setup.folder.clone(),
+                setup.template.clone().unwrap_or_default(),
+            )
+        };
+        if root != self.vault_root {
             self.daily_setup = None;
             window.close_dialog(cx);
             return;
         }
-        let folder = typed_folder(&setup.folder.read(cx).value());
-        let template = setup.template.clone().unwrap_or_default();
+        let folder = typed_folder(&input.read(cx).value());
         let settings = folder.and_then(|folder| {
             let settings = DailySettings {
                 folder,
@@ -454,9 +467,10 @@ impl Reader {
             Err(error) => Err(error),
         };
         if let Err(error) = saved {
-            if let Some(setup) = self.daily_setup.as_mut() {
+            setup.update(cx, |setup, cx| {
                 setup.error = Some(error);
-            }
+                cx.notify();
+            });
             cx.notify();
             return;
         }
@@ -583,16 +597,11 @@ impl Reader {
 /// The first-press dialog: folder and template, prefilled; Create or Cancel.
 fn setup_dialog(
     dialog: gpui_component::dialog::Dialog,
+    setup: &Entity<Setup>,
     reader: WeakEntity<Reader>,
     cx: &mut App,
 ) -> gpui_component::dialog::Dialog {
-    let Some(entity) = reader.upgrade() else {
-        return dialog;
-    };
-    let state = entity.read(cx);
-    let Some(setup) = state.daily_setup.as_ref() else {
-        return dialog;
-    };
+    let setup = setup.read(cx);
     let muted = brand::palette(cx).text_muted;
     let danger = brand::palette(cx).danger;
     let folder = setup.folder.clone();
@@ -621,7 +630,8 @@ fn setup_dialog(
     let other: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, cx| {
         let _ = other_reader.update(cx, |this, cx| this.choose_daily_template_file(true, cx));
     });
-    let (create, cancel, close) = (reader.clone(), reader.clone(), reader);
+    let (create, cancel, close, create_button) =
+        (reader.clone(), reader.clone(), reader.clone(), reader);
     let row = |label: &'static str, control: AnyElement| {
         h_flex()
             .gap_3()
@@ -698,7 +708,7 @@ fn setup_dialog(
                         }),
                 )
                 .child({
-                    let create = entity.downgrade();
+                    let create = create_button;
                     Button::new("daily-setup-create")
                         .debug_selector(|| "daily-setup-create".into())
                         .primary()
@@ -1042,7 +1052,7 @@ mod tests {
         );
         assert!(visual.debug_bounds("daily-setup-create").is_some());
         reader.read_with(visual, |r, cx| {
-            let setup = r.daily_setup.as_ref().expect("setup is open");
+            let setup = r.daily_setup.as_ref().expect("setup is open").read(cx);
             assert_eq!(setup.folder.read(cx).value().to_string(), "Daily");
             assert_eq!(setup.template.as_deref(), Some("Templates/Daily.md"));
             assert_eq!(
@@ -1109,14 +1119,14 @@ mod tests {
         reader.update_in(visual, |r, window, cx| r.open_daily_note(window, cx));
         visual.run_until_parked();
         reader.update_in(visual, |r, window, cx| {
-            let folder = r.daily_setup.as_ref().unwrap().folder.clone();
+            let folder = r.daily_setup.as_ref().unwrap().read(cx).folder.clone();
             folder.update(cx, |input, cx| input.set_value("/", window, cx));
             r.confirm_daily_setup(window, cx);
         });
         visual.run_until_parked();
         assert!(visual.debug_bounds("daily-setup-error").is_some());
-        reader.read_with(visual, |r, _| {
-            let setup = r.daily_setup.as_ref().expect("still asking");
+        reader.read_with(visual, |r, cx| {
+            let setup = r.daily_setup.as_ref().expect("still asking").read(cx);
             assert!(setup
                 .error
                 .as_deref()

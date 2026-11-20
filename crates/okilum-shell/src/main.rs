@@ -1913,7 +1913,7 @@ struct Reader {
     daily_templates: reader_daily_notes::Templates,
     /// The first-press daily notes dialog, while it is open.
     #[cfg(any(unix, windows))]
-    daily_setup: Option<reader_daily_notes::Setup>,
+    daily_setup: Option<Entity<reader_daily_notes::Setup>>,
     /// Show the reminders note through the native Tasks view (#919).
     #[cfg(any(unix, windows))]
     reminders_view: bool,
