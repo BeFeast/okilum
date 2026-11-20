@@ -78,7 +78,7 @@ fn local_viewers_dispatch_inline_and_as_files_and_canvas_navigates_without_write
             r.preview_file(file, window, cx);
             assert!(r.pane.file_preview.as_ref().unwrap().audio.is_some());
             r.toggle_source(window, cx);
-            assert!(r.editing.is_none());
+            assert!(r.pane.editing.is_none());
         });
         visual.run_until_parked();
         assert!(visual.debug_bounds("audio-toggle").is_some());

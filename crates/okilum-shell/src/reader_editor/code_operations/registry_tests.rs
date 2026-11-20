@@ -57,7 +57,7 @@ fn edit2804_read_releases_editor_before_focus_lookup_and_preserves_history(
     }
     visual.run_until_parked();
     reader.read_with(visual, |reader, _| {
-        assert!(reader.editing.is_none());
+        assert!(reader.pane.editing.is_none());
         assert!(reader.retained_edit.is_some());
     });
     // Do not call focused_input(): the getter used to hide the owning cache
@@ -82,7 +82,7 @@ fn edit2804_read_releases_editor_before_focus_lookup_and_preserves_history(
     visual.executor().advance_clock(Duration::from_millis(200));
     visual.run_until_parked();
     let next = reader.read_with(visual, |reader, cx| {
-        let input = reader.editing.as_ref().unwrap().input.clone();
+        let input = reader.pane.editing.as_ref().unwrap().input.clone();
         assert_ne!(input.entity_id(), old_id);
         assert_ne!(input.read(cx).source_stamp().document, stamp.document);
         assert_eq!(input.read(cx).value().as_ref(), prepared);

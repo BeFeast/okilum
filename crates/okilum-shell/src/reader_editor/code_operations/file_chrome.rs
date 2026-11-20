@@ -108,6 +108,7 @@ impl Render for Part {
         // Autosave temporarily parks/reassembles Editing. A retained Part may
         // be drawn in that interval; it must never address a different editor.
         if reader
+            .pane
             .editing
             .as_ref()
             .is_none_or(|e| e.input != state.source)
@@ -349,12 +350,17 @@ impl FileChrome {
 impl Reader {
     pub(crate) fn file_conflict_in_status(&self, notice: &str) -> bool {
         self.file_editor_active()
-            && self.editing.as_ref().is_some_and(|e| e.conflict_detected)
+            && self
+                .pane
+                .editing
+                .as_ref()
+                .is_some_and(|e| e.conflict_detected)
             && notice.starts_with(CONFLICT_NOTICE)
     }
 
     pub(crate) fn file_editor_active(&self) -> bool {
-        self.editing
+        self.pane
+            .editing
             .as_ref()
             .is_some_and(|e| e.file_chrome.is_some())
     }
@@ -364,7 +370,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let source = self.editing.as_ref().unwrap().input.clone();
+        let source = self.pane.editing.as_ref().unwrap().input.clone();
         let reader = cx.entity();
         let json = Path::new(self.selected_file())
             .extension()
@@ -375,21 +381,21 @@ impl Reader {
                 file.schedule(cx);
             }
         });
-        self.editing.as_mut().unwrap().file_chrome = Some(file);
+        self.pane.editing.as_mut().unwrap().file_chrome = Some(file);
     }
 
     pub(crate) fn file_editor_find_target(
         &self,
         cx: &App,
     ) -> Option<crate::reader_find_field::Target> {
-        let file = self.editing.as_ref()?.file_chrome.as_ref()?.read(cx);
+        let file = self.pane.editing.as_ref()?.file_chrome.as_ref()?.read(cx);
         let mut target = EditorTarget::target(&file.find, cx);
         target.large_file = true; // Edit never replaces its field with an icon.
         Some(target)
     }
 
     pub(crate) fn file_editor_read_state(&self, cx: &App) -> Option<PresentationState> {
-        let file = self.editing.as_ref()?.file_chrome.as_ref()?.read(cx);
+        let file = self.pane.editing.as_ref()?.file_chrome.as_ref()?.read(cx);
         let mut saved = file.read_state.clone()?;
         saved.query = file.find.read(cx).query.read(cx).value().to_string();
         saved.case_sensitive = reader_ui_state::find_case_sensitive(cx);
@@ -397,7 +403,7 @@ impl Reader {
     }
 
     pub(crate) fn file_editor_chrome(&self, cx: &App, live: bool) -> Option<ViewerChrome> {
-        let file = self.editing.as_ref()?.file_chrome.as_ref()?.read(cx);
+        let file = self.pane.editing.as_ref()?.file_chrome.as_ref()?.read(cx);
         let mut chrome = ViewerChrome {
             compact_views: true,
             ..Default::default()
@@ -521,7 +527,7 @@ impl Reader {
     }
 
     pub(crate) fn file_editor_go_to_error(&self, window: &mut Window, cx: &mut App) {
-        let Some(editing) = &self.editing else {
+        let Some(editing) = &self.pane.editing else {
             return;
         };
         let Some(file) = &editing.file_chrome else {
@@ -566,17 +572,18 @@ impl Reader {
     }
 
     pub(crate) fn repair_code_entry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.pane.file_preview.is_some() && self.editing.is_none() {
+        if self.pane.file_preview.is_some() && self.pane.editing.is_none() {
             self.toggle_source(window, cx);
         }
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             self.code_operation(Action::Repair, window, cx);
         }
     }
 
     pub(crate) fn file_editor_bottom(&self, cx: &App) -> Option<AnyElement> {
         Some(
-            self.editing
+            self.pane
+                .editing
                 .as_ref()?
                 .file_chrome
                 .as_ref()?
@@ -588,7 +595,8 @@ impl Reader {
     }
     pub(crate) fn file_editor_sheet(&self, cx: &App) -> Option<AnyElement> {
         Some(
-            self.editing
+            self.pane
+                .editing
                 .as_ref()?
                 .file_chrome
                 .as_ref()?
@@ -600,7 +608,7 @@ impl Reader {
     }
 
     pub(crate) fn publish_file_operation_notice(&mut self, window: &mut Window, cx: &mut App) {
-        let Some(editing) = self.editing.as_mut().filter(|e| !e.markdown) else {
+        let Some(editing) = self.pane.editing.as_mut().filter(|e| !e.markdown) else {
             return;
         };
         let Some(text) = editing.operations.notice.as_deref() else {
@@ -633,7 +641,7 @@ impl Reader {
 }
 
 fn disabled_reason(reader: &Reader, cx: &App) -> Option<String> {
-    let editing = reader.editing.as_ref()?;
+    let editing = reader.pane.editing.as_ref()?;
     if editing.conflict_detected {
         Some(
             "This file changed on disk. Resolve the conflict to use Format, Validate and Repair."
@@ -926,7 +934,7 @@ fn status_text(text: &str, language: &str, operation: Option<Action>, bytes: usi
 #[inline(never)]
 fn bottom(reader: &Reader, state: &FileChrome, cx: &App) -> AnyElement {
     use crate::reader_status_line::{StatusLine, Tone};
-    let editing = reader.editing.as_ref().unwrap();
+    let editing = reader.pane.editing.as_ref().unwrap();
     let ops = &editing.operations;
     let language = reader
         .code_scope_for_display(cx, true)
@@ -1111,7 +1119,7 @@ fn conflict_menu(owner: WeakEntity<Reader>, conflict: bool, _cx: &App) -> AnyEle
                         1 => r.resolve_source(true, w, cx),
                         2 => r.resolve_source(false, w, cx),
                         4 => {
-                            if let Some(e) = &mut r.editing {
+                            if let Some(e) = &mut r.pane.editing {
                                 e.compare = !e.compare;
                                 if let Some(text) = &e.conflict {
                                     e.current_input
@@ -1138,6 +1146,7 @@ fn conflict_menu(owner: WeakEntity<Reader>, conflict: bool, _cx: &App) -> AnyEle
 #[inline(never)]
 fn sheet(reader: &Reader, window: &Window, cx: &App) -> AnyElement {
     let Some(preview) = reader
+        .pane
         .editing
         .as_ref()
         .and_then(|e| e.operations.preview.as_ref())
@@ -1145,6 +1154,7 @@ fn sheet(reader: &Reader, window: &Window, cx: &App) -> AnyElement {
         return div().absolute().into_any_element();
     };
     let owner = reader
+        .pane
         .editing
         .as_ref()
         .unwrap()
@@ -1180,7 +1190,7 @@ fn sheet(reader: &Reader, window: &Window, cx: &App) -> AnyElement {
                 .debug_selector(|| "file-repair-cancel".into())
                 .on_click(move |_, w, cx| {
                     let _ = cancel.update(cx, |r, cx| {
-                        if let Some(e) = &mut r.editing {
+                        if let Some(e) = &mut r.pane.editing {
                             e.operations.status = None;
                             e.operations.preview = None;
                             e.operations.notice = None;

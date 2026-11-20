@@ -645,22 +645,46 @@ pub fn reader_palette(cx: &App) -> ReaderPalette {
 
 /// For render callbacks that have no `App` (link presentation closures). Kept in
 /// step with the live theme by `apply_theme`.
-static APPLIED_DARK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-static APPLIED_THEME: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// The app has one `App`, so one process-wide value is exact. Tests run one
+/// `App` per thread in the same process: a process-wide value let one test's
+/// `apply_theme` repaint another test's Reader text in its theme. Test builds
+/// keep it per thread.
+#[cfg(not(test))]
+mod applied {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    static DARK: AtomicBool = AtomicBool::new(false);
+    static THEME: AtomicUsize = AtomicUsize::new(0);
+    pub(super) fn store(dark: bool, theme: usize) {
+        DARK.store(dark, Ordering::Relaxed);
+        THEME.store(theme, Ordering::Relaxed);
+    }
+    pub(super) fn load() -> (bool, usize) {
+        (DARK.load(Ordering::Relaxed), THEME.load(Ordering::Relaxed))
+    }
+}
+#[cfg(test)]
+mod applied {
+    use std::cell::Cell;
+    thread_local! {
+        static APPLIED: Cell<(bool, usize)> = const { Cell::new((false, 0)) };
+    }
+    pub(super) fn store(dark: bool, theme: usize) {
+        APPLIED.with(|applied| applied.set((dark, theme)));
+    }
+    pub(super) fn load() -> (bool, usize) {
+        APPLIED.with(Cell::get)
+    }
+}
 
 fn applied_theme() -> ThemeId {
     ThemeId::ALL
-        .get(APPLIED_THEME.load(std::sync::atomic::Ordering::Relaxed))
+        .get(applied::load().1)
         .copied()
         .unwrap_or_default()
 }
 
 pub fn reader_palette_current() -> ReaderPalette {
-    tokens(
-        applied_theme(),
-        APPLIED_DARK.load(std::sync::atomic::Ordering::Relaxed),
-    )
-    .1
+    tokens(applied_theme(), applied::load().0).1
 }
 
 /// A theme's optional task checkbox animation (#3155): `motion.taskCheck`
@@ -952,8 +976,7 @@ const TITLE_TINT_STRENGTH: (f32, f32) = (0.12, 0.18);
 pub fn apply_theme(cx: &mut App) {
     let p = palette(cx);
     let dark = Theme::global(cx).is_dark();
-    APPLIED_DARK.store(dark, std::sync::atomic::Ordering::Relaxed);
-    APPLIED_THEME.store(theme_id(cx).index(), std::sync::atomic::Ordering::Relaxed);
+    applied::store(dark, theme_id(cx).index());
     // Paint-only: editors read it at the next click, nothing re-parses.
     match task_check_animation(theme_id(cx)) {
         Some(animation) => cx.set_global(animation),
@@ -1177,6 +1200,33 @@ mod tests {
     use ::core::prelude::v1::test;
     use gpui_component::IconNamed;
     use gpui_component::ThemeMode;
+
+    #[test]
+    fn applied_theme_set_by_another_test_thread_does_not_repaint_this_one() {
+        // GPUI runs each test on its own thread in one process. #3153's
+        // Obsidianite test ran next to the code-fence test and repainted its
+        // Reader code surface through `reader_palette_for_theme`.
+        let other = std::thread::spawn(|| {
+            applied::store(false, ThemeId::Obsidianite.index());
+            applied_theme()
+        })
+        .join()
+        .unwrap();
+        assert_eq!(
+            other,
+            ThemeId::Obsidianite,
+            "positive control: the other thread applied it"
+        );
+        assert_eq!(
+            applied_theme(),
+            ThemeId::Okilum,
+            "this thread keeps its own applied theme"
+        );
+        assert_eq!(
+            reader_palette_current().code_bg,
+            tokens(ThemeId::Okilum, false).1.code_bg
+        );
+    }
 
     #[test]
     fn viewer_state_and_extract_glyphs_are_embedded_in_runtime_assets() {

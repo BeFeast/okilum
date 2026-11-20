@@ -272,6 +272,7 @@ impl Reader {
             })
             .sum();
         let own_path = self
+            .pane
             .editing
             .as_ref()
             .filter(|_| under(self.selected_file(), &relative))
@@ -527,9 +528,14 @@ impl Reader {
                     && this.pane.file_preview.is_none()
                     && !this.pane.current_rel.is_empty()
                     && under(&this.pane.current_rel, &relative))
-                .then(|| (this.pane.current_rel.clone(), this.navigation.generation));
+                .then(|| {
+                    (
+                        this.pane.current_rel.clone(),
+                        this.pane.navigation.generation,
+                    )
+                });
                 let editor = if own_path.as_ref() == Some(&root.join(this.selected_file())) {
-                    this.editing.take()
+                    this.pane.editing.take()
                 } else {
                     None
                 };
@@ -587,10 +593,10 @@ impl Reader {
                             this.queue_vault_mutation(changes, cx);
                         }
                         if this.vault_root == root && under(this.selected_file(), &relative) {
-                            this.editing = None;
+                            this.pane.editing = None;
                             if clear_document.as_ref().is_some_and(|(rel, generation)| {
                                 rel == &this.pane.current_rel
-                                    && *generation == this.navigation.generation
+                                    && *generation == this.pane.navigation.generation
                             }) {
                                 // The confirmed move has a successful Trash
                                 // receipt. Authorize only this document's close;
@@ -621,9 +627,9 @@ impl Reader {
                         );
                         if this.vault_root == root
                             && held_path.as_ref() == Some(&root.join(this.selected_file()))
-                            && this.editing.is_none()
+                            && this.pane.editing.is_none()
                         {
-                            this.editing = held_editor;
+                            this.pane.editing = held_editor;
                         }
                         window.push_notification(
                             Notification::new()
@@ -1593,7 +1599,7 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |reader, window, cx| {
             reader.toggle_source(window, cx);
-            assert!(reader.editing.is_some());
+            assert!(reader.pane.editing.is_some());
             reader.delete_path("target.md".into(), window, cx)
         });
         visual.run_until_parked();
@@ -1605,7 +1611,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
             assert!(!reader.trash_pending);
-            assert!(reader.editing.is_some());
+            assert!(reader.pane.editing.is_some());
         });
         assert_eq!(
             std::fs::read_to_string(root.join("target.md")).unwrap(),
@@ -1628,7 +1634,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
             assert!(!reader.trash_pending);
-            assert!(reader.editing.is_some());
+            assert!(reader.pane.editing.is_some());
         });
         assert_eq!(
             std::fs::read_to_string(root.join("Folder/first.md")).unwrap(),
