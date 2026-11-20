@@ -500,12 +500,12 @@ impl Reader {
         // A deleted note asks before its contents are left behind (#1986).
         if self.leaving_deleted_note(Some(rel), cx) {
             let retry = rel.to_owned();
-            let history = self.navigation.history_nav;
+            let history = self.pane.navigation.history_nav;
             self.ask_leaving_deleted_note(
                 Box::new(move |this, window, cx| {
-                    let outer = std::mem::replace(&mut this.navigation.history_nav, history);
+                    let outer = std::mem::replace(&mut this.pane.navigation.history_nav, history);
                     this.preview_file(&retry, window, cx);
-                    this.navigation.history_nav = outer;
+                    this.pane.navigation.history_nav = outer;
                 }),
                 window,
                 cx,
@@ -520,32 +520,35 @@ impl Reader {
                 // Read before this choice moves focus to the document.
                 let tree_had_focus = self.tree_focus.contains_focused(window, cx);
                 self.cancel_pending_landing();
-                self.navigation.preparation_generation =
-                    self.navigation.preparation_generation.wrapping_add(1);
+                self.pane.navigation.preparation_generation =
+                    self.pane.navigation.preparation_generation.wrapping_add(1);
                 self.pane.table_overlay = None;
-                if let Some(index) = self.navigation.history_nav {
-                    self.navigation.history_ix = index;
+                if let Some(index) = self.pane.navigation.history_nav {
+                    self.pane.navigation.history_ix = index;
                 } else if self
+                    .pane
                     .navigation
                     .history
-                    .get(self.navigation.history_ix)
+                    .get(self.pane.navigation.history_ix)
                     .map(String::as_str)
                     != Some(rel)
                 {
-                    if !self.navigation.history.is_empty() {
-                        self.navigation
+                    if !self.pane.navigation.history.is_empty() {
+                        self.pane
+                            .navigation
                             .history
-                            .truncate(self.navigation.history_ix + 1);
-                        self.navigation
+                            .truncate(self.pane.navigation.history_ix + 1);
+                        self.pane
+                            .navigation
                             .history_positions
-                            .truncate(self.navigation.history_ix + 1);
+                            .truncate(self.pane.navigation.history_ix + 1);
                     }
-                    self.navigation.history.push(rel.into());
-                    self.navigation.history_positions.push(ListOffset {
+                    self.pane.navigation.history.push(rel.into());
+                    self.pane.navigation.history_positions.push(ListOffset {
                         item_ix: 0,
                         offset_in_item: px(0.),
                     });
-                    self.navigation.history_ix = self.navigation.history.len() - 1;
+                    self.pane.navigation.history_ix = self.pane.navigation.history.len() - 1;
                 }
                 let mut preview = preview;
                 if okilum_core::excalidraw::is_drawing(rel) {
@@ -661,7 +664,7 @@ impl Reader {
                 self.pane.find_open = false;
                 self.link_notice = None;
                 self.remember_source_mode();
-                self.editing = None;
+                self.pane.editing = None;
                 if reader_delimited::editable(rel) {
                     self.discover_source_recovery(cx);
                 }
@@ -692,7 +695,7 @@ impl Reader {
     ) -> AnyElement {
         // Build the nested editor from this small dispatch frame; the read
         // viewers' builder temporaries live in their own frame (#2825).
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             let header = self.render_file_header_viewport(window, cx);
             let source = self.render_source(window, cx);
             return file_edit_column(preview.code.is_some(), header, source);
@@ -1224,6 +1227,7 @@ mod tests {
             assert!(r.code_file_editable(cx));
             r.toggle_source(window, cx);
             let editor = r
+                .pane
                 .editing
                 .as_ref()
                 .expect("Edit opens the file")
@@ -1243,7 +1247,7 @@ mod tests {
             );
             assert!(!r.code_file_editable(cx));
             r.toggle_source(window, cx);
-            assert!(r.editing.is_none(), "Edit stays off over the cap");
+            assert!(r.pane.editing.is_none(), "Edit stays off over the cap");
         });
     }
 
@@ -1294,11 +1298,11 @@ mod tests {
             reader.update_in(visual, |r, window, cx| {
                 // The previous file was left in Edit; that chosen mode carries
                 // to the next editable file (GitHub #6).
-                assert_eq!(r.editing.is_some(), name != "sheet.csv");
-                if r.editing.is_none() {
+                assert_eq!(r.pane.editing.is_some(), name != "sheet.csv");
+                if r.pane.editing.is_none() {
                     r.toggle_source(window, cx);
                 }
-                let input = r.editing.as_ref().unwrap().test_input();
+                let input = r.pane.editing.as_ref().unwrap().test_input();
                 assert_eq!(input.read(cx).value().as_ref(), source);
                 let start = source.find("original").unwrap();
                 input.update(cx, |s, cx| s.set_selected_range(start..start + 8, cx));
@@ -1309,7 +1313,7 @@ mod tests {
             reader.update_in(visual, |r, window, cx| {
                 assert!(r.save_source(cx));
                 r.toggle_source(window, cx);
-                assert!(r.editing.is_none());
+                assert!(r.pane.editing.is_none());
             });
             visual.run_until_parked();
             assert_eq!(std::fs::read(root.join(name)).unwrap(), changed.as_bytes());
@@ -1339,7 +1343,7 @@ mod tests {
                     .file_editor_find_target(cx)
                     .expect("file Edit header Find");
                 assert!(field.input.focus_handle(cx).is_focused(window));
-                let source = r.editing.as_ref().unwrap().test_input().read(cx);
+                let source = r.pane.editing.as_ref().unwrap().test_input().read(cx);
                 assert!(
                     !source.search_session().open,
                     "the old toolkit strip stays closed"
@@ -1356,12 +1360,13 @@ mod tests {
                     r.file_editor_find_target(cx).unwrap().count.as_deref(),
                     Some("1 of 1")
                 );
-                let source = r.editing.as_ref().unwrap().test_input().read(cx);
+                let source = r.pane.editing.as_ref().unwrap().test_input().read(cx);
                 assert!(
                     source.search_session().external_presentation && !source.search_session().open
                 );
                 assert_eq!(
-                    r.editing
+                    r.pane
+                        .editing
                         .as_ref()
                         .unwrap()
                         .test_input()
@@ -1371,7 +1376,8 @@ mod tests {
                     changed,
                     "typing the Find query never edits the file buffer"
                 );
-                r.editing
+                r.pane
+                    .editing
                     .as_ref()
                     .unwrap()
                     .set_value("recoverable local draft", window, cx);
@@ -1387,7 +1393,8 @@ mod tests {
                     "navigation cannot discard a conflicted draft"
                 );
                 assert_eq!(
-                    r.editing
+                    r.pane
+                        .editing
                         .as_ref()
                         .unwrap()
                         .test_input()
@@ -1402,7 +1409,7 @@ mod tests {
                 "external change"
             );
             // Release the editor's real writer lock before simulating restart.
-            reader.update(visual, |r, _| r.editing = None);
+            reader.update(visual, |r, _| r.pane.editing = None);
             let store = okilum_core::file_editor::FileEditor::open(
                 &root.join(name),
                 &state.join("editor-drafts"),
@@ -1668,7 +1675,7 @@ mod tests {
             assert_eq!(reader.selected_file(), "diagram.svg");
             assert!(reader.pane.file_preview.as_ref().unwrap().image);
             reader.toggle_source(window, cx);
-            assert!(reader.editing.is_none());
+            assert!(reader.pane.editing.is_none());
             reader.file_action(FileAction::Relative, window, cx);
             assert_eq!(
                 cx.read_from_clipboard().unwrap().text().unwrap(),
@@ -1704,7 +1711,7 @@ mod tests {
             reader.preview_file("report.pdf", window, cx);
             assert!(!reader.pane.file_preview.as_ref().unwrap().image);
             assert!(reader.pdf_viewer().is_some(), "a PDF opens inline");
-            assert_eq!(reader.navigation.history.last().unwrap(), "report.pdf");
+            assert_eq!(reader.pane.navigation.history.last().unwrap(), "report.pdf");
             reader.preview_file("plain.txt", window, cx);
             assert_eq!(reader.selected_file(), "plain.txt");
             assert!(reader.pane.file_preview.as_ref().unwrap().code.is_some());
@@ -1749,7 +1756,7 @@ mod tests {
                 assert_eq!(reader.selected_title(), name);
                 assert_eq!(reader.note_label(path), name);
                 assert_eq!(reader.selected_file(), path);
-                assert_eq!(reader.navigation.history.last().unwrap(), path);
+                assert_eq!(reader.pane.navigation.history.last().unwrap(), path);
                 reader.file_action(FileAction::Relative, window, cx);
                 assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), path);
                 assert_eq!(

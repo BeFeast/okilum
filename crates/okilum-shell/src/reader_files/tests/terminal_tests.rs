@@ -72,7 +72,7 @@ fn menu_shortcut_and_palette_open_the_items_folder(cx: &mut TestAppContext) {
     // The bound shortcut acts on the open note: its folder.
     reader.update_in(visual, |r, window, cx| window.focus(&r.focus_handle, cx));
     let before = launches(visual).len();
-    visual.simulate_keystrokes("alt-cmd-t");
+    visual.simulate_keystrokes(crate::OPEN_IN_TERMINAL_KEY);
     visual.run_until_parked();
     assert_eq!(&launches(visual)[before..], std::slice::from_ref(&folder));
 

@@ -53,7 +53,7 @@ impl Target {
     /// no longer being edited (left for Reader, another note, parked).
     pub(super) fn live(&self, cx: &App) -> Option<Entity<EditorState>> {
         let reader = self.reader.upgrade()?;
-        let editing = reader.read(cx).editing.as_ref()?;
+        let editing = reader.read(cx).pane.editing.as_ref()?;
         let same_note = self
             .path
             .as_deref()
@@ -263,6 +263,7 @@ impl Reader {
     /// The note a paste into `input` belongs to, for its background results.
     pub(super) fn paste_target(&self, input: Entity<EditorState>, cx: &Context<Self>) -> Target {
         let path = self
+            .pane
             .editing
             .as_ref()
             .filter(|editing| editing.input == input)

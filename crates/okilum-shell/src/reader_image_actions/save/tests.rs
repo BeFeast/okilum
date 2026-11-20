@@ -69,7 +69,7 @@ impl Fixture<'_> {
                         .as_str(),
                 ),
             );
-            target.accepted_source = reader.content.read(cx).document_source();
+            target.accepted_source = reader.pane.content.read(cx).document_source();
             assert!(
                 target.accepted_source.is_some(),
                 "accepted Read source exists"
@@ -118,7 +118,7 @@ impl Fixture<'_> {
     }
     fn changed_render(&mut self) {
         self.reader.update(self.visual, |reader, cx| {
-            reader.content.update(cx, |content, cx| {
+            reader.pane.content.update(cx, |content, cx| {
                 content.set_text_with_source(
                     "A later accepted revision",
                     Some("A later accepted revision".into()),
@@ -139,6 +139,7 @@ fn image_popup_copies_resolved_address_and_saves_original_bytes_with_selection_g
     // image commands. Programmatic select_all avoids mouse-selection assumptions.
     f.reader.update(f.visual, |reader, cx| {
         reader
+            .pane
             .content
             .update(cx, |content, cx| content.select_all(cx))
     });
@@ -220,7 +221,7 @@ fn stale_picker_document_or_image_cannot_publish_copy(cx: &mut TestAppContext) {
     assert!(!out.exists());
     // Restore the actual accepted note for a positive, then changed-image case.
     f.reader.update(f.visual, |reader, cx| {
-        reader.content.update(cx, |content, cx| {
+        reader.pane.content.update(cx, |content, cx| {
             content.set_text_with_source(NOTE, Some(NOTE.into()), cx)
         })
     });

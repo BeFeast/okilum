@@ -33,8 +33,54 @@ LZ-string encoder that is byte-identical to JS lz-string. Everything else,
 including `## Embedded Files`, is copied byte-for-byte, and a save with no change
 writes nothing. New text elements with upstream's 21-character ids get no
 Markdown entry: the plugin's block refs are 8 characters, and it adopts such
-elements from the JSON on load. The explicit Open in Excalidraw action copies the scene
-JSON and opens the owner-approved https://draw.oklabs.uk editor; it is not part of normal rendering.
+elements from the JSON on load.
+
+## Edit drawing (#478)
+
+Edit drawing (pencil on an embedded drawing, Open menu of a drawing file, the
+Edit drawing menu command) opens the drawing in an offline Excalidraw page that
+Okilum serves itself. Displaying a drawing never starts it, and nothing goes to a
+remote editor, storage backend or the clipboard; Copy scene stays in the Copy
+menu as a separate command.
+
+- **Page.** `web/excalidraw-editor/` holds the source: React plus
+  `@excalidraw/excalidraw` 0.18.1, pinned by `package-lock.json`, bundled with
+  esbuild into `crates/okilum-shell/assets/excalidraw-editor/` together with the
+  package's fonts. The output is committed and embedded in the binary
+  (about 16 MB; JavaScript and CSS gzip-compressed), so a desktop build needs no
+  Node. `node build.mjs --check` rebuilds and compares byte for byte; the
+  nightly `forgejo-excalidraw` job runs it, and a shell test checks that the
+  embedded bytes match `SHA256SUMS`.
+- **Bridge** (`crates/okilum-shell/src/reader_drawing_edit.rs`). One session per
+  drawing, holding the drawing's `DrawingEdit` (okilum-core
+  `excalidraw::edit`), so the editor lock, recovery draft and revision check are
+  the ones notes use. It listens on `127.0.0.1` on an OS-chosen port. Every URL
+  is under a random 256-bit capability; other paths get 404. `Host` must be the
+  listener's own address (no DNS rebinding), and a change needs the page's
+  exact `Origin` and a JSON body. Requests are bounded (16 KiB headers, twice
+  the drawing size limit for bodies, 15 s I/O). The page's CSP allows only its
+  own origin, which also blocks Excalidraw's CDN font fallback.
+- **Apply.** The page reports the scene it holds right after loading, so load
+  normalisation is not an edit; Apply sends the scene and Okilum writes the
+  lossless writer's bytes. Undo Apply restores the exact previous bytes once.
+  If the file changed outside, nothing is written and the page offers Reload,
+  Keep mine or Save as copy. Keep mine names the outside version the page was
+  shown (by SHA-256); if the file changed again, that newer version is reported
+  instead of overwritten. Done is refused until such a conflict is resolved.
+- **Unsaved marker.** The page counts element edits and the canvas settings
+  the file keeps (background, grid size/step, grid mode) as changes, never pan
+  or zoom. Only the snapshot Okilum wrote becomes saved: an edit made while
+  Apply is in flight stays unsaved. During a conflict the canvas is read-only,
+  because Keep mine and Save as copy use the scene that hit the conflict.
+  Undo Apply, Reload and Done replace the scene or end the session: they ask
+  before discarding unsaved edits and freeze the canvas until Okilum replies
+  (a refused or failed request unfreezes it). The commands live in
+  `web/excalidraw-editor/src/controller.js`, outside React, so these
+  transitions are tested with delayed replies.
+- **Lifetime.** Done ends the session and releases the lock; so do two idle
+  hours and quitting Okilum. Closing the tab without Apply leaves the drawing as
+  it was. A second Edit of the same drawing opens the same session; a second tab
+  asks before taking it over, after which the first tab's revision is stale.
 
 Line endings are kept as opened, so a CRLF drawing is saved as CRLF. Obsidian
 reads such files correctly (#938): `vault.read` returns the CR bytes, but the

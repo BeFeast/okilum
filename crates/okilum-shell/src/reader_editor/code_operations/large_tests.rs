@@ -36,6 +36,7 @@ fn large2804_plain_file_open_retires_markdown_outline(cx: &mut TestAppContext) {
         assert_eq!(reader.selected_file(), "data.txt");
         assert_eq!(
             reader
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -115,7 +116,7 @@ fn large2804_multi_mb_json_file_edits_formats_and_reopens(cx: &mut TestAppContex
     });
     file_validate(visual);
     f.reader.read_with(visual, |reader, _| {
-        let state = &reader.editing.as_ref().unwrap().operations;
+        let state = &reader.pane.editing.as_ref().unwrap().operations;
         assert_eq!(state.status.as_ref().unwrap().3, "Valid strict JSON");
         assert!(state.notice.is_none(), "one message, no size refusal");
     });
@@ -125,7 +126,7 @@ fn large2804_multi_mb_json_file_edits_formats_and_reopens(cx: &mut TestAppContex
         let started = Instant::now();
         reader.code_operation(Action::Format, window, cx);
         handler_elapsed = Some(started.elapsed());
-        let state = &reader.editing.as_ref().unwrap().operations;
+        let state = &reader.pane.editing.as_ref().unwrap().operations;
         assert!(state.busy, "Format of a multi-MB file is in flight");
         assert!(state.notice.is_none());
         assert_eq!(value(&f, cx), source, "nothing applied on the UI turn");
@@ -142,7 +143,7 @@ fn large2804_multi_mb_json_file_edits_formats_and_reopens(cx: &mut TestAppContex
     assert_ne!(formatted, source);
     assert!(formatted.len() > source.len());
     f.reader.read_with(visual, |reader, cx| {
-        let state = &reader.editing.as_ref().unwrap().operations;
+        let state = &reader.pane.editing.as_ref().unwrap().operations;
         assert!(!state.busy);
         assert!(
             reader.code_view_input(cx).is_none(),
@@ -161,7 +162,7 @@ fn large2804_multi_mb_json_file_edits_formats_and_reopens(cx: &mut TestAppContex
     });
     visual.run_until_parked();
     f.reader.read_with(visual, |reader, cx| {
-        assert!(reader.editing.is_none());
+        assert!(reader.pane.editing.is_none());
         assert!(
             reader.code_file_editable(cx),
             "the saved, larger Format result stays editable"
@@ -182,6 +183,7 @@ fn large2804_multi_mb_json_file_edits_formats_and_reopens(cx: &mut TestAppContex
     // Reopening creates a new EditorState; f.input is the detached first one.
     f.reader.read_with(visual, |reader, cx| {
         let editing = reader
+            .pane
             .editing
             .as_ref()
             .expect("Edit reopens the saved result");
@@ -192,6 +194,7 @@ fn large2804_multi_mb_json_file_edits_formats_and_reopens(cx: &mut TestAppContex
     f.reader.read_with(visual, |reader, cx| {
         assert_eq!(
             reader
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -223,7 +226,7 @@ fn large2804_plain_json_below_cap_reopens_and_undoes_format(cx: &mut TestAppCont
     });
     visual.run_until_parked();
     f.reader.read_with(visual, |reader, cx| {
-        assert!(reader.editing.is_none());
+        assert!(reader.pane.editing.is_none());
         assert!(reader.code_file_editable(cx), "below-cap re-entry positive");
         assert!(!reader.code_view_input(cx).unwrap().read(cx).is_editable());
     });
@@ -240,6 +243,7 @@ fn large2804_plain_json_below_cap_reopens_and_undoes_format(cx: &mut TestAppCont
     f.reader.read_with(visual, |reader, cx| {
         assert_eq!(
             reader
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -265,7 +269,7 @@ fn large2804_worker_cancel_keeps_source_and_ui_responsive(cx: &mut TestAppContex
         let handler_started = Instant::now();
         reader.code_operation(Action::Format, window, cx);
         handler_elapsed = Some(handler_started.elapsed());
-        assert!(reader.editing.as_ref().unwrap().operations.busy);
+        assert!(reader.pane.editing.as_ref().unwrap().operations.busy);
         assert!(cx
             .global::<JobGate>()
             .0
@@ -321,13 +325,13 @@ fn large2804_worker_cancel_keeps_source_and_ui_responsive(cx: &mut TestAppContex
         );
     });
     f.reader.read_with(visual, |reader, _| {
-        let state = &reader.editing.as_ref().unwrap().operations;
+        let state = &reader.pane.editing.as_ref().unwrap().operations;
         assert_eq!(state.notice.as_deref(), Some("Cancelling…"));
         assert!(state.running.as_ref().unwrap().control.cancelled());
     });
     visual.run_until_parked();
     f.reader.read_with(visual, |reader, cx| {
-        let state = &reader.editing.as_ref().unwrap().operations;
+        let state = &reader.pane.editing.as_ref().unwrap().operations;
         assert!(!state.busy && state.preview.is_none());
         assert_eq!(state.notice.as_deref(), Some("Operation cancelled."));
         assert!(!cx
@@ -357,6 +361,7 @@ fn large2804_repair_preview_is_bounded_apply_and_format_are_single_undo(cx: &mut
     click(visual, "source-code-repair");
     f.reader.read_with(visual, |reader, cx| {
         let preview = reader
+            .pane
             .editing
             .as_ref()
             .unwrap()
@@ -406,7 +411,7 @@ fn large2804_stale_completion_never_replaces_newer_large_source(cx: &mut TestApp
     visual.run_until_parked();
     f.reader.read_with(visual, |reader, cx| {
         assert_eq!(value(&f, cx), original.replacen("Before", "Newer!", 1));
-        let state = &reader.editing.as_ref().unwrap().operations;
+        let state = &reader.pane.editing.as_ref().unwrap().operations;
         assert!(!state.busy);
         assert!(state.notice.as_deref().unwrap().contains("Source changed"));
     });
@@ -423,7 +428,7 @@ fn large2804_resource_refusal_has_one_message_not_invalid(cx: &mut TestAppContex
     click(visual, "source-code-validate");
     click(visual, "source-code-format");
     f.reader.read_with(visual, |reader, cx| {
-        let state = &reader.editing.as_ref().unwrap().operations;
+        let state = &reader.pane.editing.as_ref().unwrap().operations;
         assert!(
             state.status.is_none(),
             "no separate validation refusal line"
@@ -460,7 +465,7 @@ fn large2804_completion_retains_composition_started_after_request(cx: &mut TestA
     visual.run_until_parked();
     f.reader.read_with(visual, |reader, cx| {
         assert_eq!(value(&f, cx), composing);
-        assert!(!reader.editing.as_ref().unwrap().operations.busy);
+        assert!(!reader.pane.editing.as_ref().unwrap().operations.busy);
     });
     f.input.update_in(visual, |input, window, cx| {
         assert!(input.marked_text_range(window, cx).is_some());
@@ -511,6 +516,7 @@ fn large2804_rebound_reader_rejects_result_even_with_identical_native_stamp(
     f.reader.update(visual, |reader, cx| {
         assert_eq!(value(&f, cx), original);
         assert!(reader
+            .pane
             .editing
             .as_ref()
             .unwrap()
@@ -535,6 +541,7 @@ fn large2804_repair_apply_rejects_rebound_binding_with_same_source(cx: &mut Test
     std::fs::write(f.directory.path().join("vault/other.md"), original).unwrap();
     f.reader.update_in(visual, |reader, window, cx| {
         assert!(reader
+            .pane
             .editing
             .as_ref()
             .unwrap()
@@ -546,6 +553,7 @@ fn large2804_repair_apply_rejects_rebound_binding_with_same_source(cx: &mut Test
         reader.apply_code_repair(window, cx);
         assert_eq!(value(&f, cx), original);
         assert!(reader
+            .pane
             .editing
             .as_ref()
             .unwrap()
@@ -632,6 +640,7 @@ fn large2804_apply_and_undo_touch_only_changed_lines(cx: &mut TestAppContext) {
     f.reader.update_in(visual, |reader, window, cx| {
         assert_eq!(
             reader
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()

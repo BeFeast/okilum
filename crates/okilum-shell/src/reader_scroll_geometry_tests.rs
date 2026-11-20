@@ -7,7 +7,7 @@ use gpui::{
 /// Locate the actual painted text in a short paragraph fixture. A viewport
 /// origin can be blank opening space and is not a text hit-test position.
 pub(crate) fn paragraph_origin(reader: &Reader, cx: &App, paragraph: usize) -> Point<Pixels> {
-    let state = reader.content.read(cx);
+    let state = reader.pane.content.read(cx);
     let bounds = state.bounds();
     let mut seen = Vec::new();
     for y in (0..f32::from(bounds.size.height).ceil() as usize).step_by(4) {
@@ -73,7 +73,7 @@ fn wheel_crossing_document_top_preserves_painted_text_motion(cx: &mut gpui::Test
     visual.run_until_parked();
     reader.update(visual, |reader, cx| {
         assert_eq!(reader.pane.current_rel, "scroll.md", "loaded-note control");
-        assert!(reader.editing.is_none(), "Read mode control");
+        assert!(reader.pane.editing.is_none(), "Read mode control");
         reader.panels = Default::default();
         cx.notify();
     });
@@ -82,7 +82,7 @@ fn wheel_crossing_document_top_preserves_painted_text_motion(cx: &mut gpui::Test
     let document = visual.debug_bounds("reader-document").unwrap();
     let column = visual.debug_bounds("reader-column").unwrap();
     let anchor = reader.read_with(visual, |reader, cx| {
-        let state = reader.content.read(cx);
+        let state = reader.pane.content.read(cx);
         let anchor = state.rendered_source_at(None).unwrap();
         assert!(
             anchor.2.y - state.bounds().top() >= px(44.),
@@ -109,7 +109,7 @@ fn wheel_crossing_document_top_preserves_painted_text_motion(cx: &mut gpui::Test
             visual.update(|window, cx| window.draw(cx).clear(cx));
             expected_y += px(delta);
             let (painted, offset) = reader.read_with(visual, |reader, cx| {
-                let state = reader.content.read(cx);
+                let state = reader.pane.content.read(cx);
                 (
                     state
                         .rendered_position_for_source(anchor.0, anchor.1)

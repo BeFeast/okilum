@@ -626,6 +626,105 @@ mod tests {
         (reader, visual, temp)
     }
 
+    /// #3182: the header's Today's note button creates today's note in the
+    /// daily folder from the daily template and opens it for editing; the
+    /// next press opens that note again and rewrites nothing.
+    #[cfg(unix)]
+    #[gpui::test]
+    fn issue3182_todays_note_button_creates_then_reopens(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = fixture(cx);
+        let vault = temp.path().join("vault");
+        std::fs::create_dir_all(vault.join("Templates")).unwrap();
+        std::fs::write(vault.join("Templates/Day.md"), "# {{title}}\n\n## Plan\n").unwrap();
+        let settings = okilum_core::daily_notes::Settings {
+            folder: "Daily".into(),
+            format: "YYYY/YYYY-MM-DD".into(),
+            template: "Templates/Day.md".into(),
+        };
+        reader.read_with(visual, |view, _| {
+            let state = view.session_directory.clone().unwrap();
+            reader_daily_notes::save(&state, &view.vault_root, &settings).unwrap();
+        });
+        let now = reader_daily_notes::now();
+        let rel = okilum_core::vault::note_path(&settings.relative_path(now).unwrap());
+        let title = settings.name(now).unwrap();
+        let title = title.rsplit('/').next().unwrap();
+        let source = format!("# {title}\n\n## Plan\n");
+        assert!(!vault.join(&rel).exists());
+        let button = visual
+            .debug_bounds("sidebar-daily-note")
+            .expect("Today's note button in the Tree header");
+        visual.simulate_click(button.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(std::fs::read_to_string(vault.join(&rel)).unwrap(), source);
+        reader.read_with(visual, |view, _| {
+            assert_eq!(view.pane.current_rel, rel);
+            assert!(
+                view.pane.editing.is_some(),
+                "today's note opens for writing"
+            );
+        });
+        reader.update_in(visual, |view, window, cx| {
+            view.open_note("Other.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |view, _| {
+            assert_eq!(view.pane.current_rel, "Other.md")
+        });
+        let button = visual.debug_bounds("sidebar-daily-note").unwrap();
+        visual.simulate_click(button.center(), Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |view, _| assert_eq!(view.pane.current_rel, rel));
+        assert_eq!(std::fs::read_to_string(vault.join(&rel)).unwrap(), source);
+        assert_eq!(
+            std::fs::read_dir(vault.join("Daily").join(now.year().to_string()))
+                .unwrap()
+                .count(),
+            1,
+            "one note per day"
+        );
+    }
+
+    /// #3182 review: from another app section (here Logs, as from the More
+    /// menu) a newly created daily note comes on screen on the first press.
+    #[cfg(unix)]
+    #[gpui::test]
+    fn issue3182_todays_note_from_logs_section_shows_the_new_note(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = fixture(cx);
+        let vault = temp.path().join("vault");
+        let settings = okilum_core::daily_notes::Settings::default();
+        let rel = okilum_core::vault::note_path(
+            &settings.relative_path(reader_daily_notes::now()).unwrap(),
+        );
+        assert!(!vault.join(&rel).exists());
+        reader.update_in(visual, |view, window, cx| {
+            view.show_app_section(reader_project_navigation::Section::Logs, window, cx)
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |view, _| {
+            assert!(
+                view.project_navigation.section == reader_project_navigation::Section::Logs,
+                "control: the Logs section is on screen"
+            )
+        });
+        assert!(
+            visual.debug_bounds("reader-source").is_none(),
+            "control: no note toolbar while Logs is shown"
+        );
+        reader.update_in(visual, |view, window, cx| view.open_daily_note(window, cx));
+        visual.run_until_parked();
+        assert!(vault.join(&rel).is_file(), "today's note was created");
+        reader.read_with(visual, |view, _| {
+            assert!(view.project_navigation.section == reader_project_navigation::Section::Reader);
+            assert_eq!(view.pane.current_rel, rel);
+            assert!(view.pane.editing.is_some());
+        });
+        assert!(
+            visual.debug_bounds("reader-source").is_some(),
+            "the new note's editor is drawn, not the Logs section"
+        );
+    }
+
     #[gpui::test]
     fn issue1587_folder_rules_badge_opens_hidden_rules_without_toggling_folder(
         cx: &mut TestAppContext,
@@ -783,6 +882,7 @@ mod tests {
         for selector in [
             "tree-vault-index",
             "sidebar-new-note",
+            "sidebar-daily-note",
             "sidebar-new-folder",
             "sidebar-collapse-all",
         ] {
@@ -884,6 +984,7 @@ mod tests {
             assert_eq!(label.left(), icon.right() + px(4.));
             for selector in [
                 "sidebar-new-note",
+                "sidebar-daily-note",
                 "sidebar-new-folder",
                 "sidebar-collapse-all",
                 "sidebar-show-hidden",

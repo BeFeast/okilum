@@ -209,7 +209,7 @@ fn code2809_real_park_draft_resumes_the_retained_header(cx: &mut TestAppContext)
     });
     reader.update_in(visual, |reader, window, cx| {
         reader.toggle_source(window, cx);
-        let input = reader.editing.as_ref().unwrap().input().clone();
+        let input = reader.pane.editing.as_ref().unwrap().input().clone();
         input.update(cx, |input, cx| {
             input.replace_source_range(0..source.len(), "{\"local\":2}", window, cx)
         });
@@ -223,7 +223,7 @@ fn code2809_real_park_draft_resumes_the_retained_header(cx: &mut TestAppContext)
     visual.simulate_click(close.center(), Modifiers::default());
     settle(visual);
     reader.read_with(visual, |reader, _| {
-        assert!(reader.editing.is_none());
+        assert!(reader.pane.editing.is_none());
         assert_eq!(
             reader
                 .pane

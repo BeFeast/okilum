@@ -212,7 +212,7 @@ impl Reader {
 /// The vault-relative form of a picked file, or `None` when it is outside the
 /// vault, reached through a symlink, or not a usable Markdown note.
 #[cfg(any(unix, windows))]
-fn note_in_vault(root: &Path, chosen: &Path) -> Option<String> {
+pub(super) fn note_in_vault(root: &Path, chosen: &Path) -> Option<String> {
     let root = root.canonicalize().ok()?;
     let chosen = chosen.canonicalize().ok()?;
     let relative = chosen.strip_prefix(&root).ok()?;
