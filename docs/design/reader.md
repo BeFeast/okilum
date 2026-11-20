@@ -429,6 +429,12 @@ AAA (7:1) for High contrast. `on-accent` on `accent` is 4.5:1 and `text-faint`
 Each theme's `heading` is a hue at least 25° from its `link`, so a heading
 never reads as clickable.
 
+Obsidian community themes are ported offline with
+`scripts/themes/obsidian-theme-convert.py` (#3157, see
+[obsidian-theme-converter.md](obsidian-theme-converter.md)): it writes a theme
+file that already passes these gates, plus a report of every adjustment and
+every rule it could not carry over.
+
 **Theme picker** (`theme_picker.rs`): a self-contained row of compact swatch
 cards (120 px). Each card previews the theme's sidebar, surface, text, muted
 text, link and accent in the variant currently shown. The selected card has a
