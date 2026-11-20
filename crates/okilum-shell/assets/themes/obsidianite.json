@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "id": "obsidianite",
   "name": "Obsidianite",
-  "basis": "Dark mode after the Obsidianite theme for Obsidian (github.com/bennyxguo/Obsidian-Obsidianite, MIT, (c) 2020 Guo Xiang): its .theme-dark canvas, text, cyan accent and H1, slate H2-H6, Dracula-style code and status colours, pink highlight. Obsidianite ships no light mode; the light variant here is derived, keeping the accent and heading hues. Links use Obsidianite's periwinkle so they never share the heading's cyan. Tuned to WCAG AA.",
+  "basis": "Dark mode after the Obsidianite theme for Obsidian (github.com/bennyxguo/Obsidian-Obsidianite, MIT, (c) 2020 Guo Xiang): its .theme-dark canvas, text, cyan accent and H1, slate H2-H6, Dracula-style code and status colours, pink highlight. Obsidianite ships no light mode; the light variant here is derived, keeping the accent and heading hues. Links use Obsidianite's periwinkle so they never share the heading's cyan. Code syntax: Obsidianite's Prism Dracula palette in dark (comment lifted from #6272a4 to pass AA on the code background), Dracula's light Alucard palette in light. Tuned to WCAG AA.",
   "modes": {
     "light": {
       "canvas": "#fbfafd",
@@ -46,7 +46,33 @@
       "info": "#086d84",
       "findMarkTrack": "#f1eff6",
       "findMark": "#8a5600",
-      "findMarkCurrent": "#0b57d0"
+      "findMarkCurrent": "#0b57d0",
+      "syntax": {
+        "comment": "#635d97",
+        "string": "#7a6513",
+        "string.escape": "#a3144d",
+        "string.regex": "#14710a",
+        "number": "#644ac9",
+        "boolean": "#a34d14",
+        "constant": "#a34d14",
+        "keyword": "#a3144d",
+        "operator": "#036a96",
+        "function": "#14710a",
+        "variable": "#24212e",
+        "variable.special": "#644ac9",
+        "property": "#a34d14",
+        "type": "#a34d14",
+        "constructor": "#a34d14",
+        "attribute": "#14710a",
+        "tag": "#a3144d",
+        "punctuation": "#24212e",
+        "embedded": "#24212e",
+        "title": "#644ac9",
+        "link_text": "#036a96",
+        "link_uri": "#036a96",
+        "text.literal": "#06768c",
+        "text.code.span": "#06768c"
+      }
     },
     "dark": {
       "canvas": "#100e17",
@@ -89,7 +115,33 @@
       "info": "#8be9fd",
       "findMarkTrack": "#191621",
       "findMark": "#f1fa8c",
-      "findMarkCurrent": "#f4569d"
+      "findMarkCurrent": "#f4569d",
+      "syntax": {
+        "comment": "#7f8dbd",
+        "string": "#f1fa8c",
+        "string.escape": "#ff879d",
+        "string.regex": "#50fa7b",
+        "number": "#bd93f9",
+        "boolean": "#ffb86c",
+        "constant": "#ffb86c",
+        "keyword": "#ff79c6",
+        "operator": "#8be9fd",
+        "function": "#50fa7b",
+        "variable": "#f8f8f2",
+        "variable.special": "#bd93f9",
+        "property": "#ffb86c",
+        "type": "#ffb86c",
+        "constructor": "#ffb86c",
+        "attribute": "#50fa7b",
+        "tag": "#dc68aa",
+        "punctuation": "#f8f8f2",
+        "embedded": "#f8f8f2",
+        "title": "#bd93f9",
+        "link_text": "#8be9fd",
+        "link_uri": "#66d9ef",
+        "text.literal": "#0fb6d6",
+        "text.code.span": "#0fb6d6"
+      }
     }
   },
   "decorations": {

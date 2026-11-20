@@ -2,6 +2,7 @@
 """Large-note Reader benchmark with budgets (#653).
 
     bench.py BINARY [--runs 3] [--json OUT] [--no-budget] [--keep DIR]
+             [--note large|code] [--theme KEY] [--appearance light|dark]
 
 Writes the stress vault of fixture.py (10,000 lines, 2,000 headings, 500 links,
 four 250-row tables, 200 image references), opens Large.md in a release Reader
@@ -17,6 +18,12 @@ A run whose positive controls fail (document painted, outline complete,
 scrolling moved, every outline jump landed on its heading) is rejected, never
 counted. Timings are host-specific: compare only runs from one machine in one
 session (AGENTS.md).
+
+`--note code` opens Code.md instead: 10,000 lines of fenced Rust, Python,
+JavaScript and JSON under 435 headings (#3156). `--theme` and `--appearance`
+start every launch with that theme and mode; the probe reports what it drew
+with and a run on another theme or mode is rejected. Theme A/B: the same
+binary and note, alternating themes, one session.
 """
 import argparse
 import json
@@ -110,12 +117,24 @@ def document_stage(timeline):
         raise NoEvidence(f"diagnostic {missing} not logged") from None
 
 
-def run_once(binary, vault_source, display, work, rep, note=fixture.NOTE):
+def ui_state(theme=None, appearance=None):
+    """reader-ui.json for a launch that starts in this theme and mode."""
+    state = {"version": 1}
+    if theme:
+        state["theme"] = theme
+    if appearance:
+        state["appearance"] = appearance
+    return state
+
+
+def run_once(binary, vault_source, display, work, rep, note=fixture.NOTE, theme=None, appearance=None):
     base = work / f"run-{rep}-{Path(note).stem}"
     home, vault = base / "home", base / "vault"
     shutil.copytree(vault_source, vault)
     state = home / "okilum"
     state.mkdir(parents=True)
+    if theme or appearance:
+        (state / "reader-ui.json").write_text(json.dumps(ui_state(theme, appearance)))
     runtime = home / "runtime"
     runtime.mkdir(mode=0o700)
     report = base / "probe.json"
@@ -141,9 +160,15 @@ def run_once(binary, vault_source, display, work, rep, note=fixture.NOTE):
     return data
 
 
-def controls(data, counts):
-    """Positive controls: the run painted the whole note, moved and jumped."""
+def controls(data, counts, theme=None, appearance=None):
+    """Positive controls: the run painted the whole note, moved and jumped,
+    in the theme and mode asked for."""
     problems = []
+    drawn = data.get("theme") or {}
+    if theme and drawn.get("key") != theme:
+        problems.append(f"drawn with theme {drawn.get('key')!r}, asked for {theme!r}")
+    if appearance and drawn.get("dark") != (appearance == "dark"):
+        problems.append(f"drawn with dark={drawn.get('dark')!r}, asked for {appearance}")
     if data["blocks"] < counts["headings"]:
         problems.append(f"only {data['blocks']} blocks; the note has {counts['headings']} headings")
     if data["outline_rows"] != counts["headings"]:
@@ -187,19 +212,26 @@ def main():
     parser.add_argument("--json", type=Path)
     parser.add_argument("--no-budget", action="store_true", help="report only; do not fail on budgets")
     parser.add_argument("--keep", type=Path, help="keep every run's state and logs here")
+    parser.add_argument("--note", choices=["large", "code"], default="large")
+    parser.add_argument("--theme", help="theme key, e.g. graphite or obsidianite")
+    parser.add_argument("--appearance", choices=["light", "dark"])
     args = parser.parse_args()
+    look = {"theme": args.theme, "appearance": args.appearance}
     if not args.binary.is_file():
         raise SystemExit(f"{args.binary} is missing")
     work = Path(tempfile.mkdtemp(prefix="okilum-large-note-"))
     try:
         vault_source = work / "vault"
         _, counts = fixture.write(vault_source, check=True)
+        note = fixture.NOTE
+        if args.note == "code":
+            note, counts = fixture.CODE_NOTE, fixture.code_note()[1]
         xvfb, display = start_display()
         try:
             runs = []
             for rep in range(1, args.runs + 1):
-                data = run_once(args.binary.resolve(), vault_source, display, work, rep)
-                control = run_once(args.binary.resolve(), vault_source, display, work, rep, fixture.SMALL)
+                data = run_once(args.binary.resolve(), vault_source, display, work, rep, note, **look)
+                control = run_once(args.binary.resolve(), vault_source, display, work, rep, fixture.SMALL, **look)
                 if control["blocks"] == 0 or control["outline_rows"] != 5:
                     raise NoEvidence(f"run {rep}: the control note did not open: {json.dumps(control)}")
                 data["control_open_ms"] = control["open_ms"]
@@ -207,7 +239,7 @@ def main():
                 data["control_timeline"] = control["timeline"]
                 data["document_stage_ms"] = document_stage(data["timeline"])
                 data["control_document_stage_ms"] = document_stage(control["timeline"])
-                problems = controls(data, counts)
+                problems = controls(data, counts, **look)
                 if problems:
                     raise NoEvidence(f"run {rep} controls failed:\n  " + "\n  ".join(problems)
                                      + f"\n  report: {json.dumps(data)}")
@@ -230,6 +262,7 @@ def main():
         shutil.copytree(work, args.keep, dirs_exist_ok=True)
     shutil.rmtree(work, ignore_errors=True)
     summary, table = summarize(runs, counts)
+    summary.update(note=note, **look)
     landed = [jump["landed_frame"] for run in runs for jump in run["jumps"]]
     table += f"\noutline jumps landed in frame (0 = first after the click): {landed}"
     print(f"fixture: {counts}\n{table}")

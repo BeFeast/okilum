@@ -7002,7 +7002,13 @@ impl Reader {
                 });
             }),
             reader_perf_probe::Step::Finish => {
-                if let Err(error) = probe.write_report(targets.len()) {
+                // What the run was drawn with, so a theme A/B can check it (#3156).
+                let theme = serde_json::json!({
+                    "key": brand::theme_id(cx).key(),
+                    "dark": Theme::global(cx).is_dark(),
+                    "syntax": Theme::global(cx).highlight_theme.name,
+                });
+                if let Err(error) = probe.write_report(targets.len(), theme) {
                     diagnostic_error!("{}: {error}", reader_perf_probe::ENV);
                 }
                 cx.quit();

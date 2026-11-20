@@ -418,7 +418,7 @@ too. Status colors may fall back to the brand tokens; no other role inherits.
 | Paper | `paper` | warm off-white, ink-blue links, rust accent; sepia dark |
 | High contrast | `high-contrast` | black/white surfaces, AAA (7:1) reading text |
 | Nord | `nord` | cool arctic blues after the Nord palette |
-| Obsidianite | `obsidianite` | after Obsidianite (MIT): near-black violet canvas, cyan accent and H1, slate `#cbdbe5` H2–H6 (`heading2`..`heading6`), periwinkle links; derived light variant |
+| Obsidianite | `obsidianite` | after Obsidianite (MIT): near-black violet canvas, cyan accent and H1, slate `#cbdbe5` H2–H6 (`heading2`..`heading6`), periwinkle links, Dracula code syntax; derived light variant |
 
 Token files live in `crates/okilum-shell/assets/themes/<key>.json`
 (`okilum-theme/v1`). A unit test checks every theme in both variants: `text`
@@ -477,8 +477,48 @@ Legacy `appearance.json` is migration input only.
 
 The brand mark keeps its brand colors under every theme. The `highlight` color
 is resolved when a block is parsed, so an open note picks up a new theme's
-highlight on its next re-parse. The syntax-highlight theme for code blocks stays
-the toolkit's light/dark pair.
+highlight on its next re-parse.
+
+**Code syntax palette** (#3156): a theme may add an optional `syntax` map to
+each mode, keyed by tree-sitter capture name, values `#rrggbb`. A capture
+colours itself and the dotted children the map does not name (`string` also
+colours `string.escape` and `string.special`); a capture the parser emits but
+the palette does not list falls back to its parent (`keyword.modifier` →
+`keyword`). An unknown capture name or a non-colour value fails the unit tests. The map
+changes colours only: font style and weight stay the toolkit's, so a theme adds
+no font run, no shaping and no relayout (colour is not part of GPUI's line
+layout cache key). A theme without `syntax`, and every capture it leaves out,
+keeps the toolkit's light/dark palette, so Okilum, Graphite, Paper, High
+contrast and Nord look as before. Every `syntax` colour is at least 4.5:1 on
+`code-bg`, `canvas` and `surface-raised` (7:1 for High contrast), tested.
+One palette object exists per theme and mode, so re-applying a theme
+re-highlights nothing; a switch takes the same path as a light/dark switch and
+does not re-read the note.
+
+Obsidian themes colour code with CodeMirror (`.cm-<class>`) and Prism
+(`.token.<class>`) classes. Porting one maps them as follows:
+
+| Capture | CodeMirror | Prism |
+| --- | --- | --- |
+| `comment` | `cm-comment` | `comment`, `prolog` |
+| `string` | `cm-string`, `cm-string-2` | `string`, `char`, `attr-value` |
+| `string.escape` / `string.regex` | — | `char` / `regex` |
+| `number` | `cm-number` | `number` |
+| `boolean`, `constant` | `cm-atom` | `boolean`, `constant`, `symbol` |
+| `keyword` | `cm-keyword` | `keyword`, `important` |
+| `operator` | `cm-operator` | `operator` |
+| `function` | `cm-def`, `cm-builtin` | `function` |
+| `variable` / `variable.special` | `cm-variable` / `cm-variable-2` | `variable` |
+| `type`, `constructor` | `cm-type`, `cm-variable-3` | `class-name` |
+| `property` | `cm-property` | `property` |
+| `attribute` | `cm-attribute`, `cm-qualifier` | `atrule`, `attr-name` |
+| `tag` | `cm-tag` | `tag` |
+| `punctuation` | — | `punctuation` |
+| `link_uri` | `cm-url` | `url` |
+
+Obsidianite's dark palette is its Prism Dracula block (comment lifted from
+`#6272a4`, 3.5:1, to `#7f8dbd` for AA); its derived light mode uses Dracula's
+light Alucard colours, the string yellow darkened from `#846e15` for AA.
 
 **Vault colour** (#774, Oleg 2026-10-08): vaults are told apart like Chrome
 profiles while the theme stays app-wide. A vault may have one of eight presets
