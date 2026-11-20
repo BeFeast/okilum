@@ -179,6 +179,32 @@ pub fn suggested_template(candidates: &[String]) -> Option<String> {
         .cloned()
 }
 
+/// Every folder on the way to today's note that exists must be a real folder,
+/// checked without following links: a linked `Daily` (or year folder) could
+/// lead outside the vault. Missing folders are created later, without links.
+fn ensure_real_folders(root: &Path, relative: &Path) -> Result<()> {
+    let mut at = root.to_path_buf();
+    let mut shown = PathBuf::new();
+    for part in relative.parent().into_iter().flat_map(Path::components) {
+        at.push(part);
+        shown.push(part);
+        match std::fs::symlink_metadata(&at) {
+            Ok(meta) if meta.file_type().is_symlink() => bail!(
+                "{} is a link; daily notes need real folders inside the vault",
+                crate::vault::note_path(&shown)
+            ),
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => bail!("{} is not a folder", crate::vault::note_path(&shown)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Cannot check {}", crate::vault::note_path(&shown)))
+            }
+        }
+    }
+    Ok(())
+}
+
 /// A later press the same day (#3182): append the entry (the entry template,
 /// or `## HH:MM`) at the end of today's note through the note's own editor,
 /// so a change on disk at the same moment is refused, never overwritten.
@@ -207,7 +233,18 @@ pub fn append_entry(
         }
         None => note_templates::expand(DEFAULT_ENTRY, title, now, DEFAULT_FORMAT, "HH:mm"),
     };
+    ensure_real_folders(root, Path::new(rel))?;
     let mut editor = crate::file_editor::FileEditor::open(&root.join(rel), drafts)?;
+    // The editor saves through the folder it opened, at its canonical path:
+    // that must be this note inside this vault, with no link on the way.
+    let vault = root.canonicalize()?;
+    ensure!(
+        editor
+            .path()
+            .strip_prefix(&vault)
+            .is_ok_and(|inside| crate::vault::note_path(inside) == rel),
+        "Today's note is reached through a link; daily notes need real folders inside the vault"
+    );
     let mut source = editor.text().to_owned();
     let newline = if source.contains("\r\n") {
         "\r\n"
@@ -253,11 +290,10 @@ pub fn open_or_create(
 ) -> Result<Today> {
     let relative = settings.relative_path(now)?;
     let rel = crate::vault::note_path(&relative);
+    ensure_real_folders(root, &relative)?;
     let path = root.join(&relative);
-    if path.is_file() {
-        return Ok(Today::Existing(rel));
-    }
     match std::fs::symlink_metadata(&path) {
+        Ok(meta) if meta.is_file() => return Ok(Today::Existing(rel)),
         Ok(_) => bail!("{rel} is already there and is not a note"),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error).with_context(|| format!("Cannot check {rel}")),
@@ -481,6 +517,73 @@ mod tests {
             std::fs::read_to_string(root.join(&rel)).unwrap(),
             source,
             "nothing added"
+        );
+    }
+
+    /// #3187 review: a linked daily folder, or a linked year folder from
+    /// the name format, never leads a write outside the vault.
+    #[test]
+    fn linked_daily_folders_are_refused_and_outside_notes_stay_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+        std::fs::create_dir_all(&root).unwrap();
+        let drafts = dir.path().join("drafts");
+        std::fs::create_dir_all(&drafts).unwrap();
+        let at = time::macros::datetime!(2026-11-20 14:05 +02:00);
+        let sentinel = "outside, do not touch\n";
+        // `Daily` itself is a link to a folder outside the vault.
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("2026-11-20.md"), sentinel).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("Daily")).unwrap();
+        let flat = Settings::default();
+        let error = create(&root, &flat).unwrap_err().to_string();
+        assert!(error.contains("Daily is a link"), "{error}");
+        let error = append_entry(&root, "Daily/2026-11-20.md", &flat, at, &drafts)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("link"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(outside.join("2026-11-20.md")).unwrap(),
+            sentinel
+        );
+        // An intermediate folder of the format (`Journal/2026`) is a link.
+        let year = dir.path().join("year");
+        std::fs::create_dir_all(&year).unwrap();
+        std::fs::write(year.join("2026-11-20.md"), sentinel).unwrap();
+        std::fs::create_dir_all(root.join("Journal")).unwrap();
+        std::os::unix::fs::symlink(&year, root.join("Journal/2026")).unwrap();
+        let nested = Settings {
+            folder: "Journal".into(),
+            format: "YYYY/YYYY-MM-DD".into(),
+            ..Default::default()
+        };
+        let error = create(&root, &nested).unwrap_err().to_string();
+        assert!(error.contains("Journal/2026 is a link"), "{error}");
+        let error = append_entry(&root, "Journal/2026/2026-11-20.md", &nested, at, &drafts)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("link"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(year.join("2026-11-20.md")).unwrap(),
+            sentinel
+        );
+        // A linked note file is not today's note either.
+        std::fs::create_dir_all(root.join("Real")).unwrap();
+        std::os::unix::fs::symlink(
+            outside.join("2026-11-20.md"),
+            root.join("Real/2026-11-20.md"),
+        )
+        .unwrap();
+        let linked_file = Settings {
+            folder: "Real".into(),
+            ..Default::default()
+        };
+        assert!(create(&root, &linked_file).is_err());
+        assert!(append_entry(&root, "Real/2026-11-20.md", &linked_file, at, &drafts).is_err());
+        assert_eq!(
+            std::fs::read_to_string(outside.join("2026-11-20.md")).unwrap(),
+            sentinel
         );
     }
 
