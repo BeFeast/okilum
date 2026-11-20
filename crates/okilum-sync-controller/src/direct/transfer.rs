@@ -935,6 +935,10 @@ impl ShareGrant {
     pub(super) fn for_peer(&self, peer: Uuid) -> bool {
         self.peer == peer
     }
+    /// The Syncthing device this grant shares the vault with.
+    pub(super) fn receives(&self, device: &str) -> bool {
+        self.receiver == device
+    }
     pub(super) fn new(peer: Uuid, source: &ExistingVault, receiver: &str) -> Self {
         Self {
             peer,

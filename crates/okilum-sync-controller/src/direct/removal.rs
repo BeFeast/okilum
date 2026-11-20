@@ -998,6 +998,31 @@ fn knows(db: &Database, peer: Uuid, vault: &str) -> bool {
         .is_some_and(|p| p.allowed.iter().any(|v| v == vault))
         || db.transfers.iter().any(|t| t.removal_binding(peer, vault))
 }
+/// The pairings through which this computer shared one of `vaults` onward to
+/// the removed `device`: its own durable share grant names that device. They
+/// received the vault from here, so this computer is their vault owner and
+/// they accept the relayed decision. The sender and every other peer get
+/// nothing, and a computer without such a grant waits for no one (#3105).
+fn onward_to_removed(
+    db: &Database,
+    sender: Uuid,
+    device: &str,
+    vaults: &BTreeSet<String>,
+) -> BTreeMap<Uuid, Paired> {
+    db.peers
+        .iter()
+        .filter(|(peer, paired)| {
+            **peer != sender
+                && paired.syncthing_device.as_deref() == Some(device)
+                && db.share_grants.iter().any(|grant| {
+                    grant.for_peer(**peer)
+                        && grant.receives(device)
+                        && vaults.contains(&grant.vault)
+                })
+        })
+        .map(|(peer, paired)| (*peer, paired.clone()))
+        .collect()
+}
 fn device_of(db: &Database, peer: Uuid) -> Option<String> {
     db.peers
         .get(&peer)
@@ -1336,8 +1361,11 @@ impl Controller {
         // including the removed computer, applies the decision and does not
         // send RemoveComputer onward: peers reject that, and a leaf would
         // wait forever for an acknowledgement before pausing (#2042, #3079).
-        let pending = if sender.is_some() {
-            BTreeMap::new()
+        // One exception: when this computer shared the vault onward to the
+        // removed computer itself, it is that computer's vault owner and the
+        // only route for the decision, so it relays it there (#3105).
+        let pending = if let Some(sender) = sender {
+            onward_to_removed(&db, sender, device, &vaults)
         } else {
             db.peers
                 .iter()
@@ -4504,6 +4532,50 @@ mod tests {
         assert!(!db.peers[&id].allowed.iter().any(|vault| vault == "x"));
         assert!(db.peers[&id].allowed.iter().any(|vault| vault == "y"));
         assert!(peer_is_live(&db, &db.peers[&id]));
+        drop(db);
+        computer.shutdown();
+        Ok(())
+    }
+
+    /// #3105: C received the vault from its owner A and shared it onward to
+    /// B. A's decision to remove B reaches C, and C is B's only route, so C
+    /// relays it to B. Nothing else is relayed.
+    #[test]
+    fn issue3105_received_removal_reaches_the_computer_shared_onward_to() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let computer = Controller::open(root.path().join("c"), vec![])?;
+        let own = ["CCCCCCC"; 8].join("-");
+        let bob = ["BBBBBBB"; 8].join("-");
+        let dave = ["DDDDDDD"; 8].join("-");
+        let owner = pairing(&["AAAAAAA"; 8].join("-"), wire::public(&wire::random()?)?)?;
+        let onward = pairing(&bob, wire::public(&wire::random()?)?)?;
+        let other = pairing(&dave, wire::public(&wire::random()?)?)?;
+        let (a, b, d) = (owner.peer.id, onward.peer.id, other.peer.id);
+        let mut db = computer.shared.db.lock().unwrap();
+        db.peers.insert(a, owner);
+        db.peers.insert(b, onward);
+        db.peers.insert(d, other);
+        let vaults = BTreeSet::from(["vault".to_string()]);
+        // No grant: a receiver relays nothing (the #3079 rule).
+        assert!(onward_to_removed(&db, a, &bob, &vaults).is_empty());
+        db.share_grants.push(transfer::ShareGrant::new(
+            b,
+            &existing_vault(&own, "vault")?,
+            &bob,
+        ));
+        db.share_grants.push(transfer::ShareGrant::new(
+            d,
+            &existing_vault(&own, "vault")?,
+            &dave,
+        ));
+        // Only the removed computer's own onward pairing gets the decision.
+        let relayed = onward_to_removed(&db, a, &bob, &vaults);
+        assert_eq!(relayed.keys().copied().collect::<Vec<_>>(), vec![b]);
+        // Never back to the sender, never for another vault, and a removal
+        // of a computer this one did not share with stays local.
+        assert!(onward_to_removed(&db, b, &bob, &vaults).is_empty());
+        assert!(onward_to_removed(&db, a, &bob, &BTreeSet::from(["other".into()])).is_empty());
+        assert!(onward_to_removed(&db, a, &["EEEEEEE"; 8].join("-"), &vaults).is_empty());
         drop(db);
         computer.shutdown();
         Ok(())
