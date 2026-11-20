@@ -242,7 +242,7 @@ index c0ce6186..3c2a9e8d 100644
          source: SourceSnapshot,
          markers: Vec<ProjectionMarker>,
 diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
-index 76133304..8919e253 100644
+index 76133304..536c2f2e 100644
 --- a/crates/base/src/input/base/state.rs
 +++ b/crates/base/src/input/base/state.rs
 @@ -416,6 +416,9 @@ pub struct InputBaseState<M: InputModeKind> {
@@ -281,7 +281,7 @@ index 76133304..8919e253 100644
                  cx.emit(crate::input::projection::MarkerClick {
                      stamp,
                      range: crate::input::projection::SourceByte(range.start)
-@@ -6696,6 +6711,146 @@ mod tests {
+@@ -6696,6 +6711,149 @@ mod tests {
          assert_eq!(clicks.get(), 1, "a release outside the input cancels");
      }
  
@@ -328,6 +328,9 @@ index 76133304..8919e253 100644
 +        }
 +        fn markers(&self) -> &[super::super::projection::ProjectionMarker] {
 +            &self.1
++        }
++        fn marker_scope_is_raw(&self, _: &Range<SourceByte>) -> bool {
++            false
 +        }
 +        fn to_projected(
 +            &self,
