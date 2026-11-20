@@ -1165,8 +1165,27 @@ def enforce(tokens: dict, mode: str, report: Report, reading: float, source: dic
             for f in fills:
                 if f in ("success", "warning", "danger", "info") and contrast(quantize(tokens[f]), quantize(tokens["surface"])) < 4.5:
                     report.notes.append(f"{mode}: {f} cannot meet 4.5:1 on both surface and {on}; check by hand")
-    for key in ("findMark", "findMarkCurrent"):
+    for key, find in (("findMark", "findMatch"), ("findMarkCurrent", "findCurrent")):
         fix(key, ["findMarkTrack", "canvas"], 3.0, f"{key} below 3:1 on the scrollbar track")
+        # brand.rs code2810 also requires a mark to differ from its find colour.
+        if to_hex(tokens[key]) == to_hex(tokens[find]):
+            before = tokens[key]
+            against = [quantize(tokens["findMarkTrack"]), quantize(tokens["canvas"])]
+            h, s, l = hsl(before)
+            moved = None
+            for k in range(1, 201):
+                for sign in (1, -1):
+                    cand = from_hsl(h, s, l + sign * k * 0.005, before[3])
+                    if (to_hex(cand) != to_hex(tokens[find])
+                            and all(contrast(quantize(cand), bg) >= 3.01 for bg in against)):
+                        moved = cand
+                        break
+                if moved:
+                    break
+            if moved:
+                tokens[key] = moved
+                report.adjustments.append((mode, key, to_hex(before), to_hex(moved),
+                                           f"{key} was the same colour as {find}"))
     if "focus" in source and source["focus"].startswith("derived"):
         tokens["focus"] = tokens["accent"]
 
@@ -1192,6 +1211,9 @@ def contrast_rows(tokens: dict, reading: float) -> list[tuple[str, float, float]
     for m in ("findMark", "findMarkCurrent"):
         rows.append((f"{m} on findMarkTrack", contrast(q[m], q["findMarkTrack"]), 3.0))
         rows.append((f"{m} on canvas", contrast(q[m], q["canvas"]), 3.0))
+    for m, f in (("findMark", "findMatch"), ("findMarkCurrent", "findCurrent")):
+        rows.append((f"{m} differs from {f} (1 = yes)",
+                     float(to_hex(tokens[m]) != to_hex(tokens[f])), 1.0))
     return rows
 
 
@@ -1284,7 +1306,9 @@ def parse_gradient(value: str, resolver: Resolver):
     """(angle in degrees, [(colour, position or None)]) for a linear-gradient."""
     m = re.search(r"(?:-webkit-)?linear-gradient\(", value)
     if not m:
-        return None
+        kind = re.search(r"[\w-]*gradient", value)
+        raise Unresolved(f"{kind[0] if kind else 'gradient'} is not a linear-gradient; "
+                         "the slots take linear gradients only")
     close = _matching_paren(value, m.end() - 1)
     inner = resolver.substitute(value[m.end():close])
     parts = [p.strip() for p in split_top(inner, ",")]
@@ -1307,6 +1331,8 @@ def parse_gradient(value: str, resolver: Resolver):
             color_text = m2[1]
             pos = float(m2[2]) / 100 if m2[3] == "%" else None
         stops.append((parse_color(color_text), pos))
+    if len(stops) < 2:
+        raise Unresolved(f"linear-gradient with {len(stops)} colour stop(s)")
     return angle, stops
 
 

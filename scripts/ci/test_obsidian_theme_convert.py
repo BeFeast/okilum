@@ -255,6 +255,36 @@ class Conversion(unittest.TestCase):
         self.assert_gates(theme, report)
 
 
+class ReviewFixes(unittest.TestCase):
+    def test_non_linear_or_stopless_gradients_are_reported_not_fatal(self):
+        css = PRE_1_0_DARK + """
+.markdown-preview-view h4 { border-image-source: radial-gradient(circle, red, blue); }
+.markdown-preview-view hr { border-image-source: linear-gradient(to right); }
+blockquote { background: conic-gradient(red, blue); }
+.internal-link { background-image: linear-gradient(to bottom); }
+strong { -webkit-background-clip: text; background-image: radial-gradient(#fff, #000); }
+"""
+        theme, report = conv.convert(css, theme_id="g", name="G")
+        rendered = conv.render_report(report, theme, "g.css")
+        self.assertIn("radial-gradient is not a linear-gradient", rendered)
+        self.assertIn("conic-gradient is not a linear-gradient", rendered)
+        self.assertIn("linear-gradient with 0 colour stop(s)", rendered)
+        self.assertIn("h4 { border-image-source }", rendered)
+        self.assertIn("blockquote { background }", rendered)
+
+    def test_find_marks_never_equal_find_colours(self):
+        # A highlight equal to the warning colour made findMark == findMatch.
+        css = """.theme-dark { --background-primary: #1e1f29; --text-normal: #f8f8f2;
+            --text-accent: #bd93f9; --color-orange: #ffb86c; --text-highlight-bg: #ffb86c; }"""
+        theme, report = conv.convert(css, theme_id="d", name="D")
+        for mode in conv.MODES:
+            e = theme["modes"][mode]
+            self.assertNotEqual(e["findMark"], e["findMatch"], mode)
+            self.assertNotEqual(e["findMarkCurrent"], e["findCurrent"], mode)
+        self.assertEqual([c for c in report.contrast if not c[4]], [])
+        self.assertTrue(any(c[1].startswith("findMark differs") for c in report.contrast))
+
+
 class Contract(unittest.TestCase):
     def test_writes_every_token_the_app_reads(self):
         brand = (ROOT / "crates/okilum-shell/src/brand.rs").read_text()
@@ -273,7 +303,7 @@ class Contract(unittest.TestCase):
             with contextlib.redirect_stderr(io.StringIO()) as summary:
                 code = conv.main([str(css), "--id", "sample", "--name", "Sample",
                                   "--out", str(out), "--report", str(rep)])
-            self.assertIn("90/90 checks pass", summary.getvalue())
+            self.assertIn("94/94 checks pass", summary.getvalue())
             self.assertEqual(code, 0)
             self.assertEqual(json.loads(out.read_text())["id"], "sample")
             self.assertIn("## Not carried over", rep.read_text())
