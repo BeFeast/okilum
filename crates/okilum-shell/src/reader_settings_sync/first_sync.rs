@@ -268,13 +268,13 @@ impl SyncSettings {
                     .and_then(|s| s.peers.iter().find(|p| p.id == pending.peer))
                     .map(|p| p.name.as_str())
                     .unwrap_or("the other computer");
-                body=body.child(format!("First Sync for {} is waiting for {peer}. Keep Okilum open and recover or finish the merge on that computer. Both originals are retained.",pending.path.display()));
+                body=body.child(format!("First Sync for {} is waiting for {peer}. Keep Okilum open and recover or finish the merge on that computer. Both originals are retained.",presentation::vault_path(&pending.path)));
                 continue;
             }
             let operation = pending.operation;
             let path = pending.path.clone();
             body=body.child(v_flex().w_full().gap_2()
-                .child(format!("First Sync needs attention: {}",pending.path.display()))
+                .child(format!("First Sync needs attention: {}",presentation::vault_path(&pending.path)))
                 .child("Both originals are retained. Recover the saved merge, or cancel if publication has not started. Keep both computers online.")
                 .child(h_flex().gap_2()
                     .child(Button::new(("sync-first-recover",index)).label("Recover first sync")

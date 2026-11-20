@@ -340,7 +340,7 @@ impl Render for SyncSettings {
                                         .truncate()
                                         .text_sm()
                                         .text_color(p.text_muted)
-                                        .child(vault.path.display().to_string()),
+                                        .child(presentation::vault_path(&vault.path)),
                                 )
                                 .child(
                                     div()
@@ -407,7 +407,7 @@ impl Render for SyncSettings {
         if let Some(snapshot) = &self.snapshot {
             for (index, setting) in snapshot.history_retention.iter().enumerate() {
                 content = content.child(v_flex().gap_1()
-                    .child(format!("Previous Sync versions · {}", setting.path.display()))
+                    .child(presentation::history_label(&setting.path))
                     .child(format!("Keep for {} days on this computer. Restore from Note history or Recover notes. Sync is not a backup of every local edit.", setting.days.days()))
                     .child(h_flex().gap_2().children([7u16, 30, 90, 365].into_iter().map(|days| {
                         let path = setting.path.clone();
@@ -671,7 +671,8 @@ impl SyncSettings {
                         .child(
                             self.presentation
                                 .error_details
-                                .clone()
+                                .as_deref()
+                                .map(okilum_core::vault::display_error)
                                 .unwrap_or_else(|| "No technical details available.".into()),
                         ),
                 );
@@ -690,12 +691,13 @@ impl SyncSettings {
                 )
                 .enumerate()
             {
-                result = result.child(
-                    div()
-                        .id(("sync-history-warning", index))
-                        .text_sm()
-                        .child(format!("{}: {}", warning.0.display(), warning.1)),
-                );
+                result = result.child(div().id(("sync-history-warning", index)).text_sm().child(
+                    format!(
+                        "{}: {}",
+                        presentation::vault_path(warning.0),
+                        okilum_core::vault::display_error(warning.1)
+                    ),
+                ));
             }
         }
         if self.busy {
@@ -1169,11 +1171,10 @@ impl SyncSettings {
                         .find(|v| &v.id == id)
                         .map(|v| v.label.as_str())
                         .unwrap_or(id);
-                    body = body.child(
-                        div()
-                            .text_sm()
-                            .child(format!("Selected: {label} → {}", path.display())),
-                    );
+                    body = body.child(div().text_sm().child(format!(
+                        "Selected: {label} → {}",
+                        presentation::vault_path(path)
+                    )));
                 }
             }
             body = body.child(
@@ -1224,7 +1225,7 @@ impl SyncSettings {
                             div()
                                 .text_sm()
                                 .text_color(brand::palette(cx).text_muted)
-                                .child(vault.path.display().to_string()),
+                                .child(presentation::vault_path(&vault.path)),
                         ),
                     );
                     count += 1;
@@ -1266,7 +1267,7 @@ impl SyncSettings {
         }) {
             body = body
                 .child(div().text_lg().child(vault.label.clone()))
-                .child(vault.path.display().to_string())
+                .child(presentation::vault_path(&vault.path))
                 .child(self.vault_connection_label(vault));
             if let Some(state) = self.presentation.overview.vaults.get(&vault.path) {
                 body = body

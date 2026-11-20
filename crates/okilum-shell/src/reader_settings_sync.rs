@@ -332,7 +332,7 @@ impl SyncSettings {
         }
         let answer = reader_confirm::confirm(window, cx, "Keep fewer previous Sync versions?", reader_confirm::Body {
             intro: vec![format!("Reduce history from {} to {} days on this computer? This removes {} days of history from the retention window.", current.days(), days.days(), current.days() - days.days())],
-            items: vec![path.display().to_string()],
+            items: vec![presentation::vault_path(&path)],
             outro: vec![format!("Syncthing will permanently delete previous versions older than {} days during cleanup. Increasing retention later cannot recover them.", days.days())],
         }, "Reduce history");
         let lifetime = self.lifetime.ticket();

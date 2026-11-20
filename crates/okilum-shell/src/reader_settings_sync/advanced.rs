@@ -158,7 +158,7 @@ impl SyncSettings {
         let p = brand::palette(cx);
         v_flex().w_full().min_w_0().gap_3()
             .child(vault.label.clone())
-            .child(div().w_full().whitespace_normal().text_sm().text_color(p.text_muted).child(vault.path.display().to_string()))
+            .child(div().w_full().whitespace_normal().text_sm().text_color(p.text_muted).child(presentation::vault_path(&vault.path)))
             .child(div().text_sm().child("This folder already uses Syncthing. Allow Okilum to share it with your approved computers using that connection."))
             .child(h_flex().gap_2()
                 .child(Button::new("sync-consent-existing")
@@ -228,7 +228,7 @@ impl SyncSettings {
                             div()
                                 .text_sm()
                                 .text_color(p.text_muted)
-                                .child(path.display().to_string()),
+                                .child(presentation::vault_path(&path)),
                         )
                         .child(
                             div()
