@@ -162,6 +162,28 @@ fn routes_follow_the_lookup_and_refuse_non_http_proxies() {
     }
 }
 
+/// The socket honours the WinHTTP bypass list like the ticket client does.
+#[test]
+fn socket_route_uses_the_ticket_clients_exclusions() {
+    let lookup = || Lookup::Proxy {
+        proxy: "http://proxy.corp.test:8080".into(),
+        bypass: "10.20.0.0/16;.t3.corp.test".into(),
+    };
+    for direct in ["wss://10.20.3.4:3773/ws", "https://mac.t3.corp.test/ws"] {
+        let url = http_equivalent(&url::Url::parse(direct).unwrap()).unwrap();
+        assert_eq!(
+            route_from(&url, lookup()).unwrap(),
+            SocketRoute::Direct,
+            "{direct}"
+        );
+    }
+    let url = http_equivalent(&url::Url::parse("wss://10.21.0.1/ws").unwrap()).unwrap();
+    assert!(matches!(
+        route_from(&url, lookup()).unwrap(),
+        SocketRoute::Proxy { .. }
+    ));
+}
+
 #[test]
 fn socket_schemes_map_to_http_for_pac() {
     let ws = url::Url::parse("wss://t3.example.test/ws?wsTicket=secret").unwrap();

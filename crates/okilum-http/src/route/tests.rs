@@ -134,16 +134,46 @@ fn direct_hosts_never_run_discovery() {
     }
 }
 
+/// The hook applies the same exclusions as the per-endpoint policy: NO_PROXY
+/// plus the system bypass list, by reqwest's rules.
 #[test]
-fn bypass_is_carried_by_the_lookup() {
-    // The lookup applies the system bypass for its own host; the hook only
-    // forwards its answer. The field still reaches per-endpoint redirects.
-    let lookup = Lookup::Proxy {
-        proxy: "http://proxy.test:8080".into(),
-        bypass: "*.corp.test;<local>".into(),
+fn exclusions_follow_reqwest_rules_for_every_host() {
+    fn resolver(bypass: &'static str) -> PerRequest {
+        PerRequest::new(
+            |_| false,
+            move |_| {
+                Ok(Lookup::Proxy {
+                    proxy: "http://proxy.test:8080".into(),
+                    bypass: bypass.into(),
+                })
+            },
+        )
+    }
+    let route = |resolver: &PerRequest, url: &str| {
+        resolver
+            .proxy_for(&url::Url::parse(url).unwrap())
+            .map(|proxy| proxy.to_string())
     };
-    let Lookup::Proxy { bypass, .. } = &lookup else {
-        unreachable!()
-    };
-    assert_eq!(bypass, "*.corp.test;<local>");
+    let proxied = Some("http://proxy.test:8080/".to_owned());
+    // `*` matches every host.
+    let all = resolver("*");
+    for url in ["https://a.test/", "http://10.1.2.3/", "http://[fd00::1]/"] {
+        assert_eq!(route(&all, url), None, "{url}");
+    }
+    // An IP host matches only an address or a CIDR range, never a suffix.
+    let ips = resolver("192.168.1.0/24;2.3;10.9.9.9");
+    assert_eq!(route(&ips, "http://192.168.1.42/a.png"), None);
+    assert_eq!(route(&ips, "http://10.9.9.9/a.png"), None);
+    assert_eq!(route(&ips, "http://10.1.2.3/a.png"), proxied);
+    assert_eq!(route(&ips, "http://192.168.2.1/a.png"), proxied);
+    // A domain matches that name and its subdomains only.
+    let domains = resolver(".corp.test;intranet.test");
+    assert_eq!(route(&domains, "https://corp.test/"), None);
+    assert_eq!(route(&domains, "https://a.corp.test/"), None);
+    assert_eq!(route(&domains, "https://intranet.test/"), None);
+    assert_eq!(route(&domains, "https://evilcorp.test/"), proxied);
+    assert_eq!(
+        route(&domains, "https://intranet.test.attacker.test/"),
+        proxied
+    );
 }

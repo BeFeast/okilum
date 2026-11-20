@@ -57,16 +57,19 @@ fn http_equivalent(endpoint: &url::Url) -> anyhow::Result<url::Url> {
 
 #[cfg(any(windows, test))]
 fn route_from(url: &url::Url, lookup: crate::windows_proxy::Lookup) -> anyhow::Result<SocketRoute> {
-    use crate::windows_proxy::{env_no_proxy, env_proxy, no_proxy_matches, Lookup};
-    let proxy = match lookup {
+    use crate::windows_proxy::{env_proxy, exclusions, no_proxy_matches, Lookup};
+    // The same exclusions as the ticket client's reqwest policy: NO_PROXY
+    // alone for an environment proxy, NO_PROXY plus the system bypass list
+    // for a WinHTTP answer.
+    let (proxy, bypass) = match lookup {
         Lookup::Direct => return Ok(SocketRoute::Direct),
         Lookup::Inherit => match env_proxy(url.scheme()) {
-            Some(proxy) => proxy,
+            Some(proxy) => (proxy, String::new()),
             None => return Ok(SocketRoute::Direct),
         },
-        Lookup::Proxy { proxy, .. } => proxy,
+        Lookup::Proxy { proxy, bypass } => (proxy, bypass),
     };
-    if no_proxy_matches(url.host_str().unwrap_or_default(), &env_no_proxy()) {
+    if no_proxy_matches(url.host_str().unwrap_or_default(), &exclusions(&bypass)) {
         return Ok(SocketRoute::Direct);
     }
     let proxy = if proxy.contains("://") {

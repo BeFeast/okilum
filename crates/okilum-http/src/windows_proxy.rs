@@ -29,7 +29,7 @@ pub(super) fn resolve(url: &url::Url) -> anyhow::Result<Policy> {
         Lookup::Inherit => Policy::Inherit,
         Lookup::Direct => Policy::Direct,
         Lookup::Proxy { proxy, bypass } => {
-            let no_proxy = [env_no_proxy(), bypass.replace(';', ",")].join(",");
+            let no_proxy = exclusions(&bypass);
             Policy::Proxy(
                 reqwest::Proxy::all(proxy)?.no_proxy(reqwest::NoProxy::from_string(&no_proxy)),
             )
@@ -64,23 +64,71 @@ pub(super) fn env_no_proxy() -> String {
         .unwrap_or_default()
 }
 
-/// `NO_PROXY` as reqwest documents it: `*`, exact hosts/IPs and domain
-/// suffixes (with or without a leading dot), comma separated.
+/// The exclusions a proxy answer carries: `NO_PROXY` plus the system bypass
+/// list. The per-endpoint policy, the per-request hook and the socket route
+/// all use this one string, so a ticket and its socket agree.
+#[cfg(any(windows, test))]
+pub(super) fn exclusions(bypass: &str) -> String {
+    [env_no_proxy(), bypass.replace(';', ",")].join(",")
+}
+
+/// reqwest's `NoProxy` rules: comma separated; `*` matches every host; an IP
+/// host matches only an IP entry or a CIDR range (`192.168.1.0/24`); any
+/// other entry is a domain (leading dot optional) matching that name and its
+/// subdomains, never an IP host and never a mere string suffix.
 #[cfg(any(windows, test))]
 pub(super) fn no_proxy_matches(host: &str, list: &str) -> bool {
+    use std::net::IpAddr;
     let host = host
         .trim_start_matches('[')
         .trim_end_matches(']')
         .to_ascii_lowercase();
+    let ip = host.parse::<IpAddr>().ok();
     list.split(',').any(|entry| {
         let entry = entry.trim().to_ascii_lowercase();
-        let entry = entry.trim_start_matches('[').trim_end_matches(']');
         if entry == "*" {
             return true;
         }
-        let suffix = entry.trim_start_matches('.');
-        !suffix.is_empty() && (host == suffix || host.ends_with(&format!(".{suffix}")))
+        if let Some((network, prefix)) = entry.split_once('/') {
+            return match (ip, cidr(network, prefix)) {
+                (Some(ip), Some((network, prefix))) => in_network(ip, network, prefix),
+                _ => false,
+            };
+        }
+        let bare = entry.trim_start_matches('[').trim_end_matches(']');
+        if let Ok(entry) = bare.parse::<IpAddr>() {
+            return ip == Some(entry);
+        }
+        let domain = entry.trim_start_matches('.');
+        ip.is_none()
+            && !domain.is_empty()
+            && (host == domain || host.ends_with(&format!(".{domain}")))
     })
+}
+
+#[cfg(any(windows, test))]
+fn cidr(network: &str, prefix: &str) -> Option<(std::net::IpAddr, u8)> {
+    let network: std::net::IpAddr = network
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse()
+        .ok()?;
+    let prefix: u8 = prefix.parse().ok()?;
+    let max = if network.is_ipv4() { 32 } else { 128 };
+    (prefix <= max).then_some((network, prefix))
+}
+
+#[cfg(any(windows, test))]
+fn in_network(ip: std::net::IpAddr, network: std::net::IpAddr, prefix: u8) -> bool {
+    use std::net::IpAddr;
+    let (ip, network, bits) = match (ip, network) {
+        (IpAddr::V4(a), IpAddr::V4(b)) => (u32::from(a) as u128, u32::from(b) as u128, 32),
+        (IpAddr::V6(a), IpAddr::V6(b)) => (u128::from(a), u128::from(b), 128),
+        _ => return false,
+    };
+    let shift = bits - u32::from(prefix);
+    let mask = if shift >= 128 { 0 } else { u128::MAX << shift };
+    ip & mask == network & mask
 }
 
 #[cfg(windows)]
@@ -263,16 +311,23 @@ mod tests {
         assert!(!bypasses("remote.test", "<local>"));
     }
     #[test]
-    fn no_proxy_matches_hosts_suffixes_and_star_only() {
-        let list = "intranet.test, .corp.test,10.1.2.3,[::1]";
+    fn no_proxy_follows_reqwest_rules() {
+        let list = "intranet.test, .corp.test,10.1.2.3,[::1],192.168.1.0/24,fd00::/8,2.3";
         assert!(no_proxy_matches("intranet.test", list));
         assert!(no_proxy_matches("a.corp.test", list));
         assert!(no_proxy_matches("corp.test", list));
         assert!(no_proxy_matches("10.1.2.3", list));
         assert!(no_proxy_matches("[::1]", list));
+        assert!(no_proxy_matches("192.168.1.42", list));
+        assert!(no_proxy_matches("[fd12::1]", list));
+        assert!(!no_proxy_matches("192.168.2.1", list));
+        // A numeric entry is not a string suffix of an IP host.
+        assert!(!no_proxy_matches("10.1.2.3", "2.3"));
+        assert!(!no_proxy_matches("10.9.2.3", list));
         assert!(!no_proxy_matches("evilcorp.test", list));
         assert!(!no_proxy_matches("intranet.test.attacker.test", list));
         assert!(!no_proxy_matches("example.test", ""));
         assert!(no_proxy_matches("example.test", "*"));
+        assert!(no_proxy_matches("10.0.0.1", "*"));
     }
 }

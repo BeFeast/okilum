@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::windows_proxy::{env_no_proxy, no_proxy_matches, Lookup};
+use crate::windows_proxy::{exclusions, no_proxy_matches, Lookup};
 
 /// A PAC answer stays valid this long for one origin; a network change is
 /// therefore seen within five minutes without re-running PAC per image.
@@ -60,7 +60,9 @@ impl PerRequest {
             }
         }
         let (ttl, answer) = match (self.lookup)(url) {
-            Ok(Lookup::Proxy { proxy, .. }) if !no_proxy_matches(host, &env_no_proxy()) => {
+            Ok(Lookup::Proxy { proxy, bypass })
+                if !no_proxy_matches(host, &exclusions(&bypass)) =>
+            {
                 (ANSWER_TTL, url::Url::parse(&proxy).ok())
             }
             Ok(_) => (ANSWER_TTL, None),
