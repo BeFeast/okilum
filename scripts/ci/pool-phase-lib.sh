@@ -70,15 +70,11 @@ pool_phase() {
     local code=$?
     set -e
     pool_record "$name" "$code"
+    # A phase's own deadline (124) or a fetch failure is a code verdict.
+    # Only build-slot's 75/124, with no failing phase, is infrastructure.
     if [[ $code -ne 0 && $pool_fail -eq 0 ]]; then
         pool_fail=$code
         pool_skip=1
-        case $code in
-            75|124) pool_fail_infra=1 ;;
-        esac
-        case $name in
-            "Verify pinned Rust toolchain"|"Fetch locked public dependencies") pool_fail_infra=1 ;;
-        esac
     fi
 }
 
@@ -97,9 +93,6 @@ pool_prepare_python() {
 pool_finish() {
     if [[ $pool_fail -eq 0 ]]; then
         exit 0
-    fi
-    if [[ $pool_fail_infra -eq 1 ]]; then
-        exit 75
     fi
     exit 1
 }

@@ -19,9 +19,19 @@ source "$(dirname "${BASH_SOURCE[0]}")/pool-phase-lib.sh"
 ship=$(pool_receipt_dir)
 receipt="$ship/phases.json"
 label="ci-${mode}-$(printf '%s' "$sha" | cut -c1-12)"
+# Measured 20.11: hosted linux ~57 min; pool attempt 44810220624#2 reached
+# managed admission in 26m44s and stopped on that phase's 600s cap, before
+# the Rust suites. Run 44818390902 was still in progress. Queue wait is
+# explicit. Job timeout is wait + run.
+run_minutes=30
+if [[ $mode == linux-full ]]; then
+    run_minutes=70
+fi
+slot_receipt="$ship/build-slot.json"
 args=(
     run --project okilum --label "$label" --owner ci-pool
-    --timeout-minutes 40 --mem 7
+    --wait-minutes 15 --timeout-minutes "$run_minutes" --mem 7
+    --receipt "$slot_receipt"
     --ship "$ship"
     --env "OKILUM_POOL_RECEIPT=$receipt"
     --env "OKILUM_SOURCE_COMMIT=$sha"
@@ -50,8 +60,16 @@ rc=$?
 set -e
 rm -f "${archive:-}"
 
+oom=0
+if [[ -f $slot_receipt ]]; then
+    oom=$(python3 -c 'import json,sys; print(int((json.load(open(sys.argv[1])) or {}).get("oom_kill") or 0))' "$slot_receipt" 2>/dev/null || echo 0)
+fi
+phase_failed=0
+if [[ -f $receipt ]]; then
+    phase_failed=$(python3 -c 'import json,sys; phases=json.load(open(sys.argv[1])); print(1 if any(int(p.get("code") or 0) for p in phases) else 0)' "$receipt" 2>/dev/null || echo 0)
+fi
 kind=infra
-if [[ -f $receipt && ( $rc -eq 0 || $rc -eq 1 ) ]]; then
+if [[ $oom -eq 0 && -f $receipt && ( $rc -eq 0 || $rc -eq 1 || ( $rc -eq 124 && $phase_failed -eq 1 ) ) ]]; then
     kind=verdict
 fi
 if [[ -n ${GITHUB_OUTPUT:-} ]]; then

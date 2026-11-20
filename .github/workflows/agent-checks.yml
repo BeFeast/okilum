@@ -139,7 +139,8 @@ jobs:
   pre-merge:
     if: ${{ startsWith(github.ref, 'refs/heads/agent-checks-fast/') || github.event_name == 'schedule' }}
     runs-on: okilum-pool
-    timeout-minutes: 25
+    # 15 min queue wait + 30 min pre-merge run. Hosted pre-merge was ~10–15 min.
+    timeout-minutes: 50
     env:
       OKILUM_SOURCE_COMMIT: ${{ github.sha }}
       PUBLICATION_BASELINE: ${{ inputs.publication_baseline }}
@@ -180,7 +181,10 @@ jobs:
   linux:
     if: ${{ !startsWith(github.ref, 'refs/heads/agent-checks-fast/') }}
     runs-on: okilum-pool
-    timeout-minutes: 45
+    # 15 min queue wait + 70 min run. Hosted linux was ~57 min (20.11).
+    # Pool run 44810220624 attempt 2 took 26m44s and died in managed admission
+    # before the Rust suites; 44818390902 was still running when this cap was set.
+    timeout-minutes: 90
     env:
       OKILUM_SOURCE_COMMIT: ${{ github.sha }}
       PUBLICATION_BASELINE: ${{ inputs.publication_baseline }}

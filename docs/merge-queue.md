@@ -38,11 +38,15 @@ the oldest PASS goes first. Up to four clean pulls are merged into one tip.
    124 retries next cycle. A pull request that does not merge cleanly is left
    for the existing rebase action.
 
-Before the push the queue reads the pull requests, comments and the full
-gate again. A new `REVIEW FIX`, a moved head, or a gate that is no longer
-green cancels the fast-forward. The push is
-`git push --force-with-lease=refs/heads/main:<tested-base>`. A moved `main`
-refuses the push; the next cycle rebuilds.
+`main` does not accept a direct push. After the suite is green and the
+review is still a cross-family PASS, the queue lands with
+`POST /pulls/{n}/merge` and `head_commit_id` (`fast-forward-only` when the
+head already contains `main`, otherwise `merge`). It writes the enabled
+flag only after that landing. A head already contained in `main` is skipped.
+A red batch is run per PR, and only a PR that fails alone is ejected. A
+phase exit 124 is a code verdict. build-slot 75/124 with no failing phase,
+and `oom_kill > 0`, retry up to 3 times for the same heads and base, then
+the PR is skipped with a comment.
 
 The pool source is a `git archive` (no `.git`). Each gate runs
 `pool_ensure_git` before `check-vendor-generation.py`, which needs

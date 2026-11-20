@@ -35,10 +35,28 @@ FORGEJO = "https://git.oklabs.uk"
 GITHUB_REPO = "BeFeast/okilum"
 TRUSTED = {"oklabs-bot", "oleg", "BeFeast"}
 REVIEW_RX = re.compile(r"^(?:CRITICAL-)?REVIEW\s+(PASS|FIX)\s+([0-9a-f]{7,40})\b", re.I)
+FAMILY_RX = re.compile(r"^Reviewer:\s*.+\(([^)]+)\);\s*author family:\s*(\S+)", re.I)
+MANAGER_LABEL = "manager-merge"
+INFRA_CAP = 3
+RUN_MINUTES = 70
+WAIT_MINUTES = 15
 BATCH_CAP = 4
 STATE = Path(os.path.expanduser("~/.local/state/okilum-merge-queue/state.json"))
 LOCK = Path(os.path.expanduser("~/.local/state/okilum-merge-queue/lock"))
 ENABLED = Path(os.path.expanduser("~/.local/state/okilum-merge-queue/enabled"))
+
+
+def cross_family(body):
+    """PASS counts only when the reviewer family differs from the author family."""
+    lines = (body or "").splitlines()
+    if len(lines) < 2:
+        return False
+    match = FAMILY_RX.match(lines[1].strip())
+    if not match:
+        return False
+    reviewer = match.group(1).strip().lower()
+    author = match.group(2).strip().lower().strip(".,")
+    return bool(reviewer) and bool(author) and reviewer != author
 
 
 def review_verdict(comments, head):
@@ -49,7 +67,8 @@ def review_verdict(comments, head):
         user = ((comment.get("user") or {}).get("login") or "")
         if user not in TRUSTED:
             continue
-        lines = (comment.get("body") or "").splitlines()
+        body = comment.get("body") or ""
+        lines = body.splitlines()
         if not lines:
             continue
         match = REVIEW_RX.match(lines[0].strip())
@@ -58,7 +77,11 @@ def review_verdict(comments, head):
         token = match.group(2).lower()
         if len(token) < 7 or not head.lower().startswith(token):
             continue
-        found = (match.group(1).upper(), comment.get("created_at") or "")
+        kind = match.group(1).upper()
+        if kind == "PASS" and not cross_family(body):
+            found = (None, comment.get("created_at") or "")
+            continue
+        found = (kind, comment.get("created_at") or "")
     return found or (None, None)
 
 
@@ -132,6 +155,8 @@ def eligible(prs, comments_by_number, runs_by_sha):
     for pr in prs or []:
         if pr.get("draft") or not pr.get("head") or pr.get("base") != "main":
             continue
+        if MANAGER_LABEL in (pr.get("labels") or []):
+            continue
         verdict, when = review_verdict(comments_by_number.get(pr["number"]) or [], pr["head"])
         if verdict != "PASS":
             continue
@@ -185,13 +210,59 @@ def classify_landing(ancestor, main, heads):
     return "suite"
 
 
-def suite_outcome(code, batch):
-    """What to do after the pool suite. batch is non-empty."""
-    if code == 0:
+def suite_outcome(code, batch, receipt_text=""):
+    """Code verdicts eject. Infrastructure, including a bare 75/124, retries.
+
+    A phase that exits 124 is a code verdict. build-slot's own 124 or 75,
+    with no failing phase, is not. A red batch of more than one PR is bisected
+    instead of blaming the last PR.
+    """
+    phase = failing_phase(receipt_text)
+    if code == 0 and phase is None:
         return ("ff", None)
-    if code in (75, 124):
-        return ("retry", None)
-    return ("eject", batch[-1])
+    if phase is not None and code in (0, 1, 124):
+        if len(batch) > 1:
+            return ("bisect", None)
+        return ("eject", batch[-1])
+    return ("retry", None)
+
+
+def bisect_ejections(results):
+    """results are (pr, code, receipt) from running each PR alone. Eject only those."""
+    guilty = []
+    for pr, code, receipt in results:
+        outcome, who = suite_outcome(code, [pr], receipt)
+        if outcome == "eject" and who is not None:
+            guilty.append(who)
+    return guilty
+
+
+def skip_contained(prs, contained_heads):
+    """Drop PRs whose head is already an ancestor of main."""
+    contained = set(contained_heads or [])
+    return [pr for pr in prs or [] if pr.get("head") not in contained]
+
+
+def infra_key(batch, base):
+    return "|".join(f"{pr['number']}:{pr['head']}" for pr in batch) + "@" + base
+
+
+def note_infra(state, batch, base):
+    """Count an infrastructure retry. -> the new count."""
+    state.setdefault("infra", {})
+    key = infra_key(batch, base)
+    state["infra"][key] = int(state["infra"].get(key) or 0) + 1
+    return state["infra"][key]
+
+
+def oom_killed(slot_receipt_text):
+    try:
+        data = json.loads(slot_receipt_text or "{}")
+    except ValueError:
+        return False
+    if not isinstance(data, dict):
+        return False
+    return int(data.get("oom_kill") or 0) > 0
 
 
 def failing_phase(receipt_text):
@@ -259,6 +330,9 @@ class Queue:
             runs[pr["head"]] = self.github_runs(pr["head"])
         waiting = [pr for pr in eligible(prs, comments, runs)
                    if not is_ejected(state, pr["number"], pr["head"], main)]
+        contained = [pr["head"] for pr in waiting
+                     if self.fetch_head(pr) and self.is_ancestor(pr["head"], main)]
+        waiting = skip_contained(waiting, contained)
         if not waiting:
             print("merge queue: nothing eligible")
             return 0
@@ -272,33 +346,82 @@ class Queue:
         print(f"merge queue: {[pr['number'] for pr in batch]} action={action} landing={landing[:12]} base={main[:12]}")
         if action == "suite":
             code, receipt, tail = self.suite(landing)
-            outcome, ejected = suite_outcome(code, batch)
+            outcome, ejected = suite_outcome(code, batch, receipt)
             print(f"merge queue: suite exit={code} outcome={outcome}")
             if outcome == "retry":
-                return 0
+                return self._infra(state, batch, main, tail)
+            if outcome == "bisect":
+                return self._bisect(state, batch, main)
             if outcome == "eject":
-                phase = failing_phase(receipt)
-                self.comment(ejected["number"], eject_comment(ejected, main, landing, phase, tail))
-                state.setdefault("ejected", []).append(ejection_key(ejected["number"], ejected["head"], main))
-                state["ejected"] = state["ejected"][-200:]
-                save_state(state, self.state_path)
+                self._eject(state, ejected, main, landing, receipt, tail)
                 return 0
         current = self.git("rev-parse", "origin/main")
         if current != main:
-            print("merge queue: main moved while the suite ran; not fast-forwarding")
+            print("merge queue: main moved while the suite ran; not landing")
             return 0
         fresh = self.open_prs()
         fresh_comments = {pr["number"]: self.comments(pr["number"]) for pr in batch}
         fresh_runs = {pr["head"]: self.github_runs(pr["head"]) for pr in batch}
         if not still_landable(batch, fresh, fresh_comments, fresh_runs):
-            print("merge queue: review, head or gate changed; not fast-forwarding")
+            print("merge queue: review, head or gate changed; not landing")
             return 0
-        pushed = self.push(landing, main)
-        if pushed != 0:
-            print("merge queue: fast-forward refused; main changed")
-            return 0
-        print(f"merge queue: fast-forwarded main to {landing}")
+        style = "fast-forward-only" if action == "ff" else "merge"
+        for pr in batch:
+            self.forgejo_merge(pr["number"], pr["head"], style == "fast-forward-only")
+            print(f"merge queue: landed #{pr['number']} via {style}")
+        self._enable()
         return 0
+
+    def _eject(self, state, pr, base, tip, receipt, tail):
+        phase = failing_phase(receipt)
+        self.comment(pr["number"], eject_comment(pr, base, tip, phase, tail))
+        state.setdefault("ejected", []).append(ejection_key(pr["number"], pr["head"], base))
+        state["ejected"] = state["ejected"][-200:]
+        save_state(state, self.state_path)
+
+    def _infra(self, state, batch, base, tail):
+        count = note_infra(state, batch, base)
+        save_state(state, self.state_path)
+        if count < INFRA_CAP:
+            print(f"merge queue: infra retry {count}/{INFRA_CAP}")
+            return 0
+        for pr in batch:
+            self.comment(pr["number"], (
+                f"Merge queue skipped PR #{pr['number']} after {count} infrastructure retries "
+                f"against main `{base[:12]}` (no code verdict). It can enter again on a new head "
+                f"or a new main.\n\n```\n{(tail or '')[-2000:]}\n```"))
+            state.setdefault("ejected", []).append(ejection_key(pr["number"], pr["head"], base))
+        state["ejected"] = state["ejected"][-200:]
+        state.get("infra", {}).pop(infra_key(batch, base), None)
+        save_state(state, self.state_path)
+        return 0
+
+    def _bisect(self, state, batch, main):
+        guilty = []
+        for pr in batch:
+            if self.is_ancestor(pr["head"], main):
+                continue
+            alone = pr["head"] if self.is_ancestor(main, pr["head"]) else self.merge(main, pr["head"], pr["number"])
+            if not alone:
+                continue
+            code, receipt, tail = self.suite(alone)
+            outcome, who = suite_outcome(code, [pr], receipt)
+            if outcome == "eject" and who is not None:
+                guilty.append((who, alone, receipt, tail))
+            elif outcome == "retry":
+                self._infra(state, [pr], main, tail)
+        if not guilty:
+            self.comment(batch[0]["number"], (
+                "Merge queue: the combined batch failed and no single PR failed alone. "
+                "Nothing was ejected."))
+            return 0
+        for pr, tip, receipt, tail in guilty:
+            self._eject(state, pr, main, tip, receipt, tail)
+        return 0
+
+    def _enable(self):
+        ENABLED.parent.mkdir(parents=True, exist_ok=True)
+        ENABLED.write_text("okilum merge queue owns landing\n")
 
     def build_batch(self, main, waiting):
         batch, tip = [], main
@@ -347,24 +470,31 @@ class Queue:
         ship = Path(tempfile.mkdtemp(prefix="merge-queue-", dir=root))
         receipt = ship / "phases.json"
         label = f"merge-queue-{sha[:12]}"
+        slot_receipt = ship / "build-slot.json"
         command = [
             "build-slot", "run", "--project", "okilum", "--label", label, "--owner", "merge-queue",
-            "--timeout-minutes", "40", "--mem", "7",
+            "--wait-minutes", str(WAIT_MINUTES), "--timeout-minutes", str(RUN_MINUTES), "--mem", "7",
             "--source-git", str(self.root), "--source-rev", sha,
-            "--require-host", "baldr",
+            "--require-host", "baldr", "--receipt", str(slot_receipt),
             "--ship", str(ship), "--env", f"OKILUM_POOL_RECEIPT={receipt}",
             "--env", f"OKILUM_SOURCE_COMMIT={sha}",
             "--", "bash", "scripts/ci/pool-linux-gate.sh",
         ]
         proc = subprocess.run(command, cwd=self.root, text=True, stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT, timeout=50 * 60)
+                              stderr=subprocess.STDOUT, timeout=(WAIT_MINUTES + RUN_MINUTES + 5) * 60)
         text = receipt.read_text() if receipt.exists() else ""
+        slot_text = slot_receipt.read_text() if slot_receipt.exists() else ""
+        if oom_killed(slot_text):
+            return 75, text, proc.stdout
         return proc.returncode, text, proc.stdout
 
-    def push(self, sha, expected):
-        proc = self.run("git", "push", "origin", f"{sha}:refs/heads/main",
-                        f"--force-with-lease=refs/heads/main:{expected}", check=False, timeout=180)
-        return proc.returncode
+    def forgejo_merge(self, number, head, fast_forward):
+        # main rejects a direct push. Forgejo merges with the tested head id.
+        self.api("POST", f"/repos/{REPO}/pulls/{number}/merge", {
+            "Do": "fast-forward-only" if fast_forward else "merge",
+            "head_commit_id": head,
+            "MergeMessageField": f"Merge queue: land #{number}",
+        })
 
     def open_prs(self):
         payload = pages(lambda page: self.api(
@@ -446,8 +576,6 @@ def main():
     except BlockingIOError:
         print("merge queue: another cycle holds the lock")
         return 0
-    ENABLED.parent.mkdir(parents=True, exist_ok=True)
-    ENABLED.write_text("okilum merge queue owns landing\n")
     return Queue(args.root).once()
 
 

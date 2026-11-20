@@ -43,9 +43,13 @@ Keep design decisions in `docs/` or the project brain, not only in commit messag
   merge permission.
 - Never merge a PR whose latest review verdict is «fix first», or one with no
   review when a review was requested.
+- The merge queue lands a PR only when the latest trusted review is
+  `REVIEW PASS` for that head and its `Reviewer:` line names a family other
+  than `author family`. A PASS from the author's own family does not count.
 - PRs from manager-delegated agents (toolbar #2806–#2814, #2817, #2825/#2845,
-  #2837, #2847, updater #2855, and any PR the manager names) are merged by the
-  manager only.
+  #2837, #2847, updater #2855, and any PR the manager names) carry the label
+  `manager-merge` and are merged by the manager only. The queue skips that
+  label.
 
 ## Tests and measurements
 

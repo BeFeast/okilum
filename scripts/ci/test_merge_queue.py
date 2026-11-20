@@ -15,6 +15,10 @@ MAIN = "c" * 40
 
 
 def comment(body, user="oklabs-bot", when="2026-11-20T12:00:00Z"):
+    if body.split("\n", 1)[0].endswith(HEAD) or "REVIEW PASS" in body.split("\n", 1)[0]:
+        if "author family:" not in body and "REVIEW PASS" in body.split("\n", 1)[0]:
+            body += "\nReviewer: Codex (gpt-6.1-sol); author family: xai"
+        body += "\nReviewer: Codex (gpt-6.1-sol); author family: xai"
     return {"body": body, "user": {"login": user}, "created_at": when}
 
 
@@ -73,6 +77,11 @@ class ReviewAndGate(unittest.TestCase):
         self.assertEqual(queue.review_verdict([comment(f"REVIEW PASS {OTHER}")], HEAD)[0], None)
         self.assertEqual(queue.review_verdict([comment(f"REVIEW PASS {HEAD}", user="stranger")], HEAD)[0], None)
         self.assertEqual(queue.review_verdict([comment(f"CRITICAL-REVIEW PASS {HEAD}")], HEAD)[0], "PASS")
+        same = comment(f"REVIEW PASS {HEAD}")
+        same["body"] = f"REVIEW PASS {HEAD}\nReviewer: Grok (xai); author family: xai"
+        self.assertIsNone(queue.review_verdict([same], HEAD)[0])
+        bare = {"body": f"REVIEW PASS {HEAD}", "user": {"login": "oklabs-bot"}, "created_at": "2026-11-20T12:00:00Z"}
+        self.assertIsNone(queue.review_verdict([bare], HEAD)[0])
 
     def test_fast_and_failed_runs_are_not_a_full_gate(self):
         self.assertTrue(queue.full_green(green(), HEAD))
@@ -89,6 +98,8 @@ class ReviewAndGate(unittest.TestCase):
         runs = {HEAD: green()}
         self.assertEqual(queue.eligible([pr(7, base="release")], comments, runs), [])
         self.assertEqual(queue.eligible([pr(7)], comments, runs)[0]["number"], 7)
+        held = pr(8, labels=["manager-merge"])
+        self.assertEqual(queue.eligible([held], {8: [comment(f"REVIEW PASS {HEAD}")]}, runs), [])
 
     def test_a_fix_that_arrives_during_the_suite_blocks_the_push(self):
         batch = [pr(7)]
@@ -140,11 +151,23 @@ class Landing(unittest.TestCase):
 
     def test_red_ejects_the_last_pr_and_infra_retries(self):
         batch = [pr(1), pr(2, OTHER)]
+        failed = json.dumps([{"name": "Run Linux Rust suites offline", "code": 1}])
         self.assertEqual(queue.suite_outcome(0, batch), ("ff", None))
         self.assertEqual(queue.suite_outcome(75, batch)[0], "retry")
-        self.assertEqual(queue.suite_outcome(124, batch)[0], "retry")
-        outcome, ejected = queue.suite_outcome(1, batch)
-        self.assertEqual((outcome, ejected["number"]), ("eject", 2))
+        self.assertEqual(queue.suite_outcome(124, batch, "")[0], "retry")
+        self.assertEqual(queue.suite_outcome(137, [pr(1)], "")[0], "retry")
+        self.assertEqual(queue.suite_outcome(1, [pr(1)], "")[0], "retry")
+        self.assertEqual(queue.suite_outcome(1, batch, failed)[0], "bisect")
+        outcome, ejected = queue.suite_outcome(1, [pr(9)], failed)
+        self.assertEqual((outcome, ejected["number"]), ("eject", 9))
+        phase_deadline = json.dumps([{"name": "Run Linux Rust suites offline", "code": 124}])
+        self.assertEqual(queue.suite_outcome(124, [pr(9)], phase_deadline)[0], "eject")
+        results = [(pr(1), 1, failed), (pr(2, OTHER), 0, "[]")]
+        self.assertEqual([item["number"] for item in queue.bisect_ejections(results)], [1])
+        self.assertEqual(queue.skip_contained([pr(1), pr(2, OTHER)], {HEAD}), [pr(2, OTHER)])
+        self.assertEqual(queue.note_infra({"infra": {}}, [pr(1)], MAIN), 1)
+        self.assertTrue(queue.oom_killed('{"oom_kill": 1}'))
+        self.assertFalse(queue.oom_killed('{"oom_kill": 0}'))
 
     def test_ejection_names_the_failing_phase_and_does_not_retry_the_same_base(self):
         receipt = json.dumps([
