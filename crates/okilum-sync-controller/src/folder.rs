@@ -208,9 +208,23 @@ impl FolderController {
                     j.path.read_dir()?.next().is_none(),
                     "destination changed before creation"
                 );
-                api.add_paused_folder(&json!({"id":j.descriptor.folder_id,"label":owned_label(&j),"path":j.path,"type":"receiveonly","paused":true,"devices":[{"deviceID":j.daemon.device_id},{"deviceID":j.descriptor.hub_device_id}]}))?;
+                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+                crate::managed_launch::folder_instance_changing(
+                    &j.daemon,
+                    &j.descriptor.folder_id,
+                )?;
+                #[allow(unused_mut)]
+                let mut body = json!({"id":j.descriptor.folder_id,"label":owned_label(&j),"path":j.path,"type":"receiveonly","paused":true,"devices":[{"deviceID":j.daemon.device_id},{"deviceID":j.descriptor.hub_device_id}]});
+                // Born behind its own root marker: never runs on `.stfolder` (#2582).
+                #[cfg(target_os = "linux")]
+                {
+                    body["markerName"] = json!(crate::managed_launch::new_root_marker());
+                }
+                api.add_paused_folder(&body)?;
             }
             let folder = api.folder(&j.descriptor.folder_id)?;
+            #[cfg(target_os = "linux")]
+            crate::managed_launch::materialize_root_marker(&j.path, &folder)?;
             validate_owned(&j, &folder)?;
             if j.phase == Phase::Preparing {
                 ensure!(
@@ -414,6 +428,8 @@ impl FolderController {
             if j.owns_folder {
                 validate_owned(&j, folder)?;
                 api.patch_folder(&j.descriptor.folder_id, &json!({"paused":true}))?;
+                // Evidence is revoked only when an instance is created; a
+                // failed removal must keep the surviving instance's evidence.
                 api.remove_folder(&j.descriptor.folder_id)?;
             } else if j.changed_pause {
                 ensure!(

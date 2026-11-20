@@ -120,7 +120,7 @@ fn line_start(text: &str, line: u32) -> Option<usize> {
 
 /// The note a background paste result belongs to (#1611).
 #[derive(Clone)]
-struct Target {
+pub(super) struct Target {
     reader: WeakEntity<Reader>,
     input: Entity<EditorState>,
     root: PathBuf,
@@ -136,9 +136,15 @@ struct Target {
     /// yet. It goes in as its own paragraph before the block at the anchor,
     /// in one edit with its blank lines; until then the note is untouched.
     slot: bool,
+    /// Whether this paste uploads (#1073), decided when it happened.
+    upload: Option<reader_ui_state::UploadDecision>,
 }
 
 impl Target {
+    pub(super) fn upload_decision(&self) -> Option<reader_ui_state::UploadDecision> {
+        self.upload
+    }
+
     fn files_saved(&self, paths: &[PathBuf], window: &mut Window, cx: &mut App) {
         if let Some(reader) = self.reader.upgrade() {
             reader.update(cx, |reader, cx| {
@@ -151,7 +157,7 @@ impl Target {
     /// The editor to insert into now: the one pasted into while its session
     /// lasts, else the same note's current editor. `None` once the note is
     /// no longer being edited (left for Reader, another note, parked).
-    fn live(&self, cx: &App) -> Option<Entity<EditorState>> {
+    pub(super) fn live(&self, cx: &App) -> Option<Entity<EditorState>> {
         let reader = self.reader.upgrade()?;
         let editing = reader.read(cx).editing.as_ref()?;
         let same_note = self
@@ -161,6 +167,47 @@ impl Target {
         // A drop's place belongs to the editor it was dropped on (#1615): a
         // reopened editor of the same note gets nothing.
         (editing.input == self.input || (same_note && !self.drop)).then(|| editing.input.clone())
+    }
+
+    pub(super) fn root(&self) -> &std::path::Path {
+        &self.root
+    }
+
+    /// #1073: as [`Self::upload_inserted`], but only tracked now; the caller
+    /// starts it later.
+    fn track_inserted(
+        &self,
+        region: &Region,
+        saved: &[PathBuf],
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<super::paste_upload::Pending> {
+        let input = self.live(cx)?;
+        let text = input.read(cx).value().to_string();
+        let span = region.locate(&text)?;
+        super::paste_upload::track(self.clone(), &input, span, saved, window, cx)
+    }
+
+    /// #1073: after text went into this note at `region`, upload the saved
+    /// files it links (only when the setting is on). Never another note.
+    fn upload_inserted(
+        &self,
+        region: &Region,
+        saved: &[PathBuf],
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if saved.is_empty() {
+            return;
+        }
+        let Some(input) = self.live(cx) else {
+            return;
+        };
+        let text = input.read(cx).value().to_string();
+        let Some(span) = region.locate(&text) else {
+            return;
+        };
+        super::paste_upload::start(self.clone(), &input, span, saved, window, cx);
     }
 }
 
@@ -472,6 +519,7 @@ impl Reader {
                             image_options,
                         },
                         Leftovers::new(admission, saved),
+                        routed.saved_files.clone(),
                         window,
                         cx,
                     );
@@ -517,29 +565,65 @@ impl Reader {
         cx: &mut Context<Self>,
     ) {
         self.publish_saved_attachments(&routed.saved_files, window, cx);
+        // #1073: remote image downloads replace text inside this insert, so
+        // its upload is decided and tracked now but runs after them.
+        let downloads = matches!(routed.follow_up, Some(FollowUp::RemoteImages { .. }));
+        let mut upload_after = None;
         if let Some(text) = &routed.insert {
-            input.update(cx, |state, cx| {
-                state.replace_source_range(offset..offset, text, window, cx);
+            let inserted = input.update(cx, |state, cx| {
+                state.replace_source_range(offset..offset, text, window, cx)
             });
+            if inserted {
+                // Exactly the dropped text, in this note.
+                let target = self.follow_up_target(input.clone(), false, true, cx);
+                let span = offset..offset + text.len();
+                if downloads {
+                    upload_after = super::paste_upload::track(
+                        target,
+                        &input,
+                        span,
+                        &routed.saved_files,
+                        window,
+                        cx,
+                    );
+                } else {
+                    super::paste_upload::start(
+                        target,
+                        &input,
+                        span,
+                        &routed.saved_files,
+                        window,
+                        cx,
+                    );
+                }
+            }
         }
         if let Some(notice) = routed.notice {
             show_notice(&notice, window, cx);
         }
         if let Some(follow_up) = routed.follow_up {
             // Only drops come here.
-            self.run_follow_up(input, follow_up, slot, true, window, cx);
+            self.run_follow_up(input, follow_up, slot, true, upload_after, window, cx);
         }
     }
 
-    /// Start the background part of a paste.
+    /// The note a paste into `input` belongs to, for its background results.
+    pub(super) fn paste_target(&self, input: Entity<EditorState>, cx: &Context<Self>) -> Target {
+        self.follow_up_target(input, false, false, cx)
+    }
+
+    /// Start the background part of a paste. `upload_after` is the paste's
+    /// upload (#1073), tracked since the insert; remote image downloads add
+    /// their links to it and start it once they are done, never alongside.
     pub(super) fn run_paste_follow_up(
         &mut self,
         input: Entity<EditorState>,
         follow_up: FollowUp,
+        upload_after: Option<super::paste_upload::Pending>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.run_follow_up(input, follow_up, false, false, window, cx);
+        self.run_follow_up(input, follow_up, false, false, upload_after, window, cx);
     }
 
     /// The editor a background result goes into.
@@ -548,7 +632,7 @@ impl Reader {
         input: Entity<EditorState>,
         slot: bool,
         drop: bool,
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
     ) -> Target {
         let path = self
             .editing
@@ -562,15 +646,19 @@ impl Reader {
             path,
             drop,
             slot,
+            // Read at the paste: later background results carry it.
+            upload: reader_ui_state::upload_decision(cx),
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn run_follow_up(
         &mut self,
         input: Entity<EditorState>,
         follow_up: FollowUp,
         slot: bool,
         drop: bool,
+        upload_after: Option<super::paste_upload::Pending>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -621,6 +709,7 @@ impl Reader {
                 vault_root,
                 stamp,
                 image_options,
+                upload_after,
                 window,
                 cx,
             ),
@@ -725,7 +814,7 @@ fn copy_files(input: Target, plan: FilePlan, anchor: Anchor, window: &mut Window
                     vec![None; work_plan.copies()],
                     vec![error.to_string()],
                     vec![],
-                )
+                );
             }
         };
         let existing = files::vault_names(&work_plan.vault_root);
@@ -790,10 +879,9 @@ fn copy_files(input: Target, plan: FilePlan, anchor: Anchor, window: &mut Window
             if !links.is_empty() {
                 let block = links.len() > 1;
                 let text = links.join("\n");
-                if let Err(missed) =
-                    insert_at_anchor(&input, &anchor, &text, block, false, window, cx)
-                {
-                    not_inserted(missed, &links.join("  "), window, cx);
+                match insert_at_anchor(&input, &anchor, &text, block, false, window, cx) {
+                    Ok(region) => input.upload_inserted(&region, &saved_files, window, cx),
+                    Err(missed) => not_inserted(missed, &links.join("  "), window, cx),
                 }
             }
             if !errors.is_empty() {
@@ -830,10 +918,9 @@ fn run_job(
         let _ = cx.update_window(handle, |_, window, cx| match result {
             Ok((text, files)) => {
                 input.files_saved(&files, window, cx);
-                if let Err(missed) =
-                    insert_at_anchor(&input, &anchor, &text, false, false, window, cx)
-                {
-                    not_inserted(missed, &text, window, cx);
+                match insert_at_anchor(&input, &anchor, &text, false, false, window, cx) {
+                    Ok(region) => input.upload_inserted(&region, &files, window, cx),
+                    Err(missed) => not_inserted(missed, &text, window, cx),
                 }
             }
             Err(text) => reader_toast::error(text, window, cx),
@@ -1004,6 +1091,8 @@ fn convert_in_background(
         );
         // Its saved images, removed again if the text never goes in: by the
         // window update, or here when the window is gone.
+        // #1073: the same files upload once the text is in.
+        let files = done.files.clone();
         let pending_leftovers: PendingLeftovers = std::rc::Rc::new(std::cell::RefCell::new(Some(
             Leftovers::new(done.admission.take(), std::mem::take(&mut done.files)),
         )));
@@ -1036,6 +1125,7 @@ fn convert_in_background(
                         image_options,
                     },
                     leftovers,
+                    Vec::new(),
                     window,
                     cx,
                 );
@@ -1063,6 +1153,15 @@ fn convert_in_background(
                     return;
                 }
             };
+            // #1073: the images saved from `data:`/`file://` sources upload
+            // now, or after the remote downloads that rewrite this region;
+            // either way their links are tracked from this insert on.
+            let upload_after = if done.remote.is_empty() {
+                input.upload_inserted(&region, &files, window, cx);
+                None
+            } else {
+                input.track_inserted(&region, &files, window, cx)
+            };
             if done.deferred > 0 {
                 reader_toast::transient(router::DEFERRED_IMAGES_TEXT, window, cx);
             } else if done.failed > 0 {
@@ -1077,6 +1176,7 @@ fn convert_in_background(
                     vault_root,
                     stamp,
                     image_options,
+                    upload_after,
                     window,
                     cx,
                 );
@@ -1093,7 +1193,10 @@ fn convert_in_background(
 /// [`download::PARALLEL`] at a time, and replace each one's `![alt](url)`
 /// inside the pasted text with the saved file's embed as it arrives. Text the
 /// user changed is left alone (the remote image stays), and so is a failed
-/// download; a file whose text is gone is removed again.
+/// download; a file whose text is gone is removed again. With the upload
+/// setting on at paste time (#1073), `upload_after` tracks each embed written
+/// and uploads once every download is done.
+/// every download is done.
 #[allow(clippy::too_many_arguments)]
 fn download_images(
     input: Target,
@@ -1103,11 +1206,15 @@ fn download_images(
     vault_root: PathBuf,
     stamp: String,
     image_options: crate::note_paste::image_import::Options,
+    upload_after: Option<super::paste_upload::Pending>,
     window: &mut Window,
     cx: &mut App,
 ) {
     let total = images.len();
     if total == 0 {
+        if let Some(upload) = upload_after {
+            upload.start(cx);
+        }
         return;
     }
     let done = Arc::new(AtomicU64::new(0));
@@ -1141,6 +1248,8 @@ fn download_images(
     cx.spawn(async move |cx| {
         let mut region = region;
         let (mut saved, mut failed, mut replaced) = (0usize, 0usize, 0usize);
+        // #1073: tracks each embed as it is written, uploads at the end.
+        let upload = upload_after;
         while let Ok((index, result)) = receiver.recv().await {
             done.fetch_add(1, Ordering::Relaxed);
             let image = &images[index];
@@ -1160,21 +1269,30 @@ fn download_images(
                     let Some(input) = input.live(cx) else {
                         return 0;
                     };
-                    input.update(cx, |state, cx| {
+                    let hits = input.update(cx, |state, cx| {
                         let before = state.value().to_string();
                         let hits = region.occurrences(&before, &image.placeholder);
                         for hit in hits.iter().rev() {
                             if !state.replace_source_range(hit.clone(), &embed, window, cx) {
                                 // Read-only: nothing was replaced.
-                                return 0;
+                                return Vec::new();
                             }
                         }
                         if !hits.is_empty() {
                             let after = state.value().to_string();
                             region = region.after_replacing(&before, &hits, &embed, &after);
                         }
-                        hits.len()
-                    })
+                        hits
+                    });
+                    // #1073: the embeds just written, at their exact places,
+                    // in the editor the paste's upload follows.
+                    if let Some(upload) = upload.as_ref().filter(|u| u.input() == &input) {
+                        for (k, hit) in hits.iter().enumerate() {
+                            let start = hit.start + k * embed.len() - k * hit.len();
+                            upload.add(start..start + embed.len(), &name.paths, cx);
+                        }
+                    }
+                    hits.len()
                 })
                 .unwrap_or(0);
             if hits == 0 {
@@ -1188,6 +1306,9 @@ fn download_images(
             replaced += hits;
         }
         finished.store(true, Ordering::Relaxed);
+        if let Some(upload) = upload {
+            cx.update(|cx| upload.start(cx));
+        }
         diagnostic_error!(
             "Paste: images downloaded={saved} failed={failed} replaced={replaced} ms={}",
             started.elapsed().as_millis()
@@ -1199,7 +1320,7 @@ fn download_images(
 /// A toast with progress for background work that takes longer than
 /// [`PROGRESS_AFTER`]; removed when `finished` is set. `total == 0`: no
 /// percentage.
-fn progress_toast(
+pub(super) fn progress_toast(
     label: String,
     done: Arc<AtomicU64>,
     total: u64,
@@ -1274,6 +1395,14 @@ impl Leftovers {
         if !files.is_empty() {
             self.0.push((lease, files));
         }
+    }
+
+    /// Every file held, in order.
+    fn paths(&self) -> Vec<PathBuf> {
+        self.0
+            .iter()
+            .flat_map(|(_, files)| files.iter().cloned())
+            .collect()
     }
 
     /// Remove the files; the names of those still there.
@@ -1415,7 +1544,8 @@ enum Pending {
 /// each downloaded image's `![alt](url)` already replaced by its embed, so
 /// the drop is one edit (one Undo). A failed download keeps its remote link.
 /// Not inserted (note closed, drop point gone): the downloaded files and
-/// `on_missed`'s are removed, and the toast says so.
+/// `on_missed`'s are removed, and the toast says so. Inserted: they and
+/// `saved_files` upload when the paste's upload setting says so (#1073).
 #[allow(clippy::too_many_arguments)]
 fn download_then_insert(
     input: Target,
@@ -1424,6 +1554,7 @@ fn download_then_insert(
     images: Vec<RemoteImage>,
     downloads: Downloads,
     leftovers: Leftovers,
+    saved_files: Vec<PathBuf>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -1493,17 +1624,19 @@ fn download_then_insert(
                     text,
                     block,
                     markdown,
-                } => insert_at_anchor(&input, &anchor, &replace(text), block, markdown, window, cx)
-                    .map(|_| ()),
+                } => insert_at_anchor(&input, &anchor, &replace(text), block, markdown, window, cx),
             };
             match result {
                 Err(missed) => {
                     let kept = leftovers.remove();
                     not_inserted(missed, &kept, window, cx);
                 }
-                // In the note: its files stay.
-                Ok(()) => {
+                // In the note: its files stay, and upload (#1073).
+                Ok(region) => {
+                    let mut files = saved_files;
+                    files.extend(leftovers.paths());
                     drop(leftovers);
+                    input.upload_inserted(&region, &files, window, cx);
                     if failed > 0 {
                         reader_toast::transient(router::failed_images_text(failed), window, cx);
                     }
@@ -1526,7 +1659,7 @@ fn insert_prepared(
     text: &str,
     window: &mut Window,
     cx: &mut App,
-) -> Result<(), Missed> {
+) -> Result<Region, Missed> {
     let Some(input) = target.live(cx) else {
         return Err(Missed::Closed);
     };
@@ -1542,14 +1675,14 @@ fn insert_prepared(
             diagnostic_error!("Drop: not inserted (the drop point is gone)");
             return Err(Missed::Moved);
         };
-        let (at, edit) = if target.slot {
+        let (at, edit, text_at) = if target.slot {
             let slot = BlockSlot::new(&current, at);
-            (slot.at, slot.edit(text))
+            (slot.at, slot.edit(text), slot.at + slot.before.len())
         } else {
-            (at, text.to_string())
+            (at, text.to_string(), at)
         };
         if state.replace_source_range(at..at, &edit, window, cx) {
-            Ok(())
+            Ok(Region::at(state.value().as_ref(), text_at, text.len()))
         } else {
             Err(Missed::Closed)
         }
@@ -1634,7 +1767,7 @@ mod attachment_refresh_tests {
                     plan.image_options = options;
                     FollowUp::Files { plan, anchor }
                 };
-                reader.run_paste_follow_up(input, follow_up, window, cx);
+                reader.run_paste_follow_up(input, follow_up, None, window, cx);
             });
             visual.run_until_parked();
             let (input, pasted) = reader.read_with(visual, |r, cx| {

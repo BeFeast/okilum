@@ -44,6 +44,7 @@ mod markdown_handler;
 #[cfg(test)]
 mod network_write_qa;
 mod note_paste;
+mod note_upload;
 mod open_in;
 mod pdf_engine;
 mod platform;
@@ -75,6 +76,7 @@ mod reader_diagnostics;
 mod reader_document;
 mod reader_document_menu;
 mod reader_drawing;
+mod reader_drawing_edit;
 #[cfg(any(unix, windows))]
 mod reader_editor;
 mod reader_embeds;
@@ -203,6 +205,8 @@ mod reader_sync_help;
 #[cfg(test)]
 use reader_features::test_init;
 mod reader_batch;
+#[cfg(any(unix, windows))]
+mod reader_daily_notes;
 mod reader_recent;
 #[cfg(any(unix, windows))]
 mod reader_recovery_rows;
@@ -391,6 +395,7 @@ actions!(
     okilum,
     [
         NewNote,
+        OpenDailyNote,
         NewUntitled,
         ShowRecentFiles,
         CloseNote,
@@ -1028,7 +1033,7 @@ fn load_appearance(cx: &App) -> (AppearancePreference, brand::ThemeChoice) {
 /// not set here are refined onto the themed defaults at layout time.
 fn reader_text_style(theme: &Theme) -> TextViewStyle {
     let tokens = brand::reader_palette_for_theme(theme);
-    TextViewStyle {
+    let mut style = TextViewStyle {
         highlight_theme: theme.highlight_theme.clone(),
         is_dark: theme.is_dark(),
         ..TextViewStyle::default()
@@ -1050,8 +1055,15 @@ fn reader_text_style(theme: &Theme) -> TextViewStyle {
         ..Default::default()
     })
     .paragraph_gap(rems(0.75))
-    // One scale for Reader and Live Preview (#1076).
+    // One scale and one colour per level for Reader and Live Preview
+    // (#1076, #3147, #3153).
     .heading_font_size(|level, base| base * source_presentation::heading_scale(level))
+    // Theme decoration slots, shared with Live Preview (#3154).
+    .decorations(tokens.decorations);
+    for (level, color) in (1u8..).zip(tokens.headings) {
+        style = style.heading_level_color(level, color);
+    }
+    style
 }
 
 #[cfg(test)]
@@ -1502,7 +1514,7 @@ fn reader_plugins_at(
                 || url.starts_with("http://")
                 || url.starts_with("data:")
             {
-                Some(MarkdownImage::Source(ImageSource::from(url)))
+                Some(MarkdownImage::Source(note_upload::image_source(url)))
             } else {
                 None
             }
@@ -1646,9 +1658,14 @@ fn markdown_plugins_at(
                 Some(MarkdownImage::Video(root, path)) => {
                     reader_media::video_card(&root, &path, cx)
                 }
-                Some(MarkdownImage::Drawing(root, path)) => {
-                    reader_drawing::render(&root, &path, image.drawing_size, window, cx)
-                }
+                Some(MarkdownImage::Drawing(root, path)) => reader_drawing::render(
+                    &root,
+                    &path,
+                    image.drawing_size,
+                    image_actions.clone(),
+                    window,
+                    cx,
+                ),
                 Some(MarkdownImage::DrawingUnavailable(payload)) => {
                     reader_drawing::unavailable(&payload, cx)
                 }
@@ -1885,6 +1902,12 @@ struct Reader {
     reminder_prefs: reader_reminder_settings::Preferences,
     #[cfg(any(unix, windows))]
     reminder_prefs_error: Option<String>,
+    /// Daily notes preference per vault root, read on demand (#3182).
+    #[cfg(any(unix, windows))]
+    daily_notes: Option<(PathBuf, Result<reader_daily_notes::Prefs, String>)>,
+    /// Why the last daily notes choice in Settings was not applied.
+    #[cfg(any(unix, windows))]
+    daily_notes_error: Option<String>,
     /// Show the reminders note through the native Tasks view (#919).
     #[cfg(any(unix, windows))]
     reminders_view: bool,
@@ -2303,6 +2326,10 @@ impl Reader {
             reminder_prefs: Default::default(),
             #[cfg(any(unix, windows))]
             reminder_prefs_error: None,
+            #[cfg(any(unix, windows))]
+            daily_notes: None,
+            #[cfg(any(unix, windows))]
+            daily_notes_error: None,
             #[cfg(any(unix, windows))]
             reminders_view: false,
             #[cfg(any(unix, windows))]
@@ -4763,10 +4790,11 @@ impl Reader {
             && !self.single_file
             && project.is_none()
         {
-            &SidebarAction::ALL[..usize::from(cfg!(any(unix, windows)))]
+            // New note and Today's note.
+            &SidebarAction::ALL[..2 * usize::from(cfg!(any(unix, windows)))]
         } else if self.sidebar.left_mode == reader_sidebar::LeftMode::Tree && project.is_none() {
             // Creation and Collapse all have permanent slots beside Vault Index.
-            &SidebarAction::ALL[3..]
+            &SidebarAction::ALL[4..]
         } else {
             SidebarAction::available()
         };
@@ -7008,13 +7036,51 @@ impl Reader {
                     cx.notify();
                 });
             }),
-            reader_perf_probe::Step::Finish => {
-                if let Err(error) = probe.write_report(targets.len()) {
-                    diagnostic_error!("{}: {error}", reader_perf_probe::ENV);
-                }
-                cx.quit();
+            reader_perf_probe::Step::StartTimed => {
+                // Input on a wall-clock schedule, independent of paint (#3154):
+                // the probe only counts the frames these steps cause.
+                cx.spawn(async move |reader, cx| {
+                    let interval = Duration::from_millis(reader_perf_probe::TIMED_INTERVAL_MS);
+                    for _ in 0..reader_perf_probe::TIMED_STEPS {
+                        cx.background_executor().timer(interval).await;
+                        let scrolled = reader.update(cx, |_, cx| {
+                            list.scroll_by(reader_perf_probe::STEP);
+                            content.update(cx, |_, cx| cx.notify());
+                            cx.notify();
+                        });
+                        if scrolled.is_err() {
+                            return;
+                        }
+                    }
+                    cx.background_executor()
+                        .timer(Duration::from_millis(reader_perf_probe::TIMED_SETTLE_MS))
+                        .await;
+                    let _ = reader.update(cx, |this, cx| {
+                        if let Some(probe) = this.perf_probe.as_mut() {
+                            probe.finish_timed();
+                        }
+                        this.finish_perf_probe(targets.len(), cx);
+                    });
+                })
+                .detach();
             }
         }
+    }
+
+    /// Write the probe's report and quit.
+    fn finish_perf_probe(&mut self, outline_rows: usize, cx: &mut Context<Self>) {
+        // What the run was drawn with, so a theme A/B can check it (#3156).
+        let theme = serde_json::json!({
+            "key": brand::theme_id(cx).key(),
+            "dark": Theme::global(cx).is_dark(),
+            "syntax": Theme::global(cx).highlight_theme.name,
+        });
+        if let Some(probe) = self.perf_probe.as_ref() {
+            if let Err(error) = probe.write_report(outline_rows, theme) {
+                diagnostic_error!("{}: {error}", reader_perf_probe::ENV);
+            }
+        }
+        cx.quit();
     }
 
     fn render_outline(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -7285,7 +7351,7 @@ const SIDEBAR_NAME_GAP: f32 = 4.;
 const SIDEBAR_NAME_CHROME: f32 = 30.;
 /// The name keeps at least this much, caret included, before an action
 /// moves into ⋯; a longer name is cut with an ellipsis first (#1512). At the
-/// default 280 px width all four actions fit, vault colour dot included.
+/// default 280 px width all five actions fit, vault colour dot included.
 const SIDEBAR_NAME_MIN: f32 = 80.;
 
 /// The sidebar header's actions, in their fixed order (#1512). The order is
@@ -7293,14 +7359,17 @@ const SIDEBAR_NAME_MIN: f32 = 80.;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SidebarAction {
     NewNote,
+    /// Today's daily note (#3182).
+    DailyNote,
     NewFolder,
     CollapseAll,
     ShowHidden,
 }
 
 impl SidebarAction {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::NewNote,
+        Self::DailyNote,
         Self::NewFolder,
         Self::CollapseAll,
         Self::ShowHidden,
@@ -7326,6 +7395,7 @@ impl SidebarAction {
     fn id(self) -> &'static str {
         match self {
             Self::NewNote => "sidebar-new-note",
+            Self::DailyNote => "sidebar-daily-note",
             Self::NewFolder => "sidebar-new-folder",
             Self::CollapseAll => "sidebar-collapse-all",
             Self::ShowHidden => "sidebar-show-hidden",
@@ -7335,6 +7405,7 @@ impl SidebarAction {
     fn label(self) -> &'static str {
         match self {
             Self::NewNote => "New note",
+            Self::DailyNote => "Today's note",
             Self::NewFolder => "New folder",
             Self::CollapseAll => "Collapse all folders",
             Self::ShowHidden => HIDDEN_FILES_MENU,
@@ -7344,6 +7415,7 @@ impl SidebarAction {
     fn action(self) -> Box<dyn Action> {
         match self {
             Self::NewNote => Box::new(NewNote),
+            Self::DailyNote => Box::new(OpenDailyNote),
             Self::NewFolder => Box::new(NewFolder),
             Self::CollapseAll => Box::new(CollapseFolders),
             Self::ShowHidden => Box::new(ToggleHiddenFiles),
@@ -7358,6 +7430,7 @@ impl SidebarAction {
     fn icon(self, show_hidden: bool) -> Icon {
         match self {
             Self::NewNote => Icon::default().path("icons/square-pen.svg"),
+            Self::DailyNote => Icon::new(IconName::Calendar),
             Self::NewFolder => Icon::default().path("icons/folder-plus.svg"),
             Self::CollapseAll => Icon::default().path(brand::READER_COLLAPSE_ICON),
             Self::ShowHidden if show_hidden => Icon::new(IconName::Eye),
@@ -7370,11 +7443,13 @@ impl SidebarAction {
             #[cfg(any(unix, windows))]
             Self::NewNote => reader.new_note(None, window, cx),
             #[cfg(any(unix, windows))]
+            Self::DailyNote => reader.open_daily_note(window, cx),
+            #[cfg(any(unix, windows))]
             Self::NewFolder => reader.new_folder(None, window, cx),
             Self::CollapseAll => reader.collapse_folders(cx),
             Self::ShowHidden => reader.toggle_hidden_files(cx),
             #[cfg(not(any(unix, windows)))]
-            Self::NewNote | Self::NewFolder => {}
+            Self::NewNote | Self::DailyNote | Self::NewFolder => {}
         }
     }
 }
@@ -7568,6 +7643,7 @@ fn reader_more_menu(
                     .menu("New untitled file", Box::new(NewUntitled))
                     .menu("New Folder", Box::new(NewFolder))
                     .menu("New note from template…", Box::new(NewFromTemplate))
+                    .menu("Today's note", Box::new(OpenDailyNote))
                     .item(reader_capture::menu_item(reader.clone(), vault.clone(), cx))
                     .menu("Recover notes…", Box::new(RecoverUnsavedNotes))
                     .menu("Recover link moves…", Box::new(RecoverLinkMoves))
@@ -8693,7 +8769,7 @@ impl Reader {
                 this.invoke_viewer_action("drawing-expand", window, cx)
             }))
             .on_action(cx.listener(|this, _: &OpenDrawingExternally, window, cx| {
-                this.invoke_viewer_action("drawing-open", window, cx)
+                this.invoke_viewer_action("drawing-edit", window, cx)
             }))
             .on_action(cx.listener(|this, _: &ShowDrawingDetails, window, cx| {
                 this.invoke_viewer_action("drawing-diagnostic-details", window, cx)
@@ -8766,6 +8842,12 @@ impl Reader {
             .on_action(cx.listener(|this, _: &NewFromTemplate, window, cx| {
                 #[cfg(any(unix, windows))]
                 this.new_from_template(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &OpenDailyNote, window, cx| {
+                #[cfg(any(unix, windows))]
+                this.open_daily_note(window, cx);
+                #[cfg(not(any(unix, windows)))]
+                let _ = (this, window, cx);
             }))
             .on_action(cx.listener(|_, _: &reader_settings::OpenSettings, _, cx| {
                 reader_settings::show(Some(cx.entity().downgrade()), cx);
@@ -11665,6 +11747,7 @@ mod document_link_landing_tests {
         let ids: &[&str] = if cfg!(any(unix, windows)) {
             &[
                 "sidebar-new-note",
+                "sidebar-daily-note",
                 "sidebar-new-folder",
                 "sidebar-collapse-all",
                 "sidebar-show-hidden",
@@ -11803,15 +11886,15 @@ mod document_link_landing_tests {
         let all = &SidebarAction::ALL;
         let min = SIDEBAR_NAME_MIN;
         let slot = SIDEBAR_ACTION_SLOT;
-        assert_eq!(sidebar_visible_actions(400., 120., all), 4);
-        assert_eq!(sidebar_visible_actions(min + 4. * slot, 300., all), 4);
-        assert_eq!(sidebar_visible_actions(min + 4. * slot - 1., 300., all), 3);
-        assert_eq!(sidebar_visible_actions(60., min, all), 3);
-        assert!(all[3].spills());
-        assert!(!all[..3].iter().any(|action| action.spills()));
+        assert_eq!(sidebar_visible_actions(400., 120., all), 5);
+        assert_eq!(sidebar_visible_actions(min + 5. * slot, 300., all), 5);
+        assert_eq!(sidebar_visible_actions(min + 5. * slot - 1., 300., all), 4);
+        assert_eq!(sidebar_visible_actions(60., min, all), 4);
+        assert!(all[4].spills());
+        assert!(!all[..4].iter().any(|action| action.spills()));
         for dot in [0., VAULT_DOT_SLOT] {
             let room = 280. - 24. - dot - 2. * SIDEBAR_NAME_GAP;
-            assert_eq!(sidebar_visible_actions(room, 200., all), 4, "dot {dot}");
+            assert_eq!(sidebar_visible_actions(room, 200., all), 5, "dot {dot}");
         }
     }
 

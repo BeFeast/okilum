@@ -58,7 +58,7 @@ jobs:
           result=json.loads(Path(sys.argv[1]).read_text())
           status=result.get('status','ERROR')
           version=result.get('version','unknown T3 version')
-          detail=result.get('error') or result.get('schema_error') or result.get('bootstrap_error') or ''
+          detail=result.get('error') or result.get('schema_error') or result.get('bootstrap_error') or result.get('capability_error') or ''
           if status != 'PASS':
               # Annotation text is single-line; it repeats only what result.json already holds.
               message=f"{status} for {version}" + (f": {detail}" if detail else '') + '. See the t3-contract incident issue and the t3-contract-report artifact.'

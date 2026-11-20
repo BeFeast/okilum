@@ -316,7 +316,14 @@ fn windows_plans_start_only_absolute_programs_without_cmd() {
         console.new_console,
         "PowerShell without wt gets its own console"
     );
-    assert!(!plan(&project, &windows_launchers()[0]).new_console);
+    let wt = plan(&project, &windows_launchers()[0]);
+    assert!(!wt.new_console);
+    // A tab in the most recent window: a cold Terminal restoring its saved
+    // windows would otherwise open ours as one more window (#3135).
+    assert_eq!(
+        words(&wt)[..4],
+        ["-w", "0", "new-tab", powershell().to_str().unwrap()]
+    );
 }
 
 #[cfg(unix)]
@@ -529,10 +536,11 @@ fn folder_plans_pass_hostile_folders_as_one_argument_on_every_platform() {
             );
         }
         let [wt, console] = windows_launchers();
-        // Windows Terminal takes the folder after -d as one CRT argument.
+        // Windows Terminal takes the folder after -d as one CRT argument, in
+        // a tab of the most recent window, never a second window (#3135).
         assert_eq!(
             words(&folder_plan(path, &wt, "Terminal").unwrap()),
-            ["-d", folder]
+            ["-w", "0", "new-tab", "-d", folder]
         );
         // Without wt the folder is base64 data for the System32 PowerShell.
         let ps = folder_plan(path, &console, "Terminal").unwrap();
@@ -546,15 +554,15 @@ fn folder_plans_pass_hostile_folders_as_one_argument_on_every_platform() {
     let [wt, _] = windows_launchers();
     let semicolon = folder_plan(Path::new(folder), &wt, "Terminal").unwrap();
     assert_eq!(
-        words(&semicolon)[..2],
-        ["new-tab", powershell().to_str().unwrap()]
+        words(&semicolon)[..4],
+        ["-w", "0", "new-tab", powershell().to_str().unwrap()]
     );
     assert!(!words(&semicolon).iter().any(|a| a.contains(folder)));
     assert_eq!(decode_windows(&semicolon)["directory"], folder);
     // Positive control: an ordinary folder takes the plain route.
     assert_eq!(
         words(&folder_plan(Path::new("/Users/me/Notes"), &wt, "Terminal").unwrap()),
-        ["-d", "/Users/me/Notes"]
+        ["-w", "0", "new-tab", "-d", "/Users/me/Notes"]
     );
     assert!(folder_plan(Path::new("relative"), &wt, "Terminal").is_err());
 }

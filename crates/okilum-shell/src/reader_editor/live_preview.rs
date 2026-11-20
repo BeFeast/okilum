@@ -192,9 +192,17 @@ impl LivePreview {
 fn projection_colors(cx: &App) -> ProjectionColors {
     let palette = brand::palette(cx);
     ProjectionColors {
-        heading: palette.text,
+        // Same heading colours as the Reader, per level (#3147, #3153).
+        headings: brand::reader_palette(cx).headings,
         link: palette.link,
         muted: palette.text_muted,
+        // The same decoration slots as the Reader (#3154); bold only when the
+        // note font has its own bold face.
+        decorations: crate::source_presentation::live_preview_decorations(
+            brand::reader_palette(cx).decorations,
+            &reader_fonts::note(cx),
+            |font| cx.text_system().resolve_font(font),
+        ),
     }
 }
 
@@ -899,6 +907,55 @@ impl Reader {
 
 #[cfg(test)]
 mod tests {
+    #[gpui::test]
+    fn issue3147_live_preview_headings_use_the_reader_heading_colour(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::test_init(cx);
+            for mode in [
+                gpui_component::ThemeMode::Light,
+                gpui_component::ThemeMode::Dark,
+            ] {
+                Theme::change(mode, None, cx);
+                brand::apply_theme(cx);
+                let heading = brand::reader_palette(cx).heading;
+                assert_ne!(heading, brand::palette(cx).text, "headings are coloured");
+                let colors = projection_colors(cx);
+                assert!((1..=6).all(|level| colors.heading(level) == heading));
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn issue3153_live_preview_heading_levels_match_the_reader(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::test_init(cx);
+            cx.set_global(brand::ThemeChoice(brand::ThemeId::Obsidianite));
+            for mode in [
+                gpui_component::ThemeMode::Light,
+                gpui_component::ThemeMode::Dark,
+            ] {
+                Theme::change(mode, None, cx);
+                brand::apply_theme(cx);
+                // The Reader takes the same palette (brand.rs
+                // selected_theme_drives_palette_and_native_tokens).
+                let reader = brand::reader_palette(cx).headings;
+                let colors = projection_colors(cx);
+                for level in 1..=6u8 {
+                    assert_eq!(
+                        colors.heading(level),
+                        reader[usize::from(level) - 1],
+                        "H{level}"
+                    );
+                }
+                assert_ne!(
+                    colors.heading(1),
+                    colors.heading(2),
+                    "Obsidianite H1 differs"
+                );
+            }
+        });
+    }
+
     #[test]
     fn latency_fence_fixture_forces_raw_tail_after_local_remap_refuses() {
         use okilum_core::{
