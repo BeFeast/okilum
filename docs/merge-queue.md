@@ -15,9 +15,11 @@ All of the following, on the current head:
   this head;
 - `scripts/agent/gh_check.py` returns exit 0 for the newest full
   `agent-checks` run of this head (branch `agent-checks/…`, not
-  `agent-checks-fast/` or `agent-checks-benchmark/`). A skipped `linux` job
-  is not green. That job executed `scripts/ci/pool-linux-gate.sh` on the
-  build-slot pool.
+  `agent-checks-fast/` or `agent-checks-benchmark/`). The newest run is
+  chosen from the list before its jobs are loaded. If that read fails, the
+  pull request does not enter and an older success is not used. A skipped
+  `linux` job is not green. That job executed
+  `scripts/ci/pool-linux-gate.sh` on the build-slot pool.
 
 A pull request labelled `critical` is taken before the others. Within that,
 the oldest PASS goes first. Up to four clean pulls are merged into one tip.
