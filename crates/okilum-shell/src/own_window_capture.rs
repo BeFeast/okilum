@@ -309,7 +309,13 @@ mod native {
         #[test]
         fn own_window_capture_reads_gdi_pixels_and_rejects_foreign_windows() {
             let control = window("OkilumOwnCaptureGdi", 0, false);
-            pump();
+            // PW_RENDERFULLCONTENT reads what DWM composed, not the GDI
+            // redirection bitmap directly: wait until DWM has presented the
+            // window's first painted frame, as for the composition control.
+            for _ in 0..3 {
+                pump();
+                let _ = unsafe { windows::Win32::Graphics::Dwm::DwmFlush() };
+            }
             let captured = unsafe { capture_hwnd(control.0) }.expect("GDI positive control");
             assert_eq!(center(&captured), [0x12, 0x34, 0x56, 255]);
             assert!(png(captured).unwrap().starts_with(b"\x89PNG"));
