@@ -73,7 +73,7 @@ There are no gates; this menu is the same on every platform.
 | — | | | | `:140` |
 | Select All | `input::SelectAll` | ⌘A | Ctrl+A | `:141` |
 
-The Undo/Redo/Cut/Copy/Select All keys are in gpui-component `crates/base/src/input/base/state.rs:218-264`, context `Input`. That vendor tree is not in the Okilum commit, so I read it from /home/god/src/okilum/vendor/gpui-component (commit 928c3eb7).
+The Undo/Redo/Cut/Copy/Select All keys are in gpui-component `crates/base/src/input/base/state.rs:218-264`, context `Input`. That vendor tree is not in the Okilum commit, so I read it from the vendored gpui-component tree (commit 928c3eb7).
 
 ### Format (`reader_editor/format.rs:77-101`)
 
