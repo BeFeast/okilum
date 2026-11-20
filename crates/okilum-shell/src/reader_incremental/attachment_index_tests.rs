@@ -83,7 +83,7 @@ fn edit2803_saves_and_ui_renders_reuse_the_background_attachment_index(cx: &mut 
             if round == 0 {
                 r.toggle_source(window, cx);
             }
-            r.editing.as_ref().unwrap().set_value(
+            r.pane.editing.as_ref().unwrap().set_value(
                 &format!("{NOTE}\nedit {round} ![](diagram.png)\n"),
                 window,
                 cx,
