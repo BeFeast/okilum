@@ -2,13 +2,14 @@
 // from the Okilum session that opened this tab; changes reach the vault file
 // only through an explicit Apply, which Okilum writes with the same
 // revision-checked save it uses for notes.
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Excalidraw, getSceneVersion, serializeAsJSON } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
 import "./editor.css";
 import { Session, SessionError, sessionBase } from "./session.js";
-import { Tracker, fingerprint } from "./tracker.js";
+import { fingerprint } from "./tracker.js";
+import { Controller } from "./controller.js";
 
 const base = sessionBase(window.location);
 const session = base ? new Session(base) : null;
@@ -41,26 +42,44 @@ function App() {
   const [scene, setScene] = useState(null);
   const [load, setLoad] = useState(0);
   const [api, setApi] = useState(null);
-  const [status, setStatus] = useState("");
-  const [error, setError] = useState("");
   const [dirty, setDirty] = useState(false);
-  const [conflict, setConflict] = useState(false);
-  const [copy, setCopy] = useState("");
+  const [openError, setOpenError] = useState("");
   const [, setTick] = useState(0);
-  const tracker = useRef(new Tracker());
-  const refresh = () => setTick((tick) => tick + 1);
+  const apiRef = useRef(null);
+  apiRef.current = api;
 
-  const show = useCallback((data) => {
-    if (data.name) document.title = `${data.name} · Okilum`;
-    setScene(data.scene);
-    setLoad((count) => count + 1);
-    setApi(null);
-    tracker.current = new Tracker();
-    setDirty(false);
-    setConflict(false);
-    setCopy("");
-    setPhase("editing");
-  }, []);
+  const controller = useMemo(
+    () =>
+      session &&
+      new Controller({
+        session,
+        confirm: (text) => window.confirm(text),
+        editor: {
+          state: () => (apiRef.current ? stateOf(apiRef.current) : null),
+          scene: () => sceneOf(apiRef.current),
+        },
+        view: {
+          update: () => {
+            setDirty(controller.dirty());
+            setTick((tick) => tick + 1);
+          },
+          show: (data) => {
+            if (data.name) document.title = `${data.name} · Okilum`;
+            setScene(data.scene);
+            setLoad((count) => count + 1);
+            setApi(null);
+            apiRef.current = null;
+            setDirty(false);
+            setPhase("editing");
+          },
+          closed: () => {
+            setDirty(false);
+            setPhase("closed");
+          },
+        },
+      }),
+    [],
+  );
 
   useEffect(() => {
     if (!session) return;
@@ -71,38 +90,28 @@ function App() {
           if (data.name) document.title = `${data.name} · Okilum`;
           setPhase("elsewhere");
         } else {
-          show(data);
+          controller.shown(data);
         }
       })
       .catch((e) => {
-        setError(message(e));
+        setOpenError(message(e));
         setPhase("failed");
       });
-  }, [show]);
+  }, [controller]);
 
   // Report the loaded scene once per load.
   useEffect(() => {
-    if (!api || tracker.current.loaded()) return;
+    if (!api || controller.tracker.loaded()) return;
     let cancelled = false;
     (async () => {
       await settled(api);
       if (cancelled) return;
-      const loaded = sceneOf(api);
-      const snapshot = stateOf(api);
-      try {
-        await session.loaded(loaded);
-        tracker.current.load(snapshot);
-        setDirty(tracker.current.dirty(stateOf(api)));
-        setStatus("");
-        refresh();
-      } catch (e) {
-        setError(message(e));
-      }
+      await controller.loaded(sceneOf(api), stateOf(api));
     })();
     return () => {
       cancelled = true;
     };
-  }, [api, load]);
+  }, [api, load, controller]);
 
   useEffect(() => {
     const warn = (event) => {
@@ -115,97 +124,30 @@ function App() {
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
 
-  const onChange = useCallback((elements, appState) => {
-    setDirty(tracker.current.dirty(fingerprint(getSceneVersion(elements), appState)));
-  }, []);
-
-  const act = async (work) => {
-    setError("");
-    try {
-      await work();
-    } catch (e) {
-      setError(message(e));
-    }
-    refresh();
-  };
-
-  const apply = () =>
-    act(async () => {
-      if (!api || !tracker.current.loaded()) return;
-      // The canvas stays editable while the call is in flight: only this
-      // snapshot is what Okilum writes.
-      const snapshot = stateOf(api);
-      const data = await session.apply(sceneOf(api));
-      if (data.status === "conflict") {
-        tracker.current.conflict(snapshot);
-        setConflict(true);
-        setDirty(tracker.current.dirty(stateOf(api)));
-        setStatus("");
-        return;
-      }
-      tracker.current.wrote(snapshot);
-      setDirty(tracker.current.dirty(stateOf(api)));
-      setStatus(data.status === "unchanged" ? "Nothing to apply" : "Applied to the drawing");
-    });
-  const undo = () =>
-    act(async () => {
-      const data = await session.undo();
-      if (data.status === "blocked") {
-        setStatus("");
-        setError("The drawing changed outside this editor since the last Apply, so Undo did nothing.");
-        return;
-      }
-      show(data);
-      setStatus("Last Apply undone");
-    });
-  const keepMine = () =>
-    act(async () => {
-      const data = await session.keepMine();
-      if (data.status === "conflict") {
-        setError("The drawing changed again. Look at it in Okilum, then choose again.");
-        return;
-      }
-      // Keep mine writes the scene that hit the conflict, not the canvas.
-      tracker.current.keptMine();
-      setDirty(tracker.current.dirty(stateOf(api)));
-      setConflict(false);
-      setStatus("Applied to the drawing");
-    });
-  const reload = () =>
-    act(async () => {
-      const data = await session.reload();
-      show(data);
-      setStatus("Loaded the drawing from the vault");
-    });
-  const saveCopy = () =>
-    act(async () => {
-      const data = await session.saveCopy();
-      setCopy(data.copy || "");
-    });
-  const close = () =>
-    act(async () => {
-      const unsaved = api ? tracker.current.dirty(stateOf(api)) : dirty;
-      if (unsaved && !window.confirm("Close without applying your changes?")) return;
-      await session.close();
-      setDirty(false);
-      setPhase("closed");
-    });
+  const onChange = useCallback(
+    (elements, appState) => {
+      setDirty(controller.tracker.dirty(fingerprint(getSceneVersion(elements), appState)));
+    },
+    [controller],
+  );
 
   if (phase === "invalid") return <Notice title="This editor link is not valid">Open the drawing from Okilum.</Notice>;
   if (phase === "opening") return <Notice title="Preparing your drawing…" />;
-  if (phase === "failed") return <Notice title="The drawing could not be opened">{error}</Notice>;
+  if (phase === "failed") return <Notice title="The drawing could not be opened">{openError}</Notice>;
   if (phase === "closed") return <Notice title="Editing ended">You can close this tab.</Notice>;
   if (phase === "elsewhere") {
     return (
       <Notice title="This drawing is open in another tab">
         <p>Edit it here instead? The other tab can no longer apply its changes.</p>
-        <button className="okl-button okl-primary" onClick={reload}>Edit here</button>
-        {error && <p className="okl-error">{error}</p>}
+        <button className="okl-button okl-primary" onClick={() => controller.reload()}>Edit here</button>
+        {controller.error && <p className="okl-error">{controller.error}</p>}
       </Notice>
     );
   }
 
-  const ready = api !== null && tracker.current.loaded() && !session.closed;
+  const { status, error, conflict, copy } = controller;
+  const busy = session.busy || controller.frozen;
+  const ready = api !== null && controller.tracker.loaded() && !session.closed;
   return (
     <div className="okl-editor">
       <Excalidraw
@@ -213,18 +155,18 @@ function App() {
         initialData={{ ...scene, scrollToContent: true }}
         excalidrawAPI={setApi}
         onChange={onChange}
-        viewModeEnabled={!tracker.current.editable()}
+        viewModeEnabled={!controller.editable()}
         name={session.name}
         UIOptions={{ canvasActions: { loadScene: false, saveToActiveFile: false } }}
         renderTopRightUI={() => (
           <div className="okl-actions">
-            <button className="okl-button okl-primary" disabled={!ready || session.busy || conflict} onClick={apply}>
+            <button className="okl-button okl-primary" disabled={!ready || busy || conflict} onClick={() => controller.apply()}>
               {dirty ? "Apply •" : "Apply"}
             </button>
             {session.canUndo && !conflict && (
-              <button className="okl-button" disabled={session.busy} onClick={undo}>Undo Apply</button>
+              <button className="okl-button" disabled={busy} onClick={() => controller.undo()}>Undo Apply</button>
             )}
-            <button className="okl-button" disabled={session.busy} onClick={close}>Done</button>
+            <button className="okl-button" disabled={busy} onClick={() => controller.close()}>Done</button>
           </div>
         )}
       />
@@ -233,9 +175,9 @@ function App() {
           {conflict ? (
             <>
               <span>The drawing changed outside this editor. Your edit was not applied, and the canvas is read-only until you choose.</span>
-              <button className="okl-button" disabled={session.busy} onClick={reload}>Reload</button>
-              <button className="okl-button" disabled={session.busy} onClick={keepMine}>Keep mine</button>
-              <button className="okl-button" disabled={session.busy} onClick={saveCopy}>Save as copy</button>
+              <button className="okl-button" disabled={busy} onClick={() => controller.reload()}>Reload</button>
+              <button className="okl-button" disabled={busy} onClick={() => controller.keepMine()}>Keep mine</button>
+              <button className="okl-button" disabled={busy} onClick={() => controller.saveCopy()}>Save as copy</button>
               {copy && <span>Saved as {copy}</span>}
             </>
           ) : (

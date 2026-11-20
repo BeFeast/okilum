@@ -72,6 +72,11 @@ menu as a separate command.
   or zoom. Only the snapshot Okilum wrote becomes saved: an edit made while
   Apply is in flight stays unsaved. During a conflict the canvas is read-only,
   because Keep mine and Save as copy use the scene that hit the conflict.
+  Undo Apply, Reload and Done replace the scene or end the session: they ask
+  before discarding unsaved edits and freeze the canvas until Okilum replies
+  (a refused or failed request unfreezes it). The commands live in
+  `web/excalidraw-editor/src/controller.js`, outside React, so these
+  transitions are tested with delayed replies.
 - **Lifetime.** Done ends the session and releases the lock; so do two idle
   hours and quitting Okilum. Closing the tab without Apply leaves the drawing as
   it was. A second Edit of the same drawing opens the same session; a second tab
