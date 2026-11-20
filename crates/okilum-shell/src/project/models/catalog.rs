@@ -208,6 +208,7 @@ impl Catalog {
                 error,
                 StreamError::Closed
                     | StreamError::Unreachable
+                    | StreamError::Network(_)
                     | StreamError::Http(408 | 429 | 500..=599)
             )
         })

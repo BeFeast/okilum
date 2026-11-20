@@ -524,12 +524,15 @@ pub fn cached_remote_logo(cache: &Path, t3_project: &crate::Project) -> Option<P
 }
 
 fn fetch_logo(url: &str) -> Result<Vec<u8>> {
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(concat!("okilum/", env!("CARGO_PKG_VERSION")))
-        .connect_timeout(std::time::Duration::from_secs(5))
-        .timeout(std::time::Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::limited(3))
-        .build()?;
+    // #1944: a logo URL may name any host and redirect to another one.
+    let client = okilum_http::local_network_per_request_builder(
+        env!("CARGO_PKG_VERSION"),
+        std::time::Duration::from_secs(10),
+    )
+    .user_agent(concat!("okilum/", env!("CARGO_PKG_VERSION")))
+    .connect_timeout(std::time::Duration::from_secs(5))
+    .redirect(reqwest::redirect::Policy::limited(3))
+    .build()?;
     let response = client.get(url).send()?;
     ensure!(response.status().is_success(), "HTTP {}", response.status());
     ensure!(

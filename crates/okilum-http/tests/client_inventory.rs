@@ -4,7 +4,7 @@
 //! with the reason it deliberately keeps another policy. A new raw
 //! `reqwest`/`tungstenite` client, or a listed one that moves, fails this test,
 //! so the Windows policy can no longer depend on Cargo feature unification.
-//! Design and follow-ups: docs/windows-network-policy.md.
+//! Design: docs/windows-network-policy.md.
 use std::{collections::BTreeMap, fs, path::Path};
 
 /// Construction sites that pick a TLS backend or proxy policy on their own.
@@ -55,35 +55,6 @@ const EXCEPTIONS: &[(&str, usize, &str)] = &[
         1,
         "cfg(test) loopback WebSocket probe",
     ),
-    // Follow-ups: multi-origin clients need per-request proxy resolution
-    // (arbitrary URLs and cross-host redirects); one PAC answer does not fit.
-    (
-        "crates/okilum-shell/src/note_paste/fetch.rs",
-        1,
-        "follow-up: paste page title, arbitrary URL with redirects",
-    ),
-    (
-        "crates/okilum-shell/src/note_paste/download.rs",
-        1,
-        "follow-up: paste image download, one client for every host",
-    ),
-    (
-        "crates/okilum-t3/src/projects/icon.rs",
-        1,
-        "follow-up: project logo, arbitrary URL with redirects",
-    ),
-    (
-        "crates/okilum-t3/src/board/delivery/read.rs",
-        1,
-        "follow-up: delivery feeds on configured, arbitrary origins",
-    ),
-    // Follow-up: tungstenite has no proxy support and uses bundled webpki
-    // roots; needs HTTP CONNECT plus an OS-trust connector.
-    (
-        "crates/okilum-t3/src/stream.rs",
-        1,
-        "follow-up: T3 WebSocket, direct TCP + webpki roots",
-    ),
     // okilum-brain links into okilum-cored, not into the Windows package.
     (
         "crates/okilum-brain/src/t3.rs",
@@ -111,6 +82,21 @@ const EXCEPTIONS: &[(&str, usize, &str)] = &[
         "okilum-cored only: Todoist",
     ),
 ];
+
+/// Raw construction that still carries the shared policy: each file must keep
+/// every marker. The T3 WebSocket cannot use reqwest, so it takes the
+/// `okilum_http` socket route, tunnels through the proxy with CONNECT and picks
+/// SChannel explicitly on Windows.
+const POLICED: &[(&str, usize, &[&str])] = &[(
+    "crates/okilum-t3/src/stream.rs",
+    1,
+    &[
+        "okilum_http::local_network_socket_route(&url)",
+        "okilum_http::connect_tunnel(",
+        "tungstenite::Connector::NativeTls(",
+        "client_tls_with_config(url.as_str(), stream, Some(config), connector()?)",
+    ],
+)];
 
 fn test_only(relative: &str) -> bool {
     let name = relative.rsplit('/').next().unwrap_or_default();
@@ -176,6 +162,11 @@ fn every_outbound_client_takes_the_shared_policy_or_a_recorded_exception() {
     let expected: BTreeMap<String, usize> = EXCEPTIONS
         .iter()
         .map(|(path, count, _)| ((*path).to_owned(), *count))
+        .chain(
+            POLICED
+                .iter()
+                .map(|(path, count, _)| ((*path).to_owned(), *count)),
+        )
         .collect();
     let unexpected: Vec<_> = found
         .iter()
@@ -268,6 +259,27 @@ const MIGRATED: &[(&str, &str, Option<&str>)] = &[
         "crate::network::builder(",
         Some(".connect_timeout(Duration::from_secs(3))"),
     ),
+    // Multi-origin clients: the proxy is decided per request's origin.
+    (
+        "crates/okilum-shell/src/note_paste/fetch.rs",
+        "okilum_http::per_request_builder(",
+        Some(".connect_timeout(TIMEOUT)"),
+    ),
+    (
+        "crates/okilum-shell/src/note_paste/download.rs",
+        "okilum_http::per_request_builder(",
+        Some(".connect_timeout(TIMEOUT)"),
+    ),
+    (
+        "crates/okilum-t3/src/projects/icon.rs",
+        "okilum_http::local_network_per_request_builder(",
+        Some(".connect_timeout(std::time::Duration::from_secs(5))"),
+    ),
+    (
+        "crates/okilum-t3/src/board/delivery/read.rs",
+        "okilum_http::local_network_per_request_builder(",
+        Some(".connect_timeout(Duration::from_secs(3))"),
+    ),
 ];
 
 #[test]
@@ -288,6 +300,27 @@ fn migrated_clients_build_through_okilum_http_with_their_own_connect_budget() {
             );
         }
     }
+}
+
+#[test]
+fn policed_raw_clients_keep_the_shared_route_and_tls_choice() {
+    let root = workspace();
+    for (path, _, markers) in POLICED {
+        let text = fs::read_to_string(root.join(path)).unwrap();
+        for marker in *markers {
+            assert!(text.contains(marker), "{path} lost {marker}");
+        }
+    }
+    // The Windows connector exists only with tungstenite's native-tls feature,
+    // enabled for Windows in okilum-t3's own manifest, not by unification.
+    let manifest = fs::read_to_string(root.join("crates/okilum-t3/Cargo.toml")).unwrap();
+    let windows = manifest
+        .split("[target.'cfg(windows)'.dependencies]")
+        .nth(1)
+        .expect("okilum-t3 has Windows dependencies");
+    let windows = windows.split("\n[").next().unwrap_or_default();
+    assert!(windows.contains("\"native-tls\"]"), "{windows}");
+    assert!(windows.contains("native-tls = "), "{windows}");
 }
 
 /// T3 and Board peers on a LAN/tailnet literal stay direct on Windows.

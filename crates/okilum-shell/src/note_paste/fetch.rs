@@ -12,8 +12,8 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 /// The title of the HTML page at `url`, or `None` (not HTML, an error status,
 /// a timeout, no title). Reads at most the first 256 KB.
 pub fn page_title(url: &str) -> Option<String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(TIMEOUT)
+    // #1944: any host, cross-host redirects: the proxy is decided per request.
+    let client = okilum_http::per_request_builder(env!("CARGO_PKG_VERSION"), TIMEOUT)
         .connect_timeout(TIMEOUT)
         .redirect(reqwest::redirect::Policy::limited(5))
         .user_agent(concat!("Okilum/", env!("CARGO_PKG_VERSION")))
