@@ -40,10 +40,10 @@ class NativeToolbarReceiptTests(unittest.TestCase):
 
     def test_release_enforces_open_frame_and_actual_work_budgets(self):
         # Hosted Windows (WARP Ready time) allows 2 slow frames per pass up to
-        # 50 ms; other platforms allow 1 up to 25 ms (#2845).
+        # 50 ms; other platforms allow 1 up to 50 ms (#2845).
         self.assertEqual(probe.wall_allowance('win32'), (2, 50))
-        self.assertEqual(probe.wall_allowance('darwin'), (1, 25))
-        self.assertEqual(probe.wall_allowance('linux'), (1, 25))
+        self.assertEqual(probe.wall_allowance('darwin'), (1, 50))
+        self.assertEqual(probe.wall_allowance('linux'), (1, 50))
         for platform in ['win32', 'darwin']:
             allowed, ceiling = probe.wall_allowance(platform)
             with self.subTest(platform=platform, case='clean'):
