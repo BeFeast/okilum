@@ -358,7 +358,8 @@ pub(crate) fn install_test_editors(ids: &[&str], program: &Path) {
                 label: known.label,
                 program: program.to_owned(),
                 icon_path: PathBuf::new(),
-                prefix: Vec::new(),
+                // Launched like a detected editor: its flags come first.
+                prefix: known.flags.iter().map(OsString::from).collect(),
                 line: known.line,
             }
         })
