@@ -239,6 +239,15 @@ mod tests {
             assert!(r.tree_preview.is_open(), "control: Quick Look is open");
             assert!(r.tree_quick_look_shown(), "control: it draws over the note");
         });
+        reader.read_with(visual, |r, _| {
+            let state = r.session_directory.clone().unwrap();
+            crate::reader_daily_notes::save(
+                &state,
+                &r.vault_root,
+                &okilum_core::daily_notes::Settings::default(),
+            )
+            .unwrap();
+        });
         let rel = okilum_core::vault::note_path(
             &okilum_core::daily_notes::Settings::default()
                 .relative_path(crate::reader_daily_notes::now())

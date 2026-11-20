@@ -9,11 +9,16 @@ use time::OffsetDateTime;
 
 /// Obsidian's default name: `2026-11-20.md`.
 pub const DEFAULT_FORMAT: &str = "YYYY-MM-DD";
+/// Where daily notes go when no folder is set, in Okilum or in Obsidian's
+/// settings. Never the vault root (#3182): created on first use.
+pub const DEFAULT_FOLDER: &str = "Daily";
+/// Offered for templates when the vault's templates folder is not there.
+pub const FALLBACK_TEMPLATES: &str = "Templates";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Vault-relative folder; empty is the vault root.
+    /// Vault-relative folder; empty is [`DEFAULT_FOLDER`].
     pub folder: String,
     /// Moment-style name; a `/` in it makes subfolders (`YYYY/MM/YYYY-MM-DD`).
     /// Empty is [`DEFAULT_FORMAT`].
@@ -64,9 +69,13 @@ impl Settings {
         }
     }
 
-    /// Vault-relative folder, `""` for the vault root.
+    /// Vault-relative folder; [`DEFAULT_FOLDER`] when none is set, so a
+    /// daily note never lands in the vault root.
     pub fn folder(&self) -> Result<&str> {
-        let folder = trimmed(&self.folder);
+        let folder = match trimmed(&self.folder) {
+            "" => DEFAULT_FOLDER,
+            folder => folder,
+        };
         ensure!(
             inside_vault(folder),
             "Choose a daily notes folder inside the vault"
@@ -111,6 +120,45 @@ impl Settings {
         );
         Ok(Some((folder.to_owned(), file.to_owned())))
     }
+}
+
+/// Template notes to offer for daily notes, vault-relative: the Markdown
+/// files of the vault's templates folder (Settings, `.obsidian/templates.json`
+/// or the default) and, when that has none, of `Templates/`.
+pub fn template_candidates(root: &Path, templates: &Catalog) -> Vec<String> {
+    let mut folder = templates.folder.clone();
+    let mut files = templates.files.clone();
+    if files.is_empty() && folder != Path::new(FALLBACK_TEMPLATES) {
+        if let Ok(fallback) = Catalog::load_with_folder(root, Some(FALLBACK_TEMPLATES)) {
+            folder = fallback.folder;
+            files = fallback.files;
+        }
+    }
+    files
+        .into_iter()
+        .map(|file| crate::vault::note_path(&folder.join(file)))
+        .collect()
+}
+
+/// The candidate that is plainly a daily template: `Daily.md`,
+/// `Daily Note.md`, … first, then any name with «daily» in it.
+pub fn suggested_template(candidates: &[String]) -> Option<String> {
+    let stem = |path: &str| {
+        Path::new(path)
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().to_lowercase())
+            .unwrap_or_default()
+    };
+    candidates
+        .iter()
+        .find(|path| {
+            matches!(
+                stem(path).as_str(),
+                "daily" | "daily note" | "daily notes" | "day"
+            )
+        })
+        .or_else(|| candidates.iter().find(|path| stem(path).contains("daily")))
+        .cloned()
 }
 
 /// Open today's note, or create it. Without a daily template the note is
@@ -177,7 +225,9 @@ mod tests {
             template: String::new(),
         };
         let path = |s: Settings| s.relative_path(NOW).unwrap();
-        assert_eq!(path(settings("", "")), Path::new("2026-11-20.md"));
+        // Nothing set: the Daily folder, never the vault root (#3182).
+        assert_eq!(path(settings("", "")), Path::new("Daily/2026-11-20.md"));
+        assert_eq!(path(settings("/", "")), Path::new("Daily/2026-11-20.md"));
         assert_eq!(
             path(settings("/Daily/", "")),
             Path::new("Daily/2026-11-20.md")
@@ -186,7 +236,14 @@ mod tests {
             path(settings("Journal", "YYYY/MM/YYYY-MM-DD")),
             Path::new("Journal/2026/11/2026-11-20.md")
         );
-        assert_eq!(path(settings("", "DD.MM.YYYY")), Path::new("20.11.2026.md"));
+        assert_eq!(
+            path(settings("", "DD.MM.YYYY")),
+            Path::new("Daily/20.11.2026.md")
+        );
+        assert_eq!(
+            path(settings("Journal", "YYYY/MMMM/dddd D")),
+            Path::new("Journal/2026/November/Friday 20.md")
+        );
         assert!(settings("", "dddd").relative_path(NOW).is_err());
         assert!(settings("../out", "").relative_path(NOW).is_err());
     }
@@ -257,28 +314,68 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("vault");
         std::fs::create_dir_all(&root).unwrap();
-        let plain = create(&root, &Settings::default()).unwrap();
-        assert_eq!(
-            plain,
-            Today::Created {
-                rel: "2026-11-20.md".into(),
-                source: "# 2026-11-20\n".into()
-            }
-        );
         let missing = Settings {
-            folder: "Daily".into(),
             template: "Templates/Gone.md".into(),
             ..Default::default()
         };
         let error = create(&root, &missing).unwrap_err().to_string();
         assert!(error.contains("Templates/Gone.md"), "{error}");
-        assert!(!root.join("Daily").exists());
+        assert!(!root.join("Daily").exists(), "nothing is created");
+        let plain = create(&root, &Settings::default()).unwrap();
+        assert_eq!(
+            plain,
+            Today::Created {
+                rel: "Daily/2026-11-20.md".into(),
+                source: "# 2026-11-20\n".into()
+            }
+        );
+        assert_eq!(
+            std::fs::read_dir(&root).unwrap().count(),
+            1,
+            "only the Daily folder: nothing in the vault root"
+        );
         // A folder where the note should be is not opened as a note.
-        std::fs::create_dir_all(root.join("Daily/2026-11-20.md")).unwrap();
         let blocked = Settings {
-            folder: "Daily".into(),
+            format: "[x]".into(),
             ..Default::default()
         };
+        std::fs::create_dir_all(root.join("Daily/x.md")).unwrap();
         assert!(create(&root, &blocked).is_err());
+    }
+
+    #[test]
+    fn templates_are_offered_from_the_templates_folder_or_templates() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+        std::fs::create_dir_all(root.join("Templates")).unwrap();
+        std::fs::write(root.join("Templates/Meeting.md"), "").unwrap();
+        std::fs::write(root.join("Templates/Daily Note.md"), "").unwrap();
+        std::fs::write(root.join("Templates/notes.txt"), "").unwrap();
+        // The default templates folder is not there: Templates/ is offered.
+        let candidates = template_candidates(&root, &Catalog::load(&root).unwrap());
+        assert_eq!(
+            candidates,
+            ["Templates/Daily Note.md", "Templates/Meeting.md"]
+        );
+        assert_eq!(
+            suggested_template(&candidates).as_deref(),
+            Some("Templates/Daily Note.md")
+        );
+        // Obsidian's templates folder wins when it has templates.
+        std::fs::create_dir_all(root.join(".obsidian")).unwrap();
+        std::fs::create_dir_all(root.join("_meta/tpl")).unwrap();
+        std::fs::write(root.join("_meta/tpl/My daily plan.md"), "").unwrap();
+        std::fs::write(
+            root.join(".obsidian/templates.json"),
+            r#"{"folder":"_meta/tpl"}"#,
+        )
+        .unwrap();
+        let candidates = template_candidates(&root, &Catalog::load(&root).unwrap());
+        assert_eq!(candidates, ["_meta/tpl/My daily plan.md"]);
+        assert_eq!(
+            suggested_template(&candidates).as_deref(),
+            Some("_meta/tpl/My daily plan.md")
+        );
+        assert_eq!(suggested_template(&["Templates/Meeting.md".into()]), None);
     }
 }

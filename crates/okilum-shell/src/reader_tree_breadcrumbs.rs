@@ -690,9 +690,14 @@ mod tests {
         let (reader, visual, temp) = fixture(cx);
         let vault = temp.path().join("vault");
         let settings = okilum_core::daily_notes::Settings::default();
+        reader.read_with(visual, |view, _| {
+            let state = view.session_directory.clone().unwrap();
+            reader_daily_notes::save(&state, &view.vault_root, &settings).unwrap();
+        });
         let rel = okilum_core::vault::note_path(
             &settings.relative_path(reader_daily_notes::now()).unwrap(),
         );
+        assert!(rel.starts_with("Daily/"), "never the vault root: {rel}");
         assert!(!vault.join(&rel).exists());
         reader.update_in(visual, |view, window, cx| {
             view.show_app_section(reader_project_navigation::Section::Logs, window, cx)
