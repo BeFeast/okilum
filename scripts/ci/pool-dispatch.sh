@@ -24,6 +24,7 @@ args=(
     --timeout-minutes 40 --mem 7
     --ship "$ship"
     --env "OKILUM_POOL_RECEIPT=$receipt"
+    --env "OKILUM_SOURCE_COMMIT=$sha"
 )
 # The full gate builds the per-user AppImage runtime with Docker. Only baldr
 # has Docker; pre-merge does not, and can land on any pool host.

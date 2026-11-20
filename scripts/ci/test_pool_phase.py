@@ -51,6 +51,25 @@ class PoolGit(unittest.TestCase):
             self.assertIn("extra.rs", again.stdout)
             self.assertIn("credentials.rs", again.stdout)
 
+    def test_a_stale_slot_index_is_rebuilt_when_the_dispatcher_names_the_commit(self):
+        lib = ROOT / "scripts/ci/pool-phase-lib.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            (work / "keep.rs").write_text("keep\n")
+            subprocess.run(["git", "init", "-q"], cwd=work, check=True, capture_output=True)
+            subprocess.run(["git", "-c", "user.email=pool@okilum.local", "-c", "user.name=pool",
+                            "add", "keep.rs"], cwd=work, check=True, capture_output=True)
+            subprocess.run(["git", "-c", "user.email=pool@okilum.local", "-c", "user.name=pool",
+                            "commit", "-q", "-m", "old checkout"], cwd=work, check=True, capture_output=True)
+            (work / "keep.rs").unlink()
+            (work / "now.rs").write_text("now\n")
+            script = f'set -euo pipefail\nsource "{lib}"\npool_ensure_git\ngit ls-files'
+            result = subprocess.run(["bash", "-c", script], cwd=work, capture_output=True, text=True,
+                                    timeout=30, env={**os.environ, "OKILUM_SOURCE_COMMIT": "d" * 40})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("now.rs", result.stdout)
+            self.assertNotIn("keep.rs", result.stdout)
+
 
 class PoolPhase(unittest.TestCase):
     def test_only_a_recorded_success_passes(self):

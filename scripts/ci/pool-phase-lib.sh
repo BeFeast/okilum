@@ -7,13 +7,19 @@ pool_fail_infra=0
 
 # git archive has no repository, and check-vendor-generation.py runs git ls-files.
 pool_ensure_git() {
-    # A previous pool run may have left a synthetic repository. Rebuild it:
-    # the slot directory is reused, and an old index can omit files the host
-    # excludesFile hid. A developer's real clone (any other commit) is kept.
+    # The slot directory is reused. A previous index can list files the new
+    # archive does not have, or omit files a host excludesFile hid. When the
+    # dispatcher names OKILUM_SOURCE_COMMIT, this tree is the slot copy:
+    # rebuild every time. A developer clone (no such variable, and not one of
+    # our synthetic commits) is left untouched.
     if [[ -d .git ]]; then
-        local subject
+        local head subject
+        head=$(git rev-parse HEAD 2>/dev/null || true)
         subject=$(git log -1 --format=%s 2>/dev/null || true)
-        if [[ $subject != 'pool source' && ! -f .git/okilum-pool-source ]]; then
+        if [[ -n ${OKILUM_SOURCE_COMMIT:-} && $head == "$OKILUM_SOURCE_COMMIT" ]]; then
+            return 0
+        fi
+        if [[ -z ${OKILUM_SOURCE_COMMIT:-} && $subject != 'pool source' && ! -f .git/okilum-pool-source ]]; then
             return 0
         fi
         rm -rf .git

@@ -353,6 +353,7 @@ class Queue:
             "--source-git", str(self.root), "--source-rev", sha,
             "--require-host", "baldr",
             "--ship", str(ship), "--env", f"OKILUM_POOL_RECEIPT={receipt}",
+            "--env", f"OKILUM_SOURCE_COMMIT={sha}",
             "--", "bash", "scripts/ci/pool-linux-gate.sh",
         ]
         proc = subprocess.run(command, cwd=self.root, text=True, stdout=subprocess.PIPE,
