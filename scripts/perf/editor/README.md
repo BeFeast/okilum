@@ -122,10 +122,12 @@ Promoting it to required is a separate decision. It would add two hosted
 release builds (~20 min) to every native-scope admission.
 
 From #3065's merge (17 November 2026, 09:27 UTC) to 20 November 2026, 09:55 UTC,
-the strict job concluded 100 runs as success and 17 as failure. All 17 failed in
-the build step during one red-main hour (17 November, 21:29–22:45 UTC:
-`PreparedDocument` missing `outline`), before any measurement. None was a
-measurement verdict, and none was a false red.
+GitHub recorded 242 `forgejo-perf-linux` runs. The `perf-linux` jobs that
+completed by that cutoff break down as 127 success, 17 failure, 1 skipped and
+91 cancelled. All 17 failures happened in the build step during one red-main
+hour (runs created 17 November, 21:29–22:45 UTC: `PreparedDocument` missing
+`outline`), before any measurement. None was a measurement verdict, and none
+was a false red.
 
 The sections below document the original static collector and measurement
 boundary, retained for diagnostics and historical evidence.
