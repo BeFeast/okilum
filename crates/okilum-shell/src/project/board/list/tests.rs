@@ -282,12 +282,12 @@ async fn list_2530_real_reader_note_roundtrip_retains_selection_and_scrolled_vie
     // Opening the note prepares its document off the UI thread too.
     visual
         .condition(&reader, |reader, _| {
-            reader.current_rel == "project/note.md" && !reader.project_navigation.board_visible
+            reader.pane.current_rel == "project/note.md" && !reader.project_navigation.board_visible
         })
         .await;
     visual.run_until_parked();
     reader.read_with(visual, |r, _| {
-        assert_eq!(r.current_rel, "project/note.md");
+        assert_eq!(r.pane.current_rel, "project/note.md");
         assert!(!r.project_navigation.board_visible);
     });
     assert!(visual.debug_bounds("board-list-viewport").is_none());

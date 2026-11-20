@@ -176,6 +176,7 @@ fn prepare_log(path: &Path, root: Option<&Path>, cancel: &Cancellation) -> Resul
                 original: Some(String::new()),
                 identities: Vec::new(),
                 frontmatter: None,
+                outline: None,
             },
         )),
         published: None,
@@ -185,6 +186,46 @@ fn prepare_log(path: &Path, root: Option<&Path>, cancel: &Cancellation) -> Resul
             file: Arc::new(file),
             elapsed,
         }),
+    })
+}
+
+/// A folder opened like a file (#3098): the quick viewer of that folder with
+/// no document selected yet. Nothing is indexed, cached or recorded as a
+/// vault; the siblings listing follows publication as for a single file, and
+/// «Open folder as vault» converts the window.
+fn prepare_folder_view(root: &Path, cancel: &Cancellation) -> Result<Event> {
+    std::fs::read_dir(root).context("The requested directory cannot be read")?;
+    cancel.check()?;
+    let intent = reader_open::OpenIntent {
+        root: root.to_path_buf(),
+        single_file: true,
+        note: None,
+        created_note: false,
+    };
+    let mut vault = Vault::from_note_paths(std::iter::empty::<String>());
+    vault.root = intent.root.clone();
+    vault.single_file = true;
+    Ok(Event::First {
+        intent,
+        vault,
+        cache_lease: None,
+        searcher: None,
+        snapshot: None,
+        document: Some((
+            String::new(),
+            prepared_links::PreparedDocument {
+                encoding_damaged: false,
+                canonical_source: None,
+                source: String::new(),
+                original: Some(String::new()),
+                identities: Vec::new(),
+                frontmatter: None,
+                outline: None,
+            },
+        )),
+        published: None,
+        recovery_notice: None,
+        log: None,
     })
 }
 
@@ -217,6 +258,7 @@ fn prepare_plain_file(path: &Path, root: Option<&Path>, cancel: &Cancellation) -
                 original: Some(String::new()),
                 identities: Vec::new(),
                 frontmatter: None,
+                outline: None,
             },
         )),
         published: None,
@@ -285,6 +327,9 @@ fn prepare_first_existing_document(
         && reader_delimited::previewable(&canonical_path.to_string_lossy())
     {
         return prepare_plain_file(&canonical_path, root, cancel);
+    }
+    if opts.single_file && canonical_path.is_dir() {
+        return prepare_folder_view(&canonical_path, cancel);
     }
     if opts.single_file || (canonical_path.is_file() && root.is_none() && reusable.is_none()) {
         let mut intent = reader_open::OpenIntent::validate_cached(&canonical_path, root, None)?;
@@ -489,6 +534,7 @@ fn prepare_first_existing_document(
                     original: Some(String::new()),
                     identities: Vec::new(),
                     frontmatter: None,
+                    outline: None,
                 }
             } else if opts.use_html {
                 prepared_links::PreparedDocument::html(&vault, &rel, saved.clone())?
@@ -1429,6 +1475,9 @@ fn existing_cache_ancestor(
     })
 }
 
+/// A document's outline and the milliseconds its scan took.
+type PreparedOutline = (Vec<okilum_core::document_links::HeadingEntry>, f64);
+
 pub(crate) struct PendingDocument {
     intent: reader_open::OpenIntent,
     vault: Vault,
@@ -1441,6 +1490,11 @@ pub(crate) struct PendingDocument {
     _observer: Subscription,
     languages_prepared: bool,
     language_task: Option<Task<()>>,
+    /// The outline, scanned while the TextView parses (#3073).
+    outline_task: Option<Task<Option<PreparedOutline>>>,
+    /// When this document was staged: the open's `note_open_prepare`
+    /// diagnostic (#3073).
+    staged_at: std::time::Instant,
 }
 
 impl Reader {
@@ -1487,7 +1541,7 @@ impl Reader {
                 .map(|trace| trace.phase("text_state_stage"))
         });
         let content = cx.new(|cx| {
-            let mut state = if self.use_html {
+            let mut state = if self.pane.use_html {
                 TextViewState::html("", cx)
             } else {
                 TextViewState::markdown("", cx)
@@ -1507,6 +1561,16 @@ impl Reader {
         let observer = cx.observe_in(&content, window, |this, _, window, cx| {
             this.publish_pending_document(window, cx)
         });
+        // The outline scan is linear but slow on a long note; run it beside
+        // the parse rather than on the UI thread at publication (#3073).
+        let outline_task = (!self.pane.use_html).then(|| {
+            let source = document.source.clone();
+            cx.background_executor().spawn(async move {
+                let started = std::time::Instant::now();
+                let outline = crate::note_outline(&source);
+                Some((outline, started.elapsed().as_secs_f64() * 1000.))
+            })
+        });
         self.pending_open_document = Some(PendingDocument {
             intent,
             vault,
@@ -1519,6 +1583,8 @@ impl Reader {
             _observer: observer,
             languages_prepared: false,
             language_task: None,
+            outline_task,
+            staged_at: std::time::Instant::now(),
         });
         self.publish_pending_document(window, cx);
     }
@@ -1532,15 +1598,35 @@ impl Reader {
             return;
         };
         if status.is_ok() {
+            let trace = self
+                .loading
+                .as_ref()
+                .and_then(|load| load.opts.diagnostics.clone());
             let pending = self.pending_open_document.as_mut().unwrap();
             if !pending.languages_prepared {
                 if pending.language_task.is_none() {
+                    let parsed_at = std::time::Instant::now();
+                    if let Some(trace) = &trace {
+                        trace.event(
+                            "note_open_parse",
+                            serde_json::json!({
+                                "duration_ms": (parsed_at - pending.staged_at).as_secs_f64() * 1000.,
+                                "bytes": pending.document.source.len(),
+                            }),
+                        );
+                    }
                     let content = pending.content.clone();
                     let work = content
                         .read(cx)
                         .prepare_code_languages(reader_code_language::resolver(), cx);
+                    let outline = pending.outline_task.take();
                     pending.language_task = Some(cx.spawn_in(window, async move |this, cx| {
                         work.await;
+                        let languages_ms = parsed_at.elapsed().as_secs_f64() * 1000.;
+                        let outline = match outline {
+                            Some(task) => task.await,
+                            None => None,
+                        };
                         let _ = this.update_in_own_window(cx, |this, window, cx| {
                             let Some(pending) = this.pending_open_document.as_mut() else {
                                 return;
@@ -1548,7 +1634,23 @@ impl Reader {
                             if pending.content != content {
                                 return;
                             }
+                            let outline_ms = outline.as_ref().map(|(_, ms)| *ms);
+                            pending.document.outline = outline.map(|(outline, _)| outline);
                             pending.languages_prepared = true;
+                            if let Some(trace) = &trace {
+                                // The whole wait between staging the document
+                                // and publishing it, split by cause (#3073).
+                                trace.event(
+                                    "note_open_prepare",
+                                    serde_json::json!({
+                                        "duration_ms": pending.staged_at.elapsed().as_secs_f64() * 1000.,
+                                        "parse_ms": (parsed_at - pending.staged_at).as_secs_f64() * 1000.,
+                                        "code_languages_ms": languages_ms,
+                                        "outline_ms": outline_ms,
+                                        "bytes": pending.document.source.len(),
+                                    }),
+                                );
+                            }
                             this.publish_pending_document(window, cx);
                         });
                     }));
@@ -1589,11 +1691,11 @@ impl Reader {
         let switching_mode = self.single_file != pending.intent.single_file
             && self.vault_root == pending.intent.root;
         let preserve_preview = switching_mode
-            && self.file_preview.as_ref().is_some_and(|preview| {
+            && self.pane.file_preview.as_ref().is_some_and(|preview| {
                 pending.intent.note.as_deref() == Some(preview.rel.as_str())
             });
         let preserve_document = switching_mode
-            && (self.current_rel == pending.rel || preserve_preview)
+            && (self.pane.current_rel == pending.rel || preserve_preview)
             && self.document_ready();
         if self.vault_root != pending.intent.root {
             self.tree_preview.close();
@@ -1712,7 +1814,8 @@ impl Reader {
                 .unwrap_or_default();
             if let (false, Some(view)) = (
                 extra.is_empty(),
-                self.file_preview
+                self.pane
+                    .file_preview
                     .as_ref()
                     .and_then(|preview| preview.log.clone()),
             ) {
@@ -1735,7 +1838,7 @@ impl Reader {
     }
 
     fn current_document_is_cloud_pending(&self) -> bool {
-        let path = self.vault_root.join(&self.current_rel);
+        let path = self.vault_root.join(&self.pane.current_rel);
         self.vault
             .cloud_placeholders
             .iter()
@@ -1749,7 +1852,7 @@ impl Reader {
         cx: &mut Context<Self>,
     ) {
         // An explicitly closed selection has no document to reconcile.
-        if self.current_rel.is_empty() {
+        if self.pane.current_rel.is_empty() {
             return;
         }
         if self.current_document_is_cloud_pending() {
@@ -1779,7 +1882,7 @@ impl Reader {
             self.refresh_link_preparation(cx);
             return;
         }
-        let Some(raw) = sources.get(&self.current_rel) else {
+        let Some(raw) = sources.get(&self.pane.current_rel) else {
             if self.document_ready() {
                 self.link_notice = Some("The displayed document is no longer available; showing its last readable contents.".into());
             }
@@ -1794,11 +1897,12 @@ impl Reader {
         // Note and block embeds both wait for the inventory; an unchanged
         // source must still be rendered again to resolve them (#932). So does
         // an image the incomplete inventory did not know yet (#1126).
-        let pending_embed = okilum_core::render::has_pending_embeds(&self.note_source)
-            || okilum_core::render::has_unavailable_images(&self.note_source);
+        let pending_embed = okilum_core::render::has_pending_embeds(&self.pane.note_source)
+            || okilum_core::render::has_unavailable_images(&self.pane.note_source);
         if !pending_embed
-            && self.note_canonical_source.as_deref() == Some(raw.as_ref())
-            && self.note_encoding_damaged == self.vault.note_encoding_damaged(&self.current_rel)
+            && self.pane.note_canonical_source.as_deref() == Some(raw.as_ref())
+            && self.note_encoding_damaged
+                == self.vault.note_encoding_damaged(&self.pane.current_rel)
         {
             self.refresh_link_preparation(cx);
             return;
@@ -1839,7 +1943,7 @@ impl Reader {
                     .then(|| {
                         self.navigation
                             .places
-                            .get(&(self.vault_root.clone(), self.current_rel.clone()))
+                            .get(&(self.vault_root.clone(), self.pane.current_rel.clone()))
                             .copied()
                     })
                     .flatten()
@@ -1853,7 +1957,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.current_rel.is_empty() {
+        if self.pane.current_rel.is_empty() {
             return;
         }
         if self.current_document_is_cloud_pending() {
@@ -1878,15 +1982,15 @@ impl Reader {
             return;
         }
         let vault = self.vault.clone();
-        let rel = self.current_rel.clone();
+        let rel = self.pane.current_rel.clone();
         let root = self.vault_root.clone();
         let navigation = self.navigation.generation;
         let generation = self.navigation.preparation_generation;
-        let html = self.use_html;
+        let html = self.pane.use_html;
         self.navigation.reconciliation_generation =
             self.navigation.reconciliation_generation.wrapping_add(1);
         let reconciliation = self.navigation.reconciliation_generation;
-        let previous_canonical = self.note_canonical_source.clone();
+        let previous_canonical = self.pane.note_canonical_source.clone();
         let previous_rendered = self.pane.link_rendered_source.clone();
         let previous_original = self.pane.link_original_source.clone();
         let previous_damaged = self.note_encoding_damaged;
@@ -1944,7 +2048,7 @@ impl Reader {
                 .await;
             let _ = this.update_in_own_window(cx, |this, window, cx| {
                 if this.vault_root != root
-                    || this.current_rel != rel
+                    || this.pane.current_rel != rel
                     || this.navigation.generation != navigation
                     || this.navigation.preparation_generation != generation
                     || this.navigation.reconciliation_generation != reconciliation
@@ -1988,7 +2092,7 @@ impl Reader {
                     // Its TextView is unmounted behind Board. Keep the reading
                     // place for an explicit return without polling an invisible layout.
                     this.navigation.places.insert(
-                        (this.vault_root.clone(), this.current_rel.clone()),
+                        (this.vault_root.clone(), this.pane.current_rel.clone()),
                         position,
                     );
                     this.cancel_pending_landing();
@@ -2141,7 +2245,7 @@ impl Reader {
                 if let Err(error) = result {
                     let _ = this.update(cx, |this, cx| {
                         if this.vault_root == requested_root
-                            && this.current_rel == requested_document
+                            && this.pane.current_rel == requested_document
                         {
                             this.link_notice =
                                 Some(format!("Reading history could not be saved: {error:#}").into());
@@ -2218,13 +2322,13 @@ impl Reader {
             return;
         }
         // A log in the quick viewer is the document to restore (#602).
-        let document = match &self.file_preview {
+        let document = match &self.pane.file_preview {
             Some(preview)
                 if preview.log.is_some() || reader_delimited::previewable(&preview.rel) =>
             {
                 preview.rel.clone()
             }
-            _ => self.current_rel.clone(),
+            _ => self.pane.current_rel.clone(),
         };
         let identity = (
             self.vault_root.clone(),
@@ -2288,7 +2392,7 @@ impl Reader {
         // A deleted note asks before its contents are left behind (#1986).
         let other = opts.vault.as_ref() != Some(&self.vault_root)
             || opts.open_path.is_some()
-            || opts.note.as_deref() != Some(self.current_rel.as_str())
+            || opts.note.as_deref() != Some(self.pane.current_rel.as_str())
             || opts.single_file != self.single_file;
         if other && self.leaving_deleted_note(None, cx) {
             self.ask_leaving_deleted_note(
@@ -2312,7 +2416,7 @@ impl Reader {
             return;
         }
         if !switching_current_file {
-            self.file_preview = None;
+            self.pane.file_preview = None;
         }
         self.file_menu = None;
         if opts.vault.as_ref() != Some(&self.vault_root)
@@ -2378,14 +2482,14 @@ impl Reader {
             force_source_read,
             reconcile_recent: self.quick_open.recent.clone(),
             vault: Some(self.vault_root.clone()),
-            note: Some(self.current_rel.clone()),
+            note: Some(self.pane.current_rel.clone()),
             diagnostics: self
                 .loading
                 .as_ref()
                 .and_then(|load| load.opts.diagnostics.clone()),
             index_dir: self.index_dir.clone(),
             cache_lease: self.cache_lease.clone(),
-            use_html: self.use_html,
+            use_html: self.pane.use_html,
             ..Default::default()
         };
         // A stalled filesystem call cannot be cancelled by dropping its task.
@@ -3272,11 +3376,11 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |r, window, cx| {
             assert!(r.document_ready());
-            assert_eq!(r.current_rel, "Damaged.md");
-            assert!(r.note_source.contains("encodingcanary"));
-            assert!(r.note_source.contains('\u{fffd}'));
+            assert_eq!(r.pane.current_rel, "Damaged.md");
+            assert!(r.pane.note_source.contains("encodingcanary"));
+            assert!(r.pane.note_source.contains('\u{fffd}'));
             assert!(r.note_encoding_damaged);
-            assert!(r.note_canonical_source.is_none());
+            assert!(r.pane.note_canonical_source.is_none());
             assert_eq!(
                 r.searcher
                     .as_ref()
@@ -3306,7 +3410,7 @@ mod tests {
         });
         visual.run_until_parked();
         reader.update_in(visual, |r, window, cx| {
-            assert_eq!(r.current_rel, "Valid.md");
+            assert_eq!(r.pane.current_rel, "Valid.md");
             assert!(!r.note_encoding_damaged);
             r.toggle_source(window, cx);
             assert!(r.editing.is_some());
@@ -3413,6 +3517,7 @@ mod tests {
             assert_eq!(r.selected_file(), "sheet.tsv");
             assert!(r.searcher.is_none() && r.watcher.is_some());
             assert!(r
+                .pane
                 .file_preview
                 .as_ref()
                 .unwrap()
@@ -3436,6 +3541,7 @@ mod tests {
             assert!(r.save_source(cx));
             r.toggle_source(window, cx);
             assert!(r
+                .pane
                 .file_preview
                 .as_ref()
                 .unwrap()
@@ -3503,10 +3609,10 @@ mod tests {
         let reader = reader.unwrap();
         visual.run_until_parked();
         let (old_snapshot, rendered) = reader.read_with(visual, |r, _| {
-            assert_eq!(r.note_canonical_source.as_deref(), Some(initial));
+            assert_eq!(r.pane.note_canonical_source.as_deref(), Some(initial));
             (
-                r.note_canonical_source.clone().unwrap(),
-                r.note_source.clone(),
+                r.pane.note_canonical_source.clone().unwrap(),
+                r.pane.note_source.clone(),
             )
         });
         // The worker must use this accepted inventory snapshot, not reopen the
@@ -3525,22 +3631,25 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
-            assert_eq!(r.note_source, rendered);
-            assert_eq!(r.note_canonical_source.as_deref(), Some(changed.as_str()));
+            assert_eq!(r.pane.note_source, rendered);
+            assert_eq!(
+                r.pane.note_canonical_source.as_deref(),
+                Some(changed.as_str())
+            );
             assert_eq!(
                 old_snapshot.as_ref(),
                 initial,
                 "retained evidence stays immutable"
             );
             assert_eq!(
-                r.properties,
+                r.pane.properties,
                 okilum_core::properties::parse(
                     okilum_core::properties::frontmatter_block(&changed).unwrap()
                 )
             );
             assert!(matches!(
                 okilum_core::typed_view::select(
-                    r.note_canonical_source.as_deref().unwrap(),
+                    r.pane.note_canonical_source.as_deref().unwrap(),
                     &Default::default()
                 ),
                 okilum_core::typed_view::Selection::Fallback(_)
@@ -3561,7 +3670,10 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
-            assert_eq!(r.note_canonical_source.as_deref(), Some(changed.as_str()));
+            assert_eq!(
+                r.pane.note_canonical_source.as_deref(),
+                Some(changed.as_str())
+            );
         });
         // Shared-session fallback has no retained source map. Its worker must
         // publish canonical bytes from the same read as the rendered document.
@@ -3570,8 +3682,8 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
-            assert_eq!(r.note_canonical_source.as_deref(), Some(initial));
-            assert_eq!(r.note_source, rendered);
+            assert_eq!(r.pane.note_canonical_source.as_deref(), Some(initial));
+            assert_eq!(r.pane.note_source, rendered);
         });
         reader.update_in(visual, |r, window, cx| {
             r.reconcile_inventory_document(&sources, window, cx);
@@ -3579,9 +3691,9 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
-            assert!(r.current_rel.is_empty());
+            assert!(r.pane.current_rel.is_empty());
             assert!(
-                r.note_canonical_source.is_none(),
+                r.pane.note_canonical_source.is_none(),
                 "late preparation cannot revive a closed note"
             );
         });
@@ -3795,7 +3907,7 @@ mod tests {
                         && v.loading.as_ref().unwrap().active
                 );
                 assert_eq!(v.vault_root, *root);
-                assert_eq!(v.current_rel, expected);
+                assert_eq!(v.pane.current_rel, expected);
                 assert_eq!(
                     v.vault.notes.len(),
                     count,
@@ -3829,6 +3941,78 @@ mod tests {
             release.try_send(()).unwrap();
             visual.run_until_parked();
         }
+    }
+
+    /// The wait between staging the first note and publishing it has its own
+    /// diagnostic, split by cause, and the outline is scanned beside the
+    /// parse instead of on the UI thread at publication (#3073).
+    #[gpui::test]
+    fn first_note_preparation_is_traced_and_publishes_the_background_outline(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        let temp = TestDirectory::new();
+        let root = temp.path().join("source");
+        let state = temp.path().join("state");
+        std::fs::create_dir(&root).unwrap();
+        let note = "# Outline control\n\nText.\n\n```text\nplain\n```\n\n> # Quoted heading\n\n## Second section\n";
+        std::fs::write(root.join("first.md"), note).unwrap();
+        let trace = reader_diagnostics::Trace::new(Some(state.clone()), None);
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("first.md".into()),
+                        diagnostics: Some(trace),
+                        index_dir: Some(temp.path().join("cache")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        let mut prepare = None;
+        for _ in 0..500 {
+            visual.run_until_parked();
+            let text =
+                std::fs::read_to_string(state.join("reader-diagnostic.log")).unwrap_or_default();
+            prepare = text
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .find(|event| event["phase"] == "note_open_prepare");
+            if prepare.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let details = prepare.expect("note_open_prepare logged")["details"].clone();
+        for key in ["duration_ms", "parse_ms", "code_languages_ms", "outline_ms"] {
+            assert!(
+                details[key].as_f64().is_some_and(|ms| ms >= 0.),
+                "{key}: {details}"
+            );
+        }
+        assert!(details["duration_ms"].as_f64() >= details["parse_ms"].as_f64());
+        assert!(details["bytes"].as_u64().is_some_and(|bytes| bytes > 0));
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.pane.current_rel, "first.md");
+            // The background outline is the one published, container filter included.
+            assert_eq!(
+                r.pane
+                    .outline
+                    .iter()
+                    .map(|h| h.text.as_str())
+                    .collect::<Vec<_>>(),
+                ["Outline control", "Second section"]
+            );
+            assert_eq!(r.pane.outline, crate::note_outline(&r.pane.note_source));
+        });
     }
 
     #[gpui::test]
@@ -4726,7 +4910,7 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |v, _, _| {
             assert_eq!(v.vault_root, root);
-            assert_eq!(v.current_rel, "start.md");
+            assert_eq!(v.pane.current_rel, "start.md");
             assert_eq!(v.panel_settings.as_ref(), Some(&settings));
             assert_eq!(v.panel_widths.notes, 620.);
             v.set_panel_width(reader_layout::Panel::Notes, 480.);
@@ -4954,7 +5138,9 @@ mod tests {
             reader.update_in(visual, |v, window, cx| v.poll_vault(window, cx));
             visual.run_until_parked();
             let arrived = reader.read_with(visual, |v, _| {
-                v.note_source.contains("WatcherSurvivedPositiveControl")
+                v.pane
+                    .note_source
+                    .contains("WatcherSurvivedPositiveControl")
             });
             if arrived || std::time::Instant::now() > deadline {
                 break;
@@ -4962,7 +5148,9 @@ mod tests {
         }
         reader.read_with(visual, |v, _| {
             assert!(
-                v.note_source.contains("WatcherSurvivedPositiveControl"),
+                v.pane
+                    .note_source
+                    .contains("WatcherSurvivedPositiveControl"),
                 "the retained watcher actually delivers later source changes"
             )
         });
@@ -4983,7 +5171,7 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |v, _, cx| {
             assert_eq!(v.vault_root, temp.path().join("b"));
-            assert!(v.note_source.contains("newrootword"));
+            assert!(v.pane.note_source.contains("newrootword"));
             assert!(
                 v.searcher.is_none(),
                 "old-root rows disappear at first publication"
@@ -5229,8 +5417,8 @@ mod tests {
         reader.update_in(visual, |v, window, cx| {
             assert!(v.document_ready());
             assert!(v.searcher.is_none());
-            assert!(v.note_source.contains("pending target"));
-            assert!(!v.note_source.contains("missing target"));
+            assert!(v.pane.note_source.contains("pending target"));
+            assert!(!v.pane.note_source.contains("missing target"));
             assert_eq!(v.content.read(cx).preparation_status(), Some(Ok(())));
             let configured = reader_plugins(
                 v.vault_root.clone(),
@@ -5279,11 +5467,12 @@ mod tests {
         visual.executor().advance_clock(Duration::from_millis(300));
         visual.run_until_parked();
         reader.read_with(visual, |v, cx| {
-            assert!(v.note_source.contains("ScanTimePositiveControl"));
+            assert!(v.pane.note_source.contains("ScanTimePositiveControl"));
             assert!(v
+                .pane
                 .note_source
                 .contains("EmbeddedPositiveControl changed before watcher"));
-            assert!(!v.note_source.contains("pending target"));
+            assert!(!v.pane.note_source.contains("pending target"));
             assert_eq!(v.navigation.history, history);
             let now = v.content.read(cx).list_state().logical_scroll_top();
             assert_eq!(now.item_ix, position.item_ix);
@@ -5305,8 +5494,8 @@ mod tests {
         reader.read_with(visual, |v, _| {
             // #1986: the deleted-note notice keeps the last contents on screen.
             assert!(v.deleted_current().is_some(), "{:?}", v.link_notice);
-            assert!(v.note_source.contains("ScanTimePositiveControl"));
-            assert_eq!(v.current_rel, "start.md");
+            assert!(v.pane.note_source.contains("ScanTimePositiveControl"));
+            assert_eq!(v.pane.current_rel, "start.md");
             assert_eq!(v.navigation.history, history);
         });
     }
@@ -5352,17 +5541,19 @@ mod tests {
         reader.read_with(visual, |v, _| {
             assert!(v.document_ready());
             // Positive control: the first render really is waiting on the inventory.
-            assert!(okilum_core::render::has_pending_embeds(&v.note_source));
-            assert!(!v.note_source.contains("BlockBody932"));
+            assert!(okilum_core::render::has_pending_embeds(&v.pane.note_source));
+            assert!(!v.pane.note_source.contains("BlockBody932"));
         });
         release.try_send(()).unwrap();
         visual.run_until_parked();
         visual.executor().advance_clock(Duration::from_millis(300));
         visual.run_until_parked();
         reader.read_with(visual, |v, _| {
-            assert_eq!(v.current_rel, "start.md");
-            assert!(!okilum_core::render::has_pending_embeds(&v.note_source));
-            assert!(v.note_source.contains("BlockBody932"));
+            assert_eq!(v.pane.current_rel, "start.md");
+            assert!(!okilum_core::render::has_pending_embeds(
+                &v.pane.note_source
+            ));
+            assert!(v.pane.note_source.contains("BlockBody932"));
         });
     }
 
@@ -5415,20 +5606,20 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |v, _| {
             // Positive control: the first render waits on the inventory.
-            assert!(okilum_core::render::has_pending_embeds(&v.note_source));
-            assert!(!v.note_source.contains("QuietBlock932"));
+            assert!(okilum_core::render::has_pending_embeds(&v.pane.note_source));
+            assert!(!v.pane.note_source.contains("QuietBlock932"));
         });
         release.try_send(()).unwrap();
         visual.run_until_parked();
         visual.executor().advance_clock(Duration::from_millis(300));
         visual.run_until_parked();
         reader.read_with(visual, |v, _| {
-            assert_eq!(v.current_rel, "embeds.md");
+            assert_eq!(v.pane.current_rel, "embeds.md");
             assert!(
-                !okilum_core::render::has_pending_embeds(&v.note_source),
+                !okilum_core::render::has_pending_embeds(&v.pane.note_source),
                 "no embed may stay on Loading"
             );
-            assert!(v.note_source.contains("QuietBlock932"));
+            assert!(v.pane.note_source.contains("QuietBlock932"));
         });
     }
 
@@ -5477,22 +5668,27 @@ mod tests {
             assert!(v.document_ready());
             // Positive control: the first render really ran before the
             // inventory knew the image.
-            assert!(okilum_core::render::has_unavailable_images(&v.note_source));
+            assert!(okilum_core::render::has_unavailable_images(
+                &v.pane.note_source
+            ));
         });
         release.try_send(()).unwrap();
         visual.run_until_parked();
         visual.executor().advance_clock(Duration::from_millis(300));
         visual.run_until_parked();
         reader.read_with(visual, |v, _| {
-            assert_eq!(v.current_rel, "Recovery.md", "no navigation");
-            assert!(!okilum_core::render::has_unavailable_images(&v.note_source));
+            assert_eq!(v.pane.current_rel, "Recovery.md", "no navigation");
+            assert!(!okilum_core::render::has_unavailable_images(
+                &v.pane.note_source
+            ));
             // The image now points at the vault file.
             assert!(
-                v.note_source
+                v.pane
+                    .note_source
                     .split(['(', ')'])
                     .any(|url| url.starts_with("file://") && url.ends_with("/blue.png")),
                 "{}",
-                v.note_source
+                v.pane.note_source
             );
         });
     }
@@ -5630,6 +5826,7 @@ mod tests {
                 assert!(!load.network_waiting);
                 assert_eq!(load.network, network, "network capability survives refresh");
                 assert!(v
+                    .pane
                     .note_source
                     .contains(&format!("Reconnect positive control {network}")));
             });
@@ -5639,7 +5836,7 @@ mod tests {
         let offline = temp.path().join("offline");
         std::fs::rename(&root, &offline).unwrap();
         let (old_source, failed_generation) = reader.update_in(visual, |v, window, cx| {
-            let old = v.note_source.clone();
+            let old = v.pane.note_source.clone();
             v.refresh_inventory_unshared(Default::default(), true, window, cx);
             (old, v.loading.as_ref().unwrap().generation)
         });
@@ -5647,7 +5844,7 @@ mod tests {
         reader.read_with(visual, |v, _| {
             assert!(!v.loading.as_ref().unwrap().active);
             assert!(v.loading.as_ref().unwrap().network_waiting);
-            assert_eq!(v.note_source, old_source);
+            assert_eq!(v.pane.note_source, old_source);
             assert!(!v.vault.notes.is_empty(), "failed root retains inventory");
         });
         std::fs::rename(&offline, &root).unwrap();
@@ -5768,7 +5965,7 @@ mod tests {
         visual.update(|window, cx| window.draw(cx).clear(cx));
         reader.update_in(visual, |v, window, cx| {
             assert!(v.document_ready());
-            assert_eq!(v.current_rel, "last.md");
+            assert_eq!(v.pane.current_rel, "last.md");
             assert_eq!(v.vault.notes.len(), 103);
             assert_eq!(
                 v.vault.unreadable.len(),
@@ -6079,7 +6276,7 @@ mod tests {
                     .unwrap_or_else(|| start.elapsed().as_secs_f64() * 1000.);
                 reader.read_with(visual, |v, _| {
                     assert_eq!(v.vault.notes.len(), total_notes);
-                    assert_eq!(v.current_rel, "last.md");
+                    assert_eq!(v.pane.current_rel, "last.md");
                     assert!(!v.loading.as_ref().unwrap().active);
                     assert_eq!(
                         v.searcher
@@ -6385,8 +6582,8 @@ mod tests {
         visual.update(|window, cx| window.draw(cx).clear(cx));
         let readable = started.elapsed();
         reader.update_in(visual, |v, window, cx| {
-            assert_eq!(v.current_rel, deep);
-            assert!(v.note_source.contains("Fresh 299"));
+            assert_eq!(v.pane.current_rel, deep);
+            assert!(v.pane.note_source.contains("Fresh 299"));
             assert_eq!(v.content.read(cx).preparation_status(), Some(Ok(())));
             assert!(v.searcher.is_none());
             v.open_find(window, cx);
@@ -6424,7 +6621,7 @@ mod tests {
         release.try_send(()).unwrap();
         visual.run_until_parked();
         reader.read_with(visual, |v, cx| {
-            assert_eq!(v.current_rel, deep);
+            assert_eq!(v.pane.current_rel, deep);
             assert_eq!(
                 v.content.entity_id(),
                 content,
@@ -6499,7 +6696,7 @@ mod tests {
         let first = start.elapsed();
         reader.update_in(visual, |v, window, cx| {
             assert!(v.document_ready());
-            assert_eq!(v.current_rel, "first.md");
+            assert_eq!(v.pane.current_rel, "first.md");
             assert!(v.loading.as_ref().unwrap().active);
             assert!(v.searcher.is_none(), "positive unfinished-work control");
             assert!(!v.vault.inventory_complete);
@@ -6518,7 +6715,7 @@ mod tests {
             v.dismiss(window, cx);
             assert!(!v.loading.as_ref().unwrap().active);
             assert!(v.document_ready());
-            assert_eq!(v.current_rel, "first.md");
+            assert_eq!(v.pane.current_rel, "first.md");
         });
         let cancelled = start.elapsed();
         // An independently delayed worker phase remains held for >3 seconds.
@@ -6532,7 +6729,7 @@ mod tests {
         let teardown = start.elapsed();
         reader.update_in(visual, |v, _, _| {
             assert!(v.searcher.is_none());
-            assert_eq!(v.current_rel, "first.md");
+            assert_eq!(v.pane.current_rel, "first.md");
             assert_eq!(v.loading.as_ref().unwrap().phase, "Preparation cancelled");
         });
         diagnostic_error!(
@@ -6615,7 +6812,7 @@ mod tests {
         late_release.try_send(()).unwrap();
         visual.run_until_parked();
         reader.update_in(visual, |v, _, cx| {
-            assert_eq!(v.current_rel, "second.md");
+            assert_eq!(v.pane.current_rel, "second.md");
             assert_eq!(v.vault_root, root.join("b"));
             assert_eq!(v.navigation.history, ["second.md"]);
             assert!(v.link_notice.is_none());
@@ -7506,13 +7703,13 @@ mod tests {
         });
         visual.run_until_parked();
         let (content, history) = reader.update_in(visual, |v, _, _| {
-            assert_eq!(v.current_rel, "second.md");
+            assert_eq!(v.pane.current_rel, "second.md");
             (v.content.entity_id(), v.navigation.history.clone())
         });
         release.try_send(()).unwrap();
         visual.run_until_parked();
         reader.update_in(visual, |v, _, _| {
-            assert_eq!(v.current_rel, "second.md");
+            assert_eq!(v.pane.current_rel, "second.md");
             assert_eq!(v.content.entity_id(), content);
             assert_eq!(v.navigation.history, history);
             assert!(v.vault.inventory_complete);
@@ -7540,7 +7737,7 @@ mod tests {
         denied.assert_fired();
         reader.update_in(visual, |v, _, _| {
             assert!(v.document_ready(), "previous document remains usable");
-            assert_eq!(v.current_rel, "second.md");
+            assert_eq!(v.pane.current_rel, "second.md");
             assert_eq!(v.content.entity_id(), content);
             assert_eq!(v.navigation.history, history);
             assert!(!v.loading.as_ref().unwrap().published);
@@ -7593,7 +7790,7 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |v, window, cx| {
             assert_eq!(
-                v.current_rel, "last.md",
+                v.pane.current_rel, "last.md",
                 "shared saved hint selected before inventory"
             );
             v.open_note("first.md", None, window, cx);
@@ -7806,16 +8003,19 @@ impl Reader {
     }
 
     pub(super) fn switch_window_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_file().is_empty() || self.loading.as_ref().is_some_and(|load| load.active)
+        // A folder view has no file yet and still converts to a vault (#3098);
+        // single-file mode needs the file it will show.
+        if (!self.single_file && self.selected_file().is_empty())
+            || self.loading.as_ref().is_some_and(|load| load.active)
         {
             return;
         }
         self.start_loading(
             Opts {
                 vault: Some(self.vault_root.clone()),
-                note: Some(self.selected_file().to_owned()),
+                note: Some(self.selected_file().to_owned()).filter(|note| !note.is_empty()),
                 single_file: !self.single_file,
-                use_html: self.use_html,
+                use_html: self.pane.use_html,
                 index_dir: self
                     .loading
                     .as_ref()
@@ -8400,8 +8600,8 @@ mod quick_view_tests {
                 .entries
                 .iter()
                 .any(|entry| entry.path == "unexpanded/hidden.md"));
-            assert_eq!(v.current_rel, "start.md");
-            assert!(v.note_source.contains("# Start"));
+            assert_eq!(v.pane.current_rel, "start.md");
+            assert!(v.pane.note_source.contains("# Start"));
         });
     }
 
@@ -8588,7 +8788,7 @@ mod quick_view_tests {
             );
             reader.read_with(visual, |r, _| {
                 assert_eq!(r.single_file, !single_file);
-                assert_eq!(r.current_rel, "nested/start.md");
+                assert_eq!(r.pane.current_rel, "nested/start.md");
                 assert_eq!(
                     r.editing.as_ref().unwrap().test_input(),
                     editor,
@@ -8648,7 +8848,11 @@ mod quick_view_tests {
             let reader = entity.unwrap();
             visual.run_until_parked();
             let preview_ids = |r: &Reader| {
-                let preview = r.file_preview.as_ref().expect("typed file is displayed");
+                let preview = r
+                    .pane
+                    .file_preview
+                    .as_ref()
+                    .expect("typed file is displayed");
                 (
                     preview.text.as_ref().map(Entity::entity_id),
                     preview.log.as_ref().map(Entity::entity_id),
@@ -8678,8 +8882,9 @@ mod quick_view_tests {
                     );
                     assert_eq!(r.searcher.is_some(), !single_file);
                     let target = if single_file {
-                        reader_update_restart::Window::File {
-                            path: r.vault_root.join(name),
+                        reader_update_restart::Window::Quick {
+                            root: r.vault_root.clone(),
+                            note: Some(name.into()),
                         }
                     } else {
                         reader_update_restart::Window::Vault {
@@ -8707,12 +8912,15 @@ mod quick_view_tests {
     }
 
     fn check_quick_upgrade(cx: &mut TestAppContext, edit_during_scan: bool) {
+        let directory =
+            std::env::temp_dir().join(format!("okilum-upgrade-{}", uuid::Uuid::new_v4()));
         cx.update(|cx| {
             crate::test_init(cx);
             bind_keys(cx);
+            // The per-window session record carries each window's mode.
+            reader_open::install(cx);
+            reader_open_windows::install(directory.join("state"), cx);
         });
-        let directory =
-            std::env::temp_dir().join(format!("okilum-upgrade-{}", uuid::Uuid::new_v4()));
         let root = directory.join("notes");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("img.png"), b"image resolution fixture").unwrap();
@@ -8745,13 +8953,13 @@ mod quick_view_tests {
         visual.run_until_parked();
         let (content, source) = reader.read_with(visual, |reader, cx| {
             assert!(reader.single_file);
-            assert!(reader.note_source.contains("file://"));
-            assert!(reader.note_source.contains("img.png"));
+            assert!(reader.pane.note_source.contains("file://"));
+            assert!(reader.pane.note_source.contains("img.png"));
             reader.content.read(cx).list_state().scroll_to(ListOffset {
                 item_ix: 12,
                 offset_in_item: px(3.),
             });
-            (reader.content.clone(), reader.note_source.clone())
+            (reader.content.clone(), reader.pane.note_source.clone())
         });
         assert_eq!(
             crate::reader_history::ReadingHistory::quick_document(&directory.join("state"), &root)
@@ -8791,16 +8999,19 @@ mod quick_view_tests {
                 assert!(!reader.single_file);
                 assert_eq!(reader.searcher.is_some(), ready);
                 if ready && edit_during_scan {
-                    assert!(reader.note_source.contains("Scan edit positive control"));
-                    assert!(reader.note_source.contains("file://"));
-                    assert!(reader.note_source.contains("img.png"));
+                    assert!(reader
+                        .pane
+                        .note_source
+                        .contains("Scan edit positive control"));
+                    assert!(reader.pane.note_source.contains("file://"));
+                    assert!(reader.pane.note_source.contains("img.png"));
                 } else {
                     assert_eq!(
                         reader.content, content,
                         "upgrade retains the rendered document"
                     );
                     assert_eq!(
-                        reader.note_source, source,
+                        reader.pane.note_source, source,
                         "relative image survives publication and inventory"
                     );
                 }
@@ -8819,7 +9030,7 @@ mod quick_view_tests {
         visual.run_until_parked();
         let previous_vault = reader.read_with(visual, |reader, _| {
             assert!(
-                !reader.backlinks.is_empty(),
+                !reader.pane.backlinks.is_empty(),
                 "positive control: full-vault backlinks"
             );
             assert!(
@@ -8848,11 +9059,11 @@ mod quick_view_tests {
             assert!(reader.single_file && reader.vault.single_file);
             assert!(reader.index_dir.is_none() && reader.searcher.is_none());
             assert!(reader.shared_session.is_none() && reader.incremental_state.is_none());
-            assert!(reader.backlinks.is_empty() && reader.backlink_groups.is_empty());
+            assert!(reader.pane.backlinks.is_empty() && reader.pane.backlink_groups.is_empty());
             assert!(reader.backlink_titles.is_empty());
             assert!(reader.inbox.is_empty() && reader.inbox_source.is_none());
-            assert_eq!(reader.current_rel, "start.md");
-            assert!(reader.note_source.contains("img.png"));
+            assert_eq!(reader.pane.current_rel, "start.md");
+            assert!(reader.pane.note_source.contains("img.png"));
             let position = reader.content.read(cx).list_state().logical_scroll_top();
             assert_eq!(position.item_ix, 12);
             assert_eq!(position.offset_in_item, px(3.));
@@ -8862,11 +9073,18 @@ mod quick_view_tests {
                 .iter()
                 .any(|entry| entry.path == "img.png"));
         });
-        assert_eq!(
-            crate::reader_history::ReadingHistory::quick_document(&directory.join("state"), &root)
+        // #3123: the folder stays a known vault after the downgrade; the
+        // window's single-file mode is persisted by its session record, not
+        // by demoting the vault to a quick-viewer root.
+        assert!(
+            crate::reader_history::ReadingHistory::known_vault_roots(&directory.join("state"))
                 .unwrap()
-                .as_deref(),
-            Some("start.md"),
+                .contains(&root),
+            "downgrade keeps the vault known"
+        );
+        assert_eq!(
+            reader_open_windows::load_session_windows(&directory.join("state")),
+            [((root.clone(), Some("start.md".to_owned())), true)],
             "downgrade persists single-file mode"
         );
         assert!(
@@ -8925,7 +9143,7 @@ mod quick_view_tests {
         });
         visual.run_until_parked();
         reader.update_in(visual, |reader, window, cx| {
-            assert_eq!(reader.current_rel, "sibling.md");
+            assert_eq!(reader.pane.current_rel, "sibling.md");
             reader.refresh_inventory(Default::default(), window, cx);
         });
         visual.run_until_parked();
@@ -8961,7 +9179,7 @@ mod quick_view_tests {
             reader.start_loading(
                 Opts {
                     vault: Some(root.clone()),
-                    note: Some(reader.current_rel.clone()),
+                    note: Some(reader.pane.current_rel.clone()),
                     index_dir: Some(cache.clone()),
                     ..Default::default()
                 },
@@ -8973,7 +9191,7 @@ mod quick_view_tests {
         reader.read_with(visual, |reader, _| {
             assert!(!reader.single_file);
             assert!(reader.searcher.is_some());
-            assert_eq!(reader.current_rel, "sibling.md");
+            assert_eq!(reader.pane.current_rel, "sibling.md");
         });
         assert!(cache.exists());
         assert_eq!(

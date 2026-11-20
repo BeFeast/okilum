@@ -268,7 +268,7 @@ fn at_root_header_and_mixed_folder_activation_use_actual_index(cx: &mut gpui::Te
     visual.simulate_click(header.center(), gpui::Modifiers::default());
     visual.run_until_parked();
     reader.read_with(visual, |view, _| {
-        assert_eq!(view.current_rel, "@Index.md");
+        assert_eq!(view.pane.current_rel, "@Index.md");
         assert_eq!(view.vault_index_path().as_deref(), Some("@Index.md"));
         assert_eq!(view.backlink_title("Area/@index.md").0, "Area");
         assert_eq!(view.backlink_title("Legacy/_index.md").0, "Ordinary note");
@@ -286,7 +286,7 @@ fn at_root_header_and_mixed_folder_activation_use_actual_index(cx: &mut gpui::Te
     });
     visual.run_until_parked();
     reader.read_with(visual, |view, _| {
-        assert_eq!(view.current_rel, "Mixed/@index.md");
+        assert_eq!(view.pane.current_rel, "Mixed/@index.md");
         assert!(
             view.link_notice.is_none(),
             "one @ index must suppress legacy ambiguity"

@@ -439,9 +439,26 @@ impl Services {
         Ok(())
     }
     fn remember_pid(&self, home: &Path) -> Result<Uuid> {
-        wait("authenticated helper generation ready", || {
+        if let Err(error) = wait("authenticated helper generation ready", || {
             Ok(live_generation(home).is_ok())
-        })?;
+        }) {
+            // Surface the launch command's own refusal; its log dies with the
+            // fixture directory.
+            let log = self
+                .0
+                .lock()
+                .unwrap()
+                .command
+                .as_ref()
+                .and_then(|command| {
+                    Path::new(&command[0])
+                        .parent()
+                        .map(|p| p.join("launch.log"))
+                })
+                .and_then(|path| fs::read_to_string(path).ok())
+                .unwrap_or_default();
+            return Err(error.context(format!("launch.log:\n{log}")));
+        }
         let generation = live_generation(home)?;
         self.0.lock().unwrap().runtime_pid = Some(generation.pid);
         Ok(generation.id)
@@ -643,10 +660,14 @@ struct FirstSyncFixture {
     vault: String,
 }
 fn first_sync_fixture(root: &Path) -> Result<FirstSyncFixture> {
+    first_sync_fixture_at(root, &root.join("here"))
+}
+/// `here`, the destination, may live on a separate volume (#3080).
+fn first_sync_fixture_at(root: &Path, here: &Path) -> Result<FirstSyncFixture> {
     let (source_runtime, source, source_services) = first_sync_runtime(root, "source-runtime")?;
     let (target_runtime, target, target_services) = first_sync_runtime(root, "target-runtime")?;
     let there = root.join("there");
-    let here = root.join("here");
+    let here = here.to_owned();
     fs::create_dir(&there)?;
     fs::create_dir(&here)?;
     fs::write(there.join("same.md"), b"same\r\n")?;
@@ -944,8 +965,1003 @@ fn issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_
         b.scan(vault)?;
         Ok(fs::read(here.join("later-there.md")).is_ok_and(|bytes| bytes == b"later source edit"))
     })?;
+    // #2582 review: the folder was born behind its root marker. Its saved
+    // witness keeps naming the marker it was recorded with even after a
+    // relaunch moves the folder onto a different root marker (here: the old
+    // marker file vanished while stopped). Refresh still reconciles and syncs.
+    // A `.stfolder` witness takes the same path; see managed_launch's
+    // issue2582_root_marker_tests for that exact value.
+    let marker = b.folder(vault)?["markerName"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(marker.starts_with(".stfolder/okilum-root-"), "{marker}");
+    assert!(here.join(&marker).is_file());
+    target_services.crash_runtime()?;
+    fs::remove_file(here.join(&marker))?;
+    target_services.launch()?;
+    target_services.remember_pid(target.config_file.parent().unwrap())?;
+    let b = target.connect()?;
+    let moved = b.folder(vault)?["markerName"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        moved != marker && moved.starts_with(".stfolder/okilum-root-"),
+        "{moved}"
+    );
+    assert!(here.join(&moved).is_file());
+    second.refresh()?;
+    fs::write(here.join("after-upgrade.md"), b"after upgrade")?;
+    wait("destination to source after the witness drift", || {
+        a.scan(vault)?;
+        b.scan(vault)?;
+        Ok(fs::read(there.join("after-upgrade.md")).is_ok_and(|bytes| bytes == b"after upgrade"))
+    })?;
+    second.refresh()?;
     drop(first);
     drop(second);
+    source_runtime.disable()?;
+    target_runtime.disable()?;
+    drop((source_services, target_services));
+    Ok(())
+}
+/// Confirm one complete lossless first-Sync review of `here` (#2043).
+fn first_merge(controller: &Controller, peer: Uuid, vault: &str, here: &Path) -> Result<()> {
+    let preview = controller.preview_remote_vault(peer, vault, here)?;
+    let plan = preview.plan().clone();
+    let mut backend = controller.first_sync_backend(preview);
+    plan.apply(plan.consent(true).unwrap(), backend.as_mut())
+        .map_err(|error| anyhow::anyhow!("first merge: {error:?}"))
+}
+fn removed(controller: &Controller) -> Result<bool> {
+    Ok(controller.snapshot()?.status.contains("removed from Sync"))
+}
+fn member(api: &okilum_sync::Syncthing, vault: &str, device: &str) -> Result<bool> {
+    Ok(api.folder(vault)?["devices"]
+        .as_array()
+        .context("folder members")?
+        .iter()
+        .any(|d| d["deviceID"] == device))
+}
+fn reinvite(first: &Controller, second: &Controller, device: &str) -> Result<()> {
+    let url = first
+        .begin_pairing_at(
+            "Source fixture",
+            "127.0.0.1:0".parse()?,
+            "127.0.0.1".parse()?,
+        )?
+        .offer_url
+        .context("new invitation")?;
+    second.redeem(&url, "Destination fixture")?;
+    let request = first.snapshot()?.pending.context("returning request")?;
+    assert_eq!(
+        request.device_id, device,
+        "the returning computer keeps its Syncthing device ID"
+    );
+    first.approve(request.request_id)?;
+    Ok(())
+}
+/// #3079: a removed computer comes back by a new invitation with the same
+/// Syncthing device ID; its kept, edited copy rejoins through the lossless first
+/// merge. An old removal delivered after the new approval must not remove it again.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue3079_removed_computer_rejoins_and_a_stale_removal_cannot_remove_it_again() -> Result<()> {
+    subreaper()?;
+    let root = tempfile::tempdir()?;
+    let FirstSyncFixture {
+        source_runtime,
+        target_runtime,
+        source,
+        target,
+        source_services,
+        target_services,
+        first,
+        second,
+        here,
+        there,
+        peer,
+        vault,
+    } = first_sync_fixture(root.path())?;
+    let vault = &vault;
+    let a = source.connect()?;
+    let b = target.connect()?;
+    first_merge(&second, peer, vault, &here)?;
+    assert_eq!(first_sync_files(&here)?, first_sync_files(&there)?);
+
+    // 1. Remove the destination while it is online. It pauses its copy and keeps it.
+    let kept = first_sync_files(&here)?;
+    first.remove_computer(&target.device_id)?;
+    wait("removed computer applies its own removal", || {
+        first.refresh()?;
+        second.refresh()?;
+        Ok(removed(&second)? && b.folder(vault)?["paused"] == true)
+    })?;
+    assert!(!member(&a, vault, &target.device_id)?);
+    assert!(
+        second.catalog(peer).is_err(),
+        "old pairing keeps no authority"
+    );
+    assert_eq!(first_sync_files(&here)?, kept, "removed copy was modified");
+    // Both sides keep working while apart; the merge must keep every version.
+    fs::write(
+        here.join("while-removed-here.md"),
+        b"edited on the removed computer",
+    )?;
+    fs::write(
+        there.join("while-removed-there.md"),
+        b"edited on the remaining computer",
+    )?;
+    fs::write(here.join("same.md"), b"removed computer's version\n")?;
+
+    // 2. Re-invite the same computer. Approval readmits it.
+    reinvite(&first, &second, &target.device_id)?;
+    let rejoined = second.refresh()?;
+    ensure!(
+        !rejoined.status.contains("removed from Sync"),
+        "readmitted computer still reports removal: {}",
+        rejoined.status
+    );
+    let readmitted = rejoined
+        .peers
+        .iter()
+        .map(|p| p.id)
+        .find(|id| *id != peer)
+        .context("new pairing missing")?;
+    assert_eq!(second.catalog(readmitted)?.len(), 1);
+    assert_eq!(
+        first_sync_files(&here)?
+            .get("while-removed-here.md")
+            .map(Vec::as_slice),
+        Some(&b"edited on the removed computer"[..]),
+        "readmission must not touch the kept copy before review"
+    );
+    first_merge(&second, readmitted, vault, &here)?;
+    let merged = first_sync_files(&here)?;
+    assert_eq!(merged, first_sync_files(&there)?);
+    for (path, bytes) in [
+        (
+            "while-removed-here.md",
+            &b"edited on the removed computer"[..],
+        ),
+        (
+            "while-removed-there.md",
+            &b"edited on the remaining computer"[..],
+        ),
+    ] {
+        assert_eq!(merged.get(path).map(Vec::as_slice), Some(bytes), "{path}");
+    }
+    for bytes in [&b"same\r\n"[..], &b"removed computer's version\n"[..]] {
+        assert!(
+            merged.values().any(|value| value == bytes),
+            "a version of same.md was lost"
+        );
+    }
+    assert!(member(&a, vault, &target.device_id)?);
+    fs::write(
+        here.join("after-rejoin-here.md"),
+        b"rejoined destination edit",
+    )?;
+    fs::write(there.join("after-rejoin-there.md"), b"rejoined source edit")?;
+    wait("rejoined computer transfers in both directions", || {
+        a.scan(vault)?;
+        b.scan(vault)?;
+        Ok(fs::read(there.join("after-rejoin-here.md"))
+            .is_ok_and(|bytes| bytes == b"rejoined destination edit")
+            && fs::read(here.join("after-rejoin-there.md"))
+                .is_ok_and(|bytes| bytes == b"rejoined source edit"))
+    })?;
+    println!("ISSUE3079_REJOIN_PASS: same device ID rejoined through the lossless first merge");
+
+    // 3. Remove it again while its controller is offline, then re-invite it
+    // before that removal is delivered. The delayed removal arrives after the
+    // new approval and must be acknowledged without removing it again.
+    second.shutdown();
+    drop(second);
+    first.remove_computer(&target.device_id)?;
+    assert!(
+        first.snapshot()?.pending_removals > 0,
+        "the offline computer keeps a durable delivery"
+    );
+    assert!(!member(&a, vault, &target.device_id)?);
+    fs::write(
+        here.join("offline-here.md"),
+        b"edited while removed offline",
+    )?;
+    let second = Controller::open(
+        root.path().join("target-controller"),
+        vec![target.config_file.clone()],
+    )?;
+    reinvite(&first, &second, &target.device_id)?;
+    wait("stale removal acknowledged without effect", || {
+        let snapshot = second.refresh()?;
+        ensure!(
+            !snapshot.status.contains("removed from Sync"),
+            "a stale removal removed the readmitted computer: {}",
+            snapshot.status
+        );
+        first.refresh()?;
+        Ok(first.snapshot()?.pending_removals == 0)
+    })?;
+    let current = second.snapshot()?.peers;
+    assert_eq!(current.len(), 1, "only the newest pairing stays live");
+    let newest = current[0].id;
+    assert!(newest != peer && newest != readmitted);
+    assert_eq!(
+        second.catalog(newest)?.len(),
+        1,
+        "stale removal revoked the new pairing"
+    );
+    assert!(!removed(&second)?);
+    first_merge(&second, newest, vault, &here)?;
+    let merged = first_sync_files(&here)?;
+    assert_eq!(merged, first_sync_files(&there)?);
+    assert_eq!(
+        merged.get("offline-here.md").map(Vec::as_slice),
+        Some(&b"edited while removed offline"[..])
+    );
+    fs::write(there.join("after-stale-there.md"), b"still syncing")?;
+    wait(
+        "readmitted computer keeps receiving after the stale removal",
+        || {
+            a.scan(vault)?;
+            b.scan(vault)?;
+            second.refresh()?;
+            Ok(fs::read(here.join("after-stale-there.md"))
+                .is_ok_and(|bytes| bytes == b"still syncing"))
+        },
+    )?;
+    assert!(!removed(&second)?);
+    println!("ISSUE3079_STALE_REMOVAL_PASS: delayed removal acknowledged without effect");
+    drop(first);
+    drop(second);
+    source_runtime.disable()?;
+    target_runtime.disable()?;
+    drop((source_services, target_services));
+    Ok(())
+}
+struct ThreeComputers {
+    fixture: FirstSyncFixture,
+    third_runtime: Runtime<Services>,
+    /// Kept so the third computer's runtime stays identifiable. Tests that
+    /// only drive its controller do not read the daemon identity.
+    #[allow(dead_code)]
+    third: DaemonIdentity,
+    third_services: Services,
+    other: Controller,
+    elsewhere: PathBuf,
+}
+/// The two-instance fixture after its first merge, plus a third computer that
+/// received the same vault from the source by first merge too.
+fn three_computers(root: &Path) -> Result<ThreeComputers> {
+    let FirstSyncFixture {
+        source_runtime,
+        target_runtime,
+        source,
+        target,
+        source_services,
+        target_services,
+        first,
+        second,
+        here,
+        there,
+        peer,
+        vault,
+    } = first_sync_fixture(root)?;
+    let vault = &vault;
+    let a = source.connect()?;
+    let b = target.connect()?;
+    first_merge(&second, peer, vault, &here)?;
+    // A third computer joins the same vault from the source by first merge.
+    let (third_runtime, third, third_services) = first_sync_runtime(root, "third-runtime")?;
+    let elsewhere = root.join("elsewhere");
+    fs::create_dir(&elsewhere)?;
+    fs::write(elsewhere.join("third.md"), b"only on the third computer")?;
+    let other = Controller::open(
+        root.join("third-controller"),
+        vec![third.config_file.clone()],
+    )?;
+    let url = first
+        .begin_pairing_at(
+            "Source fixture",
+            "127.0.0.1:0".parse()?,
+            "127.0.0.1".parse()?,
+        )?
+        .offer_url
+        .context("third invitation")?;
+    other.redeem(&url, "Third fixture")?;
+    first.approve(
+        first
+            .snapshot()?
+            .pending
+            .context("third request")?
+            .request_id,
+    )?;
+    let from_source = other.refresh()?.peers[0].id;
+    let c = third.connect()?;
+    let address = |api: &okilum_sync::Syncthing| -> Result<Value> {
+        Ok(api.config()?["options"]["listenAddresses"][0].clone())
+    };
+    // Explicit device names, as in the fixture: a blank name is filled from
+    // Hello asynchronously and would legitimately invalidate a preview.
+    a.add_device(
+        &json!({"deviceID":third.device_id,"name":"Third fixture","addresses":[address(&c)?]}),
+    )?;
+    c.add_device(
+        &json!({"deviceID":source.device_id,"name":"Source fixture","addresses":[address(&a)?]}),
+    )?;
+    b.add_device(
+        &json!({"deviceID":third.device_id,"name":"Third fixture","addresses":[address(&c)?]}),
+    )?;
+    c.add_device(&json!({"deviceID":target.device_id,"name":"Destination fixture","addresses":[address(&b)?]}))?;
+    first_merge(&other, from_source, vault, &elsewhere)?;
+    // Let both unions settle on all three computers. A preview of a folder
+    // that is still receiving is refused as changed ("refresh preview").
+    wait("three computers hold the same files", || {
+        for api in [&a, &b, &c] {
+            api.scan(vault)?;
+        }
+        let there_files = first_sync_files(&there)?;
+        Ok(first_sync_files(&here)? == there_files
+            && first_sync_files(&elsewhere)? == there_files
+            && [&a, &b, &c].into_iter().try_fold(true, |idle, api| {
+                Ok::<_, anyhow::Error>(idle && api.status(vault)?["state"] == "idle")
+            })?)
+    })?;
+
+    Ok(ThreeComputers {
+        fixture: FirstSyncFixture {
+            source_runtime,
+            target_runtime,
+            source,
+            target,
+            source_services,
+            target_services,
+            first,
+            second,
+            here,
+            there,
+            peer,
+            vault: vault.clone(),
+        },
+        third_runtime,
+        third,
+        third_services,
+        other,
+        elsewhere,
+    })
+}
+/// #3079: a computer that does not own the vault cannot readmit a removed
+/// computer. The vault owner can, including from a journal written before
+/// removals recorded their released pairings. The kept, edited copy at the
+/// original root rejoins through the lossless first merge.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue3079_rejoin_through_another_computer_reuses_the_kept_copy() -> Result<()> {
+    subreaper()?;
+    let root = tempfile::tempdir()?;
+    let ThreeComputers {
+        fixture:
+            FirstSyncFixture {
+                source_runtime,
+                target_runtime,
+                source,
+                target,
+                source_services,
+                target_services,
+                first,
+                second,
+                here,
+                there,
+                peer,
+                vault,
+            },
+        third_runtime,
+        third: _,
+        third_services,
+        other,
+        elsewhere,
+    } = three_computers(root.path())?;
+    let vault = &vault;
+    let a = source.connect()?;
+    let b = target.connect()?;
+    // The source removes the destination while every computer is online.
+    let kept = first_sync_files(&here)?;
+    first.remove_computer(&target.device_id)?;
+    wait(
+        "removal reaches the destination and the third computer",
+        || {
+            first.refresh()?;
+            other.refresh()?;
+            second.refresh()?;
+            Ok(removed(&second)?
+                && b.folder(vault)?["paused"] == true
+                && first.snapshot()?.pending_removals == 0)
+        },
+    )?;
+    assert_eq!(first_sync_files(&here)?, kept, "removed copy was modified");
+    fs::write(
+        here.join("while-removed-here.md"),
+        b"edited on the removed computer",
+    )?;
+
+    // Pre-upgrade control: main journalled the applied removal without the
+    // pairings it revoked. Rejoin must still release the original copy.
+    second.shutdown();
+    drop(second);
+    let state = root.path().join("target-controller");
+    let journal = state.join("direct.json");
+    let mut saved: Value = serde_json::from_slice(&fs::read(&journal)?)?;
+    let mut stripped = 0;
+    for removal in saved["removals"].as_array_mut().context("removals")? {
+        stripped += usize::from(
+            removal
+                .as_object_mut()
+                .unwrap()
+                .remove("released")
+                .is_some(),
+        );
+    }
+    assert_eq!(
+        stripped, 1,
+        "positive control: the applied removal recorded its pairings"
+    );
+    fs::write(&journal, serde_json::to_vec(&saved)?)?;
+    let second = Controller::open(state.clone(), vec![target.config_file.clone()])?;
+    assert!(removed(&second)?);
+
+    // A computer that does not own the vault cannot readmit it.
+    let url = other
+        .begin_pairing_at(
+            "Third fixture",
+            "127.0.0.1:0".parse()?,
+            "127.0.0.1".parse()?,
+        )?
+        .offer_url
+        .context("third invitation")?;
+    second.redeem(&url, "Destination fixture")?;
+    let refused = other
+        .approve(
+            other
+                .snapshot()?
+                .pending
+                .context("third saw the request")?
+                .request_id,
+        )
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("Only the vault owner"),
+        "a non-owner readmitted the computer: {refused:#}"
+    );
+    assert!(removed(&second)?, "a non-owner cleared the removal");
+    second.cancel()?;
+    other.cancel()?;
+
+    // The vault owner invites it back.
+    reinvite(&first, &second, &target.device_id)?;
+    let rejoined = second.refresh()?;
+    ensure!(
+        !rejoined.status.contains("removed from Sync"),
+        "readmitted computer still reports removal: {}",
+        rejoined.status
+    );
+    let through_owner = rejoined
+        .peers
+        .iter()
+        .map(|p| p.id)
+        .find(|id| *id != peer)
+        .context("pairing with the owner missing")?;
+    assert_eq!(second.catalog(through_owner)?.len(), 1);
+    first_merge(&second, through_owner, vault, &here)?;
+    let merged = first_sync_files(&here)?;
+    assert_eq!(merged, first_sync_files(&there)?);
+    assert_eq!(
+        merged.get("while-removed-here.md").map(Vec::as_slice),
+        Some(&b"edited on the removed computer"[..])
+    );
+    assert!(merged.contains_key("third.md"));
+    assert_eq!(
+        fs::read(elsewhere.join("third.md")).ok().as_deref(),
+        Some(&b"only on the third computer"[..]),
+        "the third computer's own file was rewritten"
+    );
+    for bytes in kept.values() {
+        assert!(
+            merged.values().any(|value| value == bytes),
+            "a kept version was lost"
+        );
+    }
+    fs::write(there.join("after-owner.md"), b"from the vault owner")?;
+    wait("rejoined copy receives from the vault owner", || {
+        a.scan(vault)?;
+        b.scan(vault)?;
+        Ok(fs::read(here.join("after-owner.md"))
+            .is_ok_and(|bytes| bytes == b"from the vault owner"))
+    })?;
+    assert!(!removed(&second)?);
+    println!("ISSUE3079_REJOIN_THROUGH_OWNER_PASS: kept copy rejoined through the vault owner");
+
+    drop((first, second, other));
+    source_runtime.disable()?;
+    target_runtime.disable()?;
+    third_runtime.disable()?;
+    drop((source_services, target_services, third_services));
+    Ok(())
+}
+/// #3079: a non-owner's invitation does not block the owner's removal.
+/// Removed while its controller is offline, the computer stays removable
+/// until the owner readmits it. The kept copy then rejoins through the
+/// lossless first merge, and that removal does not apply again.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue3079_offline_removal_then_rejoin_through_another_computer() -> Result<()> {
+    subreaper()?;
+    let root = tempfile::tempdir()?;
+    let ThreeComputers {
+        fixture:
+            FirstSyncFixture {
+                source_runtime,
+                target_runtime,
+                source,
+                target,
+                source_services,
+                target_services,
+                first,
+                second,
+                here,
+                there,
+                peer,
+                vault,
+            },
+        third_runtime,
+        third: _,
+        third_services,
+        other,
+        elsewhere: _,
+    } = three_computers(root.path())?;
+    let vault = &vault;
+    let a = source.connect()?;
+    let b = target.connect()?;
+    // The owner removes it while its controller is offline. A third computer
+    // receives that removal and cannot readmit it, so the removal still applies
+    // when the computer comes back. The owner then readmits it.
+    let state = root.path().join("target-controller");
+    second.shutdown();
+    drop(second);
+    first.remove_computer(&target.device_id)?;
+    wait("the third computer receives the owner's removal", || {
+        other.refresh()?;
+        first.refresh()?;
+        Ok(first.snapshot()?.pending_removals == 1)
+    })?;
+    assert!(!member(&a, vault, &target.device_id)?);
+    fs::write(
+        here.join("offline-here.md"),
+        b"edited while removed offline",
+    )?;
+    let second = Controller::open(state, vec![target.config_file.clone()])?;
+    assert!(!removed(&second)?, "the removal has not reached it yet");
+    let url = other
+        .begin_pairing_at(
+            "Third fixture",
+            "127.0.0.1:0".parse()?,
+            "127.0.0.1".parse()?,
+        )?
+        .offer_url
+        .context("third invitation")?;
+    second.redeem(&url, "Destination fixture")?;
+    let refused = other
+        .approve(
+            other
+                .snapshot()?
+                .pending
+                .context("third saw the request")?
+                .request_id,
+        )
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("Only the vault owner"),
+        "a non-owner readmitted the computer: {refused:#}"
+    );
+    second.cancel()?;
+    other.cancel()?;
+    wait("the owner's removal still applies", || {
+        let snapshot = second.refresh()?;
+        first.refresh()?;
+        other.refresh()?;
+        Ok(
+            snapshot.status.contains("removed from Sync")
+                && first.snapshot()?.pending_removals == 0,
+        )
+    })?;
+    reinvite(&first, &second, &target.device_id)?;
+    let rejoined = second.refresh()?;
+    ensure!(
+        !rejoined.status.contains("removed from Sync"),
+        "the owner could not readmit: {}",
+        rejoined.status
+    );
+    let through_owner = rejoined
+        .peers
+        .iter()
+        .map(|p| p.id)
+        .find(|id| *id != peer)
+        .context("pairing with the owner missing")?;
+    assert_eq!(second.catalog(through_owner)?.len(), 1);
+    first_merge(&second, through_owner, vault, &here)?;
+    let merged = first_sync_files(&here)?;
+    assert_eq!(merged, first_sync_files(&there)?);
+    assert_eq!(
+        merged.get("offline-here.md").map(Vec::as_slice),
+        Some(&b"edited while removed offline"[..])
+    );
+    fs::write(there.join("after-offline.md"), b"from the vault owner")?;
+    wait("rejoined copy receives from the vault owner", || {
+        a.scan(vault)?;
+        b.scan(vault)?;
+        second.refresh()?;
+        Ok(fs::read(here.join("after-offline.md"))
+            .is_ok_and(|bytes| bytes == b"from the vault owner")
+            && !removed(&second)?)
+    })?;
+    println!("ISSUE3079_OFFLINE_REJOIN_PASS: a non-owner could not block the owner's removal");
+    drop((first, second, other));
+    source_runtime.disable()?;
+    target_runtime.disable()?;
+    third_runtime.disable()?;
+    drop((source_services, target_services, third_services));
+    Ok(())
+}
+
+/// #3080: a private, small tmpfs mounted by scripts/ci/sync-disk-full.sh. The
+/// control proves it is that volume before filling it for a real ENOSPC.
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "statfs field widths differ between Linux targets"
+)]
+fn disk_full_volume(variable: &str) -> Result<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = PathBuf::from(std::env::var_os(variable).with_context(|| {
+        format!("{variable} must name a private tmpfs; run scripts/ci/sync-disk-full.sh")
+    })?)
+    .canonicalize()?;
+    let name = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+    let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
+    ensure!(
+        unsafe { libc::statfs(name.as_ptr(), &mut stat) } == 0,
+        "statfs {}",
+        path.display()
+    );
+    ensure!(
+        stat.f_type as i64 == 0x0102_1994,
+        "{} is not a tmpfs mount",
+        path.display()
+    );
+    ensure!(
+        stat.f_blocks as u64 * stat.f_bsize as u64 <= 64 << 20,
+        "disk-full volume is too large to fill"
+    );
+    ensure!(
+        fs::read_dir(&path)?.next().is_none(),
+        "disk-full volume is not empty"
+    );
+    // Only the dedicated mount that sync-disk-full.sh created for this test:
+    // its own mount point (not a directory inside some other tmpfs), named
+    // okilum-disk-full, private to the fixture user.
+    let mountinfo = fs::read_to_string("/proc/self/mountinfo")?;
+    let dedicated = mountinfo.lines().any(|line| {
+        let fields: Vec<_> = line.split(' ').collect();
+        let separator = fields.iter().position(|field| *field == "-");
+        fields.get(4).is_some_and(|point| Path::new(point) == path)
+            && separator.is_some_and(|at| {
+                fields.get(at + 1) == Some(&"tmpfs")
+                    && fields.get(at + 2) == Some(&"okilum-disk-full")
+            })
+    });
+    ensure!(
+        dedicated,
+        "{} is not a dedicated okilum-disk-full tmpfs mount point",
+        path.display()
+    );
+    use std::os::unix::fs::MetadataExt;
+    let owner = fs::metadata(&path)?;
+    ensure!(
+        owner.uid() == unsafe { libc::getuid() } && owner.mode() & 0o777 == 0o700,
+        "disk-full volume is not private to this fixture user"
+    );
+    Ok(path)
+}
+/// The real filesystem error, not any other failure (#3080).
+fn is_enospc(message: &str) -> bool {
+    message.contains("No space left on device (os error 28)")
+}
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "statfs field widths differ between Linux targets"
+)]
+fn free_bytes(path: &Path) -> Result<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let name = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    ensure!(
+        unsafe { libc::statvfs(name.as_ptr(), &mut stat) } == 0,
+        "statvfs"
+    );
+    Ok(stat.f_bavail as u64 * stat.f_frsize as u64)
+}
+/// Allocate real, non-sparse filler until only `leave` bytes stay free.
+fn fill(volume: &Path, leave: u64) -> Result<PathBuf> {
+    let filler = volume.join("filler.bin");
+    let mut file = fs::File::create_new(&filler)?;
+    let chunk = vec![0x5a; 64 << 10];
+    while free_bytes(volume)? > leave + chunk.len() as u64 {
+        file.write_all(&chunk)?;
+    }
+    file.sync_all()?;
+    ensure!(free_bytes(volume)? <= leave + chunk.len() as u64);
+    Ok(filler)
+}
+/// Every regular file under `root`, including retained `.okilum-save-*`
+/// originals, except Syncthing's own metadata.
+fn every_version(root: &Path) -> Result<Vec<Vec<u8>>> {
+    fn walk(path: &Path, out: &mut Vec<Vec<u8>>) -> Result<()> {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            if matches!(name.to_str(), Some(".stfolder" | ".stversions")) {
+                continue;
+            }
+            if entry.file_type()?.is_dir() {
+                walk(&entry.path(), out)?;
+            } else if entry.file_type()?.is_file() {
+                out.push(fs::read(entry.path())?);
+            }
+        }
+        Ok(())
+    }
+    let mut out = vec![];
+    walk(root, &mut out)?;
+    Ok(out)
+}
+fn large_note() -> Vec<u8> {
+    (0..3usize << 20).map(|i| (i * 7 % 251) as u8).collect()
+}
+/// Confirm one complete lossless first-Sync review of `here` (#2043).
+fn confirm_first_sync(controller: &Controller, peer: Uuid, vault: &str, here: &Path) -> Result<()> {
+    let preview = controller.preview_remote_vault(peer, vault, here)?;
+    let plan = preview.plan().clone();
+    let mut backend = controller.first_sync_backend(preview);
+    plan.apply(plan.consent(true).unwrap(), backend.as_mut())
+        .map_err(|error| anyhow::anyhow!("first merge: {error:?}"))
+}
+/// #3080: the first merge publishes into a destination whose disk is full.
+/// Nothing is lost, the operation stays visible as pending first Sync, and
+/// explicit recovery completes it once space is freed.
+#[test]
+#[ignore = "requires a private small tmpfs; run scripts/ci/sync-disk-full.sh"]
+fn issue3080_first_merge_disk_full_keeps_every_version_and_recovers() -> Result<()> {
+    subreaper()?;
+    let volume = disk_full_volume("OKILUM_SYNC_DISK_FULL_MERGE")?;
+    let root = tempfile::tempdir()?;
+    let FirstSyncFixture {
+        source_runtime,
+        target_runtime,
+        source,
+        target,
+        source_services,
+        target_services,
+        first,
+        second,
+        here,
+        there,
+        peer,
+        vault,
+    } = first_sync_fixture_at(root.path(), &volume.join("here"))?;
+    let vault = &vault;
+    let large = large_note();
+    fs::write(there.join("large.bin"), &large)?;
+    let originals = (first_sync_files(&here)?, first_sync_files(&there)?);
+    let preview = second.preview_remote_vault(peer, vault, &here)?;
+    let plan = preview.plan().clone();
+    let mut backend = second.first_sync_backend(preview);
+    let filler = fill(&volume, 1 << 20)?;
+    ensure!(
+        free_bytes(&volume)? < large.len() as u64,
+        "positive control: the note to receive must not fit"
+    );
+    let outcome = plan.apply(plan.consent(true).unwrap(), backend.as_mut());
+    println!("ISSUE3080_FIRST_MERGE_DISK_FULL outcome={outcome:?}");
+    // The failure must be the destination's own ENOSPC while writing, after
+    // the operation was created (checked below), not an earlier refusal.
+    match &outcome {
+        Err(okilum_sync_controller::merge_preview::Error::Backend(message)) => ensure!(
+            is_enospc(message),
+            "first merge failed for another reason than a full disk: {message}"
+        ),
+        other => anyhow::bail!("first merge into a full disk did not fail with ENOSPC: {other:?}"),
+    }
+    // No byte version is lost on either computer, and nothing half-written
+    // appears under a canonical name.
+    let kept: Vec<_> = every_version(&here)?
+        .into_iter()
+        .chain(every_version(&there)?)
+        .collect();
+    for bytes in originals.0.values().chain(originals.1.values()) {
+        assert!(kept.contains(bytes), "an original was lost on a full disk");
+    }
+    assert!(
+        fs::read(here.join("large.bin")).map_or(true, |bytes| bytes == large),
+        "a partial note was published under its canonical name"
+    );
+    assert_eq!(fs::read(there.join("large.bin"))?, large);
+    // The user sees an unfinished first Sync for this vault, not success.
+    let pending = second.pending_first_sync()?;
+    let operation = pending
+        .iter()
+        .find(|p| p.path == here && p.vault == *vault)
+        .with_context(|| format!("no pending first Sync is visible: {pending:?}"))?
+        .operation;
+    let refused = second
+        .recover_first_sync(operation)
+        .expect_err("recovery cannot complete while the disk is still full");
+    ensure!(
+        is_enospc(&format!("{refused:#}")),
+        "recovery on a full disk failed for another reason: {refused:#}"
+    );
+    assert_eq!(fs::read(there.join("large.bin"))?, large);
+    fs::remove_file(filler)?;
+    second.recover_first_sync(operation)?;
+    let merged = first_sync_files(&here)?;
+    assert_eq!(merged, first_sync_files(&there)?);
+    assert_eq!(merged.get("large.bin"), Some(&large));
+    for bytes in originals.0.values().chain(originals.1.values()) {
+        assert!(
+            merged.values().any(|value| value == bytes),
+            "an original was lost by recovery"
+        );
+    }
+    assert!(second.pending_first_sync()?.is_empty());
+    assert!(first.pending_first_sync()?.is_empty());
+    let a = source.connect()?;
+    let b = target.connect()?;
+    fs::write(here.join("after-disk-full.md"), b"destination edit")?;
+    wait("transfer after disk-full recovery", || {
+        a.scan(vault)?;
+        b.scan(vault)?;
+        Ok(fs::read(there.join("after-disk-full.md"))
+            .is_ok_and(|bytes| bytes == b"destination edit"))
+    })?;
+    println!(
+        "ISSUE3080_FIRST_MERGE_DISK_FULL_PASS: real ENOSPC kept every version; recovery completed"
+    );
+    drop((first, second));
+    source_runtime.disable()?;
+    target_runtime.disable()?;
+    drop((source_services, target_services));
+    Ok(())
+}
+/// Disposable fixture runtime only: new folders take no free-space reserve,
+/// so Syncthing's admission check cannot mask the filesystem error.
+fn without_free_space_reserve(daemon: &DaemonIdentity) -> Result<()> {
+    let xml = xmltree::Element::parse(fs::read(&daemon.config_file)?.as_slice())?;
+    let gui = xml.get_child("gui").context("fixture GUI missing")?;
+    let address = gui
+        .get_child("address")
+        .and_then(xmltree::Element::get_text)
+        .context("fixture REST address missing")?
+        .into_owned();
+    let key = gui
+        .get_child("apikey")
+        .and_then(xmltree::Element::get_text)
+        .context("fixture key missing")?
+        .into_owned();
+    reqwest::blocking::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(10))
+        .build()?
+        .patch(format!("http://{address}/rest/config/defaults/folder"))
+        .header("X-API-Key", key)
+        .json(&json!({"minDiskFree":{"value":0,"unit":"%"}}))
+        .send()?
+        .error_for_status()?;
+    Ok(())
+}
+/// #3080: a real transfer into a full disk. The destination keeps its files,
+/// shows that the vault needs attention with the actual ENOSPC error, and
+/// receives the complete note once space is freed.
+#[test]
+#[ignore = "requires a private small tmpfs; run scripts/ci/sync-disk-full.sh"]
+fn issue3080_transfer_disk_full_needs_attention_keeps_files_and_resumes() -> Result<()> {
+    subreaper()?;
+    let volume = disk_full_volume("OKILUM_SYNC_DISK_FULL_TRANSFER")?;
+    let root = tempfile::tempdir()?;
+    let FirstSyncFixture {
+        source_runtime,
+        target_runtime,
+        source,
+        target,
+        source_services,
+        target_services,
+        first,
+        second,
+        here,
+        there,
+        peer,
+        vault,
+    } = first_sync_fixture_at(root.path(), &volume.join("here"))?;
+    let vault = &vault;
+    let a = source.connect()?;
+    let b = target.connect()?;
+    without_free_space_reserve(&target)?;
+    confirm_first_sync(&second, peer, vault, &here)?;
+    assert_eq!(
+        b.folder(vault)?["minDiskFree"]["value"],
+        json!(0),
+        "the free-space reserve would mask the filesystem error"
+    );
+    fs::write(there.join("canary.md"), b"received before the disk filled")?;
+    wait("positive control: ordinary transfer", || {
+        a.scan(vault)?;
+        b.scan(vault)?;
+        Ok(fs::read(here.join("canary.md"))
+            .is_ok_and(|bytes| bytes == b"received before the disk filled"))
+    })?;
+    let before = first_sync_files(&here)?;
+    let filler = fill(&volume, 1 << 20)?;
+    let large = large_note();
+    ensure!(free_bytes(&volume)? < large.len() as u64);
+    fs::write(there.join("large.bin"), &large)?;
+    let mut observed = String::new();
+    wait("real ENOSPC while receiving", || {
+        a.scan(vault)?;
+        observed = b.errors(vault)?.to_string();
+        Ok(observed.contains("no space left on device"))
+    })?;
+    println!("ISSUE3080_TRANSFER_DISK_FULL errors={observed}");
+    let state = |second: &Controller| -> Result<(bool, String)> {
+        let overview = second.overview()?;
+        let vault = overview
+            .vaults
+            .get(&here)
+            .context("vault missing from Sync overview")?;
+        Ok((vault.errors, vault.state.clone()))
+    };
+    // Settings shows this vault's row state and the main-window banner.
+    wait("the vault shows that its disk is full", || {
+        let (errors, state) = state(&second)?;
+        Ok(errors && state.contains("not enough disk space"))
+    })?;
+    let mut current = first_sync_files(&here)?;
+    assert!(
+        !current.contains_key("large.bin"),
+        "a partial note was published"
+    );
+    current.retain(|path, _| before.contains_key(path));
+    assert_eq!(
+        current, before,
+        "existing files changed while the disk was full"
+    );
+    assert_eq!(fs::read(there.join("large.bin"))?, large);
+    fs::remove_file(filler)?;
+    fs::write(there.join("after-space.md"), b"space freed")?;
+    wait("the complete note arrives once space is freed", || {
+        a.scan(vault)?;
+        b.scan(vault)?;
+        Ok(
+            fs::read(here.join("large.bin")).is_ok_and(|bytes| bytes == large)
+                && here.join("after-space.md").exists(),
+        )
+    })?;
+    wait("attention clears after recovery", || Ok(!state(&second)?.0))?;
+    assert_eq!(
+        fs::read(here.join("canary.md"))?,
+        b"received before the disk filled"
+    );
+    println!(
+        "ISSUE3080_TRANSFER_DISK_FULL_PASS: real ENOSPC kept files, showed attention and resumed"
+    );
+    drop((first, second));
     source_runtime.disable()?;
     target_runtime.disable()?;
     drop((source_services, target_services));
@@ -1566,6 +2582,858 @@ fn issue2508_scoped_receipt_refuses_unproven_states_and_recovers_each_boundary()
         Ok(second.join("progress.md").exists())
     })?;
     runtime.disable()?;
+    Ok(())
+}
+
+/// #2582 fixture: one managed runtime and a source peer sharing `ids`.
+/// Every folder has transferred `control.md` unless listed in `empty`.
+struct MissingRootFixture {
+    // Field order is drop order: daemons stop before the directory goes.
+    runtime: Runtime<Services>,
+    services: Services,
+    identity: DaemonIdentity,
+    source: Peer,
+    base: PathBuf,
+    _root: tempfile::TempDir,
+}
+impl MissingRootFixture {
+    fn new(ids: &[&str], empty: &[&str]) -> Result<Self> {
+        subreaper()?;
+        let root = tempfile::tempdir()?;
+        let base = root.path().to_owned();
+        let services = Services::default();
+        let rest = TcpListener::bind("127.0.0.1:0")?;
+        let listen = TcpListener::bind("127.0.0.1:0")?;
+        let request = Preparation {
+            executable: binary()?,
+            rest_address: rest.local_addr()?,
+            listen_address: listen.local_addr()?,
+        };
+        drop((rest, listen));
+        let runtime = Runtime::with_services(
+            base.join("runtime"),
+            base.join("units"),
+            services.clone(),
+            launcher(),
+        );
+        let identity = runtime
+            .enable(Selection::Managed(request), &[])?
+            .identity
+            .unwrap();
+        services.remember_pid(identity.config_file.parent().unwrap())?;
+        let source = Peer::new(&base, "source", binary()?)?;
+        let api = identity.connect()?;
+        let address = api.config()?["options"]["listenAddresses"][0]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        source
+            .api
+            .add_device(&json!({"deviceID":identity.device_id,"addresses":[address]}))?;
+        let fixture = Self {
+            runtime,
+            services,
+            identity,
+            source,
+            base,
+            _root: root,
+        };
+        for id in ids {
+            fixture.enroll(id, !empty.contains(id))?;
+        }
+        for id in ids.iter().filter(|id| !empty.contains(id)) {
+            fixture.transfers(id, "control.md")?;
+        }
+        // A live generation records which folders have index history.
+        fixture.relaunch()?;
+        Ok(fixture)
+    }
+    /// Enroll `id` from a fresh source share; `file` seeds `control.md`.
+    fn enroll(&self, id: &str, file: bool) -> Result<()> {
+        fs::create_dir_all(self.vault(id))?;
+        fs::create_dir_all(self.origin(id))?;
+        FolderController::new(self.state(id)).enroll(
+            &self.identity,
+            std::slice::from_ref(&self.identity.config_file),
+            &approval(&self.identity, &self.source, id),
+            &self.vault(id),
+        )?;
+        add_source(&self.source, &self.identity, id, &self.origin(id))?;
+        if file {
+            fs::write(self.origin(id).join("control.md"), format!("{id} before"))?;
+        }
+        Ok(())
+    }
+    fn ids(&self, name: &str) -> Result<Vec<String>> {
+        let path = self.launch_dir().join(name);
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        Ok(serde_json::from_slice(&fs::read(path)?)?)
+    }
+    /// Folders the launcher fenced by a unique marker (missing root).
+    fn fenced(&self) -> Result<Vec<String>> {
+        let path = self.launch_dir().join("fenced-folders.json");
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let map: serde_json::Map<String, Value> = serde_json::from_slice(&fs::read(path)?)?;
+        Ok(map.keys().cloned().collect())
+    }
+    fn marker(&self, id: &str) -> Result<String> {
+        Ok(self.identity.connect()?.folder(id)?["markerName"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned())
+    }
+    /// The folder runs behind its own root marker (never `.stfolder`), and the
+    /// marker file exists in the verified root.
+    fn rooted(&self, id: &str) -> Result<bool> {
+        let marker = self.marker(id)?;
+        Ok(marker.starts_with(".stfolder/okilum-root-") && self.vault(id).join(&marker).is_file())
+    }
+    fn vault(&self, id: &str) -> PathBuf {
+        self.base.join(id)
+    }
+    fn origin(&self, id: &str) -> PathBuf {
+        self.base.join(format!("source-{id}"))
+    }
+    fn away(&self, id: &str) -> PathBuf {
+        self.base.join(format!("unmounted-{id}"))
+    }
+    fn state(&self, id: &str) -> PathBuf {
+        self.base.join(format!("{id}-state"))
+    }
+    fn home(&self) -> &Path {
+        self.identity.config_file.parent().unwrap()
+    }
+    fn launch_dir(&self) -> PathBuf {
+        self.home().parent().unwrap().join("managed-launch")
+    }
+    fn relaunch(&self) -> Result<()> {
+        self.services.crash_runtime()?;
+        self.services.launch()?;
+        self.services.remember_pid(self.home())?;
+        Ok(())
+    }
+    fn transfers(&self, id: &str, name: &str) -> Result<()> {
+        wait("folder transfers", || {
+            self.source.api.scan(id)?;
+            Ok(self.vault(id).join(name).exists())
+        })
+    }
+    fn withheld(&self, id: &str, name: &str) -> Result<()> {
+        for _ in 0..10 {
+            self.source.api.scan(id)?;
+            ensure!(!self.vault(id).join(name).exists(), "{id} published {name}");
+            thread::sleep(Duration::from_millis(100));
+        }
+        Ok(())
+    }
+    /// Kill a launch command paused at the fixture hook (no runtime started).
+    fn kill_launcher(&self) -> Result<()> {
+        let mut state = self.services.0.lock().unwrap();
+        let mut child = state.child.take().context("no launch helper")?;
+        child.kill()?;
+        child.wait()?;
+        Ok(())
+    }
+    /// The autonomous launch command must exit unsuccessfully before any runtime
+    /// starts, so nothing can recreate the missing root.
+    fn launch_refused(&self) -> Result<()> {
+        self.services.launch()?;
+        let mut state = self.services.0.lock().unwrap();
+        let child = state.child.as_mut().context("no launch helper")?;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            ensure!(Instant::now() < deadline, "launch was not refused");
+            thread::sleep(Duration::from_millis(50));
+        };
+        ensure!(!status.success(), "launch must fail closed");
+        state.child = None;
+        Ok(())
+    }
+}
+
+/// #2582: an indexed, unpaused folder whose root disappeared (moved, deleted,
+/// unmounted) and that has no unfinished hold never stops the runtime for the
+/// other vaults. It starts unpaused (no root recreation) behind a unique marker
+/// fence; only its own root returning with the saved identity lifts the fence.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_missing_root_never_stops_the_runtime_across_launches() -> Result<()> {
+    use okilum_sync_controller::network_policy::{self, Policy};
+    let f = MissingRootFixture::new(&["kept", "gone"], &[])?;
+    assert!(f.ids("indexed-folders.json")?.contains(&"gone".into()));
+    // No-op reconciliation (the Sync refresh) is admitted configuration that
+    // changes no folder instance: it keeps the evidence.
+    for _ in 0..3 {
+        FolderController::new(f.state("gone")).pause(false)?;
+    }
+    assert!(
+        f.ids("indexed-folders.json")?.contains(&"gone".into()),
+        "no-op reconciliation keeps index evidence"
+    );
+    f.services.crash_runtime()?;
+    fs::rename(f.vault("gone"), f.away("gone"))?;
+    for launch in 1..=2 {
+        f.services.launch()?;
+        f.services.remember_pid(f.home())?;
+        assert!(live_generation(f.home())?.paused_at_start.is_empty());
+        let api = f.identity.connect()?;
+        assert_eq!(api.folder("gone")?["paused"], false, "never paused");
+        assert!(f.marker("gone")?.starts_with(".okilum-missing-root-"));
+        assert!(f.fenced()?.contains(&"gone".into()));
+        let marker = format!("while-gone-{launch}.md");
+        fs::write(f.origin("kept").join(&marker), b"other vault keeps syncing")?;
+        f.transfers("kept", &marker)?;
+        f.source.api.scan("gone")?;
+        assert!(
+            !f.vault("gone").exists(),
+            "a missing root is never recreated"
+        );
+        assert!(
+            f.origin("gone").join("control.md").exists(),
+            "a missing root never propagates deletions"
+        );
+        if launch == 1 {
+            // Runtime-wide effects hold a root-independent lease for it.
+            network_policy::reconcile(
+                f.home().parent().unwrap(),
+                &f.identity,
+                Some(Policy::PublicDiscoveryAndRelays),
+            )?;
+            assert!(
+                FolderController::new(f.state("gone")).pause(true).is_err(),
+                "a configuration effect on the missing folder itself is refused"
+            );
+            f.services.crash_runtime()?;
+        }
+    }
+    // While the runtime runs, a foreign folder with a Syncthing marker appears
+    // at the path: it is not the saved root, so it stays fenced and unsynced.
+    fs::create_dir_all(f.vault("gone").join(".stfolder"))?;
+    fs::write(
+        f.origin("gone").join("foreign-check.md"),
+        b"must not arrive early",
+    )?;
+    for _ in 0..4 {
+        f.source.api.scan("gone")?;
+        thread::sleep(Duration::from_secs(2));
+    }
+    assert!(f.marker("gone")?.starts_with(".okilum-missing-root-"));
+    assert!(!f.vault("gone").join("foreign-check.md").exists());
+    fs::remove_dir_all(f.vault("gone"))?;
+    // The saved root returns while the runtime runs: supervision unfences it.
+    fs::rename(f.away("gone"), f.vault("gone"))?;
+    wait("returned root unfenced", || f.rooted("gone"))?;
+    assert!(f.fenced()?.is_empty());
+    f.transfers("gone", "foreign-check.md")?;
+    f.runtime.disable()?;
+    Ok(())
+}
+
+/// #2582 review: a folder added (or first filled) after launch gets index
+/// evidence from the live runtime, so an unmount before any restart does not
+/// stop the runtime for the other vaults.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_folder_added_after_launch_gains_evidence_without_restart() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept"], &[])?;
+    f.enroll("late", true)?;
+    // Evidence never needs the launch gate: hold it for the whole wait, the
+    // way a first-Sync review holds it, and the evidence still appears.
+    let gate = fs::File::open(f.launch_dir().join("gate.lock"))?;
+    gate.try_lock()
+        .map_err(|e| anyhow::anyhow!("fixture could not hold the gate: {e:?}"))?;
+    f.transfers("late", "control.md")?;
+    wait(
+        "live evidence for the late folder under a held gate",
+        || Ok(f.ids("indexed-folders.json")?.contains(&"late".into())),
+    )?;
+    drop(gate);
+    f.services.crash_runtime()?;
+    fs::rename(f.vault("late"), f.away("late"))?;
+    f.services.launch()?;
+    f.services.remember_pid(f.home())?;
+    assert!(f.marker("late")?.starts_with(".okilum-missing-root-"));
+    assert!(!f.vault("late").exists());
+    fs::write(f.origin("kept").join("progress.md"), b"other vault runs")?;
+    f.transfers("kept", "progress.md")?;
+    f.runtime.disable()?;
+    Ok(())
+}
+
+/// #2582 review: index evidence belongs to one folder instance. A failed
+/// removal keeps it; re-adding the same ID revokes it, and the new instance
+/// earns it only from its own index history.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_readded_folder_id_never_inherits_index_evidence() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept", "gone"], &[])?;
+    assert!(f.ids("indexed-folders.json")?.contains(&"gone".into()));
+    // The removal's REST call fails (runtime down): the instance survives and
+    // keeps its evidence.
+    f.services.crash_runtime()?;
+    assert!(FolderController::new(f.state("gone")).remove().is_err());
+    assert!(
+        f.ids("indexed-folders.json")?.contains(&"gone".into()),
+        "a failed removal keeps the surviving instance's evidence"
+    );
+    f.services.launch()?;
+    f.services.remember_pid(f.home())?;
+    FolderController::new(f.state("gone")).remove()?;
+    // Re-add the same ID at the same (emptied) root from an empty share, so the
+    // new instance has no index history of its own.
+    for entry in fs::read_dir(f.vault("gone"))? {
+        let entry = entry?.path();
+        if entry.is_dir() {
+            fs::remove_dir_all(entry)?;
+        } else {
+            fs::remove_file(entry)?;
+        }
+    }
+    f.source.api.remove_folder("gone")?;
+    fs::remove_dir_all(f.origin("gone"))?;
+    fs::create_dir(f.origin("gone"))?;
+    FolderController::new(f.base.join("gone-again-state")).enroll(
+        &f.identity,
+        std::slice::from_ref(&f.identity.config_file),
+        &approval(&f.identity, &f.source, "gone"),
+        &f.vault("gone"),
+    )?;
+    add_source(&f.source, &f.identity, "gone", &f.origin("gone"))?;
+    for _ in 0..3 {
+        thread::sleep(Duration::from_secs(2));
+        assert!(
+            !f.ids("indexed-folders.json")?.contains(&"gone".into()),
+            "a re-added ID never inherits the old instance's evidence"
+        );
+    }
+    assert!(f.ids("indexed-folders.json")?.contains(&"kept".into()));
+    f.services.crash_runtime()?;
+    fs::rename(f.vault("gone"), f.away("gone"))?;
+    for _ in 0..2 {
+        f.launch_refused()?;
+        assert!(!f.vault("gone").exists(), "missing root recreated");
+    }
+    Ok(())
+}
+
+/// #2582 review: a missing root's admission is a real writer lease held from
+/// the launch decision through child startup. A root that returns in that
+/// window cannot be drained under the runtime; a holder that completes later
+/// and dies is fenced by the next generation.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_missing_root_admission_is_held_through_startup() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept", "gone"], &[])?;
+    f.services.crash_runtime()?;
+    fs::rename(f.vault("gone"), f.away("gone"))?;
+    let pause = f.base.join("launch-pause");
+    fs::create_dir(&pause)?;
+    std::env::set_var("OKILUM_LAUNCH_FIXTURE_PAUSE", &pause);
+    let launched = f.services.launch();
+    std::env::remove_var("OKILUM_LAUNCH_FIXTURE_PAUSE");
+    launched?;
+    wait("missing root admitted, child not started", || {
+        Ok(pause.join("launch-admitted").exists())
+    })?;
+    // The root returns and another process starts draining it.
+    fs::rename(f.away("gone"), f.vault("gone"))?;
+    let authority = Authority::for_root(&f.vault("gone"))?;
+    let mut hold = authority.begin_drain("startup-race")?;
+    let token = hold.token().clone();
+    for _ in 0..5 {
+        assert!(
+            !hold.try_hold(&token)?,
+            "the launch lease pins the drain until startup completes"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+    fs::write(pause.join("launch-go"), "start")?;
+    f.services.remember_pid(f.home())?;
+    // The drain began during startup: readiness keeps the returned root
+    // fenced (no Open admission), so this generation publishes nothing.
+    assert!(f.marker("gone")?.starts_with(".okilum-missing-root-"));
+    fs::write(f.origin("gone").join("withheld.md"), b"competing change")?;
+    fs::write(f.origin("kept").join("progress.md"), b"sibling runs")?;
+    f.transfers("kept", "progress.md")?;
+    f.withheld("gone", "withheld.md")?;
+    wait("drain completes after startup", || hold.try_hold(&token))?;
+    drop(hold); // the holder dies before any transport pause
+    f.withheld("gone", "withheld.md")?;
+    assert!(f.marker("gone")?.starts_with(".okilum-missing-root-"));
+    // The next generation fences the held folder; the sibling keeps going.
+    f.relaunch()?;
+    assert!(live_generation(f.home())?
+        .paused_at_start
+        .contains(&"gone".into()));
+    // Held: the returned root keeps its fence until explicit recovery.
+    assert!(f.marker("gone")?.starts_with(".okilum-missing-root-"));
+    fs::write(f.origin("kept").join("progress-2.md"), b"sibling runs")?;
+    f.transfers("kept", "progress-2.md")?;
+    f.withheld("gone", "withheld.md")?;
+    let mut hold = authority.recover(&authority.snapshot()?)?;
+    let token = hold.token().clone();
+    assert!(hold.try_hold(&token)?);
+    let token = hold.token().clone();
+    hold.release(&token)?;
+    FolderController::new(f.state("gone")).pause(false)?;
+    f.transfers("gone", "withheld.md")?;
+    f.runtime.disable()?;
+    Ok(())
+}
+
+/// #2582 review: a foreign directory with a Syncthing marker that takes the
+/// missing root's path between the launch decision and child start never
+/// exchanges a byte: the folder starts behind its unique marker fence.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_root_swapped_before_start_never_syncs() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept", "gone"], &[])?;
+    f.services.crash_runtime()?;
+    fs::rename(f.vault("gone"), f.away("gone"))?;
+    let pause = f.base.join("launch-pause");
+    fs::create_dir(&pause)?;
+    std::env::set_var("OKILUM_LAUNCH_FIXTURE_PAUSE", &pause);
+    let launched = f.services.launch();
+    std::env::remove_var("OKILUM_LAUNCH_FIXTURE_PAUSE");
+    launched?;
+    wait("missing root admitted, child not started", || {
+        Ok(pause.join("launch-admitted").exists())
+    })?;
+    // A foreign Syncthing folder takes the path before the child starts.
+    fs::create_dir_all(f.vault("gone").join(".stfolder"))?;
+    fs::write(f.vault("gone").join("foreign.md"), b"foreign vault data")?;
+    fs::write(pause.join("launch-go"), "start")?;
+    f.services.remember_pid(f.home())?;
+    fs::write(
+        f.origin("gone").join("vault-data.md"),
+        b"must stay in the vault",
+    )?;
+    fs::write(f.origin("kept").join("progress.md"), b"other vault runs")?;
+    f.transfers("kept", "progress.md")?;
+    for _ in 0..5 {
+        f.source.api.scan("gone")?;
+        thread::sleep(Duration::from_secs(2));
+    }
+    assert!(f.marker("gone")?.starts_with(".okilum-missing-root-"));
+    assert!(
+        !f.origin("gone").join("foreign.md").exists(),
+        "foreign data reached the vault's peer"
+    );
+    assert!(
+        !f.vault("gone").join("vault-data.md").exists(),
+        "vault data reached the foreign directory"
+    );
+    // The foreign directory goes and the saved root returns: it syncs again.
+    fs::remove_dir_all(f.vault("gone"))?;
+    fs::rename(f.away("gone"), f.vault("gone"))?;
+    wait("returned root unfenced", || f.rooted("gone"))?;
+    f.transfers("gone", "vault-data.md")?;
+    f.runtime.disable()?;
+    Ok(())
+}
+
+/// #2582 review: the original marker is durable before config.xml carries the
+/// unique fence marker. A launch command killed in between, then started
+/// again, still runs the returned root behind its own root marker.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_launcher_killed_after_fencing_keeps_the_original_marker() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept", "gone"], &[])?;
+    f.services.crash_runtime()?;
+    fs::rename(f.vault("gone"), f.away("gone"))?;
+    let pause = f.base.join("launch-pause");
+    fs::create_dir(&pause)?;
+    std::env::set_var("OKILUM_LAUNCH_FIXTURE_PAUSE", &pause);
+    let launched = f.services.launch();
+    std::env::remove_var("OKILUM_LAUNCH_FIXTURE_PAUSE");
+    launched?;
+    wait("config.xml fenced, child not started", || {
+        Ok(pause.join("launch-admitted").exists())
+    })?;
+    let xml = fs::read_to_string(&f.identity.config_file)?;
+    assert!(
+        xml.contains(".okilum-missing-root-"),
+        "config.xml is fenced"
+    );
+    let record: Value =
+        serde_json::from_slice(&fs::read(f.launch_dir().join("fenced-folders.json"))?)?;
+    assert!(
+        record["gone"]["marker"]
+            .as_str()
+            .is_some_and(|m| m.starts_with(".stfolder/okilum-root-")),
+        "original recorded first"
+    );
+    f.kill_launcher()?;
+    // systemd starts the command again.
+    f.services.launch()?;
+    f.services.remember_pid(f.home())?;
+    assert!(f.marker("gone")?.starts_with(".okilum-missing-root-"));
+    fs::write(f.origin("kept").join("progress.md"), b"other vault runs")?;
+    f.transfers("kept", "progress.md")?;
+    fs::rename(f.away("gone"), f.vault("gone"))?;
+    wait("returned root unfenced", || f.rooted("gone"))?;
+    fs::write(f.origin("gone").join("after-restart.md"), b"syncs again")?;
+    f.transfers("gone", "after-restart.md")?;
+    f.runtime.disable()?;
+    Ok(())
+}
+
+/// #2582 review: supervision watches every managed folder for the whole run.
+/// A root lost while the runtime runs (again after an unfence, too) is fenced
+/// again, so a foreign Syncthing directory at its path never exchanges a byte.
+/// A folder without index history is also paused, so its root is never
+/// recreated; the unfence undoes exactly that pause.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_root_lost_while_running_is_fenced_again_every_time() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept", "gone"], &[])?;
+    f.enroll("fresh", false)?;
+    for round in 1..=2 {
+        fs::rename(f.vault("gone"), f.away("gone"))?;
+        wait("fenced again while running", || {
+            Ok(f.marker("gone")?.starts_with(".okilum-missing-root-"))
+        })?;
+        let api = f.identity.connect()?;
+        assert_eq!(
+            api.folder("gone")?["paused"],
+            false,
+            "indexed: never paused"
+        );
+        // A foreign Syncthing folder takes the path while the runtime runs.
+        fs::create_dir_all(f.vault("gone").join(".stfolder"))?;
+        let foreign = format!("foreign-{round}.md");
+        let ours = format!("vault-{round}.md");
+        fs::write(f.vault("gone").join(&foreign), b"foreign vault data")?;
+        fs::write(f.origin("gone").join(&ours), b"must stay in the vault")?;
+        let progress = format!("progress-{round}.md");
+        fs::write(f.origin("kept").join(&progress), b"other vault runs")?;
+        f.transfers("kept", &progress)?;
+        for _ in 0..4 {
+            f.source.api.scan("gone")?;
+            thread::sleep(Duration::from_secs(2));
+        }
+        assert!(f.marker("gone")?.starts_with(".okilum-missing-root-"));
+        assert!(
+            !f.origin("gone").join(&foreign).exists(),
+            "foreign data reached the vault's peer (round {round})"
+        );
+        assert!(
+            !f.vault("gone").join(&ours).exists(),
+            "vault data reached the foreign directory (round {round})"
+        );
+        // The foreign directory goes and the saved root returns.
+        fs::remove_dir_all(f.vault("gone"))?;
+        fs::rename(f.away("gone"), f.vault("gone"))?;
+        wait("returned root unfenced", || f.rooted("gone"))?;
+        f.transfers("gone", &ours)?;
+    }
+    // A folder that never indexed anything loses its root while running.
+    fs::rename(f.vault("fresh"), f.away("fresh"))?;
+    wait("history-free folder fenced and paused", || {
+        Ok(f.marker("fresh")?.starts_with(".okilum-missing-root-")
+            && f.identity.connect()?.folder("fresh")?["paused"] == true)
+    })?;
+    for _ in 0..3 {
+        thread::sleep(Duration::from_secs(2));
+        assert!(!f.vault("fresh").exists(), "history-free root recreated");
+    }
+    fs::rename(f.away("fresh"), f.vault("fresh"))?;
+    wait("history-free folder unfenced and resumed", || {
+        Ok(f.rooted("fresh")? && f.identity.connect()?.folder("fresh")?["paused"] == false)
+    })?;
+    fs::write(f.origin("fresh").join("first.md"), b"first file")?;
+    f.transfers("fresh", "first.md")?;
+    f.runtime.disable()?;
+    Ok(())
+}
+
+/// #2582 review: a fence record that outlives its unfence (the record write
+/// failed after the marker was restored) never resumes a folder the user paused
+/// since. Supervision drops such a stale record without touching pause, and the
+/// next launch undoes a fence pause only while the fence marker is still there.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_stale_fence_record_never_resumes_a_user_pause() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept"], &[])?;
+    f.enroll("fresh", false)?;
+    let state = f.launch_dir();
+    let record = state.join("fenced-folders.json");
+    let lock_state = |read_only: bool| -> Result<()> {
+        fs::set_permissions(
+            &state,
+            fs::Permissions::from_mode(if read_only { 0o500 } else { 0o700 }),
+        )?;
+        if read_only {
+            ensure!(
+                fs::write(state.join("probe"), b"x").is_err(),
+                "fixture must run unprivileged: a read-only directory must refuse writes"
+            );
+        }
+        Ok(())
+    };
+    let record_paused = || -> Result<bool> {
+        let value: Value = serde_json::from_slice(&fs::read(&record)?)?;
+        Ok(value["fresh"]["paused"] == true)
+    };
+    let api = || f.identity.connect();
+    for cycle in 1..=2 {
+        // The history-free folder loses its root while running: fenced + paused.
+        fs::rename(f.vault("fresh"), f.away("fresh"))?;
+        wait("history-free folder fenced and paused", || {
+            Ok(f.marker("fresh")?.starts_with(".okilum-missing-root-")
+                && api()?.folder("fresh")?["paused"] == true)
+        })?;
+        assert!(record_paused()?, "the fence records its own pause");
+        // The root returns, but the round cannot drop the record.
+        lock_state(true)?;
+        fs::rename(f.away("fresh"), f.vault("fresh"))?;
+        wait(
+            "unfenced and resumed despite the failed record write",
+            || Ok(f.rooted("fresh")? && api()?.folder("fresh")?["paused"] == false),
+        )?;
+        assert!(
+            record_paused()?,
+            "the stale record survived the failed write"
+        );
+        if cycle == 1 {
+            // Writes work again: supervision drops the stale record and leaves
+            // the folder exactly as it is.
+            lock_state(false)?;
+            wait("stale record dropped", || {
+                Ok(!record.exists() || !f.fenced()?.contains(&"fresh".into()))
+            })?;
+            assert_eq!(api()?.folder("fresh")?["paused"], false);
+            continue;
+        }
+        // The user pauses the folder; the runtime then restarts with the
+        // stale record still on disk.
+        FolderController::new(f.state("fresh")).pause(true)?;
+        assert_eq!(api()?.folder("fresh")?["paused"], true);
+        f.services.crash_runtime()?;
+        lock_state(false)?;
+        assert!(record_paused()?, "the stale record reaches the next launch");
+        f.services.launch()?;
+        f.services.remember_pid(f.home())?;
+        assert!(f.rooted("fresh")?);
+        assert_eq!(
+            api()?.folder("fresh")?["paused"],
+            true,
+            "a stale fence record must not resume the user's pause"
+        );
+        for _ in 0..3 {
+            thread::sleep(Duration::from_secs(2));
+            assert_eq!(api()?.folder("fresh")?["paused"], true);
+        }
+    }
+    fs::write(f.origin("kept").join("progress.md"), b"other vault runs")?;
+    f.transfers("kept", "progress.md")?;
+    f.runtime.disable()?;
+    Ok(())
+}
+
+/// #2582 review: a verified root runs behind its own marker inside
+/// `.stfolder`, so a foreign Syncthing directory that replaces it between
+/// supervision rounds, even while the launch gate is held and supervision
+/// cannot react at all, fails `CheckPath`: nothing is scanned, committed or
+/// pulled in either direction.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_replaced_root_never_syncs_between_polls_or_under_the_gate() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept", "gone"], &[])?;
+    assert!(
+        f.rooted("gone")?,
+        "launch gives a verified root its own marker"
+    );
+    assert!(f.rooted("kept")?);
+    // Through one fence and unfence first: the unfence returns to a root
+    // marker, never to `.stfolder`.
+    fs::rename(f.vault("gone"), f.away("gone"))?;
+    wait("fenced while missing", || {
+        Ok(f.marker("gone")?.starts_with(".okilum-missing-root-"))
+    })?;
+    fs::rename(f.away("gone"), f.vault("gone"))?;
+    wait("unfenced to its root marker", || f.rooted("gone"))?;
+    let marker = f.marker("gone")?;
+    // A folder enrolled while the runtime runs is born behind its own marker.
+    f.enroll("late", true)?;
+    f.transfers("late", "control.md")?;
+    assert!(
+        f.rooted("late")?,
+        "a folder added while running never uses .stfolder"
+    );
+    let late_marker = f.marker("late")?;
+    // Hold the launch gate: no supervision round can run.
+    let gate = fs::File::open(f.launch_dir().join("gate.lock"))?;
+    gate.try_lock()
+        .map_err(|e| anyhow::anyhow!("fixture could not hold the gate: {e:?}"))?;
+    // Replace the verified root with a foreign Syncthing folder.
+    fs::rename(f.vault("gone"), f.away("gone"))?;
+    fs::create_dir_all(f.vault("gone").join(".stfolder"))?;
+    fs::write(f.vault("gone").join("foreign.md"), b"foreign vault data")?;
+    fs::write(
+        f.origin("gone").join("vault-data.md"),
+        b"must stay in the vault",
+    )?;
+    fs::rename(f.vault("late"), f.away("late"))?;
+    fs::create_dir_all(f.vault("late").join(".stfolder"))?;
+    fs::write(f.vault("late").join("foreign.md"), b"foreign vault data")?;
+    fs::write(
+        f.origin("late").join("late-data.md"),
+        b"must stay in the vault",
+    )?;
+    fs::write(f.origin("kept").join("progress.md"), b"other vault runs")?;
+    f.transfers("kept", "progress.md")?;
+    for _ in 0..5 {
+        f.source.api.scan("gone")?;
+        f.source.api.scan("late")?;
+        thread::sleep(Duration::from_secs(2));
+    }
+    assert_eq!(f.marker("late")?, late_marker);
+    assert!(!f.origin("late").join("foreign.md").exists());
+    assert!(!f.vault("late").join("late-data.md").exists());
+    assert!(f.origin("late").join("control.md").exists());
+    assert_eq!(f.marker("gone")?, marker, "supervision could not react");
+    assert!(
+        !f.origin("gone").join("foreign.md").exists(),
+        "foreign data reached the vault's peer"
+    );
+    assert!(
+        !f.vault("gone").join("vault-data.md").exists(),
+        "vault data reached the foreign directory"
+    );
+    assert!(
+        f.origin("gone").join("control.md").exists(),
+        "no deletion reached the vault's peer"
+    );
+    drop(gate);
+    // With the gate free, supervision fences the replaced root as well.
+    wait("replaced root fenced", || {
+        Ok(f.marker("gone")?.starts_with(".okilum-missing-root-"))
+    })?;
+    fs::remove_dir_all(f.vault("gone"))?;
+    fs::rename(f.away("gone"), f.vault("gone"))?;
+    wait("verified root unfenced", || f.rooted("gone"))?;
+    assert_eq!(
+        f.marker("gone")?,
+        marker,
+        "the root keeps its stable marker"
+    );
+    f.transfers("gone", "vault-data.md")?;
+    wait("late root fenced", || {
+        Ok(f.marker("late")?.starts_with(".okilum-missing-root-"))
+    })?;
+    fs::remove_dir_all(f.vault("late"))?;
+    fs::rename(f.away("late"), f.vault("late"))?;
+    wait("late root unfenced", || f.rooted("late"))?;
+    assert_eq!(f.marker("late")?, late_marker);
+    f.transfers("late", "late-data.md")?;
+    f.runtime.disable()?;
+    Ok(())
+}
+
+/// #2582 review: a missing configured path must name exactly the saved root.
+/// An indexed, Open folder ID redirected to another path is refused, and
+/// nothing is ever published into the redirected destination.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_redirected_missing_root_is_refused() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept", "gone"], &[])?;
+    f.services.crash_runtime()?;
+    let config = f.identity.config_file.clone();
+    let xml = fs::read_to_string(&config)?;
+    let tag = xml.find("id=\"gone\"").context("gone folder in config")?;
+    let start = tag + xml[tag..].find("path=\"").context("folder path")? + "path=\"".len();
+    let end = start + xml[start..].find('"').context("path end")?;
+    let elsewhere = f.base.join("elsewhere");
+    let redirected = format!("{}{}{}", &xml[..start], elsewhere.display(), &xml[end..]);
+    fs::write(&config, redirected)?;
+    for _ in 0..2 {
+        f.launch_refused()?;
+        assert!(!elsewhere.exists(), "redirected root created");
+    }
+    // The redirected destination appears with its own unfinished hold.
+    fs::create_dir(&elsewhere)?;
+    let held = Authority::for_root(&elsewhere)?;
+    let mut hold = held.begin_drain("redirected")?;
+    let token = hold.token().clone();
+    assert!(hold.try_hold(&token)?);
+    drop(hold);
+    fs::write(f.origin("gone").join("redirected.md"), b"must not publish")?;
+    f.launch_refused()?;
+    assert!(
+        fs::read_dir(&elsewhere)?.next().is_none(),
+        "nothing is published into the redirected destination"
+    );
+    Ok(())
+}
+
+/// #2582 review controls: pinned v2.1.6 would recreate the root of a paused
+/// folder or of one without index history, and a returning root must never meet
+/// an unfinished hold inside a running runtime. Those missing roots keep the
+/// launch fail-closed, without creating anything.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue2582_unsafe_missing_roots_fail_closed_without_recreating_them() -> Result<()> {
+    let f = MissingRootFixture::new(&["kept", "paused", "empty", "held"], &["empty"])?;
+    let indexed: Vec<String> =
+        serde_json::from_slice(&fs::read(f.launch_dir().join("indexed-folders.json"))?)?;
+    assert!(
+        !indexed.contains(&"empty".into()),
+        "a folder without files has sequence zero"
+    );
+    FolderController::new(f.state("paused")).pause(true)?;
+    for id in ["paused", "empty"] {
+        f.services.crash_runtime()?;
+        fs::rename(f.vault(id), f.away(id))?;
+        for _ in 0..2 {
+            f.launch_refused()?;
+            assert!(!f.vault(id).exists(), "{id}: missing root recreated");
+        }
+        fs::rename(f.away(id), f.vault(id))?;
+        f.services.launch()?;
+        f.services.remember_pid(f.home())?;
+    }
+
+    // A holder dies with its hold unfinished, then the root disappears.
+    let authority = Authority::for_root(&f.vault("held"))?;
+    let mut hold = authority.begin_drain("dead-holder")?;
+    let token = hold.token().clone();
+    wait("local writers drained", || hold.try_hold(&token))?;
+    drop(hold); // the holder dies; the hold stays durable
+    f.services.crash_runtime()?;
+    fs::rename(f.vault("held"), f.away("held"))?;
+    f.launch_refused()?;
+    assert!(!f.vault("held").exists());
+    // The root returns: launch fences the held folder; the other folder runs.
+    fs::rename(f.away("held"), f.vault("held"))?;
+    f.services.launch()?;
+    f.services.remember_pid(f.home())?;
+    assert!(live_generation(f.home())?
+        .paused_at_start
+        .contains(&"held".into()));
+    fs::write(f.origin("held").join("withheld.md"), b"competing change")?;
+    fs::write(f.origin("kept").join("progress.md"), b"other folder runs")?;
+    f.transfers("kept", "progress.md")?;
+    f.withheld("held", "withheld.md")?;
+    assert!(
+        FolderController::new(f.state("held")).pause(false).is_err(),
+        "resume is refused while the hold is unfinished"
+    );
+    let mut hold = authority.recover(&authority.snapshot()?)?;
+    let token = hold.token().clone();
+    assert!(hold.try_hold(&token)?);
+    let token = hold.token().clone();
+    hold.release(&token)?;
+    FolderController::new(f.state("held")).pause(false)?;
+    f.transfers("held", "withheld.md")?;
+    f.runtime.disable()?;
     Ok(())
 }
 

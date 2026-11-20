@@ -316,9 +316,11 @@ impl Reader {
         if self.single_file {
             // The file on screen leads even before history records it; a
             // draft on screen is already listed with the drafts.
-            let current = self.vault_root.join(&self.current_rel);
+            let current = self.vault_root.join(&self.pane.current_rel);
             let current = current.to_string_lossy().into_owned();
-            if !self.current_rel.is_empty() && !entries.iter().any(|entry| entry.path == current) {
+            if !self.pane.current_rel.is_empty()
+                && !entries.iter().any(|entry| entry.path == current)
+            {
                 let position = entries.iter().take_while(|entry| entry.unsaved).count();
                 entries.insert(
                     position,
@@ -350,7 +352,7 @@ impl Reader {
             return;
         };
         let single_file = self.single_file;
-        let current = (single_file && self.current_rel == reader_untitled::FILE)
+        let current = (single_file && self.pane.current_rel == reader_untitled::FILE)
             .then(|| self.vault_root.clone());
         self.recent_switcher.external_generation =
             self.recent_switcher.external_generation.wrapping_add(1);
@@ -689,7 +691,7 @@ impl Reader {
                 return;
             };
             self.recent_switcher.begin(
-                &self.current_rel,
+                &self.pane.current_rel,
                 &self.quick_open.recent,
                 inventory,
                 &self.vault_root,
@@ -741,7 +743,7 @@ impl Reader {
         let Some((root, path)) = self.recent_switcher.take() else {
             return;
         };
-        if root == self.vault_root && path != self.current_rel {
+        if root == self.vault_root && path != self.pane.current_rel {
             self.open_note(&path, None, window, cx);
         }
         cx.notify();
@@ -970,7 +972,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
             assert!(reader.recent_switcher.gallery_open);
-            assert_eq!(reader.current_rel, "A.md");
+            assert_eq!(reader.pane.current_rel, "A.md");
         });
         // Publish an accepted inventory with a deleted neighbour. The Reader's
         // own notification observer must preserve the selected exact path.
@@ -1009,7 +1011,7 @@ mod tests {
         visual.simulate_keystrokes("enter");
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
-            assert_eq!(reader.current_rel, "nested/renamed.md");
+            assert_eq!(reader.pane.current_rel, "nested/renamed.md");
             assert!(!reader.recent_switcher.gallery_open);
         });
         reader.update_in(visual, |reader, window, cx| {
@@ -1075,17 +1077,17 @@ mod tests {
             assert!(visual.debug_bounds("recent-switcher").is_none());
             visual.simulate_event(gpui::ModifiersChangedEvent::default());
             visual.run_until_parked();
-            reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "A.md"));
+            reader.read_with(visual, |r, _| assert_eq!(r.pane.current_rel, "A.md"));
         }
         visual.simulate_keystrokes("ctrl-tab");
         visual.run_until_parked();
         assert!(visual.debug_bounds("recent-switcher").is_some());
-        reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "A.md"));
+        reader.read_with(visual, |r, _| assert_eq!(r.pane.current_rel, "A.md"));
         visual.simulate_event(gpui::ModifiersChangedEvent::default());
         visual.run_until_parked();
         visual.executor().advance_clock(Duration::from_millis(100));
         visual.run_until_parked();
-        reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "B.md"));
+        reader.read_with(visual, |r, _| assert_eq!(r.pane.current_rel, "B.md"));
         let previous_input = reader.update_in(visual, |r, window, cx| {
             r.toggle_source(window, cx);
             r.editing.as_ref().unwrap().test_input()
@@ -1100,7 +1102,7 @@ mod tests {
         visual.executor().advance_clock(Duration::from_millis(100));
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
-            assert_eq!(r.current_rel, "B.md");
+            assert_eq!(r.pane.current_rel, "B.md");
             assert!(r.editing.is_some());
         });
         // Wayland can clear Control while the window still reports active,
@@ -1110,7 +1112,7 @@ mod tests {
         assert!(visual.debug_bounds("recent-switcher").is_some());
         visual.simulate_event(gpui::ModifiersChangedEvent::default());
         visual.run_until_parked();
-        reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "B.md"));
+        reader.read_with(visual, |r, _| assert_eq!(r.pane.current_rel, "B.md"));
         visual.deactivate_window();
         visual.run_until_parked();
         reader.update_in(visual, |_, window, _| window.activate_window());
@@ -1119,7 +1121,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert_eq!(
-                r.current_rel, "B.md",
+                r.pane.current_rel, "B.md",
                 "focus loss cancels the queued release"
             );
             assert!(!r.recent_switcher.open());
@@ -1139,14 +1141,17 @@ mod tests {
         visual.run_until_parked();
         visual.executor().advance_clock(Duration::from_millis(100));
         visual.run_until_parked();
-        reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "B.md"));
+        reader.read_with(visual, |r, _| assert_eq!(r.pane.current_rel, "B.md"));
         visual.simulate_keystrokes("ctrl-tab");
         visual.simulate_event(gpui::ModifiersChangedEvent::default());
         visual.run_until_parked();
         visual.executor().advance_clock(Duration::from_millis(100));
         visual.run_until_parked();
         let current_input = reader.read_with(visual, |r, cx| {
-            assert_eq!(r.current_rel, "A.md", "real release accepted the target");
+            assert_eq!(
+                r.pane.current_rel, "A.md",
+                "real release accepted the target"
+            );
             let editing = r
                 .editing
                 .as_ref()
@@ -1188,7 +1193,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
             assert_eq!(
-                r.current_rel, "A.md",
+                r.pane.current_rel, "A.md",
                 "external conflict refuses real navigation"
             );
             let editing = r.editing.as_ref().unwrap();

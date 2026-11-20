@@ -490,10 +490,11 @@ impl Reader {
     }
 
     pub(crate) fn selected_file(&self) -> &str {
-        self.file_preview
+        self.pane
+            .file_preview
             .as_ref()
             .map(|p| p.rel.as_str())
-            .unwrap_or(&self.current_rel)
+            .unwrap_or(&self.pane.current_rel)
     }
     pub(crate) fn preview_file(&mut self, rel: &str, window: &mut Window, cx: &mut Context<Self>) {
         // A deleted note asks before its contents are left behind (#1986).
@@ -521,7 +522,7 @@ impl Reader {
                 self.cancel_pending_landing();
                 self.navigation.preparation_generation =
                     self.navigation.preparation_generation.wrapping_add(1);
-                self.table_overlay = None;
+                self.pane.table_overlay = None;
                 if let Some(index) = self.navigation.history_nav {
                     self.navigation.history_ix = index;
                 } else if self
@@ -594,6 +595,7 @@ impl Reader {
                 } else if okilum_core::log::is_log_path(&preview.path) {
                     let (rel, path) = (rel.to_owned(), preview.path.clone());
                     let filters = self
+                        .pane
                         .file_preview
                         .as_ref()
                         .filter(|old| old.path == path)
@@ -652,7 +654,7 @@ impl Reader {
                     }));
                 }
                 let log = preview.log.is_some();
-                self.file_preview = Some(preview);
+                self.pane.file_preview = Some(preview);
                 self.resolve_json_viewer(tree_had_focus, window, cx);
                 // The notes linking here are this file's, never the last note's (#2885).
                 self.set_backlinks(self.vault.backlinks(rel), true);
@@ -1318,6 +1320,7 @@ mod tests {
             reader.update_in(visual, |r, window, cx| {
                 if reader_delimited::eligible(name) {
                     assert!(r
+                        .pane
                         .file_preview
                         .as_ref()
                         .unwrap()
@@ -1663,7 +1666,7 @@ mod tests {
         reader.update_in(visual, |reader, window, cx| {
             reader.preview_file("diagram.svg", window, cx);
             assert_eq!(reader.selected_file(), "diagram.svg");
-            assert!(reader.file_preview.as_ref().unwrap().image);
+            assert!(reader.pane.file_preview.as_ref().unwrap().image);
             reader.toggle_source(window, cx);
             assert!(reader.editing.is_none());
             reader.file_action(FileAction::Relative, window, cx);
@@ -1699,12 +1702,12 @@ mod tests {
                 "the copied link opens this file"
             );
             reader.preview_file("report.pdf", window, cx);
-            assert!(!reader.file_preview.as_ref().unwrap().image);
+            assert!(!reader.pane.file_preview.as_ref().unwrap().image);
             assert!(reader.pdf_viewer().is_some(), "a PDF opens inline");
             assert_eq!(reader.navigation.history.last().unwrap(), "report.pdf");
             reader.preview_file("plain.txt", window, cx);
             assert_eq!(reader.selected_file(), "plain.txt");
-            assert!(reader.file_preview.as_ref().unwrap().code.is_some());
+            assert!(reader.pane.file_preview.as_ref().unwrap().code.is_some());
             reader.file_action(FileAction::Relative, window, cx);
             assert_eq!(
                 cx.read_from_clipboard().unwrap().text().unwrap(),
@@ -1712,7 +1715,7 @@ mod tests {
             );
             assert!(!reader.single_file, "vault-mode positive control");
             reader.preview_file("plain.csv", window, cx);
-            let preview = reader.file_preview.as_ref().unwrap();
+            let preview = reader.pane.file_preview.as_ref().unwrap();
             assert!(preview
                 .code
                 .as_ref()
@@ -1731,7 +1734,7 @@ mod tests {
                 literal
             );
             reader.preview_file("plain.log", window, cx);
-            let preview = reader.file_preview.as_ref().unwrap();
+            let preview = reader.pane.file_preview.as_ref().unwrap();
             assert!(
                 preview.log.is_some(),
                 "vault logs use the structured viewer"

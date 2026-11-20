@@ -47,7 +47,7 @@ impl Reader {
         if self.editing.is_some() {
             &self.draft_outline.entries
         } else {
-            &self.outline
+            &self.pane.outline
         }
     }
 
@@ -153,7 +153,7 @@ impl Reader {
             input.read(cx).selected_range(),
         );
         let root = self.vault_root.clone();
-        let rel = self.current_rel.clone();
+        let rel = self.pane.current_rel.clone();
         self.cancel_pending_landing();
         let request = self.navigation.landing_generation;
         input.read(cx).focus_handle(cx).focus(window, cx);
@@ -162,7 +162,7 @@ impl Reader {
             let _ = this.update_in_own_window(cx, |this, window, cx| {
                 if this.navigation.landing_generation != request
                     || this.vault_root != root
-                    || this.current_rel != rel
+                    || this.pane.current_rel != rel
                     || this
                         .editing
                         .as_ref()
@@ -194,7 +194,7 @@ impl Reader {
                     let _ = reader.update(cx, |reader, cx| {
                         if reader.navigation.landing_generation != request
                             || reader.vault_root != root
-                            || reader.current_rel != rel
+                            || reader.pane.current_rel != rel
                             || reader
                                 .editing
                                 .as_ref()
@@ -282,11 +282,11 @@ mod tests {
             });
             visual.run_until_parked();
             reader.update_in(visual, |reader, window, cx| {
-                assert_eq!(reader.current_rel, name);
+                assert_eq!(reader.pane.current_rel, name);
                 assert!(reader.editing.is_none(), "Read is active");
-                assert_eq!(reader.note_source, body);
+                assert_eq!(reader.pane.note_source, body);
                 assert_eq!(
-                    reader.note_canonical_source.as_deref(),
+                    reader.pane.note_canonical_source.as_deref(),
                     Some(source.as_str())
                 );
                 assert_eq!(
@@ -298,10 +298,10 @@ mod tests {
                     ["Introduction", "What is Markdown?", "Later section"]
                 );
                 assert_eq!(
-                    reader.properties.is_ok(),
+                    reader.pane.properties.is_ok(),
                     valid,
                     "{name}: {:?}",
-                    reader.properties
+                    reader.pane.properties
                 );
                 assert_eq!(
                     reader
@@ -392,7 +392,11 @@ mod tests {
         visual.simulate_resize(size(px(1400.), px(960.)));
         settle(visual);
         reader.update_in(visual, |reader, window, cx| {
-            assert_eq!(reader.outline.len(), 20, "loaded note positive control");
+            assert_eq!(
+                reader.pane.outline.len(),
+                20,
+                "loaded note positive control"
+            );
             reader.panels.open(reader_layout::Panel::Backlinks);
             cx.notify();
             if live {
@@ -546,7 +550,7 @@ mod tests {
             );
             assert_eq!(reader.outline_list.item_count(), headings.len());
             assert_eq!(
-                reader.outline.len(),
+                reader.pane.outline.len(),
                 2,
                 "saved Reader inventory remains distinct"
             );
@@ -817,11 +821,11 @@ mod tests {
         settle(visual);
         let target_block = reader.update_in(visual, |reader, window, cx| {
             assert_eq!(
-                reader.outline.len(),
+                reader.pane.outline.len(),
                 3,
                 "outline inventory positive control"
             );
-            assert_eq!(reader.outline[1].text, "Цель 🎯");
+            assert_eq!(reader.pane.outline[1].text, "Цель 🎯");
             reader.panels.open(reader_layout::Panel::Backlinks);
             match mode {
                 Mode::Read => {}
@@ -829,7 +833,7 @@ mod tests {
                 Mode::Live => reader.open_live_preview(window, cx),
             }
             cx.notify();
-            reader.outline[1].target.block
+            reader.pane.outline[1].target.block
         });
         settle(visual);
         let input = reader.read_with(visual, |reader, _| {
@@ -869,7 +873,7 @@ mod tests {
         visual.executor().advance_clock(Duration::from_millis(300));
         settle(visual);
         reader.update_in(visual, |reader, window, cx| {
-            assert_eq!(reader.current_rel, "note.md");
+            assert_eq!(reader.pane.current_rel, "note.md");
             assert!(
                 reader.link_notice.is_none(),
                 "{mode:?}: {:?}",

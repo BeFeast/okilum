@@ -356,7 +356,7 @@ fn code2810_header_typing_renders_zero_slots_and_notifies_zero_panels(cx: &mut T
     );
     settle(v);
     let code = reader.read_with(v, |r, _| {
-        r.file_preview.as_ref().unwrap().code.clone().unwrap()
+        r.pane.file_preview.as_ref().unwrap().code.clone().unwrap()
     });
     struct Watch {
         _subs: Vec<Subscription>,

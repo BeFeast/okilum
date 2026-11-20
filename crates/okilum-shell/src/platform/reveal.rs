@@ -1,6 +1,9 @@
 //! Show a file selected in the system file manager (#612).
 //!
-//! macOS and Windows use GPUI's native reveal (Finder, `explorer /select`).
+//! macOS uses GPUI's native reveal (Finder). Windows calls the shell itself
+//! (#3110): GPUI ran `SHOpenFolderAndSelectItems` on a pool thread without COM,
+//! only logged a failure, and Explorer could open behind Okilum, so the menu
+//! item looked dead.
 //! On Linux the freedesktop `org.freedesktop.FileManager1.ShowItems` D-Bus
 //! call opens the containing folder with the item selected; when no file
 //! manager implements it, `xdg-open` opens the parent folder instead.
@@ -17,10 +20,128 @@ pub fn reveal_path(path: &Path, cx: &App) -> Task<anyhow::Result<()>> {
         cx.background_executor()
             .spawn(async move { linux::reveal(&path).await })
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    {
+        windows::allow_explorer_foreground();
+        let path = path.to_owned();
+        cx.background_executor().spawn(async move {
+            // The shell wants its own single-threaded COM apartment; a pool
+            // thread has none, and initializing one there would outlive us.
+            match std::thread::Builder::new()
+                .name("okilum-reveal".into())
+                .spawn(move || windows::reveal(&path))
+            {
+                Ok(thread) => thread.join().unwrap_or_else(|_| {
+                    Err(anyhow::anyhow!("Show in Explorer stopped unexpectedly"))
+                }),
+                Err(error) => {
+                    Err(anyhow::Error::new(error).context("Could not start Show in Explorer"))
+                }
+            }
+        })
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
     {
         cx.reveal_path(path);
         Task::ready(Ok(()))
+    }
+}
+
+#[cfg(windows)]
+mod windows {
+    use std::os::windows::ffi::OsStrExt as _;
+    use std::path::Path;
+    use std::ptr::{null, null_mut};
+    use windows_sys::Win32::System::Com::{
+        CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
+    };
+    use windows_sys::Win32::UI::Shell::{
+        ILFree, SHOpenFolderAndSelectItems, SHParseDisplayName, ShellExecuteW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        AllowSetForegroundWindow, ASFW_ANY, SW_SHOWNORMAL,
+    };
+
+    /// Called on the UI thread while Okilum is the foreground app (the user
+    /// just clicked or pressed the key): Explorer runs in its own process and
+    /// may otherwise open its window behind Okilum.
+    pub(super) fn allow_explorer_foreground() {
+        unsafe { AllowSetForegroundWindow(ASFW_ANY) };
+    }
+
+    fn wide(path: &Path) -> Vec<u16> {
+        path.as_os_str().encode_wide().chain([0]).collect()
+    }
+
+    struct Apartment;
+    impl Drop for Apartment {
+        fn drop(&mut self) {
+            unsafe { CoUninitialize() };
+        }
+    }
+
+    /// Selects `path` in an Explorer window; when the shell cannot select it,
+    /// opens the containing folder. Fails only when both failed.
+    pub(super) fn reveal(path: &Path) -> anyhow::Result<()> {
+        let hr = unsafe {
+            CoInitializeEx(
+                null(),
+                (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32,
+            )
+        };
+        anyhow::ensure!(hr >= 0, "COM initialization failed (HRESULT {hr:#010x})");
+        let _apartment = Apartment;
+
+        let name = wide(path);
+        let mut item = null_mut();
+        let hr = unsafe { SHParseDisplayName(name.as_ptr(), null_mut(), &mut item, 0, null_mut()) };
+        anyhow::ensure!(
+            hr >= 0 && !item.is_null(),
+            "Explorer cannot find {} (HRESULT {hr:#010x})",
+            path.display()
+        );
+        // A full item ID list with no children selects the item in its folder.
+        let selected = unsafe { SHOpenFolderAndSelectItems(item, 0, null(), 0) };
+        unsafe { ILFree(item) };
+        if selected >= 0 {
+            return Ok(());
+        }
+        let folder = path.parent().unwrap_or(path);
+        let open = wide(Path::new("open"));
+        let target = wide(folder);
+        let code = unsafe {
+            ShellExecuteW(
+                null_mut(),
+                open.as_ptr(),
+                target.as_ptr(),
+                null(),
+                null(),
+                SW_SHOWNORMAL,
+            )
+        } as isize;
+        anyhow::ensure!(
+            code > 32,
+            "Explorer could not show {} (HRESULT {selected:#010x}) or open its folder (code {code})",
+            path.display()
+        );
+        Ok(())
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use std::path::Path;
+
+    /// The old route returned Ok for every path and only logged Explorer's
+    /// failure, so the menu item failed silently (#3110). A missing item must
+    /// come back as an error the caller shows.
+    #[test]
+    fn reveal3110_missing_item_is_reported_not_swallowed() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("gone.md");
+        let error = super::windows::reveal(&missing).unwrap_err().to_string();
+        assert!(error.contains("Explorer cannot find"), "{error}");
+        assert!(error.contains("gone.md"), "{error}");
     }
 }
 

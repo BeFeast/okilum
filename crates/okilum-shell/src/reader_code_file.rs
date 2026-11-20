@@ -37,7 +37,8 @@ use document::Document;
 use view::copy_text_node;
 pub(crate) use view::{bind_keys, Availability, View};
 
-/// Bounded preview loading; UI editing has its own smaller admission cap.
+/// Bounded preview loading. JSON editing shares the 64 MiB source-tool budget
+/// (#2804); other code formats keep the smaller UI editing cap.
 pub(crate) const MAX_BYTES: u64 = 64 * 1024 * 1024;
 const EDIT_BYTES: usize = 4 * 1024 * 1024;
 
@@ -340,11 +341,6 @@ pub(crate) fn check_edit_location(path: &Path) -> anyhow::Result<()> {
 
 impl CodePreview {
     #[cfg(test)]
-    pub(crate) fn source_bytes_for_layout_test(&mut self, bytes: usize) {
-        self.source_bytes = Some(bytes);
-    }
-
-    #[cfg(test)]
     pub(crate) fn active_view(&self) -> View {
         self.view
     }
@@ -634,18 +630,42 @@ impl CodePreview {
         true
     }
 
-    /// UI editing admission is independent of the 64 MiB source-tool budget.
     pub(crate) fn editable(&self) -> bool {
         (matches!(self.state, State::Content(_))
             || reader_delimited::eligible(&self.rel) && self.source_bytes.is_some())
             && self.storage_reason.is_none()
             && self.encoding_reason.is_none()
             && (editable_format(&self.rel) || self.json_routed)
-            // CSV/TSV edit through the existing source editor without the code
-            // viewer's 4 MiB UI cap, exactly as before they shared this owner.
             && self
                 .source_bytes
-                .is_some_and(|bytes| reader_delimited::eligible(&self.rel) || bytes <= EDIT_BYTES)
+                .is_some_and(|bytes| !self.over_edit_limit(bytes))
+    }
+
+    /// Edit admission by format. CSV/TSV edit through the source editor with
+    /// no cap, exactly as before they shared this owner. JSON admits what the
+    /// viewer opens and Validate/Format/Repair accept (#2804): a 5 MB file, or
+    /// the larger result of formatting one, must stay editable. Other code
+    /// formats keep the 4 MiB UI cap.
+    fn edit_limit(&self) -> Option<usize> {
+        if reader_delimited::eligible(&self.rel) {
+            None
+        } else if is_json(&self.rel) || self.json_routed {
+            Some(okilum_core::code_operations::MAX_BYTES)
+        } else {
+            Some(EDIT_BYTES)
+        }
+    }
+
+    fn over_edit_limit(&self, bytes: usize) -> bool {
+        self.edit_limit().is_some_and(|limit| bytes > limit)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_folder_unwritable_for_test(&mut self, cx: &mut Context<Self>) {
+        self.record_edit_failure(
+            &EditLocationError(std::io::Error::from(std::io::ErrorKind::PermissionDenied)).into(),
+            cx,
+        );
     }
 
     /// The file is still being read; whether it is editable is not known yet.
@@ -937,6 +957,7 @@ impl Reader {
     }
     pub(super) fn resume_code_presentation(&self, cx: &mut App) {
         if let Some(code) = self
+            .pane
             .file_preview
             .as_ref()
             .and_then(|preview| preview.code.as_ref())
@@ -990,7 +1011,7 @@ impl Reader {
         if self.editing.is_some() {
             return None;
         }
-        self.file_preview.as_ref()?.code.clone()
+        self.pane.file_preview.as_ref()?.code.clone()
     }
     fn change_code_view(&self, view: View, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(code) = self.read_code_view() {
@@ -1008,24 +1029,33 @@ impl Reader {
     /// Native regression tests inspect the loaded read-only editor directly.
     #[cfg(test)]
     pub(crate) fn code_view_input(&self, cx: &App) -> Option<Entity<EditorState>> {
-        self.file_preview.as_ref()?.code.as_ref()?.read(cx).input()
+        self.pane
+            .file_preview
+            .as_ref()?
+            .code
+            .as_ref()?
+            .read(cx)
+            .input()
     }
 
     pub(crate) fn file_is_source(&self) -> bool {
-        self.file_preview
+        self.pane
+            .file_preview
             .as_ref()
             .is_some_and(|p| reader_delimited::editable(&p.rel) || p.code.is_some())
     }
 
     pub(crate) fn selected_json_association(&self, cx: &App) -> bool {
-        self.file_preview
+        self.pane
+            .file_preview
             .as_ref()
             .and_then(|p| p.code.as_ref())
             .is_some_and(|code| code.read(cx).json_routed)
     }
 
     pub(crate) fn selected_code_language(&self, cx: &App) -> Option<&'static str> {
-        self.file_preview
+        self.pane
+            .file_preview
             .as_ref()
             .and_then(|p| p.code.as_ref())
             .map(|code| code.read(cx).source_language())
@@ -1034,7 +1064,8 @@ impl Reader {
 
     /// Code files open in the editor only within the size cap.
     pub(crate) fn code_file_editable(&self, cx: &App) -> bool {
-        self.file_preview
+        self.pane
+            .file_preview
             .as_ref()
             .and_then(|preview| preview.code.as_ref())
             .is_none_or(|code| code.read(cx).editable())
@@ -1044,7 +1075,7 @@ impl Reader {
     pub(crate) fn toggle_code_soft_wrap(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let wrap = !reader_ui_state::code_soft_wrap(cx);
         reader_ui_state::set_code_soft_wrap(wrap, cx);
-        let Some(preview) = &self.file_preview else {
+        let Some(preview) = &self.pane.file_preview else {
             cx.notify();
             return;
         };

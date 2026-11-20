@@ -23,24 +23,33 @@ fn section_target(sections: &[(usize, String)], title: &str) -> Option<usize> {
 
 pub(super) fn land(reader: &Reader, block: usize) -> Result<(), &'static str> {
     let heading = reader
+        .pane
         .outline
         .iter()
         .find(|heading| heading.target.block == block)
         .ok_or("This position is not represented in the Tasks view. Open Source to inspect it.")?;
-    let index = section_target(&reader.typed_navigation.sections.borrow(), &heading.text)
-        .ok_or("This heading has no unique Tasks section. Open Source to inspect it.")?;
-    reader.typed_navigation.scroll.scroll_to_top_of_item(index);
+    let index = section_target(
+        &reader.pane.typed_navigation.sections.borrow(),
+        &heading.text,
+    )
+    .ok_or("This heading has no unique Tasks section. Open Source to inspect it.")?;
+    reader
+        .pane
+        .typed_navigation
+        .scroll
+        .scroll_to_top_of_item(index);
     Ok(())
 }
 
 pub(super) fn outline(reader: &Reader, cx: &mut Context<Reader>) -> Option<AnyElement> {
-    if !reader.typed_navigation.active.get() {
+    if !reader.pane.typed_navigation.active.get() {
         return None;
     }
     Some(
         v_flex()
             .children(
                 reader
+                    .pane
                     .typed_navigation
                     .sections
                     .borrow()
@@ -57,6 +66,7 @@ pub(super) fn outline(reader: &Reader, cx: &mut Context<Reader>) -> Option<AnyEl
                             .child(title.clone())
                             .on_click(cx.listener(move |reader, _, window, cx| {
                                 if let Some(index) = reader
+                                    .pane
                                     .typed_navigation
                                     .sections
                                     .borrow()
@@ -64,6 +74,7 @@ pub(super) fn outline(reader: &Reader, cx: &mut Context<Reader>) -> Option<AnyEl
                                     .position(|(candidate, _)| *candidate == line)
                                 {
                                     reader
+                                        .pane
                                         .typed_navigation
                                         .scroll
                                         .scroll_to_top_of_item(index + 1);
@@ -154,7 +165,7 @@ pub(super) fn render(
     let on_overdue = lens.is_some();
     let source = match lens {
         Some(source) => source,
-        None => reader.note_canonical_source.clone()?,
+        None => reader.pane.note_canonical_source.clone()?,
     };
     let preferences = reader_ui_state::typed_views(cx);
     let today = reader_tasks::today();
@@ -191,8 +202,8 @@ pub(super) fn render(
     if reader.content.read(cx).focus_handle().is_focused(window) {
         reader.focus_handle.focus(window, cx);
     }
-    reader.typed_navigation.active.set(true);
-    *reader.typed_navigation.sections.borrow_mut() = dashboard
+    reader.pane.typed_navigation.active.set(true);
+    *reader.pane.typed_navigation.sections.borrow_mut() = dashboard
         .layout
         .order
         .iter()
@@ -272,7 +283,7 @@ pub(super) fn render(
                 MouseButton::Left,
                 cx.listener(|reader, _, window, cx| reader.focus_handle.focus(window, cx)),
             )
-            .track_scroll(&reader.typed_navigation.scroll)
+            .track_scroll(&reader.pane.typed_navigation.scroll)
             .overflow_y_scroll()
             .px_6()
             .pt_4()
@@ -485,7 +496,7 @@ mod tests {
         visual.run_until_parked();
         assert!(visual.debug_bounds("native-tasks-dashboard").is_some());
         reader.read_with(visual, |r, _| {
-            assert_eq!(r.current_rel, "Dashboard.md");
+            assert_eq!(r.pane.current_rel, "Dashboard.md");
             assert!(r.navigation.pending_landing.is_none());
         });
         visual.simulate_keystrokes(if cfg!(target_os = "macos") {
@@ -654,11 +665,12 @@ mod tests {
         });
         visual.run_until_parked();
         view.read_with(visual, |v, _| {
-            assert!(v.typed_navigation.scroll.offset().y < px(0.))
+            assert!(v.pane.typed_navigation.scroll.offset().y < px(0.))
         });
-        let scrolled = view.read_with(visual, |v, _| v.typed_navigation.scroll.offset().y);
+        let scrolled = view.read_with(visual, |v, _| v.pane.typed_navigation.scroll.offset().y);
         view.update(visual, |v, cx| {
             let block = v
+                .pane
                 .outline
                 .iter()
                 .find(|heading| heading.text == "Focus")
@@ -672,7 +684,7 @@ mod tests {
         view.read_with(visual, |v, _| {
             assert!(v.navigation.pending_landing.is_none());
             assert!(
-                v.typed_navigation.scroll.offset().y > scrolled,
+                v.pane.typed_navigation.scroll.offset().y > scrolled,
                 "heading link moves the visible surface"
             );
         });
@@ -699,7 +711,7 @@ mod tests {
         visual.run_until_parked();
         assert!(visual.debug_bounds("native-tasks-dashboard").is_some());
         view.update(visual, |v, cx| {
-            v.note_canonical_source =
+            v.pane.note_canonical_source =
                 Some(Arc::from(source.replace("view: tasks", "view: unknown")));
             cx.notify();
         });

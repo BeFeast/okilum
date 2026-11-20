@@ -187,10 +187,10 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
             assert_eq!(
-                reader.current_rel, "Project/Target.md",
+                reader.pane.current_rel, "Project/Target.md",
                 "file action must use the confirmed area, not start.md's directory"
             );
-            assert!(reader.note_source.contains("From chat."));
+            assert!(reader.pane.note_source.contains("From chat."));
         });
         manager.update_in(visual, |manager, window, cx| {
             manager.open_chat_link(
@@ -209,7 +209,7 @@ mod tests {
                 .contains("missing"))
         });
         reader.read_with(visual, |reader, _| {
-            assert_eq!(reader.current_rel, "Project/Target.md")
+            assert_eq!(reader.pane.current_rel, "Project/Target.md")
         });
     }
 

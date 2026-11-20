@@ -17,7 +17,7 @@ impl Origin {
     fn matches(&self, reader: &Reader, editing: &Editing, entity: EntityId) -> bool {
         self.reader == entity
             && self.root == reader.vault_root
-            && self.reader_path == reader.current_rel
+            && self.reader_path == reader.pane.current_rel
             && self.selected == reader.selected_file()
             && self.file == editing.store.path()
             && self.input == editing.input.entity_id()
@@ -121,7 +121,7 @@ impl LivePreview {
             origin: Origin {
                 reader: entity,
                 root: reader.vault_root.clone(),
-                reader_path: reader.current_rel.clone(),
+                reader_path: reader.pane.current_rel.clone(),
                 selected: reader.selected_file().to_owned(),
                 file: store.path().to_owned(),
                 input: input.entity_id(),
@@ -192,9 +192,17 @@ impl LivePreview {
 fn projection_colors(cx: &App) -> ProjectionColors {
     let palette = brand::palette(cx);
     ProjectionColors {
-        heading: palette.text,
+        // Same heading colours as the Reader, per level (#3147, #3153).
+        headings: brand::reader_palette(cx).headings,
         link: palette.link,
         muted: palette.text_muted,
+        // The same decoration slots as the Reader (#3154); bold only when the
+        // note font has its own bold face.
+        decorations: crate::source_presentation::live_preview_decorations(
+            brand::reader_palette(cx).decorations,
+            &reader_fonts::note(cx),
+            |font| cx.text_system().resolve_font(font),
+        ),
     }
 }
 
@@ -401,7 +409,7 @@ impl Reader {
         }) {
             return;
         }
-        if self.file_preview.is_some() {
+        if self.pane.file_preview.is_some() {
             return;
         }
         let colors = projection_colors(cx);
@@ -899,6 +907,55 @@ impl Reader {
 
 #[cfg(test)]
 mod tests {
+    #[gpui::test]
+    fn issue3147_live_preview_headings_use_the_reader_heading_colour(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::test_init(cx);
+            for mode in [
+                gpui_component::ThemeMode::Light,
+                gpui_component::ThemeMode::Dark,
+            ] {
+                Theme::change(mode, None, cx);
+                brand::apply_theme(cx);
+                let heading = brand::reader_palette(cx).heading;
+                assert_ne!(heading, brand::palette(cx).text, "headings are coloured");
+                let colors = projection_colors(cx);
+                assert!((1..=6).all(|level| colors.heading(level) == heading));
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn issue3153_live_preview_heading_levels_match_the_reader(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::test_init(cx);
+            cx.set_global(brand::ThemeChoice(brand::ThemeId::Obsidianite));
+            for mode in [
+                gpui_component::ThemeMode::Light,
+                gpui_component::ThemeMode::Dark,
+            ] {
+                Theme::change(mode, None, cx);
+                brand::apply_theme(cx);
+                // The Reader takes the same palette (brand.rs
+                // selected_theme_drives_palette_and_native_tokens).
+                let reader = brand::reader_palette(cx).headings;
+                let colors = projection_colors(cx);
+                for level in 1..=6u8 {
+                    assert_eq!(
+                        colors.heading(level),
+                        reader[usize::from(level) - 1],
+                        "H{level}"
+                    );
+                }
+                assert_ne!(
+                    colors.heading(1),
+                    colors.heading(2),
+                    "Obsidianite H1 differs"
+                );
+            }
+        });
+    }
+
     #[test]
     fn latency_fence_fixture_forces_raw_tail_after_local_remap_refuses() {
         use okilum_core::{
@@ -3139,8 +3196,8 @@ mod tests {
                 input.clone(),
                 (
                     2,
-                    r.note_canonical_source.clone().unwrap(),
-                    r.note_source.clone(),
+                    r.pane.note_canonical_source.clone().unwrap(),
+                    r.pane.note_source.clone(),
                 ),
                 window,
                 cx,
@@ -3260,7 +3317,8 @@ mod tests {
         assert!(note.len() >= 120 * 1024);
         let (reader, visual, _directory) = fixture(cx, &note);
         let block = reader.read_with(visual, |r, _| {
-            r.outline
+            r.pane
+                .outline
                 .iter()
                 .find(|h| h.text == "Landing")
                 .unwrap()
@@ -3328,7 +3386,10 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
-            assert_eq!(r.current_rel, "target.md", "navigation positive control")
+            assert_eq!(
+                r.pane.current_rel, "target.md",
+                "navigation positive control"
+            )
         });
         reader.update_in(visual, |r, window, cx| r.history_move(-1, window, cx));
         for _ in 0..110 {
@@ -3336,7 +3397,7 @@ mod tests {
             visual.executor().advance_clock(Duration::from_millis(50));
         }
         reader.read_with(visual, |r, cx| {
-            assert_eq!(r.current_rel, "note.md");
+            assert_eq!(r.pane.current_rel, "note.md");
             assert!(r.live_preview_shown(), "Back keeps Live Preview");
             assert_eq!(
                 r.editing
@@ -3367,8 +3428,8 @@ mod tests {
                 input.clone(),
                 (
                     1,
-                    r.note_canonical_source.clone().unwrap(),
-                    r.note_source.clone(),
+                    r.pane.note_canonical_source.clone().unwrap(),
+                    r.pane.note_source.clone(),
                 ),
                 window,
                 cx,
@@ -3401,8 +3462,8 @@ mod tests {
                 input.clone(),
                 (
                     1,
-                    r.note_canonical_source.clone().unwrap(),
-                    r.note_source.clone(),
+                    r.pane.note_canonical_source.clone().unwrap(),
+                    r.pane.note_source.clone(),
                 ),
                 window,
                 cx,
@@ -3536,7 +3597,10 @@ mod tests {
         });
         visual.run_until_parked();
         reader.update_in(visual, |r, _, _| {
-            assert_eq!(r.current_rel, "target.md", "actual next note was accepted");
+            assert_eq!(
+                r.pane.current_rel, "target.md",
+                "actual next note was accepted"
+            );
             assert_ne!(
                 r.editing
                     .as_ref()
@@ -3892,16 +3956,16 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |r, _, cx| {
             let root = r.vault_root.clone();
-            let path = r.current_rel.clone();
+            let path = r.pane.current_rel.clone();
             assert!(r.checked_live_provider(cx.entity_id(), cx).is_some());
             r.vault_root = root.join("different-owner-root");
             r.schedule_live_preview(cx);
             assert!(r.checked_live_provider(cx.entity_id(), cx).is_none());
             r.vault_root = root;
-            r.current_rel = "foreign.md".into();
+            r.pane.current_rel = "foreign.md".into();
             r.schedule_live_preview(cx);
             assert!(r.checked_live_provider(cx.entity_id(), cx).is_none());
-            r.current_rel = path;
+            r.pane.current_rel = path;
             // An exact held legacy snapshot is reusable, not fresh Nav admission.
             assert!(r.checked_live_provider(cx.entity_id(), cx).is_some());
             let live = r.live_input(cx.entity_id(), cx).unwrap();
@@ -4034,7 +4098,7 @@ mod tests {
                 .clone()
                 .expect("REAL autosave worker is pending");
             let sources = std::collections::HashMap::from([(
-                r.current_rel.clone(),
+                r.pane.current_rel.clone(),
                 std::fs::read_to_string(editing.store.path()).unwrap(),
             )]);
             // Separate consumer-boundary proof: deliver the EXISTING publication
@@ -4153,7 +4217,7 @@ mod tests {
         visual.simulate_keystrokes("enter");
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
-            assert_eq!(r.current_rel, "renamed.md");
+            assert_eq!(r.pane.current_rel, "renamed.md");
             assert!(!dir.path().join("vault/note.md").exists());
             let e = r.editing.as_ref().unwrap();
             assert!(

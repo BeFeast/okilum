@@ -128,7 +128,7 @@ impl Reader {
         else {
             return;
         };
-        if self.editing.is_some() || self.current_rel != landing.rel {
+        if self.editing.is_some() || self.pane.current_rel != landing.rel {
             return;
         }
         self.toggle_source(window, cx);
@@ -148,7 +148,7 @@ impl Reader {
         if position == Position::default() {
             return;
         }
-        let rel = self.current_rel.clone();
+        let rel = self.pane.current_rel.clone();
         if !self.retarget_restored_editor() {
             self.open_link(&rel, position, window, cx);
             return;
@@ -165,7 +165,7 @@ impl Reader {
     /// `restore_ui_source` brought the editor back.
     pub(crate) fn land_restored_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(landing) = self.pending_link_edit.take_if(|l| l.generation.is_none()) {
-            if landing.rel == self.current_rel {
+            if landing.rel == self.pane.current_rel {
                 self.land_in_editor(landing, window, cx);
             }
         }
@@ -236,11 +236,12 @@ impl Reader {
     /// bounds; `None` off a heading.
     pub(crate) fn heading_at(&self, position: Point<Pixels>, cx: &App) -> Option<String> {
         // A right-click on a link belongs to the link's own menu (#943).
-        if self.editing.is_some() || self.file_preview.is_some() || self.pointer_on_link() {
+        if self.editing.is_some() || self.pane.file_preview.is_some() || self.pointer_on_link() {
             return None;
         }
         let list = self.content.read(cx).list_state();
-        self.outline
+        self.pane
+            .outline
             .iter()
             .find(|heading| {
                 list.bounds_for_item(heading.target.block)
@@ -259,7 +260,7 @@ impl Reader {
     ) {
         crate::reader_files::copy_link_to_clipboard(
             &self.vault_root,
-            &self.current_rel,
+            &self.pane.current_rel,
             self.link_scope(),
             &Position {
                 heading: Some(heading),
@@ -376,6 +377,7 @@ mod tests {
         let (heading, paragraph) = reader.read_with(visual, |v, cx| {
             let list = v.content.read(cx).list_state();
             let heading = v
+                .pane
                 .outline
                 .iter()
                 .find(|h| h.text == "Next steps & risks")
@@ -640,7 +642,7 @@ mod tests {
         });
         settle(visual);
         reader.read_with(visual, |v, cx| {
-            assert_eq!(v.current_rel, "target.md");
+            assert_eq!(v.pane.current_rel, "target.md");
             assert!(v.editing.is_none(), "a link never enters the editor");
             assert!(v.link_notice.is_none());
             assert_eq!(top(v, cx), 39);
@@ -718,7 +720,7 @@ mod tests {
         });
         settle(visual);
         reader.read_with(visual, |v, cx| {
-            assert_eq!(v.current_rel, "start.md");
+            assert_eq!(v.pane.current_rel, "start.md");
             assert!(v.editing.is_some(), "the editor stays the mode");
             assert_eq!(v.editing_caret_line(cx), Some(3));
         });

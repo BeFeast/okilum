@@ -869,14 +869,15 @@ impl Reader {
                     ("copy as rich text", PaletteItem::CopyWithFormatting),
                 ] {
                     if label.contains(&query)
-                        && (!matches!(item, PaletteItem::CopyWithFormatting) || !self.use_html)
+                        && (!matches!(item, PaletteItem::CopyWithFormatting) || !self.pane.use_html)
                     {
                         items.push((PaletteSection::Files, item));
                     }
                 }
             }
         }
-        if !self.selected_file().is_empty()
+        // A folder view has no file yet and still converts to a vault (#3098).
+        if (self.single_file || !self.selected_file().is_empty())
             && !palette.query.trim().is_empty()
             && self
                 .window_mode_label()
@@ -1880,8 +1881,8 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |v, _| {
-            assert_eq!(v.current_rel, "24q4.md");
-            let props = v.properties.as_ref().unwrap();
+            assert_eq!(v.pane.current_rel, "24q4.md");
+            let props = v.pane.properties.as_ref().unwrap();
             assert_eq!(
                 reader_properties::summary(props),
                 "Quarter · 1 relation",
@@ -1919,7 +1920,7 @@ mod tests {
         });
         visual.simulate_keystrokes("enter");
         visual.run_until_parked();
-        reader.read_with(visual, |v, _| assert_eq!(v.current_rel, "24q4.md"));
+        reader.read_with(visual, |v, _| assert_eq!(v.pane.current_rel, "24q4.md"));
         assert_eq!(
             std::fs::read_to_string(root.join("24q4.md")).unwrap(),
             source,
@@ -1948,7 +1949,7 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |v, _| {
-            assert_eq!(v.current_rel, "start.md");
+            assert_eq!(v.pane.current_rel, "start.md");
             let link = v
                 .pane
                 .link_identities
@@ -2361,7 +2362,7 @@ mod tests {
         visual.run_until_parked();
         reader.update(visual, |v, _| {
             assert!(!v.quick_open.open, "the held Enter was applied");
-            assert_eq!(v.current_rel, "Reading list.md");
+            assert_eq!(v.pane.current_rel, "Reading list.md");
         });
 
         // A reset after the held Enter cancels it: Escape on text, another
@@ -2405,7 +2406,7 @@ mod tests {
             visual.run_until_parked();
             reader.update(visual, |v, _| {
                 assert!(v.quick_open.open, "{name}: palette stays open");
-                assert_eq!(v.current_rel, "Home.md", "{name}: nothing opened");
+                assert_eq!(v.pane.current_rel, "Home.md", "{name}: nothing opened");
             });
             reader.update_in(visual, |v, window, cx| v.close_quick_open(window, cx));
         }
@@ -2503,7 +2504,7 @@ mod tests {
         visual.run_until_parked();
         reader.update(visual, |v, _| {
             assert!(!v.quick_open.open);
-            assert_eq!(v.current_rel, before[1]);
+            assert_eq!(v.pane.current_rel, before[1]);
         });
         release.try_send(()).unwrap();
         visual.run_until_parked();
@@ -2961,11 +2962,14 @@ canaryhidden [[Target]]",
         reader.update(visual, |v, _| {
             assert!(!v.quick_open.open);
             assert_eq!(
-                v.file_preview.as_ref().map(|preview| preview.rel.as_str()),
+                v.pane
+                    .file_preview
+                    .as_ref()
+                    .map(|preview| preview.rel.as_str()),
                 Some("tg.log")
             );
             assert!(!v.single_file, "vault-mode positive control");
-            let preview = v.file_preview.as_ref().unwrap();
+            let preview = v.pane.file_preview.as_ref().unwrap();
             assert!(
                 preview.log.is_some(),
                 "Quick Open mounts the structured log viewer"
@@ -3048,7 +3052,7 @@ canaryhidden [[Target]]",
         reader.update(visual, |v, _| {
             assert_eq!(v.quick_open.rows.len(), 1);
             assert_eq!(v.quick_open.rows[0].title, "Memory");
-            assert_eq!(v.current_rel, "start.md");
+            assert_eq!(v.pane.current_rel, "start.md");
         });
         let bounds = visual
             .debug_bounds("quick-open-result-0")
@@ -3057,7 +3061,7 @@ canaryhidden [[Target]]",
         visual.run_until_parked();
         reader.update(visual, |v, _| {
             assert!(!v.quick_open.open);
-            assert_eq!(v.current_rel, "Memory/@index.md");
+            assert_eq!(v.pane.current_rel, "Memory/@index.md");
         });
         for mouse in [false, true] {
             reader.update_in(visual, |v, window, cx| {
@@ -3131,7 +3135,7 @@ canaryhidden [[Target]]",
             visual.run_until_parked();
             reader.update(visual, |v, cx| {
                 assert!(!v.quick_open.open);
-                assert_eq!(v.current_rel, "Memory/@index.md");
+                assert_eq!(v.pane.current_rel, "Memory/@index.md");
                 assert_eq!(v.content.read(cx).search_status().1, 1);
                 assert!(v.content.read(cx).list_state().logical_scroll_top().item_ix > 0);
             });
@@ -3217,6 +3221,68 @@ canaryhidden [[Target]]",
                 Line::Hint(text) => Some(text),
                 _ => None,
             })
+    }
+
+    /// #3098: a fresh folder view has no file selected; ⌘K still finds
+    /// «Open folder as vault» and Enter converts the window.
+    #[gpui::test]
+    fn palette_converts_a_folder_view_without_a_selected_file(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let folder = fixture.path().join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("note.md"), "# Note\n").unwrap();
+        let folder = folder.canonicalize().unwrap();
+        cx.update(|cx| {
+            crate::test_init(cx);
+            bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(folder.clone()),
+                        single_file: true,
+                        session_directory: Some(fixture.path().join("state")),
+                        cache_base_override: Some(fixture.path().join("cache")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert!(v.single_file, "positive control: a folder view");
+            assert_eq!(v.selected_file(), "", "no file is selected");
+        });
+        reader.update_in(visual, |v, window, cx| v.open_quick_open(false, window, cx));
+        visual.run_until_parked();
+        reader.update_in(visual, |v, window, cx| {
+            v.quick_open.input.update(cx, |input, cx| {
+                input.set_value("open folder as vault", window, cx)
+            });
+            v.refresh_quick_open(cx);
+        });
+        visual.run_until_parked();
+        let row = reader.read_with(visual, |v, _| {
+            let rows = palette_rows(v);
+            rows.iter()
+                .position(|row| row == "Files: Open folder as vault")
+                .unwrap_or_else(|| panic!("the conversion is offered: {rows:?}"))
+        });
+        reader.update(visual, |v, _| v.quick_open.selected = row);
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert!(!v.quick_open.open);
+            assert!(!v.single_file, "the palette converted the folder view");
+            assert_eq!(v.vault_root, folder);
+        });
     }
 
     #[gpui::test]
@@ -3685,7 +3751,7 @@ canaryhidden [[Target]]",
         click(visual, "quick-open-result-0");
         reader.read_with(visual, |v, _| {
             assert!(!v.quick_open.open);
-            assert_eq!(v.current_rel, "Skills/review/SKILL.md");
+            assert_eq!(v.pane.current_rel, "Skills/review/SKILL.md");
         });
 
         // Content search: every open starts in the default view.
@@ -3765,7 +3831,7 @@ canaryhidden [[Target]]",
         visual.run_until_parked();
         reader.read_with(visual, |v, cx| {
             assert!(v.quick_open.open, "the held Enter was not applied");
-            assert_eq!(v.current_rel, "start.md");
+            assert_eq!(v.pane.current_rel, "start.md");
             assert_eq!(
                 v.quick_open.input.read(cx).value().to_string(),
                 "zephyrcanary agents"
@@ -3777,7 +3843,7 @@ canaryhidden [[Target]]",
         click(visual, "quick-open-result-0");
         reader.read_with(visual, |v, _| {
             assert!(!v.quick_open.open);
-            assert!(is_agent_file(&v.current_rel), "{}", v.current_rel);
+            assert!(is_agent_file(&v.pane.current_rel), "{}", v.pane.current_rel);
         });
 
         // A held agent-view query answering after a vault switch is dropped.

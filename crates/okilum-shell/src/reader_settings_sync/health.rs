@@ -88,7 +88,7 @@ impl SyncSettings {
             .child(
                 Button::new("sync-fix")
                     .label("Fix")
-                    .disabled(self.busy)
+                    .disabled(self.locked())
                     .on_click(cx.listener(|this, _, window, cx| {
                         #[cfg(target_os = "macos")]
                         this.run(Operation::Restart, cx);
@@ -385,6 +385,8 @@ pub(crate) fn restart_replaced_helper(
     if reader_history::isolated_state_directory().is_some() {
         return Ok(None);
     }
+    // Never restart the helper while an uninstall stops it (#588).
+    let _serial = super::admitted_actions()?;
     let path = helper_snapshot_path()?;
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,

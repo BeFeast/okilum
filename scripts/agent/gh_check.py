@@ -90,6 +90,7 @@ def verdict(info, sha, benchmark=False, publication_controls=False, macos_sync=F
                 "Run CI, releases and updater Python suites", "Verify per-user AppImage runtime",
                 "Verify pinned Sync fixture lifecycle, source sharing and remote inspection",
                 "Verify managed launch and configuration admission",
+                "Verify real disk-full Sync transfer and first merge",
                 "Reject and reap surviving agent fixture daemons"}
     if not benchmark:
         required.add("Verify additive vault regression controls")

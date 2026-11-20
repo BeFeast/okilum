@@ -59,6 +59,7 @@ fn main() {
             &resource,
             template
                 .replace("@ICON@", &icon.replace('\\', "/"))
+                .replace("@FILEVERSION@", &numeric_version(&version))
                 .replace("@VERSION@", &version),
         )
         .unwrap();
@@ -190,4 +191,38 @@ fn main() {
         println!("cargo:rustc-link-arg-bin=okilum=-Wl,-framework,{name}");
     }
     println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../Frameworks");
+}
+
+/// The VERSIONINFO numeric form of a release version (#1104): `0.1.33094` becomes
+/// `0,1,33094,0`, so file properties show the build, not `0.1.0.0`.
+/// This is the version the binary was compiled as: a Stable re-sign packs an earlier
+/// build's exact payload under a new number and keeps that build's VERSIONINFO
+/// (docs/windows-delivery.md, "VERSIONINFO").
+/// Each field is the leading digits of a dot-separated part; a field above 65535
+/// cannot be represented, and the package version is used instead.
+fn numeric_version(version: &str) -> String {
+    let fields = |text: &str| -> Option<Vec<u16>> {
+        let mut out = Vec::new();
+        for part in text.split_whitespace().next()?.split('.').take(4) {
+            let digits: String = part.chars().take_while(char::is_ascii_digit).collect();
+            out.push(if digits.is_empty() {
+                0
+            } else {
+                digits.parse().ok()?
+            });
+        }
+        out.resize(4, 0);
+        Some(out)
+    };
+    let fields = fields(version).unwrap_or_else(|| {
+        println!(
+            "cargo:warning=version {version:?} does not fit VERSIONINFO; using the package version"
+        );
+        fields(env!("CARGO_PKG_VERSION")).unwrap()
+    });
+    fields
+        .iter()
+        .map(u16::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
 }

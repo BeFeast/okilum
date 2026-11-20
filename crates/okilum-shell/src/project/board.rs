@@ -934,10 +934,10 @@ impl Render for Board {
 
 impl Reader {
     fn return_to_project_board(&mut self, cx: &mut Context<Self>) {
-        if !self.current_rel.is_empty() {
+        if !self.pane.current_rel.is_empty() {
             let position = self.retained_document_position(cx);
             self.navigation.places.insert(
-                (self.vault_root.clone(), self.current_rel.clone()),
+                (self.vault_root.clone(), self.pane.current_rel.clone()),
                 position,
             );
         }

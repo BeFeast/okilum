@@ -17,6 +17,27 @@ impl Global for BackgroundSync {}
 /// A failed background start (no network yet, say) tries again this often.
 const SERVE_RETRY: Duration = Duration::from_secs(30);
 
+/// #1029, #1037: the portable Windows ZIP ships no Sync helper and leaves no
+/// background components behind, so Settings → Sync offers the installer.
+pub(super) const INSTALLER_URL: &str =
+    "https://updates.befeast.com/okilum/windows/stable/Setup.exe";
+
+/// A portable Windows copy (no Velopack install) never opens Sync: no
+/// controller, pairing listener or Sync state is created.
+fn portable_build(cx: &App) -> bool {
+    #[cfg(test)]
+    return cx.has_global::<TestPortable>();
+    #[cfg(not(test))]
+    {
+        let _ = cx;
+        cfg!(windows) && crate::updater::channel() == "Portable"
+    }
+}
+#[cfg(test)]
+struct TestPortable;
+#[cfg(test)]
+impl Global for TestPortable {}
+
 /// #2589: a running app answers paired computers (catalog, vault transfers,
 /// approvals) for its whole run, not only after Settings → Sync was opened.
 /// When Sync is on and the saved journal pairs this computer or attaches a
@@ -35,7 +56,7 @@ fn serve_paired_from(
     state: impl FnOnce() -> anyhow::Result<PathBuf> + Send + 'static,
     cx: &mut App,
 ) {
-    if !reader_features::enabled(reader_features::Feature::Sync, cx) {
+    if !reader_features::enabled(reader_features::Feature::Sync, cx) || portable_build(cx) {
         return;
     }
     let access = reader_features::access(reader_features::Feature::Sync, cx);
@@ -84,7 +105,7 @@ fn start_serving(cx: &mut App) {
             view.serving = true;
             // Like `okilum sync serve`: a refresh restores the listener this
             // computer's pairs pin and reconciles transfers, without pairing.
-            view.run(Operation::Read, cx);
+            view.refresh_in_background(cx);
         }
     });
 }
@@ -131,11 +152,12 @@ pub(super) fn suspend(cx: &mut App) {
             view.snapshot = None;
             view.inspected = None;
             view.busy = false;
+            view.refreshing = false;
             view.serving = false;
             view.error = None;
             view.health = Default::default();
             view.awaiting_open = None;
-            view.pending_destination = None;
+            view.queued = None;
             view.destination_error = None;
             view.presentation = Default::default();
             cx.notify();
@@ -239,13 +261,17 @@ pub(super) struct SyncSettings {
     invitation: Option<Entity<InputState>>,
     selected_peer: Option<uuid::Uuid>,
     busy: bool,
+    /// The worker in flight is a periodic refresh nobody asked for. It never
+    /// locks controls; explicit actions wait in `queued` until it publishes (#3159).
+    refreshing: bool,
     /// Started for paired computers rather than by Settings: retry failures.
     serving: bool,
     epoch: Epoch,
     lifetime: Epoch,
     error: Option<String>,
     awaiting_open: Option<PathBuf>,
-    pending_destination: Option<Operation>,
+    /// Explicit user intent that arrived while a worker was in flight.
+    queued: Option<Operation>,
     destination_error: Option<(String, String)>,
     receiving: bool,
     scroll: ScrollHandle,
@@ -261,7 +287,7 @@ impl SyncSettings {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.busy {
+        if self.locked() {
             return;
         }
         let answer = reader_confirm::confirm(window,cx,"Remove computer from Sync?",reader_confirm::Body {
@@ -289,7 +315,7 @@ impl SyncSettings {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.busy {
+        if self.locked() {
             return;
         }
         let Some(current) = self
@@ -311,7 +337,7 @@ impl SyncSettings {
         }
         let answer = reader_confirm::confirm(window, cx, "Keep fewer previous Sync versions?", reader_confirm::Body {
             intro: vec![format!("Reduce history from {} to {} days on this computer? This removes {} days of history from the retention window.", current.days(), days.days(), current.days() - days.days())],
-            items: vec![path.display().to_string()],
+            items: vec![presentation::vault_path(&path)],
             outro: vec![format!("Syncthing will permanently delete previous versions older than {} days during cleanup. Increasing retention later cannot recover them.", days.days())],
         }, "Reduce history");
         let lifetime = self.lifetime.ticket();
@@ -363,12 +389,13 @@ impl SyncSettings {
             invitation: None,
             selected_peer: None,
             busy: false,
+            refreshing: false,
             serving: false,
             epoch: Epoch::default(),
             lifetime: Epoch::default(),
             error: None,
             awaiting_open: None,
-            pending_destination: None,
+            queued: None,
             destination_error: None,
             receiving: false,
             scroll: ScrollHandle::new(),
@@ -400,11 +427,37 @@ impl SyncSettings {
             .clone();
         (name, invitation)
     }
+    /// A user action is in flight. A periodic refresh never locks controls:
+    /// on Windows it can take several seconds every 30 s (#3159).
+    pub(super) fn locked(&self) -> bool {
+        self.busy && !self.refreshing
+    }
+    /// Run an explicit action. During a periodic refresh it is queued, never dropped.
     fn run(&mut self, operation: Operation, cx: &mut Context<Self>) {
+        self.dispatch(operation, false, cx);
+    }
+    /// The periodic or serving refresh. It keeps every control actionable.
+    fn refresh_in_background(&mut self, cx: &mut Context<Self>) {
+        self.dispatch(Operation::Read, true, cx);
+    }
+    fn dispatch(&mut self, operation: Operation, background: bool, cx: &mut Context<Self>) {
         if self.first_sync_applying(cx) {
             return;
         }
-        if self.busy || !reader_features::enabled(reader_features::Feature::Sync, cx) {
+        if !reader_features::enabled(reader_features::Feature::Sync, cx) || portable_build(cx) {
+            return;
+        }
+        if self.busy {
+            // The click landed while a refresh owned the worker. Keep the
+            // action until that refresh publishes; a plain re-check never
+            // replaces an action that is already waiting.
+            if self.refreshing
+                && !background
+                && (!matches!(operation, Operation::Read) || self.queued.is_none())
+            {
+                self.queued = Some(operation);
+                cx.notify();
+            }
             return;
         }
         let destination_vault = match &operation {
@@ -434,6 +487,7 @@ impl SyncSettings {
         }
         let epoch = self.epoch.begin();
         self.busy = true;
+        self.refreshing = background;
         self.error = None;
         if matches!(operation, Operation::Inspect(_) | Operation::Cancel) {
             self.inspected = None;
@@ -538,6 +592,7 @@ impl SyncSettings {
                         return;
                     }
                     this.busy = false;
+                    this.refreshing = false;
                     let succeeded = result.is_ok();
                     match result {
                         Ok(output) => {
@@ -590,7 +645,7 @@ impl SyncSettings {
                     }
                     cx.notify();
                     cx.refresh_windows();
-                    if let Some(operation) = this.pending_destination.take() {
+                    if let Some(operation) = this.queued.take() {
                         this.run(operation, cx);
                     } else if succeeded
                         && !this.has_first_sync_preview()
@@ -776,7 +831,7 @@ impl SyncSettings {
             cx.background_executor().timer(interval).await;
             let _ = this.update(cx, |this, cx| {
                 if epoch.is_current() && !this.busy {
-                    this.run(Operation::Read, cx);
+                    this.refresh_in_background(cx);
                 }
             });
         })
@@ -874,7 +929,7 @@ impl SyncSettings {
         // A periodic refresh may still own the worker when the native picker
         // answers. Keep explicit user intent until that worker publishes.
         if self.busy {
-            self.pending_destination = Some(operation);
+            self.queued = Some(operation);
         } else {
             self.run(operation, cx);
         }
@@ -1081,7 +1136,7 @@ fn perform_scoped(
     operation: Operation,
     ticket: &Ticket,
 ) -> anyhow::Result<Output> {
-    let _serial = serial_actions();
+    let _serial = admitted_actions()?;
     let result = perform_with_locations(controller, operation, ticket, locations);
     #[cfg(target_os = "macos")]
     let result = result.map_err(with_helper_failure);
@@ -1108,11 +1163,86 @@ fn with_helper_failure(error: anyhow::Error) -> anyhow::Error {
 
 /// One Sync action at a time per process: Settings, `okilum sync serve` and the
 /// commands other processes forward to this one share a controller (#2589).
-fn serial_actions() -> std::sync::MutexGuard<'static, ()> {
-    static ACTIONS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static ACTIONS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Whether Sync actions may run at all. Uninstall (#588) closes it before the
+/// helper stops and reopens it only when the uninstall is refused, so actions
+/// queued on the action lock during the stop are refused once they get it.
+pub(crate) struct Admission(std::sync::atomic::AtomicBool);
+impl Admission {
+    const fn open() -> Self {
+        Self(std::sync::atomic::AtomicBool::new(false))
+    }
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub(crate) fn close(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub(crate) fn reopen(&self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+    /// The action lock, checked after it is held: no discovery or bootstrap
+    /// runs for an action that waited behind a closing uninstall.
+    fn admit<'a>(
+        &self,
+        actions: &'a std::sync::Mutex<()>,
+    ) -> anyhow::Result<std::sync::MutexGuard<'a, ()>> {
+        let guard = actions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        anyhow::ensure!(
+            !self.0.load(std::sync::atomic::Ordering::SeqCst),
+            "Okilum is being uninstalled; Sync actions are closed"
+        );
+        Ok(guard)
+    }
+}
+pub(crate) static ADMISSION: Admission = Admission::open();
+
+/// Uninstall only: the action lock regardless of admission, held across the
+/// helper's stop and the purge (#588).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn serial_actions() -> std::sync::MutexGuard<'static, ()> {
     ACTIONS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+/// Every Sync action: Settings, background serving, forwarded commands.
+fn admitted_actions() -> anyhow::Result<std::sync::MutexGuard<'static, ()>> {
+    ADMISSION.admit(&ACTIONS)
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::Admission;
+    use std::sync::{mpsc, Mutex};
+
+    #[test]
+    fn a_closed_gate_refuses_actions_queued_behind_the_uninstall() {
+        let actions = Mutex::new(());
+        let gate = Admission::open();
+        gate.close();
+        // The uninstall holds the lock across the stop and the purge.
+        let held = actions.lock().unwrap();
+        let (queued, waiting) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let action = scope.spawn(|| {
+                queued.send(()).unwrap();
+                gate.admit(&actions).map(drop).is_ok()
+            });
+            waiting.recv().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            drop(held);
+            assert!(
+                !action.join().unwrap(),
+                "an action queued during the stop must not run after it"
+            );
+        });
+        assert!(gate.admit(&actions).is_err(), "new actions stay refused");
+        // A refused uninstall reopens the gate: the same action runs.
+        gate.reopen();
+        assert!(gate.admit(&actions).is_ok());
+    }
 }
 fn perform_with_locations(
     controller: Option<Controller>,

@@ -446,5 +446,23 @@ class PrivilegeAndPreflightTests(unittest.TestCase):
         self.assertTrue((state/'deploy.lock').exists())
 
 
+class IntegrationHarnessTests(unittest.TestCase):
+    def test_fixture_cargo_runs_where_the_toolchain_file_is(self):
+        # The build image installs rustup with no default toolchain; cargo only
+        # resolves one from the directory holding rust-toolchain.toml (#729).
+        here = Path(__file__).resolve().parent
+        workdir = None
+        for line in (here / 'Dockerfile').read_text().splitlines():
+            if line.startswith('WORKDIR '):
+                workdir = line.split(None, 1)[1].strip()
+            if line.startswith('COPY inbox/rust-toolchain.toml '):
+                break
+        self.assertEqual(workdir, '/source/inbox')
+        source = (here / 'integration_restart.py').read_text()
+        command = source[source.index("'--name', builder_name"):source.index("'create_restart_fixture'")]
+        self.assertIn(f"'-w', '{workdir}'", command)
+        self.assertIn("'--manifest-path', 'Cargo.toml'", command)
+
+
 if __name__ == '__main__':
     unittest.main()

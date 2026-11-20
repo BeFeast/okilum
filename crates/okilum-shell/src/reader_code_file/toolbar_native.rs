@@ -25,16 +25,33 @@ const RUNNING_BUDGET_MS: f64 = 16.;
 /// Wall-clock budget most frames must still meet.
 const WALL_BUDGET_MS: f64 = 16.;
 /// Frames per 48-frame pass that may exceed the wall budget while their
-/// Running time stays inside it. Hosted Windows runners render through WARP on
-/// the same four CPUs, so the UI thread waits Ready for 30-40 ms in about 3% of
-/// frames while running under 12 ms (#2845 ETW census). A systematic wall
-/// regression exceeds this allowance; any frame over the ceiling still fails.
-const WALL_MISSES_ALLOWED: usize = 5;
-const WALL_CEILING_MS: f64 = 100.;
+/// Running time stays inside it, and the wall ceiling for those frames.
+/// Hosted Windows runners render through WARP on the same four CPUs, so the UI
+/// thread waits Ready for 30-40 ms in about 3% of frames while it runs under
+/// 12 ms (#2845 ETW census; slowest census frame 41.7 ms, green runs since
+/// then at most one miss per job, 38.8 ms). No such source is established on
+/// macOS, where single frames missed at 20.1 and 27.4 ms with Running under
+/// 7 ms, so it allows one frame per pass. A regression that waits longer, or in
+/// more frames, still fails.
+///
+/// Accepted residual risk: without kernel tracing the gate cannot tell why a
+/// frame waited. A new UI-thread wait (lock, synchronous I/O) that stays within
+/// these counts and ceilings passes, as scheduler waits do. The old rule
+/// (every frame <=16 ms wall) caught it but failed on runner scheduling alone.
+#[cfg(target_os = "windows")]
+const WALL_MISSES_ALLOWED: usize = 2;
+#[cfg(target_os = "windows")]
+const WALL_CEILING_MS: f64 = 50.;
+#[cfg(not(target_os = "windows"))]
+const WALL_MISSES_ALLOWED: usize = 1;
+#[cfg(not(target_os = "windows"))]
+const WALL_CEILING_MS: f64 = 50.;
 
 /// Thread CPU clock with sub-millisecond resolution. GetThreadTimes ticks at
 /// 15.6 ms on Windows, too coarse for a 16 ms budget, so Windows counts thread
-/// cycles and converts them with a rate calibrated on this thread.
+/// cycles and converts them with a rate calibrated on this thread. Windows
+/// counts those cycles with the time-stamp counter, so the rate is constant
+/// only on a CPU with an invariant TSC; `calibrate` requires one.
 #[cfg(target_os = "windows")]
 struct RunningClock {
     cycles_per_ms: f64,
@@ -54,10 +71,34 @@ impl RunningClock {
         cycles
     }
 
-    /// Cycles only accrue while the thread runs, so a busy spin measures at
-    /// most the true rate. The highest of several spins is the closest lower
-    /// bound; a low rate overstates Running time, never understates it.
+    /// An invariant TSC (CPUID 0x8000_0007, EDX bit 8) ticks at one rate in
+    /// every P-, C- and T-state, so one calibrated rate converts every frame.
+    /// Without it the counter may slow inside a frame and read short.
+    #[cfg(target_arch = "x86_64")]
+    fn require_invariant_tsc() {
+        use std::arch::x86_64::__cpuid;
+        // Leaf 0x8000_0007 is read only after the maximum extended leaf
+        // confirms it exists.
+        let max = __cpuid(0x8000_0000).eax;
+        let power = (max >= 0x8000_0007).then(|| __cpuid(0x8000_0007).edx);
+        let invariant = power.is_some_and(|edx| edx & (1 << 8) != 0);
+        diagnostic_println!("CODE2810_INVARIANT_TSC max_leaf={max:#x} invariant={invariant}");
+        assert!(
+            invariant,
+            "thread cycles can only be converted to time with an invariant TSC"
+        );
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    fn require_invariant_tsc() {
+        panic!("the Windows Running meter needs an x86_64 invariant TSC");
+    }
+
+    /// Cycles only accrue while the thread runs, so preemption during a spin
+    /// lowers the measured rate, and a low rate overstates Running time. The
+    /// highest of several spins is kept.
     fn calibrate() -> Self {
+        Self::require_invariant_tsc();
         let mut best = 0f64;
         for _ in 0..5 {
             let (wall, cycles) = (Instant::now(), Self::cycles());
@@ -170,7 +211,7 @@ pub(super) fn entry() -> bool {
             let code=loop {
                 cx.background_executor().timer(Duration::from_millis(50)).await;
                 assert!(start.elapsed()<Duration::from_secs(60),"Reader Tree never ready");
-                let code=cx.update(|cx| reader.read(cx).file_preview.as_ref().and_then(|p|p.code.clone()));
+                let code=cx.update(|cx| reader.read(cx).pane.file_preview.as_ref().and_then(|p|p.code.clone()));
                 if let Some(code)=code {
                     if cx.update(|cx|code.read(cx).document.is_some() && code.read(cx).view==View::Tree) {break code;}
                 }

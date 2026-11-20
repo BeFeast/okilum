@@ -15,7 +15,7 @@ impl Selection {
     fn capture(reader: &Reader) -> Self {
         Self {
             root: reader.vault_root.clone(),
-            rel: reader.current_rel.clone(),
+            rel: reader.pane.current_rel.clone(),
             watcher: reader.watcher_generation,
             navigation: reader.navigation.generation,
             refresh: reader.navigation.reconciliation_generation,
@@ -25,7 +25,7 @@ impl Selection {
     fn is_current(&self, reader: &Reader) -> bool {
         reader.single_file
             && reader.vault_root == self.root
-            && reader.current_rel == self.rel
+            && reader.pane.current_rel == self.rel
             && reader.watcher_generation == self.watcher
             && reader.navigation.generation == self.navigation
             && reader.navigation.reconciliation_generation == self.refresh
@@ -47,7 +47,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.single_file || self.current_rel.is_empty() {
+        if !self.single_file || self.pane.current_rel.is_empty() {
             return;
         }
         // Invalidate older reads immediately, before starting the next worker.
@@ -195,7 +195,7 @@ mod tests {
                 r.single_file && r.watcher.is_some(),
                 "native watcher positive control"
             );
-            assert!(r.note_source.contains("Original"));
+            assert!(r.pane.note_source.contains("Original"));
         });
         std::fs::create_dir(root.join("unexpanded")).unwrap();
         std::fs::write(root.join("unexpanded/hidden.md"), "# Hidden").unwrap();
@@ -206,7 +206,7 @@ mod tests {
         settle(visual, &reader, |r, _| {
             listed(r, "renamed.md")
                 && !listed(r, "sibling.md")
-                && r.note_source.contains("External edit")
+                && r.pane.note_source.contains("External edit")
         });
         // Rename is path identity: retain the selected deleted note, never
         // silently select the new name or a similarly named sibling.
@@ -215,8 +215,8 @@ mod tests {
             r.deleted_note.is_some() && listed(r, "moved.md")
         });
         reader.read_with(visual, |r, _| {
-            assert_eq!(r.current_rel, "start.md");
-            assert!(r.note_source.contains("External edit"));
+            assert_eq!(r.pane.current_rel, "start.md");
+            assert!(r.pane.note_source.contains("External edit"));
         });
         std::fs::remove_file(root.join("renamed.md")).unwrap();
         settle(visual, &reader, |r, _| !listed(r, "renamed.md"));
@@ -245,8 +245,8 @@ mod tests {
             let entity = cx.new(|cx| {
                 Reader::new(
                     Opts {
-                        // #2066: directories open as vaults; keep this shallow watcher
-                        // fixture explicitly in the single-document quick viewer.
+                        // Keep this shallow watcher fixture explicitly in the
+                        // single-document quick viewer of a file.
                         open_path: Some(root.join("start.md")),
                         single_file: true,
                         session_directory: Some(fixture.path().join("state")),
@@ -298,7 +298,7 @@ mod tests {
         .unwrap();
         std::fs::rename(root.join("child/image.png"), root.join("child/renamed.png")).unwrap();
         settle(visual, &reader, |r, _| {
-            r.note_source.contains("Replaced")
+            r.pane.note_source.contains("Replaced")
                 && listed(r, "child/renamed.png")
                 && !listed(r, "child/image.png")
         });
@@ -307,8 +307,8 @@ mod tests {
             !listed(r, "child") && r.deleted_note.is_some()
         });
         reader.read_with(visual, |r, _| {
-            assert_eq!(r.current_rel, "child/external.md");
-            assert!(r.note_source.contains("Replaced"));
+            assert_eq!(r.pane.current_rel, "child/external.md");
+            assert!(r.pane.note_source.contains("Replaced"));
             assert!(!listed(r, "child/unexpanded/hidden.md"));
             assert!(r.single_file && r.searcher.is_none() && r.index_dir.is_none());
             assert!(r.shared_session.is_none());
@@ -351,7 +351,7 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         settle(visual, &reader, |r, _| r.deleted_note.is_some());
         reader.read_with(visual, |r, cx| {
-            assert_eq!(r.current_rel, "start.md");
+            assert_eq!(r.pane.current_rel, "start.md");
             assert_eq!(
                 r.editing
                     .as_ref()
@@ -392,7 +392,7 @@ mod tests {
             stale.refresh = stale.refresh.wrapping_sub(1);
             r.publish_single_folder_document(stale, Some("# Older refresh".into()), window, cx);
             assert!(r.deleted_note.is_none());
-            assert!(r.note_source.contains("Original"));
+            assert!(r.pane.note_source.contains("Original"));
             r.publish_single_folder_document(
                 current,
                 Some("# Current refresh\n".into()),
@@ -402,7 +402,7 @@ mod tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
-            assert!(r.note_source.contains("Current refresh"))
+            assert!(r.pane.note_source.contains("Current refresh"))
         });
     }
 
@@ -434,7 +434,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert_eq!(r.vault_root, new_root.canonicalize().unwrap());
-            assert!(r.note_source.contains("New root"));
+            assert!(r.pane.note_source.contains("New root"));
         });
         std::fs::remove_file(old_root.join("start.md")).unwrap();
         std::fs::write(old_root.join("old-only.md"), "# Old event\n").unwrap();
@@ -445,8 +445,8 @@ mod tests {
         std::fs::write(new_root.join("new-only.md"), "# New event\n").unwrap();
         settle(visual, &reader, |r, _| listed(r, "new-only.md"));
         reader.read_with(visual, |r, _| {
-            assert_eq!(r.current_rel, "start.md");
-            assert!(r.note_source.contains("New root"));
+            assert_eq!(r.pane.current_rel, "start.md");
+            assert!(r.pane.note_source.contains("New root"));
             assert!(!listed(r, "old-only.md"));
             assert!(r.deleted_note.is_none());
             assert!(r.single_file && r.searcher.is_none() && r.index_dir.is_none());
@@ -464,7 +464,7 @@ mod tests {
         // Prove refresh works before asserting an absence after redirection.
         std::fs::write(&path, "# Inside update\n").unwrap();
         settle(visual, &reader, |r, _| {
-            r.note_source.contains("Inside update")
+            r.pane.note_source.contains("Inside update")
         });
         std::fs::remove_file(&path).unwrap();
         std::os::unix::fs::symlink(&outside, &path).unwrap();
@@ -472,7 +472,7 @@ mod tests {
             r.deleted_note.is_some() || r.link_notice.is_some()
         });
         reader.read_with(visual, |r, _| {
-            assert!(!r.note_source.contains("Private outside"))
+            assert!(!r.pane.note_source.contains("Private outside"))
         });
         assert_eq!(
             std::fs::read_to_string(outside).unwrap(),

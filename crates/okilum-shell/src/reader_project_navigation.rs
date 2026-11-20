@@ -1061,7 +1061,7 @@ impl Reader {
         let restore_note = self
             .ui_state
             .restoring_workspace
-            .then(|| self.current_rel.clone());
+            .then(|| self.pane.current_rel.clone());
         cx.spawn_in(window, async move |this, cx| {
             let root = vault.clone();
             let requested = folder.clone();
@@ -1083,7 +1083,7 @@ impl Reader {
                 // A delivered document that arrived during validation wins.
                 if restore_note
                     .as_ref()
-                    .is_some_and(|note| note != &this.current_rel)
+                    .is_some_and(|note| note != &this.pane.current_rel)
                 {
                     return;
                 }
@@ -1149,10 +1149,10 @@ impl Reader {
         }
         // The retained document will not lay out behind Board. A previous
         // landing must not keep polling its now-hidden TextView.
-        if !self.current_rel.is_empty() {
+        if !self.pane.current_rel.is_empty() {
             let position = self.retained_document_position(cx);
             self.navigation.places.insert(
-                (self.vault_root.clone(), self.current_rel.clone()),
+                (self.vault_root.clone(), self.pane.current_rel.clone()),
                 position,
             );
         }
@@ -2391,7 +2391,9 @@ mod local_reader_without_t3_tests {
             r.open_note("Notes/Second.md", None, window, cx)
         });
         visual.run_until_parked();
-        reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "Notes/Second.md"));
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.pane.current_rel, "Notes/Second.md")
+        });
 
         assert_eq!(search(reader, visual, "meridian"), ["Notes/Second.md"]);
 
@@ -2429,7 +2431,7 @@ mod local_reader_without_t3_tests {
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert!(!r.quick_open.open);
-            assert_eq!(r.current_rel, "Notes/Second.md", "the pin opened");
+            assert_eq!(r.pane.current_rel, "Notes/Second.md", "the pin opened");
         });
 
         reader.update_in(visual, |r, window, cx| {
@@ -2443,7 +2445,7 @@ mod local_reader_without_t3_tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
-            let preview = r.file_preview.as_ref().expect("the log is open");
+            let preview = r.pane.file_preview.as_ref().expect("the log is open");
             assert_eq!(preview.rel, "app.log");
             assert!(preview.log.is_some(), "the log viewer reads it");
         });
@@ -2592,7 +2594,7 @@ mod local_reader_without_t3_tests {
             r.open_note("start.md", None, window, cx)
         });
         visual.run_until_parked();
-        reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "start.md"));
+        reader.read_with(visual, |r, _| assert_eq!(r.pane.current_rel, "start.md"));
         assert_eq!(search(&reader, visual, "meridian"), ["Notes/Second.md"]);
         reader.read_with(visual, |r, _| {
             assert!(

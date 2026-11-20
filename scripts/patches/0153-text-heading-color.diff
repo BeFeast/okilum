@@ -1,0 +1,236 @@
+diff --git a/crates/base/src/text/node.rs b/crates/base/src/text/node.rs
+index eecb2119..c2de3d89 100644
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -2988,6 +2988,7 @@ impl BlockNode {
+                     .when(rtl(&children.text()), |d| d.text_right())
+                     .text_size(text_size)
+                     .font_weight(font_weight)
++                    .when_some(node_cx.style.heading_color(*level), |d, color| d.text_color(color))
+                     .child(children.render(node_cx, window, cx))
+                     .into_any_element()
+             }
+diff --git a/crates/base/src/text/style.rs b/crates/base/src/text/style.rs
+index 4315fb62..2ffede76 100644
+--- a/crates/base/src/text/style.rs
++++ b/crates/base/src/text/style.rs
+@@ -27,6 +27,8 @@ pub struct TextViewStyle {
+     bottom_padding: Pixels,
+     heading_base_font_size: Pixels,
+     heading_font_size: Option<Arc<dyn Fn(u8, Pixels) -> Pixels + Send + Sync + 'static>>,
++    /// Heading text color per level (index 0 = H1).
++    heading_colors: [Option<Hsla>; 6],
+     code_block: StyleRefinement,
+     table: StyleRefinement,
+     table_head: StyleRefinement,
+@@ -57,6 +59,7 @@ impl PartialEq for TextViewStyle {
+                 (None, None) => true,
+                 _ => false,
+             }
++            && self.heading_colors == other.heading_colors
+             && self.code_block == other.code_block
+             && self.table == other.table
+             && self.table_head == other.table_head
+@@ -102,6 +105,7 @@ impl TextViewStyle {
+             bottom_padding: px(0.),
+             heading_base_font_size: px(14.),
+             heading_font_size: None,
++            heading_colors: [None; 6],
+             code_block: StyleRefinement::default(),
+             table: StyleRefinement::default(),
+             table_head: StyleRefinement::default(),
+@@ -209,6 +213,26 @@ impl TextViewStyle {
+         self
+     }
+ 
++    /// Sets the text color of every heading level. `None` (the default)
++    /// keeps headings in the body foreground. Links inside a heading keep
++    /// their own color.
++    pub fn with_heading_color(mut self, color: Option<Hsla>) -> Self {
++        self.heading_colors = [color; 6];
++        self
++    }
++
++    /// Sets the text color of one heading level (1-6); other levels are
++    /// unchanged and an out-of-range level is ignored.
++    pub fn with_heading_level_color(mut self, level: u8, color: Option<Hsla>) -> Self {
++        if let Some(slot) = level
++            .checked_sub(1)
++            .and_then(|ix| self.heading_colors.get_mut(usize::from(ix)))
++        {
++            *slot = color;
++        }
++        self
++    }
++
+     /// Sets the style refinement for code blocks.
+     pub fn with_code_block(mut self, style: StyleRefinement) -> Self {
+         self.code_block = style;
+@@ -319,6 +343,16 @@ impl TextViewStyle {
+             .map(|f| f(level, self.heading_base_font_size))
+     }
+ 
++    /// The text color of a heading level (1-6), when that level is not
++    /// drawn in the body foreground.
++    pub fn heading_color(&self, level: u8) -> Option<Hsla> {
++        level
++            .checked_sub(1)
++            .and_then(|ix| self.heading_colors.get(usize::from(ix)))
++            .copied()
++            .flatten()
++    }
++
+     /// The style refinement for code blocks.
+     pub fn code_block(&self) -> &StyleRefinement {
+         &self.code_block
+@@ -417,6 +451,36 @@ mod tests {
+         assert_eq!(style.heading_font_size(6), Some(px(14.)));
+     }
+ 
++    #[test]
++    fn heading_color_is_opt_in_and_part_of_the_fingerprint() {
++        let base = TextViewStyle::default();
++        assert!((0..=7).all(|level| base.heading_color(level).is_none()));
++
++        let violet: Hsla = gpui::rgb(0x5034a8).into();
++        let colored = base.clone().with_heading_color(Some(violet));
++        assert!((1..=6).all(|level| colored.heading_color(level) == Some(violet)));
++        assert_eq!(colored.heading_color(0), None);
++        assert_eq!(colored.heading_color(7), None);
++        assert!(colored != base);
++        assert!(colored.clone().with_heading_color(None) == base);
++    }
++
++    #[test]
++    fn heading_color_takes_the_level() {
++        let violet: Hsla = gpui::rgb(0x5034a8).into();
++        let slate: Hsla = gpui::rgb(0xcbdbe5).into();
++        let style = TextViewStyle::default()
++            .with_heading_color(Some(slate))
++            .with_heading_level_color(1, Some(violet))
++            .with_heading_level_color(9, Some(violet));
++        assert_eq!(style.heading_color(1), Some(violet));
++        assert!((2..=6).all(|level| style.heading_color(level) == Some(slate)));
++        let other = TextViewStyle::default()
++            .with_heading_color(Some(slate))
++            .with_heading_level_color(2, Some(violet));
++        assert!(style != other, "the level is part of the fingerprint");
++    }
++
+     #[test]
+     fn inline_code_falls_back_to_the_code_background() {
+         let style = TextViewStyle::default()
+diff --git a/crates/component/src/text/compat.rs b/crates/component/src/text/compat.rs
+index 9207c96c..80436cc6 100644
+--- a/crates/component/src/text/compat.rs
++++ b/crates/component/src/text/compat.rs
+@@ -360,6 +360,9 @@ pub(super) fn resolve_component_style(
+         .inline_code_font_family
+         .or_else(|| themed.inline_code_font_family().cloned());
+ 
++    let heading_colors: [Option<gpui::Hsla>; 6] =
++        std::array::from_fn(|ix| legacy.heading_colors[ix].or(themed.heading_color(ix as u8 + 1)));
++
+     let mut style = themed
+         .with_paragraph_gap(legacy.paragraph_gap)
+         .with_root_list_indent(legacy.root_list_indent)
+@@ -373,6 +376,9 @@ pub(super) fn resolve_component_style(
+         .with_inline_code(inline_code)
+         .with_inline_code_font_family(inline_code_font_family)
+         .with_dark(is_dark);
++    for (ix, color) in heading_colors.into_iter().enumerate() {
++        style = style.with_heading_level_color(ix as u8 + 1, color);
++    }
+     if let Some(heading_font_size) = legacy.heading_font_size {
+         style = style.with_heading_font_size(move |level, base| heading_font_size(level, base));
+     }
+@@ -510,6 +516,27 @@ mod tests {
+         }
+     }
+ 
++    #[gpui::test]
++    fn component_heading_color_reaches_the_rendered_style(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        cx.update(|cx| {
++            let theme = crate::Theme::global(cx);
++            let plain = super::resolve_component_style(theme, super::TextViewStyle::default());
++            assert!((1..=6).all(|level| plain.heading_color(level).is_none()));
++
++            let violet: gpui::Hsla = gpui::rgb(0x5034a8).into();
++            let slate: gpui::Hsla = gpui::rgb(0xcbdbe5).into();
++            let colored = super::resolve_component_style(
++                theme,
++                super::TextViewStyle::default()
++                    .heading_color(slate)
++                    .heading_level_color(1, violet),
++            );
++            assert_eq!(colored.heading_color(1), Some(violet));
++            assert!((2..=6).all(|level| colored.heading_color(level) == Some(slate)));
++        });
++    }
++
+     #[gpui::test]
+     fn stateless_markdown_facade_settles_after_parsing(cx: &mut TestAppContext) {
+         cx.update(crate::init);
+diff --git a/crates/component/src/text/style.rs b/crates/component/src/text/style.rs
+index 553ebb66..517a68c7 100644
+--- a/crates/component/src/text/style.rs
++++ b/crates/component/src/text/style.rs
+@@ -1,6 +1,6 @@
+ use std::sync::Arc;
+ 
+-use gpui::{HighlightStyle, Pixels, Rems, SharedString, StyleRefinement, px, rems};
++use gpui::{HighlightStyle, Hsla, Pixels, Rems, SharedString, StyleRefinement, px, rems};
+ 
+ use crate::highlighter::HighlightTheme;
+ 
+@@ -26,6 +26,9 @@ pub struct TextViewStyle {
+     /// The first parameter is the heading level (1-6), the second parameter is
+     /// the base font size.
+     pub heading_font_size: Option<Arc<dyn Fn(u8, Pixels) -> Pixels + Send + Sync + 'static>>,
++    /// Heading text color per level (index 0 = H1). `None` keeps that level
++    /// in the body foreground.
++    pub heading_colors: [Option<Hsla>; 6],
+     /// Highlight theme for code blocks. Default: [`HighlightTheme::default_light()`]
+     pub highlight_theme: Arc<HighlightTheme>,
+     /// The style refinement for code blocks.
+@@ -71,6 +74,7 @@ impl Default for TextViewStyle {
+             bottom_padding: px(0.),
+             heading_base_font_size: px(14.),
+             heading_font_size: None,
++            heading_colors: [None; 6],
+             highlight_theme: HighlightTheme::default_light().clone(),
+             code_block: StyleRefinement::default(),
+             table: StyleRefinement::default(),
+@@ -98,6 +102,7 @@ impl PartialEq for TextViewStyle {
+                 (None, None) => true,
+                 _ => false,
+             }
++            && self.heading_colors == other.heading_colors
+             && self.highlight_theme == other.highlight_theme
+             && self.code_block == other.code_block
+             && self.table == other.table
+@@ -124,6 +129,23 @@ impl TextViewStyle {
+         self.heading_font_size = Some(Arc::new(f));
+         self
+     }
++    /// Set the text color of every heading level; links inside headings keep
++    /// their own.
++    pub fn heading_color(mut self, color: Hsla) -> Self {
++        self.heading_colors = [Some(color); 6];
++        self
++    }
++    /// Set the text color of one heading level (1-6); an out-of-range level
++    /// is ignored.
++    pub fn heading_level_color(mut self, level: u8, color: Hsla) -> Self {
++        if let Some(slot) = level
++            .checked_sub(1)
++            .and_then(|ix| self.heading_colors.get_mut(usize::from(ix)))
++        {
++            *slot = Some(color);
++        }
++        self
++    }
+     /// Set style for code blocks.
+     pub fn code_block(mut self, style: StyleRefinement) -> Self {
+         self.code_block = style;

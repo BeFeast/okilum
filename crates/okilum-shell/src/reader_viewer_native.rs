@@ -115,7 +115,7 @@ pub(crate) fn entry() -> bool {
                                         .loading
                                         .as_ref()
                                         .is_some_and(|load| load.active && !load.published))
-                                    || r.file_preview.as_ref().is_some_and(|p| {
+                                    || r.pane.file_preview.as_ref().is_some_and(|p| {
                                         p.unavailable.is_none()
                                             && match name {
                                                 "data.json" | "source.rs" => p.code.is_some(),

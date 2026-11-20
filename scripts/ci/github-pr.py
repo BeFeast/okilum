@@ -49,8 +49,10 @@ ALSO_REQUIRED = {
 # Waiters inside a fixed Forgejo step ceiling. The primary `bridge` runner stops
 # every job at 60 min, so queue and run share one budget; the run still gets at
 # most its lane timeout. See docs/fast-runner.md (#2589).
+# inbox-restart (#729): the run takes ~7 min, but the default 30 min queue
+# limit cancelled it twice in a busy hosted queue before it started.
 BRIDGE_BUDGETS = {'shell-full': 53 * 60, 'check': 53 * 60, 'sync-source-sharing': 53 * 60,
-                  'feedback': 53 * 60, 'excalidraw': 53 * 60}
+                  'feedback': 53 * 60, 'excalidraw': 53 * 60, 'inbox-restart': 53 * 60}
 
 
 def main():

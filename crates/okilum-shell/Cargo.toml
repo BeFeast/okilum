@@ -26,6 +26,9 @@ embed-native-harness = []
 data-view-native-harness = ["gpui/bench-support"]
 # Non-publishing Project UI fixture; never registers OAuth clients or threads.
 project-ui-harness = ["gpui/profiler"]
+# Non-publishing Kubernetes Workspace visual harness (#3012): synthetic
+# in-process data, no kubectl; opened only by OKILUM_KUBERNETES_HARNESS.
+kubernetes-ui-harness = []
 
 [dependencies]
 okilum-write-authority = { path = "../okilum-write-authority" }
@@ -151,7 +154,7 @@ rustix = { version = "=1.1.6", features = ["fs", "process"] }
 okilum-sync-controller = { path = "../okilum-sync-controller" }
 dirs = "6"
 velopack = "=1.2.161"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Com", "Win32_UI_Input_KeyboardAndMouse", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects"] }
 
 [build-dependencies]
 embed-resource = "=3.0.11"

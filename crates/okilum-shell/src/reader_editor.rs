@@ -20,6 +20,7 @@ pub(crate) mod math_preview;
 mod note_open_mode_tests;
 mod open_note_sync;
 mod paste_jobs;
+mod paste_upload;
 mod recovery;
 mod status;
 mod tables;
@@ -793,7 +794,7 @@ impl Reader {
         if self.move_applying {
             return;
         }
-        if self.note_encoding_damaged && self.file_preview.is_none() {
+        if self.note_encoding_damaged && self.pane.file_preview.is_none() {
             self.link_notice = Some(reader_loading::ENCODING_NOTICE.into());
             cx.notify();
             return;
@@ -804,7 +805,7 @@ impl Reader {
         }
         let plain_file = self.file_is_source();
         // A code file over the size cap stays in its read-only note (#998).
-        if self.file_preview.is_some() && (!plain_file || !self.code_file_editable(cx)) {
+        if self.pane.file_preview.is_some() && (!plain_file || !self.code_file_editable(cx)) {
             return;
         }
         if self.editing.is_some() {
@@ -822,7 +823,7 @@ impl Reader {
             // Explicit Read, not a navigation exit. It also overrides the
             // Settings default for this window (#2817).
             self.ui_state.source_mode = false;
-            self.ui_state.read_chosen = Some(self.current_rel.clone());
+            self.ui_state.read_chosen = Some(self.pane.current_rel.clone());
             self.ui_state.auto_edit = false;
             // Saved: keep its Undo history for a return to Edit (#1095).
             self.retained_edit =
@@ -831,6 +832,7 @@ impl Reader {
                 let rel = self.selected_file().to_owned();
                 self.preview_file(&rel, window, cx);
                 if let Some((code, saved)) = self
+                    .pane
                     .file_preview
                     .as_ref()
                     .and_then(|p| p.code.as_ref())
@@ -839,13 +841,13 @@ impl Reader {
                     code.update(cx, |code, cx| code.restore_presentation(saved, window, cx));
                 }
             } else {
-                let rel = self.current_rel.clone();
+                let rel = self.pane.current_rel.clone();
                 self.prepare_document_at_place(&rel, place, window, cx);
             }
             self.focus_handle.focus(window, cx);
             return;
         }
-        if (self.current_rel.is_empty() && !plain_file)
+        if (self.pane.current_rel.is_empty() && !plain_file)
             || self
                 .loading
                 .as_ref()
@@ -856,6 +858,7 @@ impl Reader {
         // The typed definition view shares this exact editor/recovery namespace.
         // Explicit Source takes ownership only once its Save/selection is idle.
         if let Some(panel) = self
+            .pane
             .file_preview
             .as_ref()
             .and_then(|preview| preview.virtual_log.clone())
@@ -881,6 +884,7 @@ impl Reader {
                 FileEditor::open(&path, &drafts)?
             };
             if self
+                .pane
                 .file_preview
                 .as_ref()
                 .is_some_and(|preview| preview.code.is_some())
@@ -902,6 +906,7 @@ impl Reader {
                 // Record storage admission only after the existing edit attempt
                 // failed; a read must never probe writability for the header.
                 if let Some(code) = self
+                    .pane
                     .file_preview
                     .as_ref()
                     .and_then(|preview| preview.code.as_ref())
@@ -917,6 +922,7 @@ impl Reader {
             }
         };
         if let Some(code) = self
+            .pane
             .file_preview
             .as_ref()
             .and_then(|preview| preview.code.as_ref())
@@ -935,8 +941,8 @@ impl Reader {
                     .item_ix;
                 Some((
                     top,
-                    self.note_canonical_source.clone()?,
-                    self.note_source.clone(),
+                    self.pane.note_canonical_source.clone()?,
+                    self.pane.note_source.clone(),
                 ))
             })
             .flatten()
@@ -965,6 +971,7 @@ impl Reader {
         let language = code.unwrap_or(if plain_file { "text" } else { "markdown" });
         let wrap = code.is_none() || reader_ui_state::code_soft_wrap(cx);
         let read_state = self
+            .pane
             .file_preview
             .as_ref()
             .and_then(|preview| preview.code.as_ref())
@@ -979,7 +986,7 @@ impl Reader {
         let blocks = (!plain_file).then(|| {
             (
                 self.vault_root.clone(),
-                self.current_rel.clone(),
+                self.pane.current_rel.clone(),
                 cx.entity().downgrade(),
                 block_context.clone(),
             )
@@ -1333,7 +1340,7 @@ impl Reader {
                 let Some(link) = okilum_core::document_links::parse_in_vault(
                     &source,
                     &this.vault,
-                    &this.current_rel,
+                    &this.pane.current_rel,
                 )
                 .into_iter()
                 .find(|link| link.range.contains(&click.offset.0)) else {
@@ -1343,7 +1350,7 @@ impl Reader {
                     &link.target,
                     link.wiki,
                     &this.vault,
-                    &this.current_rel,
+                    &this.pane.current_rel,
                 );
                 // Protect the current draft before navigation, including browser links.
                 if !this.save_source(cx) {
@@ -1432,11 +1439,48 @@ impl Reader {
                 if let Some(notice) = &pending.notice {
                     paste_jobs::show_notice(notice, window, cx);
                 }
+                // #1073: remote image downloads rewrite text inside this
+                // paste, so its uploads wait for them instead of racing.
+                let downloads = matches!(
+                    pending.follow_up,
+                    Some(crate::note_paste::router::FollowUp::RemoteImages { .. })
+                );
                 if let Some(follow_up) = pending.follow_up {
-                    this.run_paste_follow_up(input.clone(), follow_up, window, cx);
+                    // Decided and tracked at the paste, run after the downloads.
+                    let upload_after = match event {
+                        ClipboardPasteEvent::Applied { bytes, .. } if downloads => {
+                            let caret = input.read(cx).cursor();
+                            let target = this.paste_target(input.clone(), cx);
+                            paste_upload::track(
+                                target,
+                                input,
+                                caret.saturating_sub(*bytes)..caret,
+                                &pending.saved_files,
+                                window,
+                                cx,
+                            )
+                        }
+                        _ => None,
+                    };
+                    this.run_paste_follow_up(input.clone(), follow_up, upload_after, window, cx);
                 }
                 match event {
                     ClipboardPasteEvent::Applied { bytes, .. } => {
+                        // #1073: the pasted text ends at the caret; its links
+                        // to the files this paste saved may be uploaded.
+                        if !pending.saved_files.is_empty() && !downloads {
+                            let caret = input.read(cx).cursor();
+                            let span = caret.saturating_sub(*bytes)..caret;
+                            let target = this.paste_target(input.clone(), cx);
+                            paste_upload::start(
+                                target,
+                                input,
+                                span,
+                                &pending.saved_files,
+                                window,
+                                cx,
+                            );
+                        }
                         if let Some(editing) = this
                             .editing
                             .as_ref()
@@ -1572,7 +1616,7 @@ impl Reader {
     /// retain another complete data tree; explicit Read rebuilds it normally.
     fn retire_large_plain_preview(&mut self, bytes: usize) {
         if bytes > 4 * 1024 * 1024 {
-            if let Some(preview) = self.file_preview.as_mut() {
+            if let Some(preview) = self.pane.file_preview.as_mut() {
                 preview.code.take();
             }
         }
@@ -1639,7 +1683,7 @@ impl Reader {
             .id("source-save-status")
             .flex_none()
             .px_2()
-            .when(self.file_preview.is_some(), |dot| dot.px_0().w(px(8.)))
+            .when(self.pane.file_preview.is_some(), |dot| dot.px_0().w(px(8.)))
             .text_color(if editing.conflict_detected || editing.save_failed {
                 cx.theme().warning
             } else {
@@ -1702,7 +1746,7 @@ impl Reader {
         let recovery = editing.recovery_epoch;
         let retained = self.deleted_current().is_some();
         let root = self.vault_root.clone();
-        let rel = self.current_rel.clone();
+        let rel = self.pane.current_rel.clone();
         self.navigation.reconciliation_generation =
             self.navigation.reconciliation_generation.wrapping_add(1);
         let generation = self.navigation.reconciliation_generation;
@@ -1719,7 +1763,7 @@ impl Reader {
         cx.spawn_in(window, async move |this, cx| {
             let (observed, reviewed, refresh) = task.await;
             let _ = this.update_in_own_window(cx, |this, window, cx| {
-                if this.navigation.reconciliation_generation != generation || this.vault_root != root || this.current_rel != rel { return; }
+                if this.navigation.reconciliation_generation != generation || this.vault_root != root || this.pane.current_rel != rel { return; }
                 let Some(editing) = this.editing.as_mut().filter(|e| e.input.entity_id() == input_id) else { return; };
                 if editing.autosaving.is_some() { editing.refresh_deferred = true; return; }
                 if editing.saves != saves { this.refresh_source_in_background(window, cx); return; }
@@ -2131,7 +2175,7 @@ impl Reader {
                 if let Some((absolute_path, saved_revision)) = rules_revision {
                     self.agents_rules_saved(&absolute_path, &saved_revision, cx);
                 }
-                if source_changed && self.file_preview.is_none() {
+                if source_changed && self.pane.file_preview.is_none() {
                     self.queue_saved_source(cx);
                 }
                 cx.notify();
@@ -2398,7 +2442,7 @@ impl Reader {
                     let epoch = editing.recovery_epoch;
                     self.schedule_autosave(input_id, epoch, cx);
                 }
-                if self.file_preview.is_none() {
+                if self.pane.file_preview.is_none() {
                     self.queue_saved_source(cx);
                 }
             }
@@ -2442,7 +2486,7 @@ impl Reader {
         self.editing = None;
         self.resume_code_presentation(cx);
         self.outline_list
-            .reset_with_uniform_height(self.outline.len(), px(OUTLINE_ROW_HEIGHT));
+            .reset_with_uniform_height(self.pane.outline.len(), px(OUTLINE_ROW_HEIGHT));
         true
     }
 
@@ -2472,7 +2516,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(preview) = &self.file_preview else {
+        let Some(preview) = &self.pane.file_preview else {
             return;
         };
         if !self.ui_state.source_mode || self.editing.is_some() || !self.file_is_source() {
@@ -2487,6 +2531,7 @@ impl Reader {
                 }
                 pending.set(false);
                 let current = this
+                    .pane
                     .file_preview
                     .as_ref()
                     .and_then(|preview| preview.code.as_ref())
@@ -2527,7 +2572,7 @@ impl Reader {
             .ui_state
             .read_chosen
             .as_ref()
-            .is_some_and(|rel| rel != &self.current_rel)
+            .is_some_and(|rel| rel != &self.pane.current_rel)
         {
             self.ui_state.read_chosen = None;
         }
@@ -2535,8 +2580,8 @@ impl Reader {
             || self.ui_state.read_chosen.is_some()
             || self.ui_state.source_mode
             || self.editing.is_some()
-            || self.file_preview.is_some()
-            || self.current_rel.is_empty()
+            || self.pane.file_preview.is_some()
+            || self.pane.current_rel.is_empty()
         {
             return;
         }
@@ -2627,8 +2672,8 @@ impl Reader {
                     this.editing = None;
                     this.ui_state.auto_edit = false;
                     this.outline_list
-                        .reset_with_uniform_height(this.outline.len(), px(OUTLINE_ROW_HEIGHT));
-                    let rel = this.current_rel.clone();
+                        .reset_with_uniform_height(this.pane.outline.len(), px(OUTLINE_ROW_HEIGHT));
+                    let rel = this.pane.current_rel.clone();
                     this.prepare_document_at_place(&rel, place, window, cx);
                     this.link_notice = Some(notice.into());
                     this.focus_handle.focus(window, cx);
@@ -2783,7 +2828,7 @@ impl Reader {
         };
         let input = editing.input.entity_id();
         let root = self.vault_root.clone();
-        let rel = self.current_rel.clone();
+        let rel = self.pane.current_rel.clone();
         let target_root = root.clone();
         let target_rel = rel.clone();
         cx.spawn(async move |this, cx| {
@@ -2801,7 +2846,7 @@ impl Reader {
                 return;
             };
             let _ = this.update(cx, |reader, cx| {
-                if reader.vault_root != root || reader.current_rel != rel {
+                if reader.vault_root != root || reader.pane.current_rel != rel {
                     return;
                 }
                 if reader.editing.as_ref().is_some_and(|e| {
@@ -2856,7 +2901,7 @@ impl Reader {
                         == Some(text.as_str())
             })
             .map(|(_, rel)| rel.clone());
-        let rel = previous.unwrap_or_else(|| conflict_copy_rel(&self.current_rel));
+        let rel = previous.unwrap_or_else(|| conflict_copy_rel(&self.pane.current_rel));
         let saved = editing
             .conflict_copy
             .as_ref()
@@ -2914,7 +2959,7 @@ impl Reader {
                 self.editing = None;
                 self.resume_code_presentation(cx);
                 self.ui_state.source_mode = false;
-                self.ui_state.read_chosen = Some(self.current_rel.clone());
+                self.ui_state.read_chosen = Some(self.pane.current_rel.clone());
                 self.ui_state.auto_edit = false;
                 self.link_notice = Some("Draft kept in recovery. Reopen this note and enter source mode to restore it. If it was moved, restore its original path first.".into());
                 self.focus_handle.focus(window, cx);
@@ -3674,9 +3719,9 @@ impl Reader {
             .chain([operation.from.clone(), operation.to.clone()])
             .collect();
         self.check_move_editors(&paths, cx)?;
-        let self_affected = paths
-            .iter()
-            .any(|p| self.current_rel == *p || self.current_rel.starts_with(&format!("{p}/")));
+        let self_affected = paths.iter().any(|p| {
+            self.pane.current_rel == *p || self.pane.current_rel.starts_with(&format!("{p}/"))
+        });
         let self_editing = if self_affected {
             self.editing.take().is_some()
         } else {
@@ -3690,9 +3735,9 @@ impl Reader {
             }
             if let Ok(Some(was_editing)) = reader.update(cx, |r, _| {
                 if same_move_root(&r.vault_root, &operation.root)
-                    && paths
-                        .iter()
-                        .any(|p| r.current_rel == *p || r.current_rel.starts_with(&format!("{p}/")))
+                    && paths.iter().any(|p| {
+                        r.pane.current_rel == *p || r.pane.current_rel.starts_with(&format!("{p}/"))
+                    })
                 {
                     Some(r.editing.take().is_some())
                 } else {
@@ -3707,8 +3752,8 @@ impl Reader {
             let _ = owner.update(cx, |_, window, cx| {
                 reader.update(cx, |r, cx| {
                     if result.is_ok() {
-                        r.current_rel = okilum_core::link_rewrite::moved_path(
-                            &r.current_rel,
+                        r.pane.current_rel = okilum_core::link_rewrite::moved_path(
+                            &r.pane.current_rel,
                             &operation.to,
                             &operation.from,
                         );
@@ -3720,7 +3765,7 @@ impl Reader {
                             );
                         }
                     }
-                    let rel = r.current_rel.clone();
+                    let rel = r.pane.current_rel.clone();
                     r.prepare_document(&rel, None, None, window, cx);
                     if was_editing {
                         r.toggle_source(window, cx);
@@ -3731,8 +3776,8 @@ impl Reader {
         }
         if self_affected {
             if result.is_ok() {
-                self.current_rel = okilum_core::link_rewrite::moved_path(
-                    &self.current_rel,
+                self.pane.current_rel = okilum_core::link_rewrite::moved_path(
+                    &self.pane.current_rel,
                     &operation.to,
                     &operation.from,
                 );
@@ -3740,7 +3785,7 @@ impl Reader {
                     *p = okilum_core::link_rewrite::moved_path(p, &operation.to, &operation.from);
                 }
             }
-            let rel = self.current_rel.clone();
+            let rel = self.pane.current_rel.clone();
             self.prepare_document(&rel, None, None, window, cx);
             if self_editing {
                 self.toggle_source(window, cx);
@@ -3793,7 +3838,7 @@ impl Reader {
                 r.upgrade().is_some_and(|r| {
                     let r = r.read(cx);
                     same_move_root(&r.vault_root, &self.vault_root)
-                        && r.current_rel == self.current_rel
+                        && r.pane.current_rel == self.pane.current_rel
                         && r.editing.is_some()
                 })
             })
@@ -3858,9 +3903,8 @@ impl Reader {
             "A move is already being applied in this window"
         );
         anyhow::ensure!(
-            !paths
-                .iter()
-                .any(|p| self.current_rel == *p || self.current_rel.starts_with(&format!("{p}/")))
+            !paths.iter().any(|p| self.pane.current_rel == *p
+                || self.pane.current_rel.starts_with(&format!("{p}/")))
                 || !self.source_is_dirty(cx),
             "Save or discard this note's unsaved edits before moving"
         );
@@ -3873,11 +3917,11 @@ impl Reader {
                 let reader = reader.read(cx);
                 anyhow::ensure!(
                     !same_move_root(&reader.vault_root, &self.vault_root)
-                        || !paths.iter().any(|p| reader.current_rel == *p
-                            || reader.current_rel.starts_with(&format!("{p}/")))
+                        || !paths.iter().any(|p| reader.pane.current_rel == *p
+                            || reader.pane.current_rel.starts_with(&format!("{p}/")))
                         || (!reader.source_is_dirty(cx) && !reader.move_applying),
                     "{} has unsaved edits in another window; save or discard them first",
-                    reader.current_rel
+                    reader.pane.current_rel
                 );
             }
         }
@@ -3913,7 +3957,7 @@ impl Reader {
             }
             if let Ok(Some((path, editing))) = reader.update(cx, |r, cx| {
                 if same_move_root(&r.vault_root, &self.vault_root)
-                    && (paths.contains(&r.current_rel)
+                    && (paths.contains(&r.pane.current_rel)
                         || okilum_core::link_rewrite::moved_path(
                             r.selected_file(),
                             &preview.from,
@@ -3924,7 +3968,7 @@ impl Reader {
                     r.navigation.preparation_generation =
                         r.navigation.preparation_generation.wrapping_add(1);
                     cx.notify();
-                    Some((r.current_rel.clone(), r.editing.take()))
+                    Some((r.pane.current_rel.clone(), r.editing.take()))
                 } else {
                     None
                 }
@@ -3934,7 +3978,7 @@ impl Reader {
         }
         let root = self.vault_root.clone();
         let preview = preview.clone();
-        let park_own = paths.contains(&self.current_rel);
+        let park_own = paths.contains(&self.pane.current_rel);
         let editing = if park_own { self.editing.take() } else { None };
         let (own_store, own_ui) = match editing {
             Some(editing) => {
@@ -3943,7 +3987,7 @@ impl Reader {
             }
             None => (None, None),
         };
-        let mut stores = vec![(self.current_rel.clone(), own_store)];
+        let mut stores = vec![(self.pane.current_rel.clone(), own_store)];
         let parked: Vec<_> = parked
             .into_iter()
             .map(|(reader, window, path, editing)| {
@@ -4013,7 +4057,7 @@ impl Reader {
                         );
                         if moved && next_path != path {
                             r.editing = None;
-                            r.current_rel = next_path;
+                            r.pane.current_rel = next_path;
                             for p in &mut r.navigation.history {
                                 *p = okilum_core::link_rewrite::moved_path(
                                     p,
@@ -4022,7 +4066,7 @@ impl Reader {
                                 );
                             }
                         }
-                        if let Some(file) = &r.file_preview {
+                        if let Some(file) = &r.pane.file_preview {
                             let next = okilum_core::link_rewrite::moved_path(
                                 &file.rel,
                                 &preview.from,
@@ -4036,7 +4080,7 @@ impl Reader {
                                 input.set_value(e.store.text().to_owned(), window, cx)
                             });
                         } else {
-                            let rel = r.current_rel.clone();
+                            let rel = r.pane.current_rel.clone();
                             r.prepare_document(&rel, None, None, window, cx);
                             if moved
                                 && okilum_core::link_rewrite::moved_path(
@@ -4072,7 +4116,7 @@ impl Reader {
             !self.source_is_dirty(cx),
             "Save or discard unsaved edits before restoring a version"
         );
-        self.check_move_editors(std::slice::from_ref(&self.current_rel), cx)?;
+        self.check_move_editors(std::slice::from_ref(&self.pane.current_rel), cx)?;
         let state = self
             .session_directory
             .as_ref()
@@ -4081,7 +4125,7 @@ impl Reader {
             okilum_core::source_history::restore(&mut editing.store, reviewed, text)
         } else {
             let mut editor = FileEditor::open(
-                &self.vault_root.join(&self.current_rel),
+                &self.vault_root.join(&self.pane.current_rel),
                 &state.join("editor-drafts"),
             )?;
             okilum_core::source_history::restore(&mut editor, reviewed, text)
@@ -4089,7 +4133,7 @@ impl Reader {
         // On a racing write the recovered version remains dirty and visible.
         self.sync_move_input(window, cx);
         if result.is_ok() && self.editing.is_none() {
-            let rel = self.current_rel.clone();
+            let rel = self.pane.current_rel.clone();
             self.prepare_document(&rel, None, None, window, cx);
         }
         result
@@ -4746,8 +4790,9 @@ mod tests {
             };
             assert_eq!(
                 opts.restart_windows,
-                vec![crate::reader_update_restart::Window::File {
-                    path: root.join("note.md")
+                vec![crate::reader_update_restart::Window::Quick {
+                    root: root.clone(),
+                    note: Some("note.md".into()),
                 }]
             );
         });
@@ -5098,8 +5143,9 @@ mod tests {
         });
         assert_eq!(
             crate::reader_update_restart::take(&state).unwrap(),
-            vec![crate::reader_update_restart::Window::File {
-                path: root.join("note.md")
+            vec![crate::reader_update_restart::Window::Quick {
+                root: root.clone(),
+                note: Some("note.md".into()),
             }]
         );
         assert!(committed.get());
@@ -5869,7 +5915,7 @@ mod tests {
                 reader_layout::Widths::default().notes
             );
             assert_eq!(std::fs::read(&preferences).unwrap(), preferences_bytes);
-            assert_eq!(reader.current_rel, "start.md");
+            assert_eq!(reader.pane.current_rel, "start.md");
         });
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
@@ -5951,6 +5997,7 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |reader, _, cx| {
             let backlink = reader
+                .pane
                 .backlinks
                 .iter()
                 .find(|b| b.path == "backlink.md")
@@ -5975,7 +6022,7 @@ mod tests {
         visual.simulate_click(origin + point(px(25.), px(10.)), gpui::Modifiers::default());
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
-            assert_eq!(reader.current_rel, "target.md")
+            assert_eq!(reader.pane.current_rel, "target.md")
         });
         reader.update_in(visual, |reader, window, cx| {
             reader.open_note_at("start.md", None, None, window, cx)
@@ -5998,7 +6045,7 @@ mod tests {
         visual.simulate_click(position, gpui::Modifiers::default());
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
-            assert_eq!(reader.current_rel, "start.md")
+            assert_eq!(reader.pane.current_rel, "start.md")
         });
         input.read_with(visual, |input, _| {
             let cursor = input.cursor();
@@ -6028,7 +6075,7 @@ mod tests {
         );
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
-            assert_eq!(reader.current_rel, "target.md")
+            assert_eq!(reader.pane.current_rel, "target.md")
         });
         assert_eq!(
             std::fs::read_to_string(root.join("start.md")).unwrap(),
@@ -6218,7 +6265,7 @@ mod tests {
                 "live preview: {live}"
             );
             reader.read_with(visual, |reader, _| {
-                assert_eq!(reader.current_rel, "start.md")
+                assert_eq!(reader.pane.current_rel, "start.md")
             });
             assert_eq!(
                 std::fs::read_to_string(root.join("start.md")).unwrap(),
@@ -6278,7 +6325,7 @@ mod tests {
             });
             visual.run_until_parked();
             reader.update_in(visual, |reader, window, cx| {
-                assert_eq!(reader.current_rel, "start.md");
+                assert_eq!(reader.pane.current_rel, "start.md");
                 if live {
                     reader.open_live_preview(window, cx);
                 } else {
@@ -6306,7 +6353,7 @@ mod tests {
             );
             visual.run_until_parked();
             reader.read_with(visual, |reader, _| {
-                assert_eq!(reader.current_rel, "target.md", "live preview: {live}")
+                assert_eq!(reader.pane.current_rel, "target.md", "live preview: {live}")
             });
         }
         assert_eq!(
@@ -6594,7 +6641,7 @@ mod tests {
         std::fs::write(root.join("first.md"), "external").unwrap();
         reader.update_in(visual, |reader, window, cx| {
             reader.open_note("second.md", None, window, cx);
-            assert_eq!(reader.current_rel, "first.md");
+            assert_eq!(reader.pane.current_rel, "first.md");
             assert!(reader.editing.as_ref().unwrap().conflict.is_some());
             assert!(!reader.save_source(cx));
             std::fs::write(root.join("first.md"), "external v2").unwrap();
@@ -6636,7 +6683,7 @@ mod tests {
         });
         visual.run_until_parked();
         reader.update_in(visual, |reader, _, _| {
-            assert_eq!(reader.current_rel, "second.md");
+            assert_eq!(reader.pane.current_rel, "second.md");
             assert!(
                 reader.editing.is_some(),
                 "successful navigation retains Source"
@@ -7147,7 +7194,7 @@ mod autosave_tests {
                     other_visual.run_until_parked();
                     sibling_same = other.read_with(other_visual, |r, _| {
                         assert_eq!(
-                            r.note_canonical_source.as_deref(),
+                            r.pane.note_canonical_source.as_deref(),
                             Some(format!("x{}", &source[1..]).as_str()),
                             "duplicate reader receives the actual edited source, not just its unchanged length"
                         );
@@ -8093,7 +8140,7 @@ mod mode_navigation_tests {
         reader.read_with(visual, |r, cx| {
             assert_mode(r, "asset.bin", None, cx);
             assert!(
-                r.file_preview.is_some(),
+                r.pane.file_preview.is_some(),
                 "actual unsupported-Markdown preview fallback"
             );
         });
@@ -8108,7 +8155,7 @@ mod mode_navigation_tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
-            assert_eq!(r.current_rel, "second.md");
+            assert_eq!(r.pane.current_rel, "second.md");
             assert!(
                 r.link_notice.is_some(),
                 "failed prepare reports absence rather than fabricating an editor"
@@ -8135,7 +8182,10 @@ mod mode_navigation_tests {
         });
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
-            assert!(r.file_preview.is_some(), "positive control: a file view");
+            assert!(
+                r.pane.file_preview.is_some(),
+                "positive control: a file view"
+            );
             assert_mode(r, "plain.txt", Some(false), cx);
         });
         reader.update_in(visual, |r, window, cx| {
@@ -8149,7 +8199,8 @@ mod mode_navigation_tests {
         visual.run_until_parked();
         reader.read_with(visual, |r, cx| {
             assert!(
-                r.file_preview
+                r.pane
+                    .file_preview
                     .as_ref()
                     .is_some_and(|preview| preview.code.is_some()),
                 "positive control: the code view, which loads asynchronously"

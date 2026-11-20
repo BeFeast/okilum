@@ -408,7 +408,10 @@ mod tests {
         let shortcut = crate::MAXIMIZE_NOTE_KEY;
         for source in [false, true] {
             reader.update_in(visual, |r, window, cx| {
-                assert_eq!(r.current_rel, "note.md", "loaded-document positive control");
+                assert_eq!(
+                    r.pane.current_rel, "note.md",
+                    "loaded-document positive control"
+                );
                 r.panels.open(Panel::Notes);
                 r.panels.open(Panel::Backlinks);
                 if source {
@@ -494,7 +497,7 @@ mod tests {
             reader.read_with(visual, |r, cx| {
                 assert_eq!(r.panels, before.0);
                 assert_eq!(r.panel_widths, before.1);
-                assert_eq!(r.current_rel, "note.md");
+                assert_eq!(r.pane.current_rel, "note.md");
                 assert_eq!(
                     r.editing
                         .as_ref()

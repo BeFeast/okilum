@@ -12,6 +12,9 @@ use okilum_core::kubernetes::{choose_namespace, Contexts, Failure, NamespaceOrig
 
 mod backend;
 mod dock;
+pub(crate) mod evidence;
+#[cfg(feature = "kubernetes-ui-harness")]
+pub(crate) mod harness;
 mod inspector;
 mod lens_view;
 pub(crate) mod lenses;
@@ -100,7 +103,9 @@ pub(crate) struct Workspace {
     chosen_context: Option<String>,
     namespace: Entity<InputState>,
     filter: Entity<InputState>,
-    data: Option<Data>,
+    /// Shared and copy-on-write: an export captures it in O(1), and a read
+    /// that lands during an export copies only then.
+    data: Option<Arc<Data>>,
     /// The typed namespace and how it was confirmed, for the scope strip.
     namespace_note: Option<String>,
     /// A failure that blocks reading at all (auth, kubeconfig, MFA).
@@ -115,6 +120,12 @@ pub(crate) struct Workspace {
     path_service: Option<Key>,
     selected: Option<Key>,
     tab: Tab,
+    /// Evidence export (#3012): where it was written, or why not.
+    export_note: Option<(String, Tone)>,
+    exporting: bool,
+    /// Tests write bundles here instead of asking for a folder.
+    #[cfg(test)]
+    export_dir: Option<PathBuf>,
     rows: Rc<Vec<Row>>,
     list_scroll: UniformListScrollHandle,
     list_focus: FocusHandle,
@@ -180,6 +191,10 @@ impl Workspace {
             path_service: None,
             selected: None,
             tab: Tab::Overview,
+            export_note: None,
+            exporting: false,
+            #[cfg(test)]
+            export_dir: None,
             rows: Rc::new(Vec::new()),
             list_scroll: UniformListScrollHandle::new(),
             list_focus: cx.focus_handle(),
@@ -260,7 +275,7 @@ impl Workspace {
         self.namespace_note = Some(namespace_note(&choice.origin));
         self.notice = None;
         if self.data.as_ref().map(|d| &d.scope) != Some(&scope) {
-            self.data = Some(Data::new(scope.clone()));
+            self.data = Some(Arc::new(Data::new(scope.clone())));
             self.selected = None;
         }
         if let Some(cancel) = self.loading.take() {
@@ -307,7 +322,7 @@ impl Workspace {
         if generation != self.load_generation {
             return;
         }
-        let Some(data) = self.data.as_mut() else {
+        let Some(data) = self.data.as_mut().map(Arc::make_mut) else {
             return;
         };
         match loaded {
@@ -334,6 +349,107 @@ impl Workspace {
             cancel.cancel();
             cx.notify();
         }
+    }
+
+    // ---------- Evidence export ----------
+
+    /// The bundle as of now: only what this window holds, nothing re-read.
+    /// What the bundle will hold, captured now on the UI thread. Building
+    /// and hashing it is `Capture::build`, run off the UI thread.
+    pub(crate) fn evidence_capture(&self, cx: &App) -> evidence::Capture {
+        let related_uids = match (&self.data, &self.selected) {
+            (Some(data), Some(key)) => self.event_uids(&model::resolve(data, key)),
+            _ => Vec::new(),
+        };
+        // Bytes, filter, counts and provenance all describe what the view
+        // shows: its own snapshot and the session that sent it. Rows that
+        // arrived after the last frame are not yet shown and not exported.
+        let view = self.dock.view.as_ref().map(|view| {
+            let view = view.read(cx);
+            evidence::LogViewState {
+                snapshot: view.stream_snapshot(),
+                filter: view.filter_evidence(),
+            }
+        });
+        evidence::Capture {
+            data: self.data.clone(),
+            selected: self.selected.clone(),
+            related_uids,
+            lens: self.lens.label(),
+            session: self.dock.session.clone(),
+            displayed: self.dock.in_view.clone(),
+            current_generation: self.dock.generation,
+            tail_lines: self.dock.tail,
+            view,
+            generated_at: std::time::SystemTime::now(),
+            app_version: env!("OKILUM_RELEASE_VERSION"),
+            app_source: env!("OKILUM_SOURCE_COMMIT"),
+        }
+    }
+
+    /// Asks for a folder, then writes a new bundle directory into it off the
+    /// UI thread. The bundle is fixed when asked; later rows are not added.
+    pub(crate) fn export_evidence(&mut self, cx: &mut Context<Self>) {
+        if self.exporting || self.data.is_none() {
+            return;
+        }
+        let capture = self.evidence_capture(cx);
+        self.exporting = true;
+        self.export_note = Some((
+            "Choose a folder for the evidence bundle…".into(),
+            Tone::Neutral,
+        ));
+        #[cfg(test)]
+        let fixed = self.export_dir.clone();
+        #[cfg(not(test))]
+        let fixed: Option<PathBuf> = None;
+        let picker = fixed.is_none().then(|| {
+            cx.prompt_for_paths(PathPromptOptions {
+                files: false,
+                directories: true,
+                multiple: false,
+                prompt: Some("Export evidence here".into()),
+            })
+        });
+        let executor = cx.background_executor().clone();
+        self._tasks.push(cx.spawn(async move |this, cx| {
+            let folder = match (fixed, picker) {
+                (Some(folder), _) => Some(folder),
+                (None, Some(picker)) => match picker.await {
+                    Ok(Ok(Some(mut paths))) => paths.pop(),
+                    _ => None,
+                },
+                (None, None) => None,
+            };
+            let written = match folder {
+                Some(folder) => Some(
+                    executor
+                        .spawn(async move {
+                            let bundle = capture.build();
+                            let summary = evidence::summary(&bundle);
+                            evidence::write(&folder, &bundle).map(|path| (path, summary))
+                        })
+                        .await,
+                ),
+                None => None,
+            };
+            let _ = this.update(cx, |this, cx| {
+                this.exporting = false;
+                this.export_note = Some(match written {
+                    None => (
+                        "Evidence export cancelled; nothing was written.".into(),
+                        Tone::Neutral,
+                    ),
+                    Some(Ok((path, summary))) => (
+                        format!("Evidence written to {} ({summary}).", path.display()),
+                        Tone::Good,
+                    ),
+                    Some(Err(error)) => (format!("Evidence not written: {error}"), Tone::Danger),
+                });
+                cx.notify();
+            });
+        }));
+        cx.notify();
     }
 
     // ---------- List and selection ----------
@@ -561,6 +677,16 @@ impl Workspace {
             }))
             .child(div().flex_1())
             .child(
+                Button::new("k8s-export")
+                    .debug_selector(|| "k8s-export".into())
+                    .small()
+                    .ghost()
+                    .label("Export evidence")
+                    .disabled(self.data.is_none() || self.exporting)
+                    .tooltip("Write what this window observed and loaded, with sources, times and hashes, to a new folder. Reads nothing from the cluster.")
+                    .on_click(cx.listener(|this, _, _, cx| this.export_evidence(cx))),
+            )
+            .child(
                 div()
                     .px_2()
                     .py(px(2.))
@@ -582,6 +708,15 @@ impl Workspace {
         }
         if let Some(note) = &self.namespace_note {
             lines.push((note.clone(), tokens.text_muted));
+        }
+        if let Some((note, tone)) = &self.export_note {
+            lines.push((
+                note.clone(),
+                match tone {
+                    Tone::Neutral => tokens.text_muted,
+                    tone => tone_color(*tone, cx),
+                },
+            ));
         }
         if lines.is_empty() {
             return None;
@@ -647,7 +782,7 @@ impl Workspace {
                             .small()
                             .ghost()
                             .label(label)
-                            .selected(self.section == section)
+                            .map(|b| segment(b, self.section == section, cx))
                             .on_click(
                                 cx.listener(move |this, _, _, cx| this.set_section(section, cx)),
                             )
@@ -765,6 +900,7 @@ impl Workspace {
         }
         h_flex()
             .id(("k8s-row", ix))
+            .w_full()
             .debug_selector(move || format!("k8s-row-{ix}"))
             .px_3()
             .py(px(5.))
@@ -925,6 +1061,26 @@ fn blocking_failure(loaded: &backend::Loaded) -> Option<String> {
             | Failure::Unavailable { .. }
     )
     .then(|| failure.summary())
+}
+
+/// The shared segmented-control look (reader_segmented): the active segment
+/// is raised with a border and semibold text, the others are muted. A plain
+/// ghost `selected` matches the segment track and is invisible.
+pub(crate) fn segment(button: Button, active: bool, cx: &App) -> Button {
+    let tokens = brand::palette(cx);
+    button
+        .selected(active)
+        .text_color(if active {
+            tokens.text
+        } else {
+            tokens.text_muted
+        })
+        .when(active, |b| {
+            b.bg(tokens.surface_raised)
+                .border_1()
+                .border_color(tokens.border_subtle)
+                .font_weight(FontWeight::SEMIBOLD)
+        })
 }
 
 pub(crate) fn tone_color(tone: Tone, cx: &App) -> Hsla {

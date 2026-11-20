@@ -46,6 +46,7 @@ fn open(reader: &Entity<Reader>, rel: &str, visual: &mut VisualTestContext) -> E
     settle(visual);
     reader.read_with(visual, |reader, _| {
         reader
+            .pane
             .file_preview
             .as_ref()
             .unwrap()
@@ -254,7 +255,7 @@ fn schema2994_stale_refresh_cannot_replace_newer_snapshot_or_selection(cx: &mut 
     settle(visual);
     reader.read_with(visual, |reader, _| {
         assert_eq!(
-            reader.file_preview.as_ref().unwrap().code.as_ref(),
+            reader.pane.file_preview.as_ref().unwrap().code.as_ref(),
             Some(&next)
         )
     });

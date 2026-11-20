@@ -255,7 +255,7 @@ impl Reader {
     /// opened on its Overdue chip. Navigating to another note ends it.
     pub(super) fn show_reminders_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let note = self.reminder_prefs.note.clone();
-        if self.current_rel != note || self.file_preview.is_some() {
+        if self.pane.current_rel != note || self.pane.file_preview.is_some() {
             self.open_note(&note, None, window, cx);
         }
         self.reminders_view = true;
@@ -264,7 +264,7 @@ impl Reader {
 
     /// The Tasks source for the view above, while it is active for the open note.
     pub(super) fn reminders_lens(&self) -> Option<Arc<str>> {
-        if !self.reminders_view || self.current_rel != self.reminder_prefs.note {
+        if !self.reminders_view || self.pane.current_rel != self.reminder_prefs.note {
             return None;
         }
         schedule::reminders_dashboard(&self.reminder_prefs.note)
@@ -534,7 +534,7 @@ mod tests {
         });
         visual.run_until_parked();
         assert_eq!(
-            reader.read_with(visual, |r, _| r.current_rel.clone()),
+            reader.read_with(visual, |r, _| r.pane.current_rel.clone()),
             reader_reminder::NOTE
         );
         assert!(
@@ -686,7 +686,7 @@ mod tests {
         reader.update_in(visual, |r, window, cx| r.history_move(-1, window, cx));
         visual.run_until_parked();
         assert_eq!(
-            reader.read_with(visual, |r, _| r.current_rel.clone()),
+            reader.read_with(visual, |r, _| r.pane.current_rel.clone()),
             "start.md"
         );
         assert!(visual.debug_bounds("native-tasks-dashboard").is_none());
@@ -694,7 +694,7 @@ mod tests {
         reader.update_in(visual, |r, window, cx| r.history_move(1, window, cx));
         visual.run_until_parked();
         assert_eq!(
-            reader.read_with(visual, |r, _| r.current_rel.clone()),
+            reader.read_with(visual, |r, _| r.pane.current_rel.clone()),
             reader_reminder::NOTE,
             "positive control: the reminders note is open again"
         );

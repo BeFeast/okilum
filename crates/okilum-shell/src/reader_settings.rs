@@ -689,6 +689,11 @@ struct Settings {
     /// The saved value the draft was opened against; presets and other windows
     /// reset the draft rather than leaving a picker for a different accent.
     vault_color_saved: Option<Option<brand::VaultColor>>,
+    /// The upload token being typed (#1073), made on the first render of
+    /// Editor. Never prefilled: a saved token stays in the OS credential store.
+    upload_token: Option<Entity<InputState>>,
+    /// Why the last token save or removal failed.
+    upload_token_error: Option<String>,
 }
 impl Settings {
     fn close_button(&self, cx: &Context<Self>) -> Button {
@@ -828,6 +833,8 @@ impl Settings {
             vault_color_rejected: None,
             vault_color_picker: None,
             vault_color_saved: None,
+            upload_token: None,
+            upload_token_error: None,
             #[cfg(any(unix, windows))]
             template_root: None,
             #[cfg(any(unix, windows))]
@@ -1335,6 +1342,135 @@ impl Settings {
         cx.notify();
     }
 
+    /// Settings → Editor (#1073): optional upload of pasted and dropped
+    /// files, and the provider token kept in the OS credential store.
+    fn upload_settings(&self, cx: &mut Context<Self>) -> AnyElement {
+        use crate::note_upload::TokenState;
+        let saved = match crate::note_upload::token_state(cx) {
+            TokenState::Known(token) => Some(token.is_some()),
+            TokenState::Unread | TokenState::Reading => None,
+        };
+        let status = match saved {
+            Some(true) => "A token is saved in the system credential store. Okilum also uses it to show uploaded images.",
+            Some(false) => "No token saved. Uploads and uploaded images need one.",
+            None => "Checking the system credential store…",
+        };
+        let danger = brand::palette(cx).danger;
+        v_flex()
+            .gap_2()
+            .debug_selector(|| "settings-upload".into())
+            .child(setting_row(
+                "Upload pasted and dropped files to pomoi.co",
+                "Images and files are saved in the vault first, then uploaded as private links that never expire, and the note links the uploaded copy. The local file stays. Other apps need a pomoi.co sign-in to open these links.",
+                div().debug_selector(|| "settings-upload-pasted-control".into()).child(
+                    Switch::new("settings-upload-pasted")
+                        .accessibility_label("Upload pasted and dropped files to pomoi.co")
+                        .checked(reader_ui_state::upload_pasted_files(cx))
+                        .on_click(|value, _, cx| reader_ui_state::set_upload_pasted_files(*value, cx)),
+                ),
+                cx,
+            ))
+            .child(setting_row(
+                "pomoi.co token",
+                status,
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .children(self.upload_token.as_ref().map(|input| {
+                        div().w(px(220.)).child(Input::new(input).small())
+                    }))
+                    .child(
+                        Button::new("settings-upload-token-save")
+                            .debug_selector(|| "settings-upload-token-save".into())
+                            .small()
+                            .label("Save")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.save_upload_token(window, cx)
+                            })),
+                    )
+                    .when(saved == Some(true), |row| {
+                        row.child(
+                            Button::new("settings-upload-token-remove")
+                                .debug_selector(|| "settings-upload-token-remove".into())
+                                .small()
+                                .ghost()
+                                .label("Remove")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.remove_upload_token(window, cx)
+                                })),
+                        )
+                    }),
+                cx,
+            ))
+            .children(self.upload_token_error.clone().map(|error| {
+                div().text_sm().text_color(danger).child(error)
+            }))
+            .into_any_element()
+    }
+
+    fn save_upload_token(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(input) = self.upload_token.clone() else {
+            return;
+        };
+        let token = input.read(cx).value().trim().to_string();
+        if token.is_empty() {
+            return;
+        }
+        let key = crate::note_upload::provider().credential_key();
+        let write = cx.write_credentials(key, "Okilum", token.as_bytes());
+        cx.spawn_in(window, async move |this, cx| {
+            let result = write.await;
+            // The session's token follows the store even if Settings closed
+            // meanwhile (#1073); only the field and message need the window.
+            if result.is_ok() {
+                gpui::AsyncApp::update(cx, |cx| crate::note_upload::set_token(Some(token), cx));
+            }
+            let _ = this.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(()) => {
+                        input.update(cx, |input, cx| input.set_value("", window, cx));
+                        this.upload_token_error = None;
+                    }
+                    Err(error) => {
+                        diagnostic_error!("Upload: token not saved ({error:#})");
+                        this.upload_token_error = Some(
+                            "The token couldn’t be saved in the system credential store.".into(),
+                        );
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn remove_upload_token(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let key = crate::note_upload::provider().credential_key();
+        let delete = cx.delete_credentials(key);
+        cx.spawn_in(window, async move |this, cx| {
+            let result = delete.await;
+            if result.is_ok() {
+                gpui::AsyncApp::update(cx, |cx| crate::note_upload::set_token(None, cx));
+            }
+            let _ = this.update_in(cx, |this, _, cx| {
+                match result {
+                    Ok(()) => {
+                        this.upload_token_error = None;
+                    }
+                    Err(error) => {
+                        diagnostic_error!("Upload: token not removed ({error:#})");
+                        this.upload_token_error = Some(
+                            "The token couldn’t be removed from the system credential store."
+                                .into(),
+                        );
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn template_controls(&self, cx: &mut Context<Self>) -> AnyElement {
         #[cfg(any(unix, windows))]
         {
@@ -1547,6 +1683,7 @@ impl Settings {
                     paste_size_stepper(cx),
                     cx,
                 ))
+                .child(self.upload_settings(cx))
                 .child(setting_row(
                     "Close brackets and quotes",
                     "Typing ( [ { \" ' or « adds the closing one; typing it again steps over it.",
@@ -1745,6 +1882,17 @@ impl Settings {
                             },
                         )
                         .child(self.template_controls(cx))
+                        .children(self.vault(cx).map(|reader| {
+                            #[cfg(any(unix, windows))]
+                            {
+                                reader_daily_notes::controls(&reader, cx)
+                            }
+                            #[cfg(not(any(unix, windows)))]
+                            {
+                                let _ = reader;
+                                div().into_any_element()
+                            }
+                        }))
                         .children(self.vault(cx).map(|reader| {
                             #[cfg(any(unix, windows))]
                             {
@@ -2017,6 +2165,21 @@ impl Render for Settings {
         }
         #[cfg(any(unix, windows))]
         self.refresh_template_folder(cx);
+        // Daily notes rows show the vault's choice, read once (#3182).
+        #[cfg(any(unix, windows))]
+        if let Some(reader) = self.vault(cx) {
+            reader.update(cx, |reader, _| reader.ensure_daily_prefs());
+        }
+        if self.section == Section::Editor && self.upload_token.is_none() {
+            self.upload_token = Some(cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("Paste a pomoi.co token")
+                    .masked(true)
+            }));
+            // Settings is opened on request: reading the store here is
+            // expected, and it shows whether a token is saved.
+            crate::note_upload::ensure_token(cx);
+        }
         if self.editor_command.is_none() {
             let command = match reader_ui_state::log_editor(cx) {
                 source_link::Editor::Custom(command) => command,
@@ -2675,13 +2838,13 @@ mod tests {
                         },
                         "LABEL1834: Settings must update existing tree rows and their sort live"
                     );
-                    assert_eq!(reader.current_rel, "a.md");
+                    assert_eq!(reader.pane.current_rel, "a.md");
                     assert_eq!(
-                        reader.current_title,
+                        reader.pane.current_title,
                         if *folder { "a" } else { "Zebra heading" }
                     );
                     assert_eq!(
-                        reader.outline[0].text, "Zebra heading",
+                        reader.pane.outline[0].text, "Zebra heading",
                         "the opened note retains its real H1"
                     );
                     assert_eq!(

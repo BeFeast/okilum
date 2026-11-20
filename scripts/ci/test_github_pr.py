@@ -40,6 +40,21 @@ class HostedPRTests(unittest.TestCase):
                     expected.update(also_required=bridge.ALSO_REQUIRED[lane])
                 self.assertEqual(wait.call_args.kwargs, expected)
 
+    def test_inbox_restart_lane_keeps_its_literal_queue_budget(self):
+        # #729: two dispatches were cancelled in the hosted queue at the 30 min
+        # default. Literal values, so deleting or shrinking the budget fails here.
+        with tempfile.TemporaryDirectory() as tmp:
+            env = dict(CI_LANE='inbox-restart', MIRROR_TOKEN='test', PR_HEAD_SHA=SHA, PR_NUMBER='12',
+                       GITHUB_RUN_ID='345', GITHUB_OUTPUT=str(Path(tmp) / 'output'))
+            with patch.dict(os.environ, env), patch.object(bridge.transport, 'push_head'), \
+                    patch.object(bridge.transport, 'GitHub'), patch.object(bridge.time, 'monotonic', return_value=1000.0), \
+                    patch.object(bridge.transport, 'wait_for_run', return_value=('success', 'ok')) as wait:
+                self.assertEqual(bridge.main(), 0)
+        self.assertEqual(wait.call_args.kwargs, dict(
+            workflow='.github/workflows/forgejo-inbox-restart.yml', job_name='inbox-restart',
+            build_step='Run Inbox restart integration', queue_timeout=53 * 60,
+            deadline=1000.0 + 53 * 60, run_timeout=1800))
+
     def test_hosted_check_requires_every_python_suite_and_the_fast_gate(self):
         # #2589: the certification check's two parallel hosted jobs are one gate.
         job, step, _ = bridge.LANES['check']

@@ -4,7 +4,7 @@ use super::{
     destination, destination_name, draw_sync_fixture, mac_direct_state, perform,
     perform_with_locations, serve_paired, shared, suspend, sync_fixture_init,
     sync_refresh_interval, user_error, BackgroundSync, ControllerGuard, Epoch, Operation, Output,
-    SyncSettings, TestSyncState, TestWorker,
+    SyncSettings, TestPortable, TestSyncState, TestWorker,
 };
 use crate::{
     reader_features, reader_history, reader_open, reader_settings, reader_startup, Opts, Reader,
@@ -39,12 +39,13 @@ fn fixture(window: &mut Window, cx: &mut Context<SyncSettings>) -> SyncSettings 
         invitation: Some(cx.new(|cx| InputState::new(window, cx).placeholder("Paste pairing URL"))),
         selected_peer: None,
         busy: false,
+        refreshing: false,
         serving: false,
         epoch: Epoch::default(),
         lifetime: Epoch::default(),
         error: None,
         awaiting_open: None,
-        pending_destination: None,
+        queued: None,
         destination_error: None,
         receiving: false,
         scroll: ScrollHandle::new(),
@@ -1627,13 +1628,9 @@ fn sync_new_destination_picker_answer_during_refresh_is_not_dropped(cx: &mut Tes
         Some(vec![root_dir.path().join("Revoked notes")])
     });
     visual.run_until_parked();
-    view.read_with(visual, |view, _| {
-        assert!(view.pending_destination.is_some())
-    });
+    view.read_with(visual, |view, _| assert!(view.queued.is_some()));
     visual.update(|_, cx| reader_features::set_enabled(reader_features::Feature::Sync, false, cx));
-    view.read_with(visual, |view, _| {
-        assert!(view.pending_destination.is_none())
-    });
+    view.read_with(visual, |view, _| assert!(view.queued.is_none()));
     assert_eq!(*calls.lock().unwrap(), vec!["read", "other"]);
     assert!(!root_dir.path().join("Revoked notes").exists());
 }
@@ -1731,6 +1728,187 @@ async fn sync_new_destination_failure_is_visible_beside_vault_after_refresh(
         "refresh preserves actionable failure"
     );
     assert!(!directory.path().join("absent").exists());
+}
+
+/// #3159: a periodic refresh on Windows takes seconds every 30 s. Clicks made
+/// while it runs must stay possible and must reach the controller.
+#[gpui::test]
+async fn sync_3159_start_first_sync_during_background_refresh_is_queued(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    cx.update(sync_fixture_init);
+    let directory = tempfile::tempdir().unwrap();
+    let destination = directory.path().join("Notes");
+    std::fs::create_dir(&destination).unwrap();
+    let peer = uuid::Uuid::new_v4();
+    let mut ready = snapshot(None);
+    ready.status = "Ready".into();
+    ready.peers.push(direct::Peer {
+        id: peer,
+        name: "Source".into(),
+        device_id: "source".into(),
+    });
+    ready.catalog.push(direct::Vault {
+        id: "notes".into(),
+        label: "Notes".into(),
+    });
+    let controller = Controller::open(directory.path().join("state"), vec![]).unwrap();
+    let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    cx.update(|cx| {
+        let calls = calls.clone();
+        cx.set_global(TestWorker(std::sync::Arc::new(move |operation| {
+            calls.lock().unwrap().push(match operation {
+                Operation::Read => "read",
+                Operation::ReviewDestination(..) => "review",
+                _ => "other",
+            });
+            Ok(Output {
+                runtime_health: Default::default(),
+                overview: Default::default(),
+                connection_error: None,
+                diagnostic: None,
+                controller: controller.clone(),
+                snapshot: ready.clone(),
+                inspected: None,
+                selected_destination: None,
+                first_sync: Default::default(),
+                #[cfg(target_os = "linux")]
+                runtimes: vec![],
+                vaults: vec![],
+            })
+        })));
+    });
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = fixture(window, cx);
+            view.presentation.wizard = Some(super::presentation::Step::Vaults);
+            view.run(Operation::Read, cx);
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<SyncSettings>().unwrap()
+    });
+    visual
+        .condition(&view, |view, _| !view.busy && view.snapshot.is_some())
+        .await;
+    draw_sync_fixture(visual);
+    let pick = visual.debug_bounds("sync-new-vault-folder-0").unwrap();
+    visual.simulate_click(pick.center(), Modifiers::default());
+    assert!(visual.did_prompt_for_paths());
+    visual.simulate_path_prompt_response(|_| Some(vec![destination.clone()]));
+    visual
+        .condition(&view, |view, _| {
+            view.presentation.destinations.contains_key("notes")
+        })
+        .await;
+    draw_sync_fixture(visual);
+    assert_eq!(*calls.lock().unwrap(), vec!["read"]);
+
+    // The 30 s timer fires. Its worker stays in flight: nothing below parks
+    // the executor until the click has been delivered.
+    view.update(visual, |view, cx| {
+        view.refresh_in_background(cx);
+        assert!(view.busy && view.refreshing, "the refresh owns the worker");
+        assert!(!view.locked(), "a periodic refresh never locks controls");
+    });
+    for _ in 0..2 {
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+    }
+    assert!(
+        visual.debug_bounds("sync-pending").is_none(),
+        "a periodic refresh does not move the page"
+    );
+    let start = visual.debug_bounds("sync-start-first-transfer").unwrap();
+    visual.update(|window, cx| {
+        for input in [
+            gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                position: start.center(),
+                modifiers: Modifiers::default(),
+                button: gpui::MouseButton::Left,
+                click_count: 1,
+                first_mouse: false,
+            }),
+            gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                position: start.center(),
+                modifiers: Modifiers::default(),
+                button: gpui::MouseButton::Left,
+                click_count: 1,
+            }),
+        ] {
+            window.dispatch_event(input, cx);
+        }
+    });
+    view.read_with(visual, |view, _| {
+        assert!(view.busy && view.refreshing, "the click landed mid-refresh");
+        assert!(
+            matches!(view.queued, Some(Operation::ReviewDestination(..))),
+            "the click is kept, not dropped"
+        );
+    });
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec!["read"],
+        "the action waits for the refresh worker"
+    );
+    for _ in 0..2 {
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+    }
+    assert!(
+        visual.debug_bounds("sync-start-queued").is_some(),
+        "the dialog says the click is waiting"
+    );
+
+    visual.run_until_parked();
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec!["read", "read", "review"],
+        "the refresh publishes, then the queued first sync starts exactly once"
+    );
+    view.read_with(visual, |view, _| {
+        assert!(view.queued.is_none());
+        assert!(!view.busy && !view.refreshing);
+    });
+
+    // Control: an explicit action in flight still locks the button, and a
+    // click on it reaches nothing.
+    view.update(visual, |view, cx| {
+        view.presentation.destinations.insert(
+            "notes".into(),
+            Operation::Attach(peer, "notes".into(), destination.clone()),
+        );
+        view.presentation.wizard = Some(super::presentation::Step::Vaults);
+        view.run(Operation::Read, cx);
+        assert!(view.busy && !view.refreshing && view.locked());
+    });
+    for _ in 0..2 {
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+    }
+    assert!(visual.debug_bounds("sync-start-locked").is_some());
+    let start = visual.debug_bounds("sync-start-first-transfer").unwrap();
+    visual.update(|window, cx| {
+        for input in [
+            gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                position: start.center(),
+                modifiers: Modifiers::default(),
+                button: gpui::MouseButton::Left,
+                click_count: 1,
+                first_mouse: false,
+            }),
+            gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                position: start.center(),
+                modifiers: Modifiers::default(),
+                button: gpui::MouseButton::Left,
+                click_count: 1,
+            }),
+        ] {
+            window.dispatch_event(input, cx);
+        }
+    });
+    view.read_with(visual, |view, _| {
+        assert!(view.queued.is_none());
+        assert!(view.presentation.destinations.contains_key("notes"));
+    });
 }
 
 #[gpui::test]
@@ -2686,7 +2864,7 @@ fn sync_health_controller_error_does_not_override_healthy_runtime_and_recovery_c
 /// builds deliver it through the same gpui system notification as Windows.
 #[gpui::test]
 fn issue2490_approval_notice_once_per_request_and_retracted_when_answered(cx: &mut TestAppContext) {
-    cx.update(crate::test_init);
+    cx.update(sync_fixture_init);
     cx.update(|cx| cx.set_app_identity("com.befeast.okilum", "Okilum"));
     let directory = tempfile::tempdir().unwrap();
     let controller = Controller::open(directory.path().join("direct"), vec![]).unwrap();
@@ -2801,7 +2979,7 @@ enum Answer {
 /// Reject send exactly that request id; any answer, including a stale request
 /// the controller refuses as expired, retracts the OS notice.
 fn issue2490_answer(cx: &mut TestAppContext, answer: Answer) {
-    cx.update(crate::test_init);
+    cx.update(sync_fixture_init);
     let state = tempfile::tempdir().unwrap();
     cx.update(|cx| {
         reader_features::install(state.path(), cx);
@@ -2946,7 +3124,7 @@ fn issue2490_stale_request_refused_as_expired_retracts_the_notice(cx: &mut TestA
 /// waits, the line the approving computer's banner repeats.
 #[gpui::test]
 fn issue2490_waiting_computer_shows_its_own_device_id(cx: &mut TestAppContext) {
-    cx.update(crate::test_init);
+    cx.update(sync_fixture_init);
     let (_root, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
             let mut view = fixture(window, cx);
@@ -2969,4 +3147,101 @@ fn issue2490_waiting_computer_shows_its_own_device_id(cx: &mut TestAppContext) {
     );
     assert!(visual.debug_bounds("sync-waiting-device").is_some());
     assert!(visual.debug_bounds("sync-approval-device").is_none());
+}
+
+/// #1029, #1037: a portable Windows copy has no Sync helper. Settings → Sync
+/// offers the installer and never opens a controller or pairing listener.
+#[gpui::test]
+fn issue1029_portable_settings_offer_the_installer_and_never_pair(cx: &mut TestAppContext) {
+    cx.update(sync_fixture_init);
+    let directory = tempfile::tempdir().unwrap();
+    cx.update(|cx| {
+        reader_features::install(directory.path(), cx);
+        cx.set_global(TestPortable);
+        reader_features::set_enabled(reader_features::Feature::Sync, true, cx);
+    });
+    let calls = guided_worker(cx, vec![snapshot(None)]);
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| SyncSettings::new(window, cx));
+        Root::new(view, window, cx)
+    });
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<SyncSettings>().unwrap()
+    });
+    visual.run_until_parked();
+    assert_visible(visual, "sync-portable");
+    assert_visible(visual, "sync-portable-install");
+    assert!(
+        visual.debug_bounds("sync-add-computer").is_none(),
+        "the portable copy offers no pairing"
+    );
+    view.read_with(visual, |view, _| {
+        assert!(view.controller.is_none() && !view.busy && view.error.is_none());
+    });
+
+    // A pairing link or the share menu lands here too: no wizard opens.
+    view.update(visual, |view, cx| view.receive(cx));
+    draw_sync_fixture(visual);
+    assert!(visual.update(|window, cx| !window.has_active_dialog(cx)));
+    assert_visible(visual, "sync-portable");
+    let install = visual.debug_bounds("sync-portable-install").unwrap();
+    visual.simulate_click(install.center(), Modifiers::default());
+    assert_eq!(visual.opened_url().as_deref(), Some(super::INSTALLER_URL));
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "no Sync operation ran: {:?}",
+        calls.lock().unwrap()
+    );
+
+    // Positive control: the installed build opens pairing through the same worker.
+    visual.update(|_, cx| {
+        cx.remove_global::<TestPortable>();
+    });
+    view.update(visual, |view, cx| view.run(Operation::EnterPairing, cx));
+    visual.run_until_parked();
+    assert_eq!(*calls.lock().unwrap(), vec!["enter"]);
+    draw_sync_fixture(visual);
+    assert!(visual.debug_bounds("sync-portable").is_none());
+    assert_visible(visual, "sync-add-computer");
+}
+
+/// #1029, #1037: the portable copy never serves Sync at app start, even when
+/// the saved journal would start it in the installed build.
+#[gpui::test]
+fn issue1029_portable_build_never_serves_sync_at_start(cx: &mut TestAppContext) {
+    cx.update(sync_fixture_init);
+    let directory = tempfile::tempdir().unwrap();
+    let state = directory.path().join("direct");
+    std::fs::create_dir(&state).unwrap();
+    // An unreadable journal starts serving so the failure stays visible.
+    std::fs::write(state.join("direct.json"), b"not a journal").unwrap();
+    let calls = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+    let recorded = calls.clone();
+    cx.update(|cx| {
+        reader_features::install(directory.path(), cx);
+        cx.set_global(TestSyncState(state.clone()));
+        cx.set_global(TestWorker(std::sync::Arc::new(move |_| {
+            *recorded.lock().unwrap() += 1;
+            Err(anyhow::anyhow!("fixture Sync worker"))
+        })));
+        cx.set_global(TestPortable);
+        // Turning Sync on serves paired computers in the installed build.
+        reader_features::set_enabled(reader_features::Feature::Sync, true, cx);
+        serve_paired(cx);
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert!(reader_features::enabled(reader_features::Feature::Sync, cx));
+        assert!(!cx.has_global::<BackgroundSync>(), "portable never serves");
+    });
+    assert_eq!(*calls.lock().unwrap(), 0);
+
+    // Positive control: the same journal starts serving in the installed build.
+    cx.update(|cx| {
+        cx.remove_global::<TestPortable>();
+        serve_paired(cx);
+    });
+    cx.run_until_parked();
+    cx.update(|cx| assert!(cx.has_global::<BackgroundSync>()));
+    assert!(*calls.lock().unwrap() >= 1);
 }

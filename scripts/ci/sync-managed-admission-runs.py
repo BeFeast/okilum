@@ -19,12 +19,31 @@ CRASH_TEST = 'issue2043_crash_recovery_retains_versions_and_rejects_third_versio
 TESTS = {
     'issue2582_configuration_process_drains_and_later_real_effects_are_refused',
     'issue2582_autonomous_restart_fences_dead_holder_and_other_folder_transfers',
+    'issue2582_missing_root_never_stops_the_runtime_across_launches',
+    'issue2582_unsafe_missing_roots_fail_closed_without_recreating_them',
+    'issue2582_folder_added_after_launch_gains_evidence_without_restart',
+    'issue2582_readded_folder_id_never_inherits_index_evidence',
+    'issue2582_missing_root_admission_is_held_through_startup',
+    'issue2582_redirected_missing_root_is_refused',
+    'issue2582_root_swapped_before_start_never_syncs',
+    'issue2582_launcher_killed_after_fencing_keeps_the_original_marker',
+    'issue2582_root_lost_while_running_is_fenced_again_every_time',
+    'issue2582_stale_fence_record_never_resumes_a_user_pause',
+    'issue2582_replaced_root_never_syncs_between_polls_or_under_the_gate',
     'issue2582_linux_bootstrap_and_replaced_bindings_fail_closed',
     'issue2043_scoped_hold_blocks_real_transfer_and_recovers_across_restart',
     'issue2504_reader_writers_and_pinned_transport_share_one_restart_safe_hold',
     'issue2508_scoped_receipt_refuses_unproven_states_and_recovers_each_boundary',
     CRASH_TEST,
     'issue2043_two_managed_instances_preview_union_preservation_and_bidirectional_handoff',
+    'issue3079_removed_computer_rejoins_and_a_stale_removal_cannot_remove_it_again',
+    'issue3079_rejoin_through_another_computer_reuses_the_kept_copy',
+    'issue3079_offline_removal_then_rejoin_through_another_computer',
+}
+# #3080: these fill a private tmpfs; scripts/ci/sync-disk-full.sh mounts and runs them.
+DISK_FULL = {
+    'issue3080_first_merge_disk_full_keeps_every_version_and_recovers',
+    'issue3080_transfer_disk_full_needs_attention_keeps_files_and_resumes',
 }
 CHECKPOINTS = (
     'destination-prepared', 'source-staged', 'source-partial-blob', 'source-prepared',
@@ -41,7 +60,9 @@ def main():
     # Discover the exact compiled parent inventory before selecting any shard.
     listing = subprocess.run([executable, '--list'], check=True, text=True, stdout=subprocess.PIPE).stdout
     discovered = {line.removesuffix(': test') for line in listing.splitlines() if line.endswith(': test')}
-    assert discovered == TESTS | {'issue2582_child'}, discovered
+    assert discovered == TESTS | DISK_FULL | {'issue2582_child'}, discovered
+    # The #3079 rejoin controls run inside 'remaining': a further parallel
+    # process of multi-runtime fixtures made port reuse hit other tests.
     groups = [
         ('crash-even', CHECKPOINTS[::2]),
         ('crash-odd', CHECKPOINTS[1::2]),
@@ -68,7 +89,7 @@ def main():
             command += [CRASH_TEST, '--exact']
             env['OKILUM_FIRST_SYNC_CRASH_CASE'] = ','.join(checkpoints)
         else:
-            command += ['--skip', 'issue2582_child', '--skip', CRASH_TEST]
+            command += ['--skip', 'issue2582_child', '--skip', CRASH_TEST, '--skip', 'issue3080_']
         log = root / 'acceptance.log'
         with log.open('w') as output:
             process = subprocess.Popen(command, env=env, stdout=output, stderr=subprocess.STDOUT,
