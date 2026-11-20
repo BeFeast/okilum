@@ -1151,6 +1151,8 @@ fn heading_line_scales(
 /// face. A family without one (bold and regular resolve to the same font, as
 /// the platform falls back to the closest face) keeps bold solid: the bold
 /// slot is dropped, so no gradient colour or span is produced.
+// Standalone projection examples include this module without app fonts.
+#[allow(dead_code)]
 pub(crate) fn live_preview_decorations(
     mut decorations: gpui_base::text::TextDecorations,
     family: &str,
