@@ -42,6 +42,14 @@ class PoolGit(unittest.TestCase):
                                     timeout=30, env={"HOME": str(home), "PATH": os.environ["PATH"]})
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("credentials.rs", result.stdout)
+            # A reused slot keeps the synthetic repository. Rebuilding it must
+            # pick up a file the old index omitted.
+            (work / "extra.rs").write_text("extra\n")
+            again = subprocess.run(["bash", "-c", script], cwd=work, capture_output=True, text=True,
+                                   timeout=30, env={"HOME": str(home), "PATH": os.environ["PATH"]})
+            self.assertEqual(again.returncode, 0, again.stderr)
+            self.assertIn("extra.rs", again.stdout)
+            self.assertIn("credentials.rs", again.stdout)
 
 
 class PoolPhase(unittest.TestCase):

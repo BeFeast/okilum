@@ -7,10 +7,19 @@ pool_fail_infra=0
 
 # git archive has no repository, and check-vendor-generation.py runs git ls-files.
 pool_ensure_git() {
+    # A previous pool run may have left a synthetic repository. Rebuild it:
+    # the slot directory is reused, and an old index can omit files the host
+    # excludesFile hid. A developer's real clone (any other commit) is kept.
     if [[ -d .git ]]; then
-        return 0
+        local subject
+        subject=$(git log -1 --format=%s 2>/dev/null || true)
+        if [[ $subject != 'pool source' && ! -f .git/okilum-pool-source ]]; then
+            return 0
+        fi
+        rm -rf .git
     fi
     git init -q
+    : > .git/okilum-pool-source
     # A host excludesFile such as **/credentials.* must not drop archived source.
     git -c core.excludesFile=/dev/null add -A
     git -c user.email=pool@okilum.local -c user.name='okilum pool' \
