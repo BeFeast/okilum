@@ -10,8 +10,8 @@ stay `pre-merge` and `linux`, and the step names `gh-check.sh` requires are
 unchanged. A pool failure (queue, timeout, missing receipt) fails the dispatch
 step, which the helper counts as infrastructure (exit 75). A failing phase
 fails the step of that name, which is a code verdict (exit 1). Windows and
-macOS jobs are unchanged. Landing of a green, reviewed PR is the merge queue
-in `docs/merge-queue.md`, not a second gate.
+macOS jobs are unchanged. Landing is unchanged: a reviewed PR with a green
+`agent-checks` run is merged as before (`AGENTS.md`).
 
 ## When which check runs (Oleg 13.11 ~14:20, ~15:10)
 

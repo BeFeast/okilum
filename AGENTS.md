@@ -43,22 +43,19 @@ Keep design decisions in `docs/` or the project brain, not only in commit messag
   merge permission.
 - Never merge a PR whose latest review verdict is «fix first», or one with no
   review when a review was requested.
-- The merge queue lands a PR only when the latest trusted review is
-  `REVIEW PASS` for that head and its `Reviewer:` line names a family other
-  than `author family`. A PASS from the author's own family does not count.
 - PRs from manager-delegated agents (toolbar #2806–#2814, #2817, #2825/#2845,
-  #2837, #2847, updater #2855, and any PR the manager names) carry the label
-  `manager-merge` and are merged by the manager only. The queue skips that
-  label.
+  #2837, #2847, updater #2855, and any PR the manager names) are merged by the
+  manager only.
 
 ## Tests and measurements
 
-- Before merge, `H=github scripts/agent/gh-check.sh` on the exact HEAD.
-  The Linux `pre-merge` and `linux` jobs run on the build-slot pool; the
-  GitHub check names are unchanged. A reviewed PR with a green full run is
-  landed by the merge queue, which re-runs the full Linux suite on the exact
-  main+PR commit when main has moved. See `docs/agent-checks.md` and
-  `docs/merge-queue.md`. Never run Cargo on maestro except `cargo fmt`.
+- Before merge (Oleg 13.11 ~14:20, ~15:10): `H=github scripts/agent/gh-check.sh
+  --fast` on the exact HEAD: formatting, script checks and workspace clippy on
+  Linux; no Rust test suites, no Windows/macOS run. The full set (`gh-check.sh` without `--fast`
+  and the Forgejo full gate) runs once a day before Stable and gates Stable
+  only; see `docs/agent-checks.md`. Use local build slots only for
+  GitHub outages or checks requiring local hardware. Never run Cargo on maestro
+  except `cargo fmt`.
 - idunn is used interactively by Oleg: keep there only what needs idunn, and run
   every build/test as `flock /home/god/work/okilum-idunn-build.lock nice -n 19 ionice -c3 …`.
 - A regression test must fail without the fix. Probes need controls that exercise
