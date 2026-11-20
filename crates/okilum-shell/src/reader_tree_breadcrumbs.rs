@@ -682,6 +682,46 @@ mod tests {
         );
     }
 
+    /// #3182 review: from another app section (here Logs, as from the More
+    /// menu) a newly created daily note comes on screen on the first press.
+    #[cfg(unix)]
+    #[gpui::test]
+    fn issue3182_todays_note_from_logs_section_shows_the_new_note(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = fixture(cx);
+        let vault = temp.path().join("vault");
+        let settings = okilum_core::daily_notes::Settings::default();
+        let rel = okilum_core::vault::note_path(
+            &settings.relative_path(reader_daily_notes::now()).unwrap(),
+        );
+        assert!(!vault.join(&rel).exists());
+        reader.update_in(visual, |view, window, cx| {
+            view.show_app_section(reader_project_navigation::Section::Logs, window, cx)
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |view, _| {
+            assert!(
+                view.project_navigation.section == reader_project_navigation::Section::Logs,
+                "control: the Logs section is on screen"
+            )
+        });
+        assert!(
+            visual.debug_bounds("reader-source").is_none(),
+            "control: no note toolbar while Logs is shown"
+        );
+        reader.update_in(visual, |view, window, cx| view.open_daily_note(window, cx));
+        visual.run_until_parked();
+        assert!(vault.join(&rel).is_file(), "today's note was created");
+        reader.read_with(visual, |view, _| {
+            assert!(view.project_navigation.section == reader_project_navigation::Section::Reader);
+            assert_eq!(view.pane.current_rel, rel);
+            assert!(view.editing.is_some());
+        });
+        assert!(
+            visual.debug_bounds("reader-source").is_some(),
+            "the new note's editor is drawn, not the Logs section"
+        );
+    }
+
     #[gpui::test]
     fn issue1587_folder_rules_badge_opens_hidden_rules_without_toggling_folder(
         cx: &mut TestAppContext,

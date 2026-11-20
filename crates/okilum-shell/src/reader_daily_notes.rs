@@ -260,6 +260,24 @@ impl Reader {
             );
             return;
         }
+        // An untitled draft's folder is Okilum's own storage, not a vault:
+        // a dated note there would be stranded in app state, and the draft
+        // would lose its Save As (#1528). Also after browsing to another file
+        // of that folder, so the check is on the root, not the file on screen.
+        if self
+            .session_directory
+            .as_deref()
+            .and_then(|state| reader_untitled::draft_folder(state, &self.vault_root))
+            .is_some()
+        {
+            self.file_operation_blocked(
+                "daily_note",
+                "",
+                "Today's note needs a vault. Open a folder first.",
+                cx,
+            );
+            return;
+        }
         if self.leaving_deleted_note(None, cx) {
             self.ask_leaving_deleted_note(
                 Box::new(|this, window, cx| this.open_daily_note(window, cx)),
@@ -295,6 +313,12 @@ impl Reader {
             }
             Ok(Today::Created { rel, source }) => {
                 self.trace_file_operation("daily_note", "created", &rel, None, cx);
+                // From Inbox, Projects or Logs the note must come on screen,
+                // as `open_note` does for an existing one.
+                if self.project_navigation.active.is_none() {
+                    self.close_project(window, cx);
+                }
+                self.project_navigation.section = reader_project_navigation::Section::Reader;
                 self.show_created_note(rel, source, window, cx);
             }
             Err(error) => {
