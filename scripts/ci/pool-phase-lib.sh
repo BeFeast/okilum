@@ -32,6 +32,41 @@ pool_ensure_git() {
         -c core.excludesFile=/dev/null commit -q -m 'pool source'
 }
 
+# The slot keeps ignored vendor/ output between runs. The generated pinned
+# crates (scripts/*/manifest.json generated_path) refuse a tree that no longer
+# matches a changed manifest instead of regenerating it. Remove such a tree
+# only when its manifest changed since the last verified run in this slot, so
+# an unchanged crate keeps its files and the warm target. `stamp` records the
+# manifests after vendor-setup.sh --verify passed. Slot copies only.
+pool_reset_stale_vendor() {
+    [[ -n ${OKILUM_SOURCE_COMMIT:-} ]] || return 0
+    python3 - "${1:-reset}" <<'PY'
+import hashlib, json, shutil, sys
+mode = sys.argv[1]
+from pathlib import Path
+stamps = Path("vendor/.pool-stamps")
+for manifest in sorted(Path("scripts").glob("*/manifest.json")):
+    try:
+        generated = json.loads(manifest.read_text()).get("generated_path")
+    except (OSError, ValueError):
+        continue
+    if not generated or not generated.startswith("vendor/") or ".." in Path(generated).parts:
+        continue
+    want = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    stamp = stamps / (Path(generated).name + ".manifest-sha256")
+    have = stamp.read_text().strip() if stamp.is_file() else ""
+    dest = Path(generated)
+    if mode == "stamp":
+        stamps.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(want + "\n")
+    elif have != want:
+        stamp.unlink(missing_ok=True)
+        if dest.exists():
+            print(f"pool: {generated} not verified for this manifest; regenerating", flush=True)
+            shutil.rmtree(dest)
+PY
+}
+
 # build-slot only ships directories under these roots back to the caller.
 pool_receipt_dir() {
     local root=/home/god/scratch/okilum-pool-receipts

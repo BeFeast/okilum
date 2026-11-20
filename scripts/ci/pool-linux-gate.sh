@@ -54,8 +54,10 @@ pool_phase "Verify pinned Rust toolchain" verify_toolchain
 pool_phase "Verify per-user AppImage runtime" \
     bash scripts/appimage/build-runtime.sh "${TMPDIR:-/tmp}/appimage-runtime" --controls
 pool_phase "Prepare and verify pinned vendor and comrak" bash -c '
+    source scripts/ci/pool-phase-lib.sh && pool_reset_stale_vendor &&
     bash scripts/vendor-setup.sh &&
     bash scripts/vendor-setup.sh --verify &&
+    pool_reset_stale_vendor stamp &&
     python3 scripts/ci/check-vendor-generation.py
 '
 pool_phase "Fetch locked public dependencies" fetch_locked

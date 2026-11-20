@@ -71,6 +71,63 @@ class PoolGit(unittest.TestCase):
             self.assertNotIn("keep.rs", result.stdout)
 
 
+class PoolVendor(unittest.TestCase):
+    """A reused slot keeps ignored vendor/ output; a changed manifest must not."""
+
+    def run_lib(self, work, mode="", commit="abc"):
+        lib = ROOT / "scripts/ci/pool-phase-lib.sh"
+        env = {"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "/tmp")}
+        if commit:
+            env["OKILUM_SOURCE_COMMIT"] = commit
+        script = f'set -euo pipefail\nsource "{lib}"\npool_reset_stale_vendor {mode}'
+        result = subprocess.run(["bash", "-c", script], cwd=work, capture_output=True,
+                                text=True, timeout=30, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result
+
+    def test_only_a_tree_for_a_changed_manifest_is_regenerated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            for name in ("a", "b"):
+                (work / "scripts" / name).mkdir(parents=True)
+                (work / "scripts" / name / "manifest.json").write_text(
+                    json.dumps({"generated_path": f"vendor/{name}-1", "tree_sha256": "1"}))
+                (work / "vendor" / f"{name}-1").mkdir(parents=True)
+                (work / "vendor" / f"{name}-1" / "lib.rs").write_text("old\n")
+            # First run in a slot: nothing verified yet, so both regenerate.
+            self.run_lib(work)
+            self.assertFalse((work / "vendor/a-1").exists())
+            self.assertFalse((work / "vendor/b-1").exists())
+            for name in ("a", "b"):
+                (work / "vendor" / f"{name}-1").mkdir()
+                (work / "vendor" / f"{name}-1" / "lib.rs").write_text("new\n")
+            self.run_lib(work, "stamp")
+            # Unchanged manifests keep their trees.
+            self.run_lib(work)
+            self.assertTrue((work / "vendor/a-1/lib.rs").exists())
+            self.assertTrue((work / "vendor/b-1/lib.rs").exists())
+            # main changes a's patches: only a is removed, b stays warm.
+            (work / "scripts/a/manifest.json").write_text(
+                json.dumps({"generated_path": "vendor/a-1", "tree_sha256": "2"}))
+            out = self.run_lib(work)
+            self.assertFalse((work / "vendor/a-1").exists())
+            self.assertTrue((work / "vendor/b-1/lib.rs").exists())
+            self.assertIn("vendor/a-1", out.stdout)
+            # A failed regeneration leaves no stamp, so a partial tree is removed again.
+            (work / "vendor/a-1").mkdir()
+            self.run_lib(work)
+            self.assertFalse((work / "vendor/a-1").exists())
+
+    def test_a_developer_clone_is_untouched(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            (work / "scripts/a").mkdir(parents=True)
+            (work / "scripts/a/manifest.json").write_text(json.dumps({"generated_path": "vendor/a-1"}))
+            (work / "vendor/a-1").mkdir(parents=True)
+            self.run_lib(work, commit="")
+            self.assertTrue((work / "vendor/a-1").exists())
+
+
 class PoolPhase(unittest.TestCase):
     def test_only_a_recorded_success_passes(self):
         with tempfile.TemporaryDirectory() as directory:
