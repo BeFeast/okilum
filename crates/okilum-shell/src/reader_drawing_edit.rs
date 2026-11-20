@@ -637,7 +637,7 @@ impl Reader {
                                 reader_toast::transient(message, window, cx);
                             });
                         }
-                        let _ = cx.update(|cx| {
+                        cx.update(|cx| {
                             let sessions = &mut cx.default_global::<Sessions>().0;
                             if sessions.get(&key).is_some_and(|bridge| bridge.url == url) {
                                 sessions.remove(&key);

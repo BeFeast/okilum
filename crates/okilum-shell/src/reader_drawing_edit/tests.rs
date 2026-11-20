@@ -4,7 +4,6 @@
 use super::*;
 use ::core::prelude::v1::test;
 use serde_json::{json, Value};
-use sha2::Digest as _;
 use std::io::{Read, Write};
 
 const BOARD: &str =
