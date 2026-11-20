@@ -853,26 +853,25 @@ index 00000000..ebc05b4d
 +    }
 +}
 diff --git a/crates/base/src/text/inline.rs b/crates/base/src/text/inline.rs
-index 2d9cd551..172c4747 100644
+index 2d9cd551..93635f37 100644
 --- a/crates/base/src/text/inline.rs
 +++ b/crates/base/src/text/inline.rs
-@@ -208,6 +208,205 @@ pub(super) fn text_runs(
+@@ -208,6 +208,211 @@ pub(super) fn text_runs(
      }
  }
  
 +/// Bold ranges whose letters take the theme's bold gradient: bold weight, no
 +/// colour of their own (links, code and syntax keep theirs), no font family
 +/// override. Touching ranges form one span, so the gradient runs along the
-+/// whole bold phrase. Right-to-left text keeps its solid colour: its glyph
-+/// order does not follow byte order.
++/// whole bold phrase. Decided per span: a span that itself holds
++/// right-to-left text keeps its solid colour (its letters do not run in byte
++/// order), while a left-to-right span in a mixed-direction paragraph gets the
++/// gradient; its glyphs are repainted at the positions gpui shaped them at.
 +pub(super) fn bold_gradient_spans(
 +    text: &str,
 +    highlights: &[(Range<usize>, InlineHighlight)],
 +) -> Vec<Range<usize>> {
-+    if unicode_bidi::BidiInfo::new(text, None).has_rtl() {
-+        return Vec::new();
-+    }
-+    super::merge_touching(
++    let spans = super::merge_touching(
 +        highlights
 +            .iter()
 +            .filter(|(range, h)| {
@@ -883,7 +882,14 @@ index 2d9cd551..172c4747 100644
 +                    && text.is_char_boundary(range.end.min(text.len()))
 +            })
 +            .map(|(range, _)| range.clone()),
-+    )
++    );
++    spans
++        .into_iter()
++        .filter(|span| {
++            text.get(span.clone())
++                .is_some_and(|span| !unicode_bidi::BidiInfo::new(span, None).has_rtl())
++        })
++        .collect()
 +}
 +
 +/// Keeps only the gradient spans whose edges already are font-run
@@ -1062,7 +1068,7 @@ index 2d9cd551..172c4747 100644
  /// A inline element used to render a inline text and support selectable.
  ///
  /// All text in TextView (including the CodeBlock) used this for text rendering.
-@@ -222,6 +421,10 @@ pub(super) struct Inline {
+@@ -222,6 +427,10 @@ pub(super) struct Inline {
      highlights: Vec<(Range<usize>, InlineHighlight)>,
      styled_text: StyledText,
      link_click_handler: Option<Arc<LinkClickHandlerFn>>,
@@ -1073,7 +1079,7 @@ index 2d9cd551..172c4747 100644
  
      state: Arc<Mutex<InlineState>>,
  }
-@@ -275,10 +478,18 @@ impl Inline {
+@@ -275,10 +484,18 @@ impl Inline {
              text: text.clone(),
              styled_text: StyledText::new(text),
              link_click_handler,
@@ -1092,7 +1098,7 @@ index 2d9cd551..172c4747 100644
      pub(super) fn search_source(mut self, state: &Arc<Mutex<InlineState>>, offset: usize) -> Self {
          self.search_segment = Arc::as_ptr(state) as usize;
          self.search_offset = offset;
-@@ -649,8 +860,24 @@ impl Element for Inline {
+@@ -649,8 +866,24 @@ impl Element for Inline {
          window: &mut Window,
          cx: &mut App,
      ) -> (LayoutId, Self::RequestLayoutState) {
@@ -1118,7 +1124,7 @@ index 2d9cd551..172c4747 100644
  
          self.styled_text = StyledText::new(self.text.clone()).with_runs(runs);
          let (layout_id, _) =
-@@ -669,6 +896,7 @@ impl Element for Inline {
+@@ -669,6 +902,7 @@ impl Element for Inline {
          window: &mut Window,
          cx: &mut App,
      ) -> Self::PrepaintState {
@@ -1126,7 +1132,7 @@ index 2d9cd551..172c4747 100644
          self.styled_text
              .prepaint(id, inspector_id, bounds, &mut (), window, cx);
  
-@@ -749,8 +977,35 @@ impl Element for Inline {
+@@ -749,8 +983,35 @@ impl Element for Inline {
  
          let text_layout =
              AlignedLayout::new(self.styled_text.layout().clone(), window.text_style().text_align);
@@ -1162,7 +1168,7 @@ index 2d9cd551..172c4747 100644
  
          // One transient index serves selection and hit geometry for this paint.
          let geometry = OnceCell::new();
-@@ -2050,3 +2305,240 @@ mod font_presentation_regressions {
+@@ -2050,3 +2311,275 @@ mod font_presentation_regressions {
          );
      }
  }
@@ -1274,8 +1280,10 @@ index 2d9cd551..172c4747 100644
 +            (18..22, code),
 +        ];
 +        assert_eq!(bold_gradient_spans(text, &highlights), vec![3..12]);
-+        // Right-to-left text keeps its solid colour.
-+        assert!(bold_gradient_spans("שלום abc", &[(9..12, bold())]).is_empty());
++        // Decided per span: Latin bold in a mixed-direction paragraph keeps
++        // its gradient, bold right-to-left text keeps its solid colour.
++        assert_eq!(bold_gradient_spans("שלום abc", &[(9..12, bold())]), vec![9..12]);
++        assert!(bold_gradient_spans("abc שלום", &[(4..12, bold())]).is_empty());
 +    }
 +
 +    #[test]
@@ -1299,6 +1307,39 @@ index 2d9cd551..172c4747 100644
 +        // Body text: the bold face is its own font, so the span stays.
 +        let body = text_runs(text, &TextStyle::default(), &highlights);
 +        assert_eq!(spans_on_font_boundaries(&body, spans, font_id), vec![5..11]);
++    }
++
++    #[test]
++    fn latin_bold_in_a_mixed_direction_paragraph_gets_the_gradient_without_shaping() {
++        // `שלום **bold** end`: the right-to-left word is outside the span.
++        let text = "שלום bold end";
++        let bold_range = 9..13;
++        let highlights = vec![(bold_range.clone(), bold())];
++        let shaped = Arc::new(AtomicUsize::new(0));
++        let system = gpui::WindowTextSystem::new(Arc::new(gpui::TextSystem::new(Arc::new(
++            BoldFace(shaped.clone()),
++        ))));
++        let style = TextStyle::default();
++        let plain = text_runs(text, &style, &highlights);
++        let spans = spans_on_font_boundaries(
++            &plain,
++            bold_gradient_spans(text, &highlights),
++            |font| system.resolve_font(font),
++        );
++        assert_eq!(spans, vec![bold_range.clone()], "the Latin bold keeps its gradient");
++        let painted = gradient_runs(plain.clone(), &spans);
++        assert!(painted.iter().any(|run| run.color == crate::text::gradient_run_color()));
++        let shape = |runs: &[gpui::TextRun]| {
++            system
++                .shape_text(text.into(), px(16.), runs, Some(px(400.)), None)
++                .unwrap()
++        };
++        let before = shape(&plain);
++        let calls = shaped.load(Ordering::Relaxed);
++        assert!(calls > 0, "positive control: the first layout really shapes");
++        let after = shape(&painted);
++        assert_eq!(shaped.load(Ordering::Relaxed), calls, "no new shaping");
++        assert!(std::ptr::eq::<gpui::WrappedLineLayout>(&**before[0], &**after[0]));
 +    }
 +
 +    #[test]

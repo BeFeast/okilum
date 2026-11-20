@@ -460,7 +460,8 @@ font-run split, so shaping and the line-layout cache key are unchanged) and
 its glyphs are painted again letter by letter at paint time. A span is
 coloured only when its edges already are font-run boundaries (checked with the
 resolved fonts in the Reader); bold inside a heading, links, code, syntax
-colours and right-to-left text keep their solid colours. Reader slots paint
+colours and bold right-to-left text keep their solid colours (decided per
+span: Latin bold in a mixed-direction paragraph keeps the gradient). Reader slots paint
 inside the block's existing box (the heading rule sits in the heading's bottom
 padding, quote bars and background over the quote, `hr` halves inside the 2 px
 rule), so no block height or text position changes. A vendor test
