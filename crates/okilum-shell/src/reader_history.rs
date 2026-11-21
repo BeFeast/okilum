@@ -1122,7 +1122,7 @@ mod tests {
 
         // Clear list: nothing is listed or restored, the default goes too,
         // and the reading places stay.
-        ReadingHistory::set_default_vault(&state, Some(&vault)).unwrap();
+        ReadingHistory::set_default_vault(&state, Some(vault.as_path())).unwrap();
         ReadingHistory::hide_roots(&state, &[qa.clone(), vault.clone()]).unwrap();
         assert_eq!(
             ReadingHistory::startup_roots(&state).unwrap(),

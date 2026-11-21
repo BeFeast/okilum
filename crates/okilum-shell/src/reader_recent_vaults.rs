@@ -113,6 +113,7 @@ impl Places {
 pub(crate) enum Status {
     Ready,
     /// It opens, but edits cannot be saved; the text says why.
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
     ReadOnly(&'static str),
     Unavailable(Unavailable),
 }
@@ -281,7 +282,9 @@ fn fstab() -> String {
         std::fs::read_to_string("/etc/fstab").unwrap_or_default()
     }
     #[cfg(not(unix))]
-    String::new()
+    {
+        String::new()
+    }
 }
 
 /// The folder is missing because its volume is: the drive or share is gone
@@ -798,7 +801,7 @@ mod tests {
             std::fs::create_dir_all(root).unwrap();
             ReadingHistory::record_usable_document(&state, root, "a.md").unwrap();
         }
-        ReadingHistory::set_default_vault(&state, Some(&qa)).unwrap();
+        ReadingHistory::set_default_vault(&state, Some(qa.as_path())).unwrap();
         let places = Places::with_temp(vec![base.join("scratch")]);
         let mut pruned = prune(&state, &places).unwrap();
         pruned.sort();
