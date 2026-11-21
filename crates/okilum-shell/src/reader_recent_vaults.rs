@@ -155,29 +155,61 @@ pub(crate) enum Volume {
 }
 
 impl Unavailable {
-    /// The folder itself is gone (moved or deleted), not merely out of reach.
-    pub(crate) fn gone(&self) -> bool {
-        matches!(self, Unavailable::Missing | Unavailable::NotAFolder)
-    }
-
-    /// The reason the start screen shows next to the vault.
-    #[cfg_attr(not(test), allow(dead_code))] // Drawn by the redesigned start screen (#3208).
+    /// The reason the start screen shows on the vault's row (#3208 spec).
     pub(crate) fn reason(&self) -> String {
         match self {
             Unavailable::VolumeMissing { name, kind } => match kind {
-                Volume::Network => format!("Network volume “{name}” not mounted"),
-                Volume::Unknown => format!("Volume “{name}” not mounted"),
-                Volume::Drive => format!("Drive {name} not connected"),
-                Volume::Share => format!("Network share {name} not available"),
+                Volume::Network if cfg!(target_os = "macos") => {
+                    format!("Network volume “{name}” isn’t connected")
+                }
+                Volume::Network => format!("Network share “{name}” isn’t mounted"),
+                Volume::Unknown if cfg!(target_os = "macos") => {
+                    format!("Volume “{name}” isn’t connected")
+                }
+                Volume::Unknown => format!("Volume “{name}” isn’t mounted"),
+                Volume::Drive => format!("Drive “{name}” isn’t connected"),
+                Volume::Share => format!("Network location {name} isn’t reachable"),
             },
-            Unavailable::NotResponding => "Network volume not responding".into(),
-            Unavailable::Missing => "Folder missing".into(),
-            Unavailable::NotAFolder => "Not a folder".into(),
-            Unavailable::NoAccess { privacy: true } => {
-                "Can’t read: access not allowed in Privacy & Security settings".into()
-            }
-            Unavailable::NoAccess { privacy: false } => "Can’t read: permission denied".into(),
-            Unavailable::CantOpen(detail) => format!("Can’t open: {detail}"),
+            Unavailable::NotResponding => "Network folder isn’t responding".into(),
+            Unavailable::Missing => "Folder was moved or deleted".into(),
+            Unavailable::NotAFolder => "This path is now a file, not a folder".into(),
+            Unavailable::NoAccess { .. } => "Okilum isn’t allowed to read this folder".into(),
+            Unavailable::CantOpen(detail) => format!("Couldn’t open: {detail}"),
+        }
+    }
+
+    /// The one fitting action next to the reason.
+    pub(crate) fn action(&self) -> Fix {
+        match self {
+            Unavailable::VolumeMissing { .. } | Unavailable::NotResponding => Fix::TryAgain,
+            Unavailable::Missing | Unavailable::NotAFolder => Fix::Locate,
+            Unavailable::NoAccess { .. } if cfg!(target_os = "macos") => Fix::AllowAccess,
+            Unavailable::NoAccess { .. } => Fix::Locate,
+            Unavailable::CantOpen(_) => Fix::Details,
+        }
+    }
+}
+
+/// What the inline button on an unavailable row does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Fix {
+    /// Check again: the volume may be back.
+    TryAgain,
+    /// Choose the folder where it is now; it replaces the entry.
+    Locate,
+    /// macOS: choose the same folder in the picker, which grants access.
+    AllowAccess,
+    /// Show the full error.
+    Details,
+}
+
+impl Fix {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Fix::TryAgain => "Try again",
+            Fix::Locate => "Locate…",
+            Fix::AllowAccess => "Allow access…",
+            Fix::Details => "Details…",
         }
     }
 }
@@ -190,21 +222,109 @@ impl Status {
         }
     }
 
-    /// The inline text for a vault that is not simply ready, if any.
-    #[cfg_attr(not(test), allow(dead_code))] // Drawn by the redesigned start screen (#3208).
+    /// The inline text for an unavailable vault. A read-only vault is
+    /// available: its row shows a lock and «Read-only» instead.
     pub(crate) fn reason(&self) -> Option<String> {
-        match self {
-            Status::Ready => None,
-            Status::ReadOnly(why) => Some(format!("Can’t edit: {why}")),
-            Status::Unavailable(reason) => Some(reason.reason()),
-        }
+        self.unavailable().map(Unavailable::reason)
+    }
+
+    pub(crate) fn read_only(&self) -> bool {
+        matches!(self, Status::ReadOnly(_))
     }
 }
 
 /// Check one folder. Blocking: a network folder may take long, so callers
 /// run this off the UI thread with a deadline ([`check_all`]).
-pub(crate) fn check(root: &Path) -> Status {
-    check_in(root, &mount_areas(), &fstab())
+/// `network`: the folder was on a network volume when last opened, so a
+/// volume that is gone now is named a network volume.
+pub(crate) fn check(root: &Path, network: bool) -> Status {
+    match check_in(root, &mount_areas(), &fstab()) {
+        Status::Unavailable(Unavailable::VolumeMissing {
+            name,
+            kind: Volume::Unknown,
+        }) if network => Status::Unavailable(Unavailable::VolumeMissing {
+            name,
+            kind: Volume::Network,
+        }),
+        status => status,
+    }
+}
+
+/// The folder is on a network filesystem (NFS, SMB, AFP, WebDAV, …), as the
+/// kernel reports it. Recorded when a vault opens (#3208), so an unmounted
+/// share can later be named a network volume.
+pub(crate) fn on_network_volume(root: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        const NETWORK: &[&str] = &["nfs", "smbfs", "afpfs", "webdav", "ftp", "cifs"];
+        rustix::fs::statfs(root).is_ok_and(|fs| {
+            let name: String = fs
+                .f_fstypename
+                .iter()
+                .take_while(|c| **c != 0)
+                .map(|c| char::from(c.to_ne_bytes()[0]))
+                .collect();
+            NETWORK.contains(&name.as_str())
+        })
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // NFS, SMB, CIFS, SMB2, AFS, 9P, Ceph.
+        const NETWORK: &[u32] = &[
+            0x6969,
+            0x517B,
+            0xFF53_4D42,
+            0xFE53_4D42,
+            0x5346_414F,
+            0x0102_1997,
+            0x00C3_6400,
+        ];
+        rustix::fs::statfs(root).is_ok_and(|fs| {
+            let kind = (i128::from(fs.f_type) & 0xFFFF_FFFF) as u32;
+            NETWORK.contains(&kind) || gvfs_share(root).is_some()
+        })
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = root;
+        false
+    }
+}
+
+/// A GNOME gvfs mount (`/run/user/<uid>/gvfs/smb-share:server=nas,share=notes/…`):
+/// its directory, the share's name and its `smb://server/share` spelling.
+pub(crate) fn gvfs_share(root: &Path) -> Option<(PathBuf, String, String)> {
+    let parts: Vec<&std::ffi::OsStr> = root
+        .components()
+        .filter_map(|part| match part {
+            Component::Normal(part) => Some(part),
+            _ => None,
+        })
+        .collect();
+    let [run, user, _uid, gvfs, mount, ..] = parts.as_slice() else {
+        return None;
+    };
+    if *run != "run" || *user != "user" || *gvfs != "gvfs" || !root.has_root() {
+        return None;
+    }
+    let mount = mount.to_str()?;
+    let (scheme, rest) = mount.split_once(':')?;
+    let field = |key: &str| {
+        rest.split(',')
+            .find_map(|pair| pair.strip_prefix(key)?.strip_prefix('='))
+    };
+    let server = field("server").or_else(|| field("host"))?;
+    let share = field("share").unwrap_or(server);
+    let scheme = scheme.strip_suffix("-share").unwrap_or(scheme);
+    let directory: PathBuf = std::iter::once(std::ffi::OsStr::new(std::path::MAIN_SEPARATOR_STR))
+        .chain(parts[..5].iter().copied())
+        .collect();
+    let uri = if share == server {
+        format!("{scheme}://{server}")
+    } else {
+        format!("{scheme}://{server}/{share}")
+    };
+    Some((directory, share.to_owned(), uri))
 }
 
 fn check_in(root: &Path, areas: &[PathBuf], fstab: &str) -> Status {
@@ -312,6 +432,12 @@ fn volume_missing(root: &Path, areas: &[PathBuf], fstab: &str) -> Option<Unavail
         top.push(std::path::MAIN_SEPARATOR_STR);
         return (!top.exists()).then_some(Unavailable::VolumeMissing { name, kind });
     }
+    if let Some((mount, share, _)) = gvfs_share(root) {
+        return (!mount.exists()).then_some(Unavailable::VolumeMissing {
+            name: share,
+            kind: Volume::Network,
+        });
+    }
     // The nearest folder that is still there.
     let present = root.ancestors().skip(1).find(|path| path.is_dir())?;
     for area in areas {
@@ -398,24 +524,31 @@ fn network_mount(fstab: &str, mount: &Path) -> bool {
 /// Check each folder on its own thread and wait at most `patience` in all;
 /// a folder that has not answered by then is on a volume that does not
 /// respond. A thread stuck in the kernel is left behind, never joined.
-pub(crate) fn check_all(roots: &[PathBuf], patience: Duration) -> Vec<(PathBuf, Status)> {
-    check_all_with(roots, patience, check)
+pub(crate) fn check_all(
+    roots: &[PathBuf],
+    network: &std::collections::BTreeSet<PathBuf>,
+    patience: Duration,
+) -> Vec<(PathBuf, Status)> {
+    let network: Vec<bool> = roots.iter().map(|root| network.contains(root)).collect();
+    check_all_with(roots, &network, patience, check)
 }
 
 fn check_all_with(
     roots: &[PathBuf],
+    network: &[bool],
     patience: Duration,
-    check: fn(&Path) -> Status,
+    check: fn(&Path, bool) -> Status,
 ) -> Vec<(PathBuf, Status)> {
     let (sender, receiver) = mpsc::channel();
     let mut statuses: Vec<Option<Status>> = vec![None; roots.len()];
     for (index, root) in roots.iter().enumerate() {
         let sender = sender.clone();
         let root = root.clone();
+        let network = network.get(index).copied().unwrap_or(false);
         let spawned = std::thread::Builder::new()
             .name("okilum-recent-check".into())
             .spawn(move || {
-                let _ = sender.send((index, check(&root)));
+                let _ = sender.send((index, check(&root, network)));
             });
         if let Err(error) = spawned {
             diagnostic_error!("Cannot check a recent vault: {error}");
@@ -564,56 +697,137 @@ mod tests {
 
     #[test]
     fn issue3208_reasons_are_specific_and_plain() {
+        let volume = |name: &str, kind| Unavailable::VolumeMissing {
+            name: name.into(),
+            kind,
+        };
+        let mac = cfg!(target_os = "macos");
         let cases = [
             (
-                Unavailable::VolumeMissing {
-                    name: "Maestro".into(),
-                    kind: Volume::Network,
+                volume("Maestro", Volume::Network),
+                if mac {
+                    "Network volume “Maestro” isn’t connected"
+                } else {
+                    "Network share “Maestro” isn’t mounted"
                 },
-                "Network volume “Maestro” not mounted",
+                Fix::TryAgain,
             ),
             (
-                Unavailable::VolumeMissing {
-                    name: "Backup".into(),
-                    kind: Volume::Unknown,
+                volume("Backup", Volume::Unknown),
+                if mac {
+                    "Volume “Backup” isn’t connected"
+                } else {
+                    "Volume “Backup” isn’t mounted"
                 },
-                "Volume “Backup” not mounted",
+                Fix::TryAgain,
             ),
             (
-                Unavailable::VolumeMissing {
-                    name: "Z:".into(),
-                    kind: Volume::Drive,
-                },
-                "Drive Z: not connected",
+                volume("Z:", Volume::Drive),
+                "Drive “Z:” isn’t connected",
+                Fix::TryAgain,
             ),
             (
-                Unavailable::VolumeMissing {
-                    name: r"\\nas\notes".into(),
-                    kind: Volume::Share,
-                },
-                r"Network share \\nas\notes not available",
+                volume(r"\\nas\notes", Volume::Share),
+                r"Network location \\nas\notes isn’t reachable",
+                Fix::TryAgain,
             ),
-            (Unavailable::NotResponding, "Network volume not responding"),
-            (Unavailable::Missing, "Folder missing"),
-            (Unavailable::NotAFolder, "Not a folder"),
+            (
+                Unavailable::NotResponding,
+                "Network folder isn’t responding",
+                Fix::TryAgain,
+            ),
+            (
+                Unavailable::Missing,
+                "Folder was moved or deleted",
+                Fix::Locate,
+            ),
+            (
+                Unavailable::NotAFolder,
+                "This path is now a file, not a folder",
+                Fix::Locate,
+            ),
             (
                 Unavailable::NoAccess { privacy: false },
-                "Can’t read: permission denied",
+                "Okilum isn’t allowed to read this folder",
+                if mac { Fix::AllowAccess } else { Fix::Locate },
+            ),
+            (
+                Unavailable::CantOpen("Input/output error".into()),
+                "Couldn’t open: Input/output error",
+                Fix::Details,
             ),
         ];
-        for (reason, text) in cases {
+        for (reason, text, fix) in cases {
             assert_eq!(reason.reason(), text);
+            assert_eq!(reason.action(), fix);
             assert_eq!(Status::Unavailable(reason).reason().as_deref(), Some(text));
         }
-        assert_eq!(
-            Status::ReadOnly("read-only volume").reason().as_deref(),
-            Some("Can’t edit: read-only volume")
-        );
+        assert_eq!(Status::ReadOnly("read-only volume").reason(), None);
+        assert!(Status::ReadOnly("read-only volume").read_only());
         assert_eq!(Status::Ready.reason(), None);
         let error = std::io::Error::from_raw_os_error(if cfg!(windows) { 87 } else { 22 });
         let detail = plain_error(&error);
         assert!(!detail.contains("os error"), "{detail}");
         assert!(!detail.is_empty());
+    }
+
+    #[test]
+    fn issue3208_a_volume_last_seen_on_the_network_is_named_so() {
+        let fixture = tempfile::tempdir().unwrap();
+        let area = fixture.path().canonicalize().unwrap().join("Volumes");
+        std::fs::create_dir(&area).unwrap();
+        let root = area.join("Maestro").join("theme-showcase");
+        let unknown = check_in(&root, std::slice::from_ref(&area), "");
+        assert_eq!(
+            unknown,
+            Status::Unavailable(Unavailable::VolumeMissing {
+                name: "Maestro".into(),
+                kind: Volume::Unknown,
+            })
+        );
+        // `check` upgrades an unknown volume when the history says network;
+        // the same path checked through `check_in` stays unknown (control).
+        let upgraded = match unknown {
+            Status::Unavailable(Unavailable::VolumeMissing { name, .. }) => {
+                Status::Unavailable(Unavailable::VolumeMissing {
+                    name,
+                    kind: Volume::Network,
+                })
+            }
+            other => other,
+        };
+        assert_eq!(
+            upgraded.reason().unwrap(),
+            if cfg!(target_os = "macos") {
+                "Network volume “Maestro” isn’t connected"
+            } else {
+                "Network share “Maestro” isn’t mounted"
+            }
+        );
+    }
+
+    #[test]
+    fn issue3208_gvfs_shares_are_recognised() {
+        let root = Path::new("/run/user/1000/gvfs/smb-share:server=nas,share=notes/Work/Vault");
+        let (mount, share, uri) = gvfs_share(root).unwrap();
+        assert_eq!(
+            mount,
+            Path::new("/run/user/1000/gvfs/smb-share:server=nas,share=notes")
+        );
+        assert_eq!(share, "notes");
+        assert_eq!(uri, "smb://nas/notes");
+        assert!(gvfs_share(Path::new("/home/o/run/user/1/gvfs/x:server=a")).is_none());
+        assert!(gvfs_share(Path::new("/run/user/1000/other/smb-share:server=nas")).is_none());
+        // A gvfs mount that is gone names its share as a network share.
+        if cfg!(unix) {
+            assert_eq!(
+                volume_missing(root, &[], ""),
+                Some(Unavailable::VolumeMissing {
+                    name: "notes".into(),
+                    kind: Volume::Network,
+                })
+            );
+        }
     }
 
     #[test]
@@ -752,7 +966,7 @@ mod tests {
             .expect("a free drive letter");
         let root = PathBuf::from(format!(r"\\?\{letter}:\Notes\Vault"));
         assert_eq!(
-            check(&root),
+            check(&root, false),
             Status::Unavailable(Unavailable::VolumeMissing {
                 name: format!("{letter}:"),
                 kind: Volume::Drive,
@@ -762,7 +976,7 @@ mod tests {
 
     #[test]
     fn issue3208_a_folder_that_does_not_answer_is_not_responding() {
-        fn hangs(root: &Path) -> Status {
+        fn hangs(root: &Path, _: bool) -> Status {
             if root.ends_with("dead") {
                 std::thread::sleep(Duration::from_secs(5));
             }
@@ -770,7 +984,7 @@ mod tests {
         }
         let roots = [path(&["live"]), path(&["dead"]), path(&["also-live"])];
         let started = Instant::now();
-        let statuses = check_all_with(&roots, Duration::from_millis(200), hangs);
+        let statuses = check_all_with(&roots, &[], Duration::from_millis(200), hangs);
         assert!(
             started.elapsed() < Duration::from_secs(3),
             "the deadline holds"

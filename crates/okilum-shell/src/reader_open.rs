@@ -741,6 +741,8 @@ pub(crate) fn install(cx: &mut App) {
     cx.on_action(|_: &OpenFile, cx| pick(false, cx));
     cx.on_action(|_: &OpenFolder, cx| pick(true, cx));
     cx.on_action(|_: &NewVault, cx| new_vault(cx));
+    // The start screen's keys and its New file (#3208).
+    super::reader_welcome::install(cx);
 }
 
 pub(crate) fn file_menu() -> Menu {
