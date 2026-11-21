@@ -45,6 +45,40 @@ pub(crate) fn state_directory() -> Result<PathBuf> {
         .context("No absolute Reader state directory is available")
 }
 
+/// How an opened vault or file goes into the history (#3208).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Recording {
+    /// `--no-history` / `OKILUM_NO_HISTORY=1`: not at all.
+    Off,
+    /// Remembered for its last note, never listed: nobody chose it as a vault.
+    Unlisted,
+    Listed,
+}
+
+/// `--no-history` switched recording off for this process (#3208).
+static NO_HISTORY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `--no-history`: this process records no recent vaults or files (#3208).
+pub(crate) fn disable_recording() {
+    NO_HISTORY.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Recording is off: `--no-history`, or `OKILUM_NO_HISTORY=1` (#3208). QA
+/// scripts, fixtures and one-off opens leave the recent list as it was.
+fn recording_disabled() -> bool {
+    static FROM_ENV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    NO_HISTORY.load(std::sync::atomic::Ordering::Relaxed)
+        || *FROM_ENV.get_or_init(|| no_history_from(std::env::var_os("OKILUM_NO_HISTORY")))
+}
+
+fn no_history_from(value: Option<std::ffi::OsString>) -> bool {
+    value.is_some_and(|value| {
+        let value = value.to_string_lossy();
+        let value = value.trim();
+        !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+    })
+}
+
 /// Tests point Readers at a temporary state directory instead of the user's.
 #[cfg(test)]
 pub(crate) struct TestSessionDirectory(pub PathBuf);
@@ -282,9 +316,36 @@ impl ReadingHistory {
         // #3208: a folder nobody chooses as a vault (a test fixture, a temp
         // or app-support folder) keeps its last note but is never listed or
         // reopened at startup from the user's own history.
-        let unchosen = crate::reader_recent_vaults::users_history(directory)
-            && crate::reader_recent_vaults::Places::current().unchosen(root);
-        Self::record_opened(directory, root, document, single_file, opened_at, unchosen)
+        let recording = if recording_disabled() {
+            Recording::Off
+        } else if crate::reader_recent_vaults::users_history(directory)
+            && crate::reader_recent_vaults::Places::current().unchosen(root)
+        {
+            Recording::Unlisted
+        } else {
+            Recording::Listed
+        };
+        Self::record_as(directory, root, document, single_file, opened_at, recording)
+    }
+
+    fn record_as(
+        directory: &Path,
+        root: &Path,
+        document: &str,
+        single_file: bool,
+        opened_at: Option<u64>,
+        recording: Recording,
+    ) -> Result<()> {
+        validate_document(root, document)?;
+        match recording {
+            Recording::Off => Ok(()),
+            Recording::Unlisted => {
+                Self::record_opened(directory, root, document, single_file, opened_at, true)
+            }
+            Recording::Listed => {
+                Self::record_opened(directory, root, document, single_file, opened_at, false)
+            }
+        }
     }
 
     fn record_opened(
@@ -545,6 +606,41 @@ mod tests {
             let _ = fs::remove_dir_all(&self.0);
         }
     }
+    #[test]
+    fn issue3208_no_history_environment_values() {
+        for on in ["1", "true", "yes", " 1 "] {
+            assert!(no_history_from(Some(on.into())), "{on:?}");
+        }
+        for off in ["", "0", "false", "FALSE", "  "] {
+            assert!(!no_history_from(Some(off.into())), "{off:?}");
+        }
+        assert!(!no_history_from(None));
+    }
+
+    /// #3208: with recording off nothing is written; control: the same call
+    /// recording normally lists the vault.
+    #[test]
+    fn issue3208_no_history_records_nothing() {
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let vault = fixture.path().join("Notes");
+        fs::create_dir(&vault).unwrap();
+        ReadingHistory::record_as(&state, &vault, "a.md", false, Some(1), Recording::Off).unwrap();
+        ReadingHistory::record_as(&state, &vault, "", true, None, Recording::Off).unwrap();
+        assert!(!state.join(FILE).exists(), "no history file at all");
+        assert!(
+            ReadingHistory::record_as(&state, &vault, "../x.md", false, None, Recording::Off)
+                .is_err(),
+            "invalid input is still refused"
+        );
+        ReadingHistory::record_as(&state, &vault, "a.md", false, Some(1), Recording::Listed)
+            .unwrap();
+        assert_eq!(
+            ReadingHistory::startup_roots(&state).unwrap().1,
+            std::slice::from_ref(&vault)
+        );
+    }
+
     #[test]
     fn isolated_state_directory_requires_an_absolute_path() {
         let absolute = std::env::temp_dir().join("okilum-qa-state");

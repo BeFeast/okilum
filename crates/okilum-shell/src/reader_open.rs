@@ -489,6 +489,10 @@ pub(crate) fn parse_args(
                     opts.copy_source = true;
                     continue;
                 }
+                Some("--no-history") => {
+                    opts.no_history = true;
+                    continue;
+                }
                 Some(s) if s.starts_with('-') => bail!("Unknown option: {s}"),
                 _ => {}
             }
@@ -2193,6 +2197,15 @@ mod entry_tests {
             Command::BuildInfo => bail!("Unexpected build info"),
         }
     }
+    /// #3208: `--no-history` is an option, not a path to open.
+    #[test]
+    fn issue3208_no_history_is_an_option() {
+        let opts = parse(&["--no-history"]).unwrap();
+        assert!(opts.no_history);
+        assert!(opts.open_path.is_none() && opts.vault.is_none());
+        assert!(!parse(&[]).unwrap().no_history, "control: off by default");
+    }
+
     /// #1049: a clicked link arrives as the argument; a `%u` file arrives
     /// as a file: URL. Neither becomes a bogus path.
     #[test]

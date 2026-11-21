@@ -99,6 +99,8 @@ Support`, `~/Library/Caches`, `~/Library/Logs`, `AppData`, `.cache`,
 listed nor reopened at startup. iCloud Drive (`~/Library/Mobile Documents`) is
 not excluded. Clear list hides every listed vault the same way; opening one as
 a vault lists it again. Remove forgets one entry (#1368).
+`okilum --no-history` or `OKILUM_NO_HISTORY=1` records no recent vaults or
+files at all for that process (QA scripts, fixtures, one-off opens).
 
 Each listed vault is checked off the UI thread, one thread per folder, with a
 1.5 s deadline in all, so a dead network mount cannot hold up the start screen.
