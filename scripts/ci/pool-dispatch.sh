@@ -33,7 +33,7 @@ case $mode in
         shards=(
             "base 4 docker baldr 25"
             "rust-b 7 userbus,dbus baldr 25"
-            "admission 3 tmpfs slava 25"
+            "admission 3 tmpfs,sudo slava 25"
             "rust-a 7 userbus,dbus okilum-dev 25"
             "sync 4 - okilum-build-nas 25"
             "desktop 7 dbus okilum-build-nas 25"
@@ -120,7 +120,7 @@ for dir in "${dirs[@]}"; do
     printf '::endgroup::\n'
 done
 
-summary=$(python3 "$here/pool-aggregate.py" --out "$receipt" "${dirs[@]}")
+summary=$(python3 "$here/pool-aggregate.py" --out "$receipt" --shards-out "$ship/shards.json" "${dirs[@]}")
 printf '%s\n' "$summary"
 kind=$(printf '%s\n' "$summary" | sed -n 's/^kind=//p')
 if [[ -n ${GITHUB_OUTPUT:-} ]]; then
@@ -128,6 +128,7 @@ if [[ -n ${GITHUB_OUTPUT:-} ]]; then
 fi
 if [[ -n ${GITHUB_ENV:-} ]]; then
     printf 'OKILUM_POOL_RECEIPT=%s\n' "$receipt" >> "$GITHUB_ENV"
+    printf 'OKILUM_POOL_SHARDS=%s\n' "$ship/shards.json" >> "$GITHUB_ENV"
 fi
 printf 'pool dispatch mode=%s shards=%s kind=%s wall=%ss receipt=%s\n' \
     "$mode" "${#shards[@]}" "$kind" "$(( $(date +%s) - started ))" "$receipt"

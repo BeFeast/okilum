@@ -178,6 +178,11 @@ jobs:
       - name: Check release binaries without test features
         if: steps.pool.outputs.kind == 'verdict'
         run: bash scripts/ci/pool-phase.sh "Check release binaries without test features"
+      # Every shard and every recorded phase, including phases without their own
+      # step above and a phase one shard skipped after an earlier failure.
+      - name: Verify every pool shard and phase passed
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh --overall
   linux:
     if: ${{ !startsWith(github.ref, 'refs/heads/agent-checks-fast/') }}
     runs-on: okilum-pool
@@ -214,6 +219,9 @@ jobs:
       - name: Run CI, releases and updater Python suites
         if: steps.pool.outputs.kind == 'verdict'
         run: bash scripts/ci/pool-phase.sh "Run CI, releases and updater Python suites"
+      - name: Verify bundled Sync Help and brand
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Verify bundled Sync Help and brand"
       - name: Lint every workspace target offline
         if: steps.pool.outputs.kind == 'verdict'
         run: bash scripts/ci/pool-phase.sh "Lint every workspace target offline"
@@ -229,15 +237,24 @@ jobs:
       - name: Reject and reap surviving agent fixture daemons
         if: steps.pool.outputs.kind == 'verdict'
         run: bash scripts/ci/pool-phase.sh "Reject and reap surviving agent fixture daemons"
+      - name: Verify local writer authority and fencing
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Verify local writer authority and fencing"
       - name: Build Linux desktop offline
         if: steps.pool.outputs.kind == 'verdict'
         run: bash scripts/ci/pool-phase.sh "Build Linux desktop offline"
+      - name: Pair through a running okilum sync serve
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Pair through a running okilum sync serve"
       - name: Stress private reveal bus (20 runs)
         if: steps.pool.outputs.kind == 'verdict'
         run: bash scripts/ci/pool-phase.sh "Stress private reveal bus (20 runs)"
       - name: Run complete okilum-core suite offline
         if: steps.pool.outputs.kind == 'verdict'
         run: bash scripts/ci/pool-phase.sh "Run complete okilum-core suite offline"
+      - name: Start a systemd user manager for updater unit controls
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Start a systemd user manager for updater unit controls"
       - name: Run Linux Rust suites offline
         if: steps.pool.outputs.kind == 'verdict'
         run: bash scripts/ci/pool-phase.sh "Run Linux Rust suites offline"
@@ -256,3 +273,8 @@ jobs:
       - name: Compare editor publication with pinned main on this host
         if: ${{ steps.pool.outputs.kind == 'verdict' && inputs.publication_baseline != '' }}
         run: bash scripts/ci/pool-phase.sh "Compare editor publication with pinned main on this host"
+      # Every shard and every recorded phase, including phases without their own
+      # step above and a phase one shard skipped after an earlier failure.
+      - name: Verify every pool shard and phase passed
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh --overall

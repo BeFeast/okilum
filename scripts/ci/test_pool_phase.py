@@ -4,9 +4,14 @@ import os
 import re
 import runpy
 import subprocess
+import sys
 import tempfile
+import time
+import shutil
 import unittest
 from pathlib import Path
+
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 PHASE = ROOT / "scripts/ci/pool-phase.sh"
@@ -152,6 +157,37 @@ class PoolPhase(unittest.TestCase):
             self.assertIn("not run", missing.stderr)
 
 
+class PoolOverall(unittest.TestCase):
+    def overall(self, phases, shards):
+        with tempfile.TemporaryDirectory() as directory:
+            receipt = Path(directory) / "phases.json"
+            receipt.write_text(json.dumps(phases))
+            env = {"OKILUM_POOL_RECEIPT": str(receipt), "PATH": "/usr/bin:/bin"}
+            if shards is not None:
+                (Path(directory) / "shards.json").write_text(json.dumps(shards))
+                env["OKILUM_POOL_SHARDS"] = str(Path(directory) / "shards.json")
+            return subprocess.run(["bash", str(PHASE), "--overall"], capture_output=True, text=True,
+                                  timeout=30, env=env)
+
+    def test_only_every_shard_and_record_passing_is_green(self):
+        passed = [{"shard": "base", "state": "pass", "rc": 0}, {"shard": "sync", "state": "pass", "rc": 0}]
+        ok = self.overall([{"name": "x", "code": 0, "shard": "base"}], passed)
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+        for phases, shards, why in (
+                ([{"name": "x", "code": 1, "shard": "sync"}], passed, "exit 1"),
+                ([{"name": "x", "code": None, "skipped": True, "shard": "sync"}], passed, "skipped"),
+                ([{"name": "x", "shard": "sync"}], passed, "no exit code"),
+                ([{"name": "x", "code": 0}], [passed[0], {"shard": "sync", "state": "fail", "rc": 1}],
+                 "pool shard sync fail"),
+                ([{"name": "x", "code": 0}], [passed[0], {"shard": "rust-b", "state": "infra", "rc": 75}],
+                 "pool shard rust-b infra"),
+                ([{"name": "x", "code": 0}], [], "no pool shard ran"),
+                ([{"name": "x", "code": 0}], None, "OKILUM_POOL_SHARDS is unset")):
+            result = self.overall(phases, shards)
+            self.assertEqual(result.returncode, 1, why)
+            self.assertIn(why, result.stderr)
+
+
 class PoolShardedPhase(unittest.TestCase):
     def check(self, phases, name):
         with tempfile.TemporaryDirectory() as directory:
@@ -171,6 +207,11 @@ class PoolShardedPhase(unittest.TestCase):
                           {"name": name, "code": 0, "shard": "rust-b"}], name)
         self.assertEqual(bad.returncode, 1)
         self.assertIn("on shard rust-a", bad.stderr)
+        # A shard that stopped before this phase cannot borrow another shard's pass.
+        skipped = self.check([{"name": name, "code": 0, "shard": "rust-a"},
+                              {"name": name, "code": None, "skipped": True, "shard": "rust-b"}], name)
+        self.assertEqual(skipped.returncode, 1)
+        self.assertIn("failed on shard rust-b: skipped after an earlier failure", skipped.stderr)
 
 
 AGGREGATE = runpy.run_path(str(ROOT / "scripts/ci/pool-aggregate.py"))
@@ -186,9 +227,42 @@ class PoolAggregate(unittest.TestCase):
         if rc is not None:
             (directory / "rc").write_text(f"{rc}\n")
         if slot:
-            (directory / "build-slot.json").write_text(json.dumps(
-                {"host": "baldr", "oom_kill": oom, "queue_waited_s": 3, "ran_s": 60}))
+            record = {"host": "baldr", "exit": rc, "oom_kill": oom, "queue_waited_s": 3, "ran_s": 60}
+            if isinstance(slot, dict):
+                record.update(slot)
+                record = {key: value for key, value in record.items() if value is not ...}
+            (directory / "build-slot.json").write_text(json.dumps(record))
         return str(directory)
+
+    def test_a_run_without_a_complete_slot_receipt_is_never_a_verdict(self):
+        """OOM status comes only from build-slot's receipt (#3186 review)."""
+        green = [{"name": "x", "code": 0}, COMPLETE]
+        red = [{"name": "x", "code": 1}, {"name": "Pool shard complete", "code": 1}]
+        cases = {
+            "missing": dict(slot=False),
+            "no-oom": dict(slot={"oom_kill": ...}),
+            "null-oom": dict(slot={"oom_kill": None}),
+            "text-oom": dict(slot={"oom_kill": "0"}),
+            "negative-oom": dict(slot={"oom_kill": -1}),
+            "no-exit": dict(slot={"exit": ...}),
+            "other-exit": dict(slot={"exit": 75}),
+        }
+        with tempfile.TemporaryDirectory() as root:
+            for name, options in cases.items():
+                for phases, rc in ((green, 0), (red, 1)):
+                    shard = self.shard(root, f"{name}-{rc}", phases, rc=rc, **options)
+                    state = AGGREGATE["shard_state"](shard)[0]
+                    self.assertEqual(state, "infra", (name, rc))
+                    self.assertEqual(AGGREGATE["aggregate"]([shard])[0], "infra", (name, rc))
+            invalid = self.shard(root, "invalid", green, rc=0, slot=False)
+            Path(invalid, "build-slot.json").write_text("{not json")
+            self.assertEqual(AGGREGATE["shard_state"](invalid)[0], "infra")
+            listed = self.shard(root, "listed", green, rc=0, slot=False)
+            Path(listed, "build-slot.json").write_text("[]")
+            self.assertEqual(AGGREGATE["shard_state"](listed)[0], "infra")
+            # Controls: the same receipts with explicit metadata classify as before.
+            self.assertEqual(AGGREGATE["shard_state"](self.shard(root, "ok", green, rc=0))[0], "pass")
+            self.assertEqual(AGGREGATE["shard_state"](self.shard(root, "bad", red, rc=1))[0], "fail")
 
     def test_every_shard_passing_is_a_verdict_with_all_records(self):
         with tempfile.TemporaryDirectory() as root:
@@ -289,6 +363,200 @@ class PoolShardSelection(unittest.TestCase):
         linux = workflow[workflow.index("\n  linux:"):]
         for step in re.findall(r'pool-phase\.sh "([^"]+)"', linux):
             self.assertIn(f'pool_phase "{step}"', gate, step)
+
+
+PIDNS = runpy.run_path(str(ROOT / "scripts/ci/pid-namespace.py"), run_name="pidns")
+
+
+def passwordless_sudo():
+    try:
+        return subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+class PoolHostDiscoveryIsolation(unittest.TestCase):
+    """#3186 review: a sibling slot's same-uid Syncthing must not reach host discovery."""
+
+    def test_pool_admission_isolates_host_discovery_and_runs_where_sudo_is(self):
+        runs = (ROOT / "scripts/ci/sync-managed-admission-runs.py").read_text()
+        self.assertIn("pidns['probe'](work)", runs)
+        self.assertIn("pidns['command'](command, env, root)", runs)
+        self.assertIn("assert not foreign_syncthing()", runs)  # unchanged outside the pool
+        dispatch = (ROOT / "scripts/ci/pool-dispatch.sh").read_text()
+        self.assertRegex(dispatch, r'"admission \d+ [a-z,]*\bsudo\b')
+
+    @unittest.skipUnless(passwordless_sudo(), "needs passwordless sudo (pool hosts and hosted runners)")
+    def test_a_concurrent_sibling_syncthing_is_invisible_inside_and_status_and_env_pass_through(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            PIDNS["probe"](work)  # raises unless the decoy is visible outside only
+            sibling_dir = work / "sibling"
+            sibling_dir.mkdir()
+            shutil.copy2(shutil.which("bash"), sibling_dir / "syncthing")
+            sibling = subprocess.Popen(["bash", "-c", "read -r -t 60 _ || true"],
+                                       executable=str(sibling_dir / "syncthing"), stdin=subprocess.PIPE)
+            try:
+                scan = ("import runpy, sys, os; ns = runpy.run_path(sys.argv[1], run_name='x'); "
+                        "print(ns['same_uid_syncthing']()); print(os.environ['POOL_TEST_VALUE']); sys.exit(7)")
+                argv, env_file, _ = PIDNS["command"](
+                    [sys.executable, "-I", "-c", scan, str(ROOT / "scripts/ci/pid-namespace.py")],
+                    {**os.environ, "POOL_TEST_VALUE": "kept"}, work)
+                deadline = time.monotonic() + 5
+                while sibling.pid not in PIDNS["same_uid_syncthing"]() and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertIn(sibling.pid, PIDNS["same_uid_syncthing"]())
+                result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                        timeout=60)
+                self.assertEqual(result.returncode, 7, result.stderr)
+                self.assertEqual(result.stdout.split(), ["[]", "kept"])
+                self.assertFalse(Path(env_file).exists())
+                self.assertIsNone(sibling.poll())
+            finally:
+                sibling.kill()
+                sibling.wait()
+                sibling.stdin.close()
+
+    @unittest.skipUnless(passwordless_sudo(), "needs passwordless sudo (pool hosts and hosted runners)")
+    def test_killing_the_run_ends_the_whole_namespace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            argv, _, token = PIDNS["command"](["bash", "-c", "sleep 600 & wait"], dict(os.environ), Path(directory))
+            process = subprocess.Popen(argv, stdin=subprocess.DEVNULL)
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and not self.marked(token, "sleep"):
+                time.sleep(.05)
+            self.assertTrue(self.marked(token, "sleep"))
+            PIDNS["kill_marked"](token)
+            self.assertNotEqual(process.wait(timeout=30), 0)
+            self.assertFalse(self.marked(token))
+
+    @staticmethod
+    def marked(token, comm=None):
+        found = []
+        for entry in Path("/proc").iterdir():
+            try:
+                if entry.name.isdecimal() and f"OKILUM_PIDNS_TOKEN={token}".encode() in \
+                        (entry / "environ").read_bytes().split(b"\0"):
+                    if comm is None or (entry / "comm").read_text().strip() == comm:
+                        found.append(int(entry.name))
+            except (OSError, ProcessLookupError):
+                continue
+        return found
+
+
+# The real shard branching (pool-linux-gate.sh) and phase library, with every
+# phase command replaced by `true`, or `false` for the injected ones.
+STUB_LIB = r'''
+eval "$(declare -f pool_phase | sed '1s/^pool_phase /pool_phase_real /')"
+pool_phase() {
+    local name=$1
+    if [[ ",${POOL_TEST_FAIL:-}," == *",${OKILUM_POOL_SHARD}:${name},"* ]]; then
+        pool_phase_real "$name" false
+    else
+        pool_phase_real "$name" true
+    fi
+}
+pool_ensure_git() { :; }
+'''
+
+
+class PoolGateEndToEnd(unittest.TestCase):
+    """Failure injection through shard branching, aggregation and every workflow reporter."""
+
+    def shards(self):
+        dispatch = (ROOT / "scripts/ci/pool-dispatch.sh").read_text()
+        block = dispatch[dispatch.index("    linux-full)"):]
+        block = block[:block.index(";;")]
+        return re.findall(r'^\s+"([a-z-]+) \d+ ', block, re.M)
+
+    def reporters(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/agent-checks.yml").read_text())
+        steps = []
+        for step in workflow["jobs"]["linux"]["steps"]:
+            run, condition = step.get("run", ""), str(step.get("if", ""))
+            # An ordinary PR run: no benchmark-only or publication-only steps.
+            benchmark_only = "agent-checks-benchmark/" in condition and "!startsWith" not in condition
+            if "pool-phase.sh" not in run or benchmark_only or "publication_baseline" in condition:
+                continue
+            steps.append((step["name"], run))
+        return steps
+
+    def gate(self, fail=()):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "scripts/ci").mkdir(parents=True)
+            shutil.copy(ROOT / "scripts/ci/pool-linux-gate.sh", root / "scripts/ci/pool-linux-gate.sh")
+            lib = (ROOT / "scripts/ci/pool-phase-lib.sh").read_text() + STUB_LIB
+            (root / "scripts/ci/pool-phase-lib.sh").write_text(lib)
+            ship = root / "ship"
+            dirs = []
+            for shard in self.shards():
+                out = ship / shard
+                out.mkdir(parents=True)
+                env = {**os.environ, "OKILUM_POOL_RECEIPT": str(out / "phases.json"),
+                       "POOL_TEST_FAIL": ",".join(fail), "TMPDIR": str(root)}
+                env.pop("OKILUM_PUBLICATION_BASELINE", None)
+                env.pop("OKILUM_POOL_BENCHMARK", None)
+                result = subprocess.run(["bash", "scripts/ci/pool-linux-gate.sh", shard], cwd=root, env=env,
+                                        capture_output=True, text=True, timeout=120)
+                (out / "rc").write_text(f"{result.returncode}\n")
+                (out / "build-slot.json").write_text(json.dumps(
+                    {"host": "baldr", "exit": result.returncode, "oom_kill": 0}))
+                dirs.append(str(out))
+            receipt, states = ship / "phases.json", ship / "shards.json"
+            summary = subprocess.run([sys.executable, str(ROOT / "scripts/ci/pool-aggregate.py"),
+                                      "--out", str(receipt), "--shards-out", str(states), *dirs],
+                                     capture_output=True, text=True, timeout=60, check=True).stdout
+            kind = re.search(r"^kind=(\w+)$", summary, re.M).group(1)
+            results = {}
+            env = {"OKILUM_POOL_RECEIPT": str(receipt), "OKILUM_POOL_SHARDS": str(states),
+                   "PATH": os.environ["PATH"]}
+            for name, run in self.reporters():
+                results[name] = subprocess.run(["bash", "-c", run], cwd=ROOT, env=env, capture_output=True,
+                                               text=True, timeout=60).returncode
+            return kind, results
+
+    def test_all_shards_green_passes_every_reporter(self):
+        self.assertEqual(self.shards(), ["base", "rust-b", "admission", "rust-a", "sync", "desktop"])
+        kind, results = self.gate()
+        self.assertEqual(kind, "verdict")
+        self.assertIn("Verify every pool shard and phase passed", results)
+        self.assertEqual({name for name, rc in results.items() if rc}, set())
+
+    def test_every_injected_shard_failure_fails_the_gate(self):
+        overall = "Verify every pool shard and phase passed"
+        for shard, phase, also in (
+                ("sync", "Verify local writer authority and fencing", "Verify local writer authority and fencing"),
+                ("base", "Verify bundled Sync Help and brand", "Verify bundled Sync Help and brand"),
+                # The user bus fails before rust-b's census: rust-a's passing
+                # record of the same phase must not satisfy its reporter.
+                ("rust-b", "Start a systemd user manager for updater unit controls",
+                 "Run Linux Rust suites offline"),
+                ("desktop", "Pair through a running okilum sync serve", "Pair through a running okilum sync serve"),
+                # A setup phase without its own reporter is caught by the overall check.
+                ("admission", "Fetch locked public dependencies", None)):
+            with self.subTest(shard=shard, phase=phase):
+                kind, results = self.gate([f"{shard}:{phase}"])
+                self.assertEqual(kind, "verdict")
+                self.assertEqual(results[overall], 1)
+                if also:
+                    self.assertEqual(results[also], 1, also)
+
+    def test_every_phase_of_every_shard_is_reported_or_covered_by_the_overall_check(self):
+        gate = (ROOT / "scripts/ci/pool-linux-gate.sh").read_text()
+        phases = set(re.findall(r'pool_phase "([^"]+)"', gate))
+        reported = {name for name, _ in self.reporters()}
+        workflow = (ROOT / ".github/workflows/agent-checks.yml").read_text()
+        # Setup phases: a failure there is reported by the overall check only.
+        setup = {"Verify pinned Rust toolchain", "Fetch locked public dependencies",
+                 "Prepare isolated Python test dependencies"}
+        conditional = {"Warm build Linux desktop offline", "Warm complete okilum-core suite offline",
+                       "Warm Linux Rust suites offline", "Compare editor publication with pinned main on this host"}
+        for phase in phases - setup:
+            if phase in conditional:
+                self.assertIn(f'pool-phase.sh "{phase}"', workflow, phase)
+            else:
+                self.assertIn(phase, reported, phase)
 
 
 if __name__ == "__main__":

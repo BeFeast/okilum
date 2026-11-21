@@ -7,7 +7,11 @@ The owning Python process checks and reaps the complete fixture tree on exit.
 
 A HOST_DISCOVERY test runs alone: its product path scans /proc for every
 same-uid Syncthing and correctly refuses any it does not own, so a concurrent
-group's live fixture runtime would fail it (#3069).
+group's live fixture runtime would fail it (#3069). On a build-slot pool slot
+(OKILUM_POOL_SHARD set) the other slots of the host run as the same user, so
+`alone` is not enough there: the test runs in a private PID namespace
+(pid-namespace.py, needs passwordless sudo), after a positive control shows a
+same-uid decoy Syncthing outside is invisible inside (#3186 review).
 
 OKILUM_ADMISSION_PART selects the processes (default all). The pool gate runs
 `crash` (both checkpoint halves), `remaining-0` and `remaining-1` (the other
@@ -25,6 +29,7 @@ import tempfile
 import time
 
 lifecycle = runpy.run_path(str(Path(__file__).with_name('sync-fixture-lifecycle.py')))
+pidns = runpy.run_path(str(Path(__file__).with_name('pid-namespace.py')), run_name='pidns')
 CRASH_TEST = 'issue2043_crash_recovery_retains_versions_and_rejects_third_version'
 TESTS = {
     'issue2582_configuration_process_drains_and_later_real_effects_are_refused',
@@ -119,23 +124,20 @@ def main():
         raise SystemExit(128 + signum)
     signal.signal(signal.SIGTERM, interrupted)
 
-    def foreign_syncthing():
-        # The same scope as direct::configuration_paths: this uid, exe named syncthing.
-        found = []
-        for entry in Path('/proc').iterdir():
-            try:
-                if not entry.name.isdecimal() or entry.stat().st_uid != os.geteuid():
-                    continue
-                if os.readlink(entry / 'exe').removesuffix(' (deleted)').rsplit('/', 1)[-1] == 'syncthing':
-                    found.append(int(entry.name))
-            except (FileNotFoundError, ProcessLookupError, PermissionError):
-                continue
-        return found
+    # The same scope as direct::configuration_paths: this uid, exe named syncthing.
+    foreign_syncthing = pidns['same_uid_syncthing']
+    isolate = bool(os.environ.get('OKILUM_POOL_SHARD'))
+    tokens = {}
 
     def start(name, checkpoints, selected, alone):
         if alone:
             assert not active, (name, [run[0] for run in active])
-            assert not foreign_syncthing(), (name, 'same-uid Syncthing before host discovery', foreign_syncthing())
+            if isolate:
+                # Sibling slots may legitimately run Syncthing fixtures; the
+                # namespace hides them and its init re-checks inside.
+                pidns['probe'](work)
+            else:
+                assert not foreign_syncthing(), (name, 'same-uid Syncthing before host discovery', foreign_syncthing())
         root = work / name
         root.mkdir(mode=0o700)
         (root / 'state').mkdir(mode=0o700)
@@ -153,9 +155,11 @@ def main():
         if checkpoints:
             env['OKILUM_FIRST_SYNC_CRASH_CASE'] = ','.join(checkpoints)
         log = root / 'acceptance.log'
+        if alone and isolate:
+            command, _, tokens[name] = pidns['command'](command, env, root)
         with log.open('w') as output:
-            process = subprocess.Popen(command, env=env, stdout=output, stderr=subprocess.STDOUT,
-                                       preexec_fn=lifecycle['parent_death_signal']())
+            process = subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL, stdout=output,
+                                       stderr=subprocess.STDOUT, preexec_fn=lifecycle['parent_death_signal']())
         run = (name, checkpoints, process, log, selected, alone)
         active.append(run)
         all_runs.append(run)
@@ -198,8 +202,14 @@ def main():
     finally:
         for name, _, process, log, _, _ in all_runs:
             if process.poll() is None:
-                process.kill()
-            process.wait()
+                if name in tokens:
+                    # sudo is root-owned; ending the namespace init ends the run.
+                    pidns['kill_marked'](tokens[name])
+                try:
+                    process.kill()
+                except PermissionError:
+                    pass
+            process.wait(timeout=60)
             if any(run[0] == name for run in active):
                 print(f'=== Incomplete managed admission {name} ===\n{log.read_text()}', flush=True)
         lifecycle['check'](work, cleanup=True)

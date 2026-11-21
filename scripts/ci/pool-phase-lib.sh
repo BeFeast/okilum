@@ -80,13 +80,19 @@ pool_receipt_init() {
     printf '[]\n' > "$OKILUM_POOL_RECEIPT"
 }
 
+# pool_record NAME CODE, or pool_record NAME skipped: a phase that an earlier
+# failure stopped is recorded too, so the same phase passing on another shard
+# cannot stand in for it (pool-phase.sh fails a skipped record).
 pool_record() {
     python3 - "$OKILUM_POOL_RECEIPT" "$1" "$2" <<'PY'
 import json, sys
-path, name, code = sys.argv[1], sys.argv[2], int(sys.argv[3])
+path, name, code = sys.argv[1], sys.argv[2], sys.argv[3]
 with open(path) as handle:
     phases = json.load(handle)
-phases.append({"name": name, "code": code})
+if code == "skipped":
+    phases.append({"name": name, "code": None, "skipped": True})
+else:
+    phases.append({"name": name, "code": int(code)})
 with open(path, "w") as handle:
     json.dump(phases, handle)
     handle.write("\n")
@@ -97,6 +103,7 @@ pool_phase() {
     local name=$1
     shift
     if [[ $pool_skip -eq 1 && $name != "Reject and reap surviving agent fixture daemons" ]]; then
+        pool_record "$name" skipped
         return 0
     fi
     printf '\nPOOL PHASE %s\n' "$name"

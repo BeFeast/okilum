@@ -43,7 +43,8 @@ def receipt():
                 "Verify pinned Sync fixture lifecycle, source sharing and remote inspection",
                 "Verify managed launch and configuration admission",
                 "Verify real disk-full Sync transfer and first merge",
-                "Reject and reap surviving agent fixture daemons", "Verify additive vault regression controls")]},
+                "Reject and reap surviving agent fixture daemons", "Verify additive vault regression controls",
+                "Verify every pool shard and phase passed")]},
         {"name": "windows-recovery", "conclusion": "success", "steps": [
             {"name": n, "conclusion": "success"} for n in (
                 "Prepare and verify Windows vendor", "Run native Windows recovery controls",
@@ -306,6 +307,12 @@ class VerdictTests(unittest.TestCase):
 
     def test_positive_control_all_required_checks_pass(self):
         self.assertEqual(helper.verdict(receipt(), SHA), 0)
+        # The pool's overall shard check is required: a run without it is no verdict.
+        info = receipt()
+        info['jobs'][0]['steps'] = [s for s in info['jobs'][0]['steps']
+                                    if s['name'] != 'Verify every pool shard and phase passed']
+        self.assertEqual(helper.verdict(info, SHA), 75)
+        self.assertIn('Verify every pool shard and phase passed', helper.FAST_REQUIRED)
         self.assertEqual(helper.verdict(receipt(), SHA, benchmark=True), 75)
         info = receipt()
         info['jobs'][0]['steps'] += [dict(name=n, conclusion='success') for n in (

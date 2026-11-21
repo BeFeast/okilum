@@ -30,9 +30,25 @@ coordinator (`--needs`):
 Every shard also verifies the toolchain, vendor, locked dependencies and the
 Python environment, and reaps fixture daemons. `pool-aggregate.py` merges the
 shard receipts: a phase recorded by several shards passes only when every
-record passed. Any failing phase is a code verdict; a lost shard (queue, ssh,
-OOM kill, incomplete receipt) without a code failure fails the dispatch step,
-which is infrastructure. Managed admission keeps its unchanged 600 s deadline
+record passed, and a phase that an earlier failure skipped is recorded as
+skipped, so another shard's pass of the same phase cannot stand in for it.
+Any failing phase is a code verdict; a lost shard (queue, ssh, OOM kill,
+incomplete receipt) without a code failure fails the dispatch step, which is
+infrastructure. A shard counts only with a valid build-slot receipt whose
+`exit` equals the shard's exit code and whose `oom_kill` is an explicit count:
+a missing, malformed or incomplete slot receipt is infrastructure, never a
+pass. The last step of both pool jobs, `Verify every pool shard and phase
+passed` (`pool-phase.sh --overall`), fails unless every dispatched shard
+passed and no record anywhere failed or was skipped; `gh-check.sh` requires
+it, so a phase without its own reporter step cannot leave a green gate.
+
+Managed admission's host-discovery test refuses every same-uid Syncthing it
+does not own, and the other slots of a pool host run as the same user. On a
+pool slot it therefore runs in a private PID namespace (`pid-namespace.py`,
+`sudo unshare --pid --mount-proc`, then back to the calling user), after a
+positive control shows a same-uid decoy `syncthing` outside is invisible
+inside. The `admission` shard needs `sudo`; outside the pool the test runs as
+before. Managed admission keeps its unchanged 600 s deadline
 per process set: `crash`, `remaining-0` and `remaining-1` each check the full
 compiled inventory and run on their own shard, so no part waits behind
 another (`OKILUM_ADMISSION_PART`; default `all`). The two Rust shards use the
