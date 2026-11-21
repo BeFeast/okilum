@@ -752,44 +752,50 @@ class HelperFlowTests(unittest.TestCase):
         self.assertCountEqual(seen, names)
         self.assertEqual(sum(threads), 4)
 
+    @staticmethod
+    def fake_linux_suite_root(directory):
+        """Copy the real Linux suite list beside recording stubs; returns (root, scripts, fake)."""
+        root = Path(directory)
+        scripts = root / 'scripts/ci'
+        scripts.mkdir(parents=True)
+        for name in ('linux-rust-tests.sh', 'test-nofile.sh', 'test-group.sh', 'test-group.py',
+                     'workspace-rust-tests.py'):
+            shutil.copy2(ROOT / 'scripts/ci' / name, scripts / name)
+        # This control measures command inventory and first-failure retention,
+        # not process supervision. Record every wrapper invocation and run
+        # each fake command directly; the next control runs the real watchdog.
+        (scripts / 'test-group.sh').write_text(
+            'if [[ ${1:-} == --isolated-writer-account ]]; then\n'
+            '  shift; printf "%s\\n" "$1" >> "$ACCOUNT_LOG"\nfi\n'
+            'printf "%s %s\\n" "$1" "$2" >> "$GROUP_LOG"\n'
+            'shift 2\nexec "$@"\n')
+        (scripts / 'vendor-tests.sh').write_text('echo vendor-tests >> "$CALL_LOG"\n')
+        (scripts / 'local-writer-admission.sh').write_text(
+            'echo local-writer-admission >> "$CALL_LOG"\n')
+        fake = root / 'bin'
+        fake.mkdir()
+        cargo = fake / 'cargo'
+        cargo.write_text('#!/usr/bin/env bash\n'
+                         'echo "$* sprint=${OKILUM_SPRINT_BUILD:-0}" >> "$CALL_LOG"\n'
+                         'if [[ "$FAIL_FIRST" = 1 && ! -e "$FAIL_MARKER" ]]; then\n'
+                         '  touch "$FAIL_MARKER"; exit 7\n'
+                         'fi\n'
+                         'if [[ " $* " == *" -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3 "* ]]; then\n'
+                         '  if [[ " $* " == *" --list "* ]]; then\n'
+                         '    printf "ordinary::case0: test\\nordinary::case2: test\\nreader_log::sample: test\\nplatform::reveal::tests::sample: test\\n"\n'
+                         '  else\n'
+                         '    printf "Running unittests src/lib.rs (stub)\\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\\n"\n'
+                         '  fi\n'
+                         'fi\n')
+        cargo.chmod(0o755)
+        # The shared suite also runs web reachability checks. Stub every
+        # test runner so this failure-propagation control stays isolated.
+        shutil.copy2(cargo, fake / 'node')
+        return root, scripts, fake
+
     def test_linux_suites_keep_the_first_failure_and_still_execute_later_checks(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            scripts = root / 'scripts/ci'
-            scripts.mkdir(parents=True)
-            for name in ('linux-rust-tests.sh', 'test-nofile.sh', 'test-group.sh', 'test-group.py',
-                         'workspace-rust-tests.py'):
-                shutil.copy2(ROOT / 'scripts/ci' / name, scripts / name)
-            # This control measures command inventory and first-failure retention,
-            # not process supervision. Record every wrapper invocation and run
-            # each fake command directly; the next control runs the real watchdog.
-            (scripts / 'test-group.sh').write_text(
-                'if [[ ${1:-} == --isolated-writer-account ]]; then\n'
-                '  shift; printf "%s\\n" "$1" >> "$ACCOUNT_LOG"\nfi\n'
-                'printf "%s %s\\n" "$1" "$2" >> "$GROUP_LOG"\n'
-                'shift 2\nexec "$@"\n')
-            (scripts / 'vendor-tests.sh').write_text('echo vendor-tests >> "$CALL_LOG"\n')
-            (scripts / 'local-writer-admission.sh').write_text(
-                'echo local-writer-admission >> "$CALL_LOG"\n')
-            fake = root / 'bin'
-            fake.mkdir()
-            cargo = fake / 'cargo'
-            cargo.write_text('#!/usr/bin/env bash\n'
-                             'echo "$* sprint=${OKILUM_SPRINT_BUILD:-0}" >> "$CALL_LOG"\n'
-                             'if [[ "$FAIL_FIRST" = 1 && ! -e "$FAIL_MARKER" ]]; then\n'
-                             '  touch "$FAIL_MARKER"; exit 7\n'
-                             'fi\n'
-                             'if [[ " $* " == *" -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3 "* ]]; then\n'
-                             '  if [[ " $* " == *" --list "* ]]; then\n'
-                             '    printf "ordinary::case0: test\\nordinary::case2: test\\nreader_log::sample: test\\nplatform::reveal::tests::sample: test\\n"\n'
-                             '  else\n'
-                             '    printf "Running unittests src/lib.rs (stub)\\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\\n"\n'
-                             '  fi\n'
-                             'fi\n')
-            cargo.chmod(0o755)
-            # The shared suite also runs web reachability checks. Stub every
-            # test runner so this failure-propagation control stays isolated.
-            shutil.copy2(cargo, fake / 'node')
+            root, scripts, fake = self.fake_linux_suite_root(directory)
             counts = []
             for fail in ('0', '1'):
                 log = root / ('calls-' + fail)
@@ -842,6 +848,43 @@ class HelperFlowTests(unittest.TestCase):
                 self.assertEqual(wrapped[-1], 'sidecar-macos-preparation 120')
                 counts.append(len(calls))
             self.assertEqual(counts[0], counts[1])
+
+    def test_linux_suite_parts_split_the_full_list_into_two_disjoint_halves(self):
+        # #3198: the daily hosted gate runs `checks` and `workspace` as parallel
+        # jobs. Together they must run exactly the `all` groups, each once.
+        with tempfile.TemporaryDirectory() as directory:
+            root, scripts, fake = self.fake_linux_suite_root(directory)
+            def run(*part):
+                log, groups = root / ('calls-' + '-'.join(part or ('none',))), root / ('groups-' + '-'.join(part or ('none',)))
+                result = subprocess.run(['bash', str(scripts / 'linux-rust-tests.sh'), *part], cwd=root,
+                                        env={**os.environ, 'PATH': str(fake) + os.pathsep + os.environ['PATH'],
+                                             'CALL_LOG': str(log), 'GROUP_LOG': str(groups), 'FAIL_FIRST': '0',
+                                             'ACCOUNT_LOG': str(root / 'accounts'),
+                                             'FAIL_MARKER': str(root / 'failed')},
+                                        capture_output=True, text=True, timeout=30)
+                read = lambda path: path.read_text().splitlines() if path.exists() else []
+                return result, read(log), [line.split()[0] for line in read(groups)]
+            result, calls, everything = run()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(run('all')[2], everything)
+            self.assertIn('workspace-full', everything)  # positive control
+            result, checks_calls, checks = run('checks')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result, workspace_calls, workspace = run('workspace')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn('workspace-full', checks)
+            self.assertEqual([group for group in workspace if not group.startswith('workspace-')],
+                             [])
+            self.assertEqual([group for group in everything if group != 'workspace-full'
+                              and not group.startswith('workspace-')], checks)
+            self.assertEqual([group for group in everything if group.startswith('workspace-')], workspace)
+            # The census selection is compiled before the census deadline starts.
+            self.assertIn('--no-run', workspace_calls[0])
+            self.assertIn('-p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3', workspace_calls[0])
+            self.assertFalse(any('--no-run' in call for call in calls + checks_calls))
+            result, calls, groups = run('bogus')
+            self.assertEqual((result.returncode, calls, groups), (2, [], []))
+            self.assertIn('unknown part', result.stderr)
 
     def test_native_frame_measurement_waits_for_ordinary_cases_and_keeps_its_failure(self):
         for shared in (False, True):
