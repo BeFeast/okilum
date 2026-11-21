@@ -38,13 +38,35 @@ are assigned per mount, so the UUID slot holds a domain-separated SHA-256 prefix
 of the filesystem type and mount source (`host:/export`, `//user@host/share`)
 from `fstatfs` on the same handle. A remount of the same source keeps the
 binding; the same folder seen first through a native UUID is a different
-volume and fails closed. Other attribute errors stay errors. One export can be
-mounted under two source spellings (an IP address and a hostname), so a
-mount-source identity cannot prove two roots disjoint. While any UUID-less
-binding is registered, readable or not, a different UUID-less root (another
-spelling, a child or parent outside its path, another folder on the export) is
-refused; same-path reopen and folders inside the vault resolve to that scope.
-Several UUID-less roots are tracked separately (#3204).
+volume and fails closed. Other attribute errors stay errors.
+
+One export can be mounted under two source spellings (an IP address and a
+hostname), so the digest alone cannot relate two paths (#3204). The server
+assigns inode (NFS fileid) and birth time, so two UUID-less identities of the
+same filesystem type with equal inode and birth time are one folder when
+looking for a writer scope; a false match only over-fences. Several UUID-less
+vaults (two folders on one export, or on two exports) get separate scopes.
+Each UUID-less scope records the identities of its strict ancestors on its own
+mount in `ancestry.json` in its private directory when it is registered
+(bindings from #3202 get it the next time their root is readable). With it:
+
+- the same folder through another spelling resolves to the existing scope and
+  meets its holds;
+- a child opened through another mount resolves to the enclosing scope;
+- a parent opened through another mount finds the child from the child's
+  record, even when the child's mount is gone: an unfinished hold or a live
+  writer refuses the parent, otherwise the child is promoted and its handles
+  resolve the parent scope at admission (one fencing scope, as for path
+  children);
+- a binding whose path no longer reaches its folder (mount gone, or another
+  folder there) is retired, when idle, once its folder is opened through
+  another path; a hold or a live writer keeps it and refuses the new path. A
+  child whose alias parent was retired admits writers again.
+
+A pre-#3204 UUID-less binding without a record whose root cannot be read
+refuses a new UUID-less root that it might lie inside, until it is mounted
+again. The same export remounted under another spelling at the same path is a
+changed identity and goes through the explicit re-attach flow.
 
 On Linux (#2710), schema 2 likewise treats `st_dev` as diagnostic only. One
 no-follow descriptor supplies inode, birthtime and `fstatfs` filesystem ID. On

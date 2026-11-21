@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compiled native controls: volatile-device and missing-migration regressions."""
+"""Compiled native controls: volatile-device, migration, UUID-less (#3202) and mount-alias (#3204) regressions."""
 import pathlib
 import subprocess
 
@@ -55,21 +55,39 @@ def main():
         run(no_uuid_test, "no-uuid-refused-negative", negative=True)
     finally:
         native.write_text(original_native)
-    second_test = "identity_macos_tests::identity_3202_second_uuid_less_root_is_refused_while_one_is_registered"
-    run(second_test, "second-uuid-less-positive")
-    try:
-        # #3202: a second UUID-less root may be another spelling, child or parent
-        # of the registered one; without the rule it minted a second authority.
-        rule = "!ancestor_identities[0].is_mount_source()"
-        assert original_entry.count(rule) == 1
-        entry.write_text(original_entry.replace(rule, "true"))
-        run(second_test, "second-uuid-less-negative", negative=True)
-    finally:
-        entry.write_text(original_entry)
+    alias_test = "identity_macos_tests::identity_3204_mount_alias_resolves_to_the_held_scope"
+    child_test = "identity_macos_tests::identity_3204_child_first_then_parent_through_alias_keeps_one_scope"
+    gone_test = "identity_macos_tests::identity_3204_held_child_fences_parent_after_its_mount_is_gone"
+    stale_test = "identity_macos_tests::identity_3204_stale_binding_is_retired_through_another_mount"
+    for test, label in [(alias_test, "alias"), (child_test, "child-first"),
+                        (gone_test, "mount-gone"), (stale_test, "stale")]:
+        run(test, f"{label}-positive")
+    # #3204: each control removes one rule; its regression must then fail.
+    controls = [
+        (native, original_native, "&& (self.1, self.2) == (other.1, other.2)", "&& false",
+         alias_test, "no-alias-match-negative"),
+        (entry, original_entry, "Some(encloses) => encloses,", "Some(_) => false,",
+         child_test, "no-ancestry-enclosure-negative"),
+        (entry, original_entry, "Some(encloses) => encloses,", "Some(_) => false,",
+         gone_test, "no-ancestry-after-unmount-negative"),
+        (entry, original_entry, "        self.alias_enclosing()\n", "        Ok(None)\n",
+         child_test, "no-alias-routing-negative"),
+        (entry, original_entry, "a.retire_unmounted()?;", "let _ = &a;",
+         stale_test, "no-retire-negative"),
+    ]
+    for path, original, old, replacement, test, label in controls:
+        try:
+            assert original.count(old) == 1, old
+            path.write_text(original.replace(old, replacement))
+            run(test, label, negative=True)
+        finally:
+            path.write_text(original)
     run(device_test, "native-restored")
     run(legacy_test, "migration-restored")
     run(no_uuid_test, "no-uuid-restored")
-    run(second_test, "second-uuid-less-restored")
+    for test, label in [(alias_test, "alias"), (child_test, "child-first"),
+                        (gone_test, "mount-gone"), (stale_test, "stale")]:
+        run(test, f"{label}-restored")
     assert native.read_text() == original_native and entry.read_text() == original_entry
 
 
