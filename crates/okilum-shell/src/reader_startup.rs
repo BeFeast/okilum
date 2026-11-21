@@ -555,16 +555,6 @@ fn show_entry(roots: Vec<PathBuf>, state: EntryState, cx: &mut App) {
             })
             .detach();
         let entry = cx.new(|cx| Entry::new(roots, state, window, cx));
-        // Availability is checked again whenever the window comes back to
-        // the front: a volume may have been mounted meanwhile (#3208).
-        let observed = entry.downgrade();
-        window
-            .observe_window_activation(move |window, cx| {
-                if window.is_window_active() {
-                    let _ = observed.update(cx, |entry, cx| entry.recheck(cx));
-                }
-            })
-            .detach();
         let root = cx.new(|cx| Root::new(entry, window, cx));
         super::window_state::track(&root, frame_key, window, cx);
         root
@@ -666,7 +656,14 @@ impl Entry {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let view = super::reader_welcome::View::new(window, cx);
+        let mut view = super::reader_welcome::View::new(window, cx);
+        // Availability is checked again whenever the window comes back to
+        // the front: a volume may have been mounted meanwhile (#3208).
+        view.keep(cx.observe_window_activation(window, |entry, window, cx| {
+            if window.is_window_active() {
+                entry.recheck(cx);
+            }
+        }));
         let mut entry = Self { roots, state, view };
         entry.select_first_available(cx);
         let first_launch = entry.first_launch();

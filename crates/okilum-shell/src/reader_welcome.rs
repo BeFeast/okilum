@@ -178,6 +178,11 @@ impl View {
         }
     }
 
+    /// Keep a subscription alive as long as the start screen.
+    pub(crate) fn keep(&mut self, subscription: Subscription) {
+        self._subscriptions.push(subscription);
+    }
+
     pub(crate) fn clamp_selection(&mut self, rows: usize) {
         self.selected = self.selected.min(rows.saturating_sub(1));
     }
