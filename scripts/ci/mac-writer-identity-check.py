@@ -66,10 +66,22 @@ def main():
         run(alias_test, "mount-alias-bypass-negative", negative=True)
     finally:
         entry.write_text(original_entry)
+    enclosed_test = "identity_macos_tests::identity_3202_held_child_fences_its_parent_through_another_mount"
+    run(enclosed_test, "mount-alias-child-positive")
+    try:
+        # #3202 review: a parent opened through a second mount spelling missed a
+        # held child registered through the first and minted an overlapping authority.
+        guard = "|| !physically_encloses(&ancestor_identities[0], &b.root),"
+        assert original_entry.count(guard) == 1
+        entry.write_text(original_entry.replace(guard, "|| true,"))
+        run(enclosed_test, "mount-alias-child-bypass-negative", negative=True)
+    finally:
+        entry.write_text(original_entry)
     run(device_test, "native-restored")
     run(legacy_test, "migration-restored")
     run(no_uuid_test, "no-uuid-restored")
     run(alias_test, "mount-alias-restored")
+    run(enclosed_test, "mount-alias-child-restored")
     assert native.read_text() == original_native and entry.read_text() == original_entry
 
 

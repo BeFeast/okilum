@@ -241,6 +241,17 @@ fn physical_candidate(current: &[Identity], stored: &Identity) -> bool {
         false
     })
 }
+/// Whether a strict ancestor of `scope` is physically `root`, under any path
+/// spelling. Unreadable ancestors cannot prove enclosure.
+#[cfg(target_os = "macos")]
+fn physically_encloses(root: &Identity, scope: &Path) -> bool {
+    let ancestors = scope
+        .ancestors()
+        .skip(1)
+        .filter_map(|path| identity(path).ok())
+        .collect::<Vec<_>>();
+    physical_candidate(&ancestors, root)
+}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct Binding {
     schema: u32,
@@ -438,6 +449,18 @@ impl Authority {
                     ensure!(a.state()?.phase == Phase::Open,
                         "Physical vault identity has an unfinished hold at another root; explicit recovery required");
                 }
+                // A scope inside this root reached through another path spelling
+                // (a second mount of one UUID-less export, #3202). Its handles
+                // resolve enclosing scopes by path, so promotion cannot fence
+                // them: refuse rather than mint an overlapping authority.
+                #[cfg(target_os = "macos")]
+                ensure!(
+                    b.root.starts_with(&root)
+                        || !physically_encloses(&ancestor_identities[0], &b.root),
+                    "{} is already registered as a writer scope through another path ({}); open the vault through that path",
+                    root.display(),
+                    b.root.display()
+                );
                 if b.root.starts_with(&root) && b.root != root {
                     let child = Self {
                         account: account.clone(),

@@ -316,3 +316,36 @@ fn identity_3202_mount_source_alias_cannot_bypass_a_hold() {
         "no second authority for the same physical folder"
     );
 }
+
+#[test]
+fn identity_3202_held_child_fences_its_parent_through_another_mount() {
+    let _nfs = Nfs::everywhere();
+    let temporary = tempfile::tempdir().unwrap();
+    let base = temporary.path().canonicalize().unwrap();
+    let vault = base.join("by-ip").join("Vault");
+    fs::create_dir_all(vault.join("Sub")).unwrap();
+    fs::write(vault.join("Sub").join("note.md"), b"Canonical bytes\r\n").unwrap();
+    let account = base.join("account");
+    // The child scope is registered and held through the first mount.
+    let child = Authority::open_in(&account, &vault.join("Sub")).unwrap();
+    let _hold = child.begin_drain("exclusive-operation").unwrap();
+    // The parent is then opened through a second mount of the same export.
+    let alias = base.join("by-hostname");
+    fs::create_dir_all(alias.join("Vault")).unwrap();
+    let _second_mount = Nfs::mount(
+        alias.clone(),
+        "maestro.oklabs.uk:/srv/nfs/Maestro",
+        Some(base.join("by-ip")),
+    );
+    let parent = alias.join("Vault");
+    let error = Authority::open_in(&account, &parent).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("through another path"),
+        "{error:#}"
+    );
+    assert!(
+        !account.join(format!("{}.json", key(&parent))).exists(),
+        "no overlapping authority for the parent"
+    );
+    assert!(child.admit().is_err(), "the child hold stays in force");
+}

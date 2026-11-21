@@ -43,7 +43,12 @@ mounted under two source spellings (an IP address and a hostname), so the
 digest alone cannot prove two roots disjoint: when looking for an existing
 authority, two UUID-less identities of the same filesystem type with equal inode
 and birth time are the same folder. The second spelling resolves to the existing
-authority and meets its holds; a false match only over-fences.
+authority and meets its holds; a false match only over-fences. The other
+order is refused: a root whose existing scope sits physically inside it under
+another path spelling (a child registered through the first mount, the parent
+opened through the second) cannot be promoted, because that child's handles
+resolve enclosing scopes by path. Opening the parent there fails until the
+vault is opened through the first spelling.
 
 On Linux (#2710), schema 2 likewise treats `st_dev` as diagnostic only. One
 no-follow descriptor supplies inode, birthtime and `fstatfs` filesystem ID. On
