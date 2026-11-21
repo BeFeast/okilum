@@ -233,6 +233,11 @@ fn physical_candidate(current: &[Identity], stored: &Identity) -> bool {
         if stored.3.is_none() && stored.legacy_matches(identity) {
             return true;
         }
+        // UUID-less Mac volumes cannot prove two mount spellings disjoint (#3202).
+        #[cfg(target_os = "macos")]
+        if stored.mount_alias_candidate(identity) {
+            return true;
+        }
         false
     })
 }

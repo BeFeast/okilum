@@ -176,22 +176,34 @@ fn identity_2692_concurrent_migration_publishes_one_preserved_binding() {
     );
 }
 
-struct WithoutVolumeUuid;
-impl WithoutVolumeUuid {
-    fn set() -> Self {
-        identity_macos::WITHOUT_VOLUME_UUID.with(|flag| flag.set(true));
+const EXPORT: &str = "10.10.0.14:/srv/nfs/Maestro";
+
+/// Every identity on this thread comes from a UUID-less NFS mount until dropped.
+struct Nfs;
+impl Nfs {
+    fn everywhere() -> Self {
+        Self::mount("/".into(), EXPORT, None)
+    }
+    fn mount(prefix: PathBuf, source: &'static str, backing: Option<PathBuf>) -> Self {
+        identity_macos::SIMULATED_MOUNTS.with(|mounts| {
+            mounts.borrow_mut().push(identity_macos::SimulatedMount {
+                prefix,
+                source,
+                backing,
+            })
+        });
         Self
     }
 }
-impl Drop for WithoutVolumeUuid {
+impl Drop for Nfs {
     fn drop(&mut self) {
-        identity_macos::WITHOUT_VOLUME_UUID.with(|flag| flag.set(false));
+        identity_macos::SIMULATED_MOUNTS.with(|mounts| mounts.borrow_mut().pop());
     }
 }
 
 #[test]
 fn identity_3202_volume_without_uuid_admits_writers_across_remounts() {
-    let _nfs = WithoutVolumeUuid::set();
+    let _nfs = Nfs::everywhere();
     let (_temporary, authority) = fixture();
     let current = identity(authority.root()).unwrap();
     let uuid = current.3.expect("mount-source identity");
@@ -234,9 +246,11 @@ fn identity_3202_mount_source_is_scoped_and_errors_stay_errors() {
     let handle = File::open(authority.root()).unwrap();
     let native = identity_macos::from_file(&handle).unwrap();
     for missing in [libc::EINVAL, libc::ENOTSUP, libc::ENOATTR] {
-        let fallback = identity_macos::from_file_with(&handle, |_| {
-            Err(std::io::Error::from_raw_os_error(missing))
-        })
+        let fallback = identity_macos::from_file_with(
+            &handle,
+            |_| Err(std::io::Error::from_raw_os_error(missing)),
+            |_| identity_macos::mount_source_digest(b"nfs", EXPORT.as_bytes()),
+        )
         .unwrap();
         assert_eq!((fallback.1, fallback.2), (native.1, native.2));
         assert_ne!(
@@ -244,11 +258,18 @@ fn identity_3202_mount_source_is_scoped_and_errors_stay_errors() {
             "no-UUID identity cannot alias a native UUID"
         );
     }
-    let zero = identity_macos::from_file_with(&handle, |_| Ok(None)).unwrap();
+    let zero = identity_macos::from_file_with(
+        &handle,
+        |_| Ok(None),
+        |_| identity_macos::mount_source_digest(b"nfs", EXPORT.as_bytes()),
+    )
+    .unwrap();
     assert!(zero.3.is_some_and(|uuid| uuid != [0; 16]));
-    let error = identity_macos::from_file_with(&handle, |_| {
-        Err(std::io::Error::from_raw_os_error(libc::EIO))
-    })
+    let error = identity_macos::from_file_with(
+        &handle,
+        |_| Err(std::io::Error::from_raw_os_error(libc::EIO)),
+        |_| identity_macos::mount_source_digest(b"nfs", EXPORT.as_bytes()),
+    )
     .unwrap_err();
     assert!(format!("{error:#}").contains("Cannot read stable writer volume identity"));
 }
@@ -256,6 +277,42 @@ fn identity_3202_mount_source_is_scoped_and_errors_stay_errors() {
 #[test]
 fn identity_3202_native_binding_does_not_accept_a_volume_without_uuid() {
     let (_temporary, authority) = fixture();
-    let _nfs = WithoutVolumeUuid::set();
+    let _nfs = Nfs::everywhere();
     assert!(Authority::open_in(&authority.account, authority.root()).is_err());
+}
+
+#[test]
+fn identity_3202_mount_source_alias_cannot_bypass_a_hold() {
+    let _nfs = Nfs::everywhere();
+    let (temporary, authority) = fixture();
+    // The same export mounted again by hostname: another path and mount source
+    // spelling for the same server object (same inode and birth time).
+    let alias = temporary.path().canonicalize().unwrap().join("by-hostname");
+    fs::create_dir(&alias).unwrap();
+    let _second_mount = Nfs::mount(
+        alias.clone(),
+        "maestro.oklabs.uk:/srv/nfs/Maestro",
+        Some(authority.root().to_path_buf()),
+    );
+    let through_alias = identity(&alias).unwrap();
+    let original = identity(authority.root()).unwrap();
+    assert_ne!(
+        through_alias, original,
+        "source spellings give distinct digests"
+    );
+    assert_eq!((through_alias.1, through_alias.2), (original.1, original.2));
+
+    let _hold = authority.begin_drain("exclusive-operation").unwrap();
+    // The alias resolves to the one existing authority, which is held.
+    let resolved = Authority::open_in(&authority.account, &alias).unwrap();
+    assert_eq!(resolved.root(), authority.root());
+    assert_eq!(resolved.binding_path, authority.binding_path);
+    assert!(resolved.admit().is_err(), "hold must fence the alias");
+    assert!(
+        !authority
+            .account
+            .join(format!("{}.json", key(&alias)))
+            .exists(),
+        "no second authority for the same physical folder"
+    );
 }

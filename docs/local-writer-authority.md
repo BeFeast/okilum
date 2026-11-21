@@ -37,8 +37,13 @@ Network and FUSE volumes (NFS, SMB, macFUSE) answer `ATTR_VOL_UUID` with
 are assigned per mount, so the UUID slot holds a domain-separated SHA-256 prefix
 of the filesystem type and mount source (`host:/export`, `//user@host/share`)
 from `fstatfs` on the same handle. A remount of the same source keeps the
-binding; another source, or the same folder seen first through a native UUID,
-is a different volume and fails closed. Other attribute errors stay errors.
+binding; the same folder seen first through a native UUID is a different
+volume and fails closed. Other attribute errors stay errors. One export can be
+mounted under two source spellings (an IP address and a hostname), so the
+digest alone cannot prove two roots disjoint: when looking for an existing
+authority, two UUID-less identities of the same filesystem type with equal inode
+and birth time are the same folder. The second spelling resolves to the existing
+authority and meets its holds; a false match only over-fences.
 
 On Linux (#2710), schema 2 likewise treats `st_dev` as diagnostic only. One
 no-follow descriptor supplies inode, birthtime and `fstatfs` filesystem ID. On

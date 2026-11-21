@@ -30,51 +30,103 @@ impl Identity {
             && self.2.is_some()
             && self.2 == current.2
     }
+    /// Mount-source identities name an export by the spelling of its source, so
+    /// one export mounted as `10.10.0.14:/srv` and `maestro:/srv` yields two
+    /// volume digests for one physical folder (#3202 review). For authority
+    /// discovery, two UUID-less identities of the same filesystem type with the
+    /// same inode and birth time are treated as the same folder: an alias then
+    /// resolves to the existing authority (or meets its hold) instead of minting
+    /// a second one. A false match only over-fences; it never admits a writer.
+    pub(super) fn mount_alias_candidate(&self, other: &Self) -> bool {
+        match (self.3, other.3) {
+            (Some(a), Some(b)) => {
+                a[..4] == MOUNT_SOURCE_MARKER
+                    && a[..8] == b[..8]
+                    && (self.1, self.2) == (other.1, other.2)
+            }
+            _ => false,
+        }
+    }
 }
+
+/// First four bytes of a UUID-less volume digest. A native UUID that happens
+/// to start with it is only ever over-fenced by `mount_alias_candidate`.
+const MOUNT_SOURCE_MARKER: [u8; 4] = *b"OKmt";
 
 pub fn read(path: &Path) -> Result<Identity> {
     let handle = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(path)?;
+    #[cfg(test)]
+    if let Some((backing, source)) = simulated_mount(path) {
+        // NFS answers ATTR_VOL_UUID with EINVAL (#3202, macOS 27 on NFSv3).
+        let handle = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(backing)?;
+        return from_file_with(
+            &handle,
+            |_| Err(std::io::Error::from_raw_os_error(libc::EINVAL)),
+            |_| mount_source_digest(b"nfs", source.as_bytes()),
+        );
+    }
     from_file(&handle)
+}
+
+/// Test-only NFS mounts on this thread: identities of paths under `prefix`
+/// carry no volume UUID and the mount source `source`. With `backing`, the
+/// prefix is another spelling of that directory, as a second mount of the
+/// same export would be; identities then read the backing object.
+#[cfg(test)]
+pub(super) struct SimulatedMount {
+    pub prefix: PathBuf,
+    pub source: &'static str,
+    pub backing: Option<PathBuf>,
+}
+#[cfg(test)]
+thread_local! {
+    pub(super) static SIMULATED_MOUNTS: std::cell::RefCell<Vec<SimulatedMount>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+#[cfg(test)]
+fn simulated_mount(path: &Path) -> Option<(PathBuf, &'static str)> {
+    SIMULATED_MOUNTS.with(|mounts| {
+        let mounts = mounts.borrow();
+        let mount = mounts
+            .iter()
+            .filter(|mount| path.starts_with(&mount.prefix))
+            .max_by_key(|mount| mount.prefix.as_os_str().len())?;
+        let backing = match &mount.backing {
+            Some(backing) => backing.join(path.strip_prefix(&mount.prefix).ok()?),
+            None => path.to_path_buf(),
+        };
+        Some((backing, mount.source))
+    })
 }
 
 /// Stable APFS identity from the same already-open no-follow handle.
 pub fn from_file(handle: &File) -> Result<Identity> {
-    #[cfg(test)]
-    if WITHOUT_VOLUME_UUID.with(std::cell::Cell::get) {
-        // NFS answers ATTR_VOL_UUID with EINVAL (#3202, macOS 27 on NFSv3).
-        return from_file_with(handle, |_| {
-            Err(std::io::Error::from_raw_os_error(libc::EINVAL))
-        });
-    }
-    from_file_with(handle, volume_uuid)
-}
-
-#[cfg(test)]
-thread_local! {
-    /// Models a volume that reports no UUID for every identity on this thread.
-    pub(super) static WITHOUT_VOLUME_UUID: std::cell::Cell<bool> =
-        const { std::cell::Cell::new(false) };
+    from_file_with(handle, volume_uuid, mount_source_identity)
 }
 
 pub(super) fn from_file_with(
     handle: &File,
     native_uuid: impl FnOnce(&File) -> std::io::Result<Option<[u8; 16]>>,
+    mount_source: impl FnOnce(&File) -> Result<[u8; 16]>,
 ) -> Result<Identity> {
     let meta = handle.metadata()?;
     let volume = match native_uuid(handle) {
         Ok(Some(uuid)) => uuid,
         // The filesystem has no volume UUID attribute; anything else stays an error.
-        Ok(None) => mount_source_identity(handle)?,
+        Ok(None) => mount_source(handle)?,
         Err(error)
             if matches!(
                 error.raw_os_error(),
                 Some(libc::EINVAL | libc::ENOTSUP | libc::ENOATTR)
             ) =>
         {
-            mount_source_identity(handle)?
+            mount_source(handle)?
         }
         Err(error) => return Err(error).context("Cannot read stable writer volume identity"),
     };
@@ -125,7 +177,8 @@ fn volume_uuid(handle: &File) -> std::io::Result<Option<[u8; 16]>> {
 /// gives the same export a new device on every remount), so they cannot persist.
 /// The filesystem type and mount source (`host:/export`, `//user@host/share`)
 /// name the same export across remounts; inode and birth time then select the
-/// object within it. The domain-separated digest cannot equal a native UUID.
+/// object within it. Distinct spellings of one source are aliases; see
+/// `Identity::mount_alias_candidate`.
 fn mount_source_identity(handle: &File) -> Result<[u8; 16]> {
     let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
     if unsafe { libc::fstatfs(handle.as_raw_fd(), &mut stat) } != 0 {
@@ -146,12 +199,20 @@ pub(super) fn mount_source_digest(filesystem: &[u8], source: &[u8]) -> Result<[u
         !filesystem.is_empty() && !source.is_empty(),
         "Stable writer volume identity is unavailable"
     );
-    let mut digest = Sha256::new();
-    digest.update(b"okilum-writer-mount-source-v1\0");
-    digest.update(filesystem);
-    digest.update(b"\0");
-    digest.update(source);
+    // Marker, then the filesystem type (alias discovery compares these eight
+    // bytes), then the mount source spelling.
+    let digest = |parts: &[&[u8]]| {
+        let mut digest = Sha256::new();
+        digest.update(b"okilum-writer-mount-source-v1\0");
+        for part in parts {
+            digest.update(part);
+            digest.update(b"\0");
+        }
+        digest.finalize()
+    };
     let mut volume = [0; 16];
-    volume.copy_from_slice(&digest.finalize()[..16]);
+    volume[..4].copy_from_slice(&MOUNT_SOURCE_MARKER);
+    volume[4..8].copy_from_slice(&digest(&[filesystem])[..4]);
+    volume[8..].copy_from_slice(&digest(&[filesystem, source])[..8]);
     Ok(volume)
 }

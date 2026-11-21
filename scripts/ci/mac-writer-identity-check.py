@@ -55,9 +55,21 @@ def main():
         run(no_uuid_test, "no-uuid-refused-negative", negative=True)
     finally:
         native.write_text(original_native)
+    alias_test = "identity_macos_tests::identity_3202_mount_source_alias_cannot_bypass_a_hold"
+    run(alias_test, "mount-alias-positive")
+    try:
+        # #3202 review: without alias discovery, a second mount spelling of the
+        # same export minted a second authority and bypassed the hold.
+        alias = "if stored.mount_alias_candidate(identity) {"
+        assert original_entry.count(alias) == 1
+        entry.write_text(original_entry.replace(alias, "if false && stored.mount_alias_candidate(identity) {"))
+        run(alias_test, "mount-alias-bypass-negative", negative=True)
+    finally:
+        entry.write_text(original_entry)
     run(device_test, "native-restored")
     run(legacy_test, "migration-restored")
     run(no_uuid_test, "no-uuid-restored")
+    run(alias_test, "mount-alias-restored")
     assert native.read_text() == original_native and entry.read_text() == original_entry
 
 
