@@ -156,7 +156,9 @@ def main():
             env['OKILUM_FIRST_SYNC_CRASH_CASE'] = ','.join(checkpoints)
         log = root / 'acceptance.log'
         if alone and isolate:
-            command, _, tokens[name] = pidns['command'](command, env, root)
+            # The fixture guard below sees nothing once the namespace is gone;
+            # its PID 1 runs the same guard for this root first.
+            command, _, tokens[name] = pidns['command'](command, env, root, guard=root)
         with log.open('w') as output:
             process = subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL, stdout=output,
                                        stderr=subprocess.STDOUT, preexec_fn=lifecycle['parent_death_signal']())

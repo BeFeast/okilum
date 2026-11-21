@@ -381,7 +381,7 @@ class PoolHostDiscoveryIsolation(unittest.TestCase):
     def test_pool_admission_isolates_host_discovery_and_runs_where_sudo_is(self):
         runs = (ROOT / "scripts/ci/sync-managed-admission-runs.py").read_text()
         self.assertIn("pidns['probe'](work)", runs)
-        self.assertIn("pidns['command'](command, env, root)", runs)
+        self.assertIn("pidns['command'](command, env, root, guard=root)", runs)
         self.assertIn("assert not foreign_syncthing()", runs)  # unchanged outside the pool
         dispatch = (ROOT / "scripts/ci/pool-dispatch.sh").read_text()
         self.assertRegex(dispatch, r'"admission \d+ [a-z,]*\bsudo\b')
@@ -429,6 +429,48 @@ class PoolHostDiscoveryIsolation(unittest.TestCase):
             PIDNS["kill_marked"](token)
             self.assertNotEqual(process.wait(timeout=30), 0)
             self.assertFalse(self.marked(token))
+
+    @unittest.skipUnless(passwordless_sudo(), "needs passwordless sudo (pool hosts and hosted runners)")
+    def test_a_successful_run_that_leaks_a_fixture_fails_before_the_namespace_ends(self):
+        """Leaving PID 1 kills survivors, so the outside guard alone would see none."""
+        guard = runpy.run_path(str(ROOT / "scripts/ci/sync-fixture-processes.py"), run_name="fixtures")
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            fixture_dir = work / "cache/okilum-sync-fixture/bin"
+            fixture_dir.mkdir(parents=True)
+            shutil.copy2(shutil.which("bash"), fixture_dir / "syncthing")
+            fifo = work / "hold"
+            os.mkfifo(fifo)
+            home = work / "evidence/home"
+            home.mkdir(parents=True)
+            # A matching fixture: exe .../okilum-sync-fixture/.../syncthing, --home under the root.
+            # Inside the fixture $0 is --home, $1 its home and $2 the fifo it waits on.
+            start = ('"$0" -c \'read -r -t 60 _ <> "$2"\' --home "$2" "$1" & '
+                     'for _ in $(seq 100); do [ -e /proc/$!/exe ] && break; sleep 0.05; done; ')
+            for leave, expected in ((True, 70), (False, 0)):
+                with self.subTest(leave_fixture=leave):
+                    script = start + ('exit 0' if leave else 'kill -9 $!; wait $! 2>/dev/null; exit 0')
+                    argv, _, token = PIDNS["command"](
+                        ["bash", "-c", script, str(fixture_dir / "syncthing"), str(fifo), str(home)],
+                        dict(os.environ), work, guard=work / "evidence")
+                    result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                            timeout=60)
+                    self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                    survivors = "survivors=1" if leave else "survivors=0"
+                    self.assertIn(f"Fixture guard: root={work.resolve() / 'evidence'} {survivors}", result.stdout)
+                    if leave:
+                        self.assertIn("ORPHAN fixture", result.stdout)
+                        self.assertIn("left fixture processes", result.stderr)
+                    # The namespace is gone either way: nothing survives outside.
+                    self.assertEqual(guard["fixtures"](work / "evidence"), [])
+                    self.assertFalse(self.marked(token))
+            # A failing command keeps its own code even when it also leaked.
+            argv, _, _ = PIDNS["command"](
+                ["bash", "-c", start + "exit 3", str(fixture_dir / "syncthing"), str(fifo), str(home)],
+                dict(os.environ), work, guard=work / "evidence")
+            result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 3, result.stderr)
+            self.assertIn("ORPHAN fixture", result.stdout)
 
     @staticmethod
     def marked(token, comm=None):

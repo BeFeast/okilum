@@ -47,8 +47,10 @@ does not own, and the other slots of a pool host run as the same user. On a
 pool slot it therefore runs in a private PID namespace (`pid-namespace.py`,
 `sudo unshare --pid --mount-proc`, then back to the calling user), after a
 positive control shows a same-uid decoy `syncthing` outside is invisible
-inside. The `admission` shard needs `sudo`; outside the pool the test runs as
-before. Managed admission keeps its unchanged 600 s deadline
+inside. Leaving the namespace kills whatever is left in it, so its PID 1 runs
+the fixture guard for the test's evidence root first and fails a successful
+test that left a fixture alive. The `admission` shard needs `sudo`; outside
+the pool the test runs as before. Managed admission keeps its unchanged 600 s deadline
 per process set: `crash`, `remaining-0` and `remaining-1` each check the full
 compiled inventory and run on their own shard, so no part waits behind
 another (`OKILUM_ADMISSION_PART`; default `all`). The two Rust shards use the

@@ -14,16 +14,21 @@ private file and runs
 
     sudo -n unshare --pid --fork --kill-child --mount-proc --
         setpriv --reuid UID --regid GID --init-groups --
-        python3 -I pid-namespace.py --inner ENVFILE -- CMD...
+        python3 -I pid-namespace.py --inner ENVFILE [--guard ROOT] -- CMD...
 
 The inner side restores the environment, deletes the file, checks that no
 same-uid Syncthing is visible, then stays PID 1: it forwards termination
-signals to CMD, reaps every orphan and exits with CMD's status.
+signals to CMD and reaps every orphan. Leaving PID 1 kills everything left in
+the namespace, which would hide a leaked fixture from the caller's guard; so
+with --guard, PID 1 first runs the same fixture guard (sync-fixture-processes.py)
+for ROOT inside the namespace and fails a successful CMD that left a fixture
+alive, then exits with CMD's status.
 `--probe` is the positive control used before every isolated run: a decoy
 process named syncthing outside must be visible here and invisible inside.
 """
 import json
 import os
+import runpy
 from pathlib import Path
 import shutil
 import signal
@@ -35,6 +40,8 @@ import uuid
 
 HERE = Path(__file__).resolve()
 MARKER = 'OKILUM_PIDNS_TOKEN'
+# A successful command that left a fixture daemon alive in the namespace.
+LEAKED_FIXTURE = 70
 
 
 def same_uid_syncthing(proc='/proc'):
@@ -51,8 +58,13 @@ def same_uid_syncthing(proc='/proc'):
     return found
 
 
-def command(argv, env, workdir, inner_args=()):
-    """(argv, env file, token) for one isolated run; the env file is private to the caller."""
+def command(argv, env, workdir, inner_args=(), guard=None):
+    """(argv, env file, token) for one isolated run; the env file is private to the caller.
+
+    guard: the evidence root whose surviving fixtures fail the run (checked by
+    PID 1 inside the namespace, before its exit ends them)."""
+    if guard is not None:
+        inner_args = (*inner_args, '--guard', str(Path(guard).resolve()))
     token = uuid.uuid4().hex
     env = dict(env, **{MARKER: token})
     fd, path = tempfile.mkstemp(prefix='pidns-env-', suffix='.json', dir=workdir)
@@ -112,9 +124,14 @@ def probe(workdir):
 
 def inner(args):
     env_file, rest = args[0], args[1:]
-    probe_only = bool(rest) and rest[0] == '--probe'
-    if probe_only:
-        rest = rest[1:]
+    probe_only, guard = False, None
+    while rest and rest[0] != '--':
+        if rest[0] == '--probe':
+            probe_only, rest = True, rest[1:]
+        elif rest[0] == '--guard' and len(rest) > 1:
+            guard, rest = rest[1], rest[2:]
+        else:
+            raise SystemExit(f'pid-namespace: unknown inner option {rest[0]}')
     assert rest and rest[0] == '--', rest
     rest = rest[1:]
     env = json.loads(Path(env_file).read_text())
@@ -129,10 +146,25 @@ def inner(args):
     if visible:
         print(f'pid-namespace: same-uid Syncthing visible inside the namespace: {visible}', file=sys.stderr)
         return 70
-    return init(rest, env)
+    return init(rest, env, guard)
 
 
-def init(argv, env):
+def reap():
+    try:
+        while os.waitpid(-1, os.WNOHANG)[0]:
+            pass
+    except ChildProcessError:
+        pass
+
+
+def guard_fixtures(root):
+    """The caller's fixture guard, run while the namespace still holds the survivors."""
+    reap()
+    processes = runpy.run_path(str(HERE.with_name('sync-fixture-processes.py')), run_name='fixtures')
+    return processes['check'](root)
+
+
+def init(argv, env, guard=None):
     """PID 1 of the namespace: run argv, forward signals, reap orphans."""
     child = os.fork()
     if child == 0:
@@ -151,8 +183,14 @@ def init(argv, env):
         except InterruptedError:
             continue
         if pid == child:
-            # Leaving PID 1 ends every remaining process of the namespace.
-            return os.waitstatus_to_exitcode(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(status)
+            code = os.waitstatus_to_exitcode(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(status)
+            # Leaving PID 1 ends every remaining process of the namespace, so
+            # check for leaked fixtures first; a test failure keeps its code.
+            if guard is not None and guard_fixtures(guard) and code == 0:
+                print(f'pid-namespace: the command succeeded but left fixture processes under {guard}',
+                      file=sys.stderr, flush=True)
+                code = LEAKED_FIXTURE
+            return code
 
 
 if __name__ == '__main__':
