@@ -43,6 +43,7 @@ TESTS = {
     'issue3079_removed_computer_rejoins_and_a_stale_removal_cannot_remove_it_again',
     'issue3079_rejoin_through_another_computer_reuses_the_kept_copy',
     'issue3079_offline_removal_then_rejoin_through_another_computer',
+    'issue3105_receiver_shares_onward_then_refreshes_and_removes_that_computer',
 }
 # linux_bootstrap::connect_with repeats complete host discovery
 # (direct::configuration_paths) before taking lifecycle authority.

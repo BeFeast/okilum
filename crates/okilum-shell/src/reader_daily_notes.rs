@@ -585,19 +585,17 @@ impl Reader {
             )
         })();
         if result.is_ok() {
-            // From Inbox, Projects or Logs the note must come on screen,
-            // as `open_note` does; Quick Look draws over the editor.
-            if self.project_navigation.active.is_none() {
-                self.close_project(window, cx);
-            }
-            self.project_navigation.section = reader_project_navigation::Section::Reader;
-            self.tree_preview.close();
+            self.prepare_daily_show(window, cx);
         }
         match result {
             Ok(Today::Existing(rel)) => self.append_daily_entry(rel, &prefs.settings, window, cx),
             Ok(Today::Created { rel, source }) => {
                 self.trace_file_operation("daily_note", "created", &rel, None, cx);
                 self.show_created_note(rel, source, window, cx);
+            }
+            Ok(Today::Draft { rel, text }) => {
+                self.trace_file_operation("daily_note", "draft", &rel, None, cx);
+                self.offer_daily_draft(rel, text, window, cx);
             }
             Err(error) => {
                 let error = format!("{error:#}");
@@ -632,6 +630,25 @@ impl Reader {
         let Some(state) = self.session_directory.clone() else {
             return;
         };
+        let drafts = state.join("editor-drafts");
+        // Unsaved edits from before (a crash, another session) wait for the
+        // normal recovery offer: open the note as it is and add nothing, so
+        // the entry never publishes a draft nobody reviewed (#3182).
+        if okilum_core::file_editor::FileEditor::has_unsaved_draft(
+            &self.vault_root.join(&rel),
+            &drafts,
+        )
+        .unwrap_or(true)
+        {
+            self.trace_file_operation("daily_note", "draft-waiting", &rel, None, cx);
+            self.open_note(&rel, None, window, cx);
+            reader_toast::transient(
+                "Today's note has unsaved edits from before. Restore them or keep the note as it is, then press Today's note again to add an entry.",
+                window,
+                cx,
+            );
+            return;
+        }
         match okilum_core::daily_notes::append_entry(
             &self.vault_root,
             &rel,
@@ -652,6 +669,150 @@ impl Reader {
         }
     }
 
+    /// Bring the Reader to the note: from Inbox, Projects or Logs, and over
+    /// Quick Look, as `open_note` does.
+    fn prepare_daily_show(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.project_navigation.active.is_none() {
+            self.close_project(window, cx);
+        }
+        self.project_navigation.section = reader_project_navigation::Section::Reader;
+        self.tree_preview.close();
+    }
+
+    /// Today's note is gone but its unsaved draft is kept (#3182): ask,
+    /// never «choose another name».
+    fn offer_daily_draft(
+        &mut self,
+        rel: String,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let preview: String = text.lines().take(8).collect::<Vec<_>>().join("\n");
+        let reader = cx.entity().downgrade();
+        // Both answers act on exactly what is shown: this vault, this note.
+        let root = self.vault_root.clone();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            draft_dialog(dialog, &root, &rel, &preview, reader.clone(), cx)
+        });
+        cx.notify();
+    }
+
+    /// «Restore draft»: the draft becomes today's note again.
+    pub(super) fn restore_daily_draft(
+        &mut self,
+        root: &Path,
+        rel: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.daily_choice_still_applies(root, window, cx) {
+            return;
+        }
+        let Some(state) = self.session_directory.clone() else {
+            return;
+        };
+        match okilum_core::daily_notes::restore_draft(
+            &self.vault_root,
+            &rel,
+            &state.join("editor-drafts"),
+        ) {
+            Ok(Today::Created { rel, source }) => {
+                self.trace_file_operation("daily_note", "restored", &rel, None, cx);
+                self.prepare_daily_show(window, cx);
+                self.show_created_note(rel, source, window, cx);
+            }
+            // The note came back meanwhile (Sync, another window): nothing was
+            // written; it opens with its normal recovery offer.
+            Ok(Today::Existing(rel)) | Ok(Today::Draft { rel, .. }) => {
+                self.trace_file_operation("daily_note", "back", &rel, None, cx);
+                self.prepare_daily_show(window, cx);
+                self.open_note(&rel, None, window, cx);
+                reader_toast::transient(
+                    "Today's note is back on disk; nothing was overwritten. Its unsaved edits are offered on the note.",
+                    window,
+                    cx,
+                );
+            }
+            Err(error) => {
+                let error = format!("{error:#}");
+                self.trace_file_operation("daily_note", "failed", &rel, Some(&error), cx);
+                reader_toast::error(format!("Cannot restore the draft: {error}"), window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// The vault the choice was shown in is still the one open; else nothing
+    /// is touched and the person presses Today's note again.
+    fn daily_choice_still_applies(
+        &mut self,
+        root: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.vault_root == root {
+            return true;
+        }
+        reader_toast::transient(
+            "Another vault is open now; nothing was changed. Press Today's note again.",
+            window,
+            cx,
+        );
+        false
+    }
+
+    /// «Start fresh from template» for the note the choice was shown for
+    /// (`rel`, not the clock's day): its draft stays in Recover notes.
+    pub(super) fn start_fresh_daily_note(
+        &mut self,
+        root: &Path,
+        rel: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.daily_choice_still_applies(root, window, cx) {
+            return;
+        }
+        let Some(state) = self.session_directory.clone() else {
+            return;
+        };
+        let result = (|| -> anyhow::Result<Today> {
+            let prefs = self.reload_daily_prefs().map_err(anyhow::Error::msg)?;
+            let templates = self.creation_templates()?;
+            okilum_core::daily_notes::start_fresh(
+                &self.vault_root,
+                rel,
+                &prefs.settings,
+                &templates,
+                now(),
+                &state.join("editor-drafts"),
+            )
+        })();
+        match result {
+            Ok(Today::Created { rel, source }) => {
+                self.trace_file_operation("daily_note", "fresh", &rel, None, cx);
+                self.prepare_daily_show(window, cx);
+                self.show_created_note(rel, source, window, cx);
+                reader_toast::transient(
+                    "The earlier draft is kept in File → Recover notes…",
+                    window,
+                    cx,
+                );
+            }
+            Ok(Today::Existing(rel)) | Ok(Today::Draft { rel, .. }) => {
+                self.prepare_daily_show(window, cx);
+                self.open_note(&rel, None, window, cx);
+            }
+            Err(error) => {
+                let error = format!("{error:#}");
+                self.trace_file_operation("daily_note", "failed", "", Some(&error), cx);
+                reader_toast::error(format!("Cannot start today's note: {error}"), window, cx);
+            }
+        }
+        cx.notify();
+    }
+
     fn set_daily_entry(&mut self, entry: Option<String>, cx: &mut Context<Self>) {
         let mut settings = self.daily_settings();
         settings.entry = entry.unwrap_or_default();
@@ -662,6 +823,84 @@ impl Reader {
         }
         self.set_daily_settings(settings, cx);
     }
+}
+
+/// A waiting draft of today's note: Restore it, or start fresh and keep it
+/// in recovery. Built from values only; it never reads the Reader.
+fn draft_dialog(
+    dialog: gpui_component::dialog::Dialog,
+    root: &Path,
+    rel: &str,
+    preview: &str,
+    reader: WeakEntity<Reader>,
+    cx: &mut App,
+) -> gpui_component::dialog::Dialog {
+    let muted = brand::palette(cx).text_muted;
+    let border = brand::palette(cx).border;
+    let (restore, fresh) = (reader.clone(), reader);
+    let restore_rel = rel.to_owned();
+    let fresh_rel = rel.to_owned();
+    let (restore_root, fresh_root) = (root.to_path_buf(), root.to_path_buf());
+    dialog
+        .title("Today's note has an unsaved draft")
+        .width(px(460.))
+        .child(
+            v_flex()
+                .gap_3()
+                .debug_selector(|| "daily-draft".into())
+                .child(div().text_sm().child(format!(
+                    "{rel} is not in the vault, but its unsaved edits are kept. Restore them as today's note, or start fresh from the template; the draft then stays in File → Recover notes…"
+                )))
+                .child(
+                    div()
+                        .debug_selector(|| "daily-draft-preview".into())
+                        .p_2()
+                        .border_1()
+                        .border_color(border)
+                        .rounded_md()
+                        .text_sm()
+                        .text_color(muted)
+                        .whitespace_normal()
+                        .child(preview.to_owned()),
+                ),
+        )
+        .footer(
+            h_flex()
+                .justify_end()
+                .gap_2()
+                .child(
+                    Button::new("daily-draft-cancel")
+                        .debug_selector(|| "daily-draft-cancel".into())
+                        .ghost()
+                        .label("Cancel")
+                        .on_click(|_, window, cx| window.close_dialog(cx)),
+                )
+                .child(
+                    Button::new("daily-draft-fresh")
+                        .debug_selector(|| "daily-draft-fresh".into())
+                        .outline()
+                        .label("Start fresh from template")
+                        .on_click(move |_, window, cx| {
+                            window.close_dialog(cx);
+                            let _ = fresh.update(cx, |this, cx| {
+                                this.start_fresh_daily_note(&fresh_root, &fresh_rel, window, cx)
+                            });
+                        }),
+                )
+                .child(
+                    Button::new("daily-draft-restore")
+                        .debug_selector(|| "daily-draft-restore".into())
+                        .primary()
+                        .label("Restore draft")
+                        .on_click(move |_, window, cx| {
+                            window.close_dialog(cx);
+                            let rel = restore_rel.clone();
+                            let _ = restore.update(cx, |this, cx| {
+                                this.restore_daily_draft(&restore_root, rel, window, cx)
+                            });
+                        }),
+                ),
+        )
 }
 
 /// The first-press dialog: folder and template, prefilled; Create or Cancel.
@@ -1245,6 +1484,201 @@ mod tests {
             );
             assert_eq!(r.source_text(cx).as_deref(), Some(text.as_str()));
         });
+    }
+
+    /// Today's path set up in Okilum (Daily/, template Templates/Daily.md),
+    /// and a recovery draft left at it as an editor leaves one; with
+    /// `delete`, the note itself is gone (Oleg, beta 7925).
+    fn waiting_draft(temp: &tempfile::TempDir, delete: bool) -> (PathBuf, String) {
+        let root = temp.path().join("vault");
+        let state = temp.path().join("state");
+        let settings = DailySettings {
+            template: "Templates/Daily.md".into(),
+            ..Default::default()
+        };
+        // The Reader keys its preference by the canonical vault root.
+        save(&state, &root.canonicalize().unwrap(), &settings).unwrap();
+        save(&state, &root, &settings).unwrap();
+        let rel = okilum_core::vault::note_path(&settings.relative_path(super::now()).unwrap());
+        let path = root.join(&rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "# saved\n").unwrap();
+        {
+            let mut editor =
+                okilum_core::file_editor::FileEditor::open(&path, &state.join("editor-drafts"))
+                    .unwrap();
+            editor.set_text("lost words\n".into()).unwrap();
+        }
+        if delete {
+            std::fs::remove_file(&path).unwrap();
+        }
+        (root, rel)
+    }
+
+    /// #3182 (beta 7925): today's note was deleted after an unsaved edit.
+    /// Today's note asks instead of «choose another name»; Restore brings the
+    /// draft back as today's note, open for writing.
+    #[gpui::test]
+    fn waiting_draft_of_a_deleted_note_is_offered_and_restored(cx: &mut TestAppContext) {
+        let temp = vault_with_daily_template();
+        let (root, rel) = waiting_draft(&temp, true);
+        let (reader, visual) = open_vault(cx, &temp);
+        reader.update_in(visual, |r, window, cx| r.open_daily_note(window, cx));
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("daily-draft").is_some(),
+            "the draft is offered"
+        );
+        assert!(
+            !root.join(&rel).exists(),
+            "nothing created before the choice"
+        );
+        let restore = visual.debug_bounds("daily-draft-restore").unwrap();
+        visual.simulate_click(restore.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("daily-draft").is_none());
+        assert_eq!(
+            std::fs::read_to_string(root.join(&rel)).unwrap(),
+            "lost words\n"
+        );
+        reader.read_with(visual, |r, cx| {
+            assert_eq!(r.pane.current_rel, rel);
+            assert!(r.pane.editing.is_some());
+            assert_eq!(r.source_text(cx).as_deref(), Some("lost words\n"));
+        });
+    }
+
+    /// Start fresh: the note comes from the template and opens clean; the
+    /// draft stays in Recover notes.
+    #[gpui::test]
+    fn waiting_draft_start_fresh_keeps_it_in_recovery(cx: &mut TestAppContext) {
+        let temp = vault_with_daily_template();
+        let (root, rel) = waiting_draft(&temp, true);
+        let (reader, visual) = open_vault(cx, &temp);
+        reader.update_in(visual, |r, window, cx| r.open_daily_note(window, cx));
+        visual.run_until_parked();
+        let fresh = visual.debug_bounds("daily-draft-fresh").expect("offered");
+        visual.simulate_click(fresh.center(), Modifiers::default());
+        visual.run_until_parked();
+        let text = std::fs::read_to_string(root.join(&rel)).unwrap();
+        assert!(
+            text.ends_with("\n\n## Plan\n"),
+            "from the template: {text:?}"
+        );
+        assert!(!text.contains("lost words"));
+        reader.read_with(visual, |r, cx| {
+            assert_eq!(r.pane.current_rel, rel);
+            assert_eq!(
+                r.source_text(cx).as_deref(),
+                Some(text.as_str()),
+                "opens clean"
+            );
+        });
+        let listing =
+            okilum_core::source_history::drafts(&temp.path().join("state/editor-drafts"), &root)
+                .unwrap();
+        assert!(
+            listing.versions.iter().any(|v| v.text == "lost words\n"),
+            "the draft stays in recovery"
+        );
+    }
+
+    /// The note is there with unsaved edits from before: Today's note opens
+    /// it with the normal recovery offer and appends nothing.
+    #[gpui::test]
+    fn existing_note_with_a_draft_opens_with_the_recovery_offer(cx: &mut TestAppContext) {
+        let temp = vault_with_daily_template();
+        let (root, rel) = waiting_draft(&temp, false);
+        let (reader, visual) = open_vault(cx, &temp);
+        reader.update_in(visual, |r, window, cx| r.open_daily_note(window, cx));
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("daily-draft").is_none());
+        assert_eq!(
+            std::fs::read_to_string(root.join(&rel)).unwrap(),
+            "# saved\n",
+            "no entry over unreviewed edits"
+        );
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.pane.current_rel, rel);
+            assert!(
+                r.pane.editing.is_none(),
+                "the draft is not adopted silently"
+            );
+            assert!(r.pane.recovery_offer, "the normal recovery offer");
+        });
+    }
+
+    /// #3190 review: the note comes back (Sync) while the choice is open.
+    /// Restore overwrites nothing and opens it with the normal recovery offer.
+    #[gpui::test]
+    fn restore_after_the_note_came_back_opens_it_with_the_offer(cx: &mut TestAppContext) {
+        let temp = vault_with_daily_template();
+        let (root, rel) = waiting_draft(&temp, true);
+        let (reader, visual) = open_vault(cx, &temp);
+        reader.update_in(visual, |r, window, cx| r.open_daily_note(window, cx));
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("daily-draft").is_some());
+        std::fs::write(root.join(&rel), "# synced back\n").unwrap();
+        let restore = visual.debug_bounds("daily-draft-restore").unwrap();
+        visual.simulate_click(restore.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            std::fs::read_to_string(root.join(&rel)).unwrap(),
+            "# synced back\n"
+        );
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.pane.current_rel, rel);
+            assert!(
+                r.pane.editing.is_none(),
+                "the draft is not adopted silently"
+            );
+            assert!(r.pane.recovery_offer, "the normal recovery offer");
+        });
+    }
+
+    /// #3190 review: the choice was shown for an earlier day (the dialog
+    /// stayed open across midnight) and today's note has a draft of its own.
+    /// Start fresh for the shown day leaves today's journal untouched.
+    #[gpui::test]
+    fn start_fresh_acts_on_the_shown_day_and_keeps_todays_draft(cx: &mut TestAppContext) {
+        let temp = vault_with_daily_template();
+        let (root, today) = waiting_draft(&temp, true);
+        let drafts = temp.path().join("state/editor-drafts");
+        let shown = "Daily/2000-01-01.md";
+        std::fs::write(root.join(shown), "# old\n").unwrap();
+        {
+            let mut editor =
+                okilum_core::file_editor::FileEditor::open(&root.join(shown), &drafts).unwrap();
+            editor.set_text("draft of the shown day\n".into()).unwrap();
+        }
+        std::fs::remove_file(root.join(shown)).unwrap();
+        let (reader, visual) = open_vault(cx, &temp);
+        reader.update_in(visual, |r, window, cx| {
+            let vault = r.vault_root.clone();
+            r.start_fresh_daily_note(&vault, shown, window, cx)
+        });
+        visual.run_until_parked();
+        let text = std::fs::read_to_string(root.join(shown)).unwrap();
+        assert!(text.starts_with("# 2000-01-01\n"), "{text:?}");
+        assert!(!root.join(&today).exists());
+        assert_eq!(
+            okilum_core::file_editor::FileEditor::unsaved_draft_text(&root.join(&today), &drafts)
+                .unwrap()
+                .as_deref(),
+            Some("lost words\n"),
+            "today's draft stays attached to today's note"
+        );
+        // A choice from another vault changes nothing.
+        reader.update_in(visual, |r, window, cx| {
+            r.start_fresh_daily_note(Path::new("/elsewhere"), &today, window, cx)
+        });
+        visual.run_until_parked();
+        assert!(!root.join(&today).exists());
+        assert!(okilum_core::file_editor::FileEditor::has_unsaved_draft(
+            &root.join(&today),
+            &drafts
+        )
+        .unwrap());
     }
 
     fn hhmm(at: time::OffsetDateTime) -> String {
