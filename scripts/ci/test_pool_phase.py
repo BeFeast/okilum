@@ -361,7 +361,7 @@ class PoolShardSelection(unittest.TestCase):
         for shard in ("base", "admission", "sync", "desktop", "rust-a", "rust-b"):
             self.assertIn(f'"{shard} ', dispatch)
         workflow = (ROOT / ".github/workflows/agent-checks.yml").read_text()
-        linux = workflow[workflow.index("\n  linux:"):]
+        linux = workflow[workflow.index("\n  linux-pool:"):]
         for step in re.findall(r'pool-phase\.sh "([^"]+)"', linux):
             self.assertIn(f'pool_phase "{step}"', gate, step)
 
@@ -454,7 +454,7 @@ class PoolGateEndToEnd(unittest.TestCase):
     def reporters(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/agent-checks.yml").read_text())
         steps = []
-        for step in workflow["jobs"]["linux"]["steps"]:
+        for step in workflow["jobs"]["linux-pool"]["steps"]:
             run, condition = step.get("run", ""), str(step.get("if", ""))
             # An ordinary PR run: no benchmark-only or publication-only steps.
             benchmark_only = "agent-checks-benchmark/" in condition and "!startsWith" not in condition
