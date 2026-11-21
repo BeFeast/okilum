@@ -17,19 +17,19 @@ slots (Oleg 21.11: 4–6 shards, PR gate tickets first in build-slot, target
 `build-slot run --priority critical` per shard; the nightly scheduled run on
 `main` uses normal priority. Host capabilities come from the build-slot
 coordinator (`--needs`). A critical ticket skips the `--host` preference
-delay, so five shards are pinned with `--require-host` (two per heavy host
-within its memory budget); `admission` takes whichever `tmpfs`+`pidns` host is
-free. Each shard runs with umask 022 and its own `XDG_STATE_HOME` and
+delay, so every shard is pinned with `--require-host` within each host's
+memory budget. Sync fixtures stay off ZFS okilum-build-nas, where managed
+admission overran its 600 s deadline. Each shard runs with umask 022 and its own `XDG_STATE_HOME` and
 `XDG_DATA_HOME`, as on a fresh hosted runner (`pool_hosted_env`): a pool host
 keeps one account across runs.
 
 | Shard | Host | Needs | Phases |
 |---|---|---|---|
 | `base` | baldr | `docker` | AppImage runtime image, helper controls, CI/releases/updater Python suites, Sync Help and brand, managed admission crash checkpoints |
-| `admission` | baldr or slava | `tmpfs`, `pidns` | managed admission `remaining-0` and the negative controls, real disk-full transfer (private tmpfs) |
-| `sync` | okilum-build-nas | — | Sync source sharing, managed admission `remaining-1`, local writer authority |
+| `admission` | baldr | `tmpfs`, `pidns` | managed admission `remaining-0` and the negative controls, real disk-full transfer (private tmpfs) |
+| `sync` | okilum-dev | — | Sync source sharing, managed admission `remaining-1`, local writer authority |
 | `desktop` | okilum-build-nas | `dbus` | workspace clippy, `cargo fmt --check` and desktop build, pairing through `okilum sync serve`, reveal stress, vault regression controls |
-| `rust-a` | baldr | `userbus`, `dbus` | `okilum-core` suite, Linux Rust groups outside the workspace census |
+| `rust-a` | slava | `userbus`, `dbus` | `okilum-core` suite, Linux Rust groups outside the workspace census |
 | `rust-b` | okilum-dev | `userbus`, `dbus` | Linux Rust workspace census |
 
 Every shard also verifies the toolchain, vendor, locked dependencies and the

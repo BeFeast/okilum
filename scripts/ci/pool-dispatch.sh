@@ -27,9 +27,12 @@ short=$(printf '%s' "$sha" | cut -c1-12)
 # critical ticket (every PR run) skips the --host preference delay, so a
 # preference placed shards by capability alone: base reached slava, which
 # lists docker but cannot open the socket, and both Rust shards met on
-# okilum-dev. The pins keep two shards per heavy host within its memory
-# budget (baldr 4+7 of 13, okilum-dev 7 of 12, okilum-build-nas 4+7 of 14);
-# admission takes whichever tmpfs+pidns host is free (baldr or slava).
+# okilum-dev. The pins keep each host within its memory budget (baldr 4+3 of
+# 13, okilum-dev 7+4 of 12, slava 7 of 8, okilum-build-nas 7 of 14).
+# Managed admission's Syncthing fixtures are fsync- and timing-bound under an
+# unchanged 600 s deadline: on okilum-build-nas (ZFS) next to the desktop
+# compile, remaining-1 overran it (run 44902434687), so sync runs on ext4
+# okilum-dev and admission on baldr.
 # cargo jobs `-` keeps the slot default. The okilum-shell test binary alone
 # peaks at the 8 GiB slot limit in one rustc (anon 8.09 GB at --jobs 1 on
 # okilum-dev, 21.11); with any concurrent compile it was OOM-killed in every
@@ -40,10 +43,10 @@ case $mode in
     linux-full)
         shards=(
             "base 4 docker baldr 25 -"
-            "rust-a 7 userbus,dbus baldr 25 1"
+            "admission 3 tmpfs,pidns baldr 25 -"
+            "rust-a 7 userbus,dbus slava 30 1"
             "rust-b 7 userbus,dbus okilum-dev 25 1"
-            "admission 3 tmpfs,pidns - 25 -"
-            "sync 4 - okilum-build-nas 25 -"
+            "sync 4 - okilum-dev 25 -"
             "desktop 7 dbus okilum-build-nas 25 -"
         )
         ;;

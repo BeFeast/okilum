@@ -529,7 +529,7 @@ class PoolGateEndToEnd(unittest.TestCase):
             return kind, results
 
     def test_all_shards_green_passes_every_reporter(self):
-        self.assertEqual(self.shards(), ["base", "rust-a", "rust-b", "admission", "sync", "desktop"])
+        self.assertEqual(self.shards(), ["base", "admission", "rust-a", "rust-b", "sync", "desktop"])
         kind, results = self.gate()
         self.assertEqual(kind, "verdict")
         self.assertIn("Verify every pool shard and phase passed", results)
