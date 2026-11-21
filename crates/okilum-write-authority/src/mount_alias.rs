@@ -22,6 +22,9 @@
 use super::*;
 
 const ANCESTRY: &str = "ancestry.json";
+/// A retired binding, moved into its own scope directory. One rename both
+/// unpublishes the binding and marks the directory for setting aside.
+const RETIRED: &str = "retired-binding.json";
 /// Scopes may enclose scopes; a chain longer than this is a corrupt registry.
 pub(super) const MAX_SCOPE_HOPS: usize = 64;
 
@@ -173,7 +176,9 @@ impl Authority {
     /// Retire an idle UUID-less binding whose path no longer reaches its folder,
     /// because that folder is being opened through another path. Callers hold
     /// `registry.lock`. A hold or a live writer keeps the binding and refuses.
-    /// Handles of the retired binding fail closed: their record is gone.
+    /// Handles of the retired binding fail closed: their record is gone, and
+    /// a later registration at this path sets the directory aside and creates
+    /// new lock files and a new epoch (`set_aside_retired`).
     pub(super) fn retire_unmounted(&self) -> Result<()> {
         let admission = file(&self.directory.join("admission.lock"), false)?;
         admission
@@ -193,12 +198,38 @@ impl Authority {
         writers
             .try_lock()
             .context("A writer still uses the unmounted path; retry after it finishes")?;
-        fs::rename(
-            &self.binding_path,
-            self.binding_path.with_extension("retired"),
-        )?;
+        fs::rename(&self.binding_path, self.directory.join(RETIRED))?;
         #[cfg(unix)]
         File::open(&self.account)?.sync_all()?;
+        Ok(())
+    }
+
+    /// Registration of a path whose scope directory belongs to a retired
+    /// binding: move that directory aside so the path starts a fresh scope.
+    /// Callers hold `registry.lock` and have found no binding for the path.
+    /// Stale handles stay fenced: the new directory and lock files have other
+    /// identities and the new state another epoch.
+    pub(super) fn set_aside_retired(directory: &Path) -> Result<()> {
+        let marker = directory.join(RETIRED);
+        if !marker.try_exists()? {
+            return Ok(());
+        }
+        let retired: Binding = read(&marker)?;
+        ensure!(
+            uuid::Uuid::parse_str(&retired.epoch).is_ok(),
+            "Invalid retired writer authority; explicit recovery required"
+        );
+        let name = directory
+            .file_name()
+            .context("Writer authority directory has no name")?
+            .to_string_lossy()
+            .into_owned();
+        fs::rename(
+            directory,
+            directory.with_file_name(format!("{name}.retired-{}", retired.epoch)),
+        )?;
+        #[cfg(unix)]
+        File::open(directory.parent().context("Authority parent missing")?)?.sync_all()?;
         Ok(())
     }
 

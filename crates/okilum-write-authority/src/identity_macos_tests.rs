@@ -468,6 +468,8 @@ fn identity_3204_stale_binding_is_retired_through_another_mount() {
     let (second, _second) = mount(&e.base, &e.server, "by-hostname", ALIAS);
     let old = Authority::open_in(&e.account, &first.join("Vault")).unwrap();
     old.operation().unwrap();
+    // A completed hold leaves state.json at a later revision.
+    release(old.begin_drain("completed-operation").unwrap());
     fs::remove_dir_all(&first).unwrap();
     let new = Authority::open_in(&e.account, &second.join("Vault")).unwrap();
     assert_ne!(new.binding_path, old.binding_path);
@@ -481,6 +483,26 @@ fn identity_3204_stale_binding_is_retired_through_another_mount() {
     assert!(!bound(&e.account, &first.join("Vault")));
     let hold = again.begin_drain("exclusive-operation").unwrap();
     assert!(new.admit().is_err());
+    release(hold);
+    // Now the second mount is gone too: the first path registers again in its
+    // retired directory, and handles of both old scopes stay fenced.
+    release(new.begin_drain("completed-operation").unwrap());
+    fs::remove_dir_all(&second).unwrap();
+    let returned = Authority::open_in(&e.account, &first.join("Vault")).unwrap();
+    assert_eq!(returned.binding_path, old.binding_path);
+    assert_ne!(returned.binding.epoch, old.binding.epoch);
+    assert!(!new.binding_path.exists(), "the second binding is retired");
+    returned.operation().unwrap();
+    assert!(old.admit().is_err(), "the retired first scope stays fenced");
+    assert!(
+        new.admit().is_err(),
+        "the retired second scope stays fenced"
+    );
+    let hold = returned.begin_drain("exclusive-operation").unwrap();
+    assert!(Authority::open_in(&e.account, &first.join("Vault"))
+        .unwrap()
+        .admit()
+        .is_err());
     release(hold);
 
     // A stale binding with an unfinished hold is kept and refuses the new path.

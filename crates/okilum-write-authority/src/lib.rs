@@ -500,6 +500,8 @@ impl Authority {
         // No binding was published, so no caller can have acquired this scope.
         // Resume interrupted initialization under registry.lock, preserving any
         // unfinished durable hold rather than resetting operational state.
+        // A directory left by a retired UUID-less binding (#3204) is set aside.
+        Self::set_aside_retired(&directory)?;
         private_dir(&directory)?;
         let state_path = directory.join("state.json");
         if state_path.try_exists()? {

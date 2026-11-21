@@ -61,7 +61,10 @@ mount in `ancestry.json` in its private directory when it is registered
 - a binding whose path no longer reaches its folder (mount gone, or another
   folder there) is retired, when idle, once its folder is opened through
   another path; a hold or a live writer keeps it and refuses the new path. A
-  child whose alias parent was retired admits writers again.
+  child whose alias parent was retired admits writers again. Retiring moves
+  the binding into its scope directory; registering that path later sets the
+  directory aside and starts a new epoch with new lock files, so handles of the
+  retired scope stay fenced.
 
 A pre-#3204 UUID-less binding without a record whose root cannot be read
 refuses a new UUID-less root that it might lie inside, until it is mounted
