@@ -9,6 +9,13 @@ use std::time::Duration;
 #[cfg(any(windows, test))]
 mod windows_proxy;
 
+mod cause;
+#[cfg(any(windows, test))]
+mod route;
+mod tunnel;
+pub use cause::{classify, NetworkCause, ProxyDiscoveryFailed};
+pub use tunnel::{connect_tunnel, local_network_socket_route, SocketRoute, TunnelError};
+
 pub fn client(endpoint: &str, version: &str, timeout: Duration) -> Result<Client> {
     builder(endpoint, version, timeout)?
         .build()
@@ -39,11 +46,7 @@ fn blocking_builder(
     direct: fn(&url::Url) -> bool,
 ) -> Result<ClientBuilder> {
     let endpoint = parse_endpoint(endpoint)?;
-    let builder = Client::builder()
-        .user_agent(format!("Okilum/{version} ({})", std::env::consts::OS))
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(timeout)
-        .redirect(reqwest::redirect::Policy::none());
+    let builder = blocking_defaults(version, timeout);
     #[cfg(windows)]
     let builder = {
         let builder = builder.use_native_tls();
@@ -56,6 +59,50 @@ fn blocking_builder(
     #[cfg(not(windows))]
     let _ = (endpoint, direct);
     Ok(builder)
+}
+
+fn blocking_defaults(version: &str, timeout: Duration) -> ClientBuilder {
+    Client::builder()
+        .user_agent(format!("Okilum/{version} ({})", std::env::consts::OS))
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+}
+
+/// For a client whose hosts are not known when it is built: pasted links and
+/// images, project logos, delivery feeds. It may follow redirects to another
+/// host, so on Windows the proxy is decided for each request's own origin
+/// instead of once per client: the environment proxy for that scheme with
+/// `NO_PROXY`, else WinHTTP static/per-protocol/PAC/WPAD (cached per origin
+/// for five minutes). Loopback stays direct.
+///
+/// A discovery failure sends that request direct, as browsers do when a PAC
+/// script cannot be fetched: these clients are best-effort previews, and a
+/// per-request hook cannot return an error. Single-origin clients keep the
+/// fail-closed [`builder`]. macOS/Linux keep bundled roots and env proxies.
+pub fn per_request_builder(version: &str, timeout: Duration) -> ClientBuilder {
+    per_request(version, timeout, is_loopback)
+}
+
+/// As [`per_request_builder`], with private IP literals also direct; see
+/// [`local_network_builder`].
+pub fn local_network_per_request_builder(version: &str, timeout: Duration) -> ClientBuilder {
+    per_request(version, timeout, is_private_literal)
+}
+
+fn per_request(version: &str, timeout: Duration, direct: fn(&url::Url) -> bool) -> ClientBuilder {
+    let builder = blocking_defaults(version, timeout);
+    #[cfg(windows)]
+    // Always the hook, even with an environment proxy: reqwest would apply
+    // `HTTP_PROXY` to http only and never read PAC for https. The hook takes
+    // the request scheme's environment proxy (with `NO_PROXY`) and asks
+    // WinHTTP for a scheme without one.
+    let builder = builder
+        .use_native_tls()
+        .proxy(route::PerRequest::new(direct, windows_proxy::lookup).into_proxy());
+    #[cfg(not(windows))]
+    let _ = direct;
+    builder
 }
 
 fn parse_endpoint(endpoint: &str) -> Result<url::Url> {
@@ -210,37 +257,18 @@ pub fn primary_then_fallback<T>(
 }
 
 /// Short actionable reason for UI; the caller retains/logs the entire chain.
+/// Typed: an HTTP status wins, then [`classify`], which never reads a URL.
 pub fn reason(error: &anyhow::Error) -> String {
     for cause in error.chain() {
-        if let Some(error) = cause.downcast_ref::<reqwest::Error>() {
-            if let Some(status) = error.status() {
-                return http_reason(status.as_u16());
-            }
-            if error.is_timeout() {
-                return "The network request timed out".into();
-            }
+        if let Some(status) = cause
+            .downcast_ref::<reqwest::Error>()
+            .and_then(reqwest::Error::status)
+        {
+            return http_reason(status.as_u16());
         }
     }
-    let detail = format!("{error:#}").to_ascii_lowercase();
-    if detail.contains("proxy authentication required") || detail.contains("http 407") {
-        return http_reason(407);
-    }
-    if detail.contains("certificate")
-        || detail.contains("unknownissuer")
-        || detail.contains("untrustedroot")
-        || detail.contains("0x80090325")
-        || detail.contains("0x800b0109")
-        || detail.contains("tls")
-        || detail.contains("ssl")
-    {
-        "The TLS certificate is not trusted by this computer".into()
-    } else if detail.contains("proxy") || detail.contains("autoconfig") {
-        "The system proxy could not complete the request".into()
-    } else if detail.contains("timed out") || detail.contains("timeout") {
-        "The network request timed out".into()
-    } else {
-        "The network connection could not be completed".into()
-    }
+    let error: &(dyn std::error::Error + 'static) = error.as_ref();
+    classify(error).to_string()
 }
 
 pub fn http_reason(status: u16) -> String {

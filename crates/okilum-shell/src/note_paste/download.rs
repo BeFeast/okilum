@@ -50,8 +50,9 @@ fn client() -> Option<&'static reqwest::blocking::Client> {
         std::sync::OnceLock::new();
     CLIENT
         .get_or_init(|| {
-            reqwest::blocking::Client::builder()
-                .timeout(TIMEOUT)
+            // #1944: every host of a paste, so the proxy is decided per
+            // request's origin (cached), not once for the first image.
+            okilum_http::per_request_builder(env!("CARGO_PKG_VERSION"), TIMEOUT)
                 .connect_timeout(TIMEOUT)
                 .redirect(reqwest::redirect::Policy::limited(5))
                 .user_agent(concat!("Okilum/", env!("CARGO_PKG_VERSION")))
