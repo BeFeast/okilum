@@ -173,6 +173,78 @@ class AppImageTests(unittest.TestCase):
         # The old main-only actions/cache step never ran on hourly refs.
         self.assertFalse(any(str(s.get('uses', '')).startswith('actions/cache') for s in appimage['steps']))
 
+    def test_beta_cache_key_ignores_the_runner_images_preinstalled_toolchains(self):
+        # #3043: rust-cache hashes every installed toolchain, and ubuntu-22.04
+        # images 20261103/20261111 preinstall different stable Rust, so producers
+        # on the other image missed the single pruned entry and compiled cold.
+        import yaml
+        producer = yaml.safe_load((ROOT / '.github/workflows/forgejo-linux.yml').read_text())
+        seeder = yaml.safe_load((ROOT / '.github/workflows/beta-appimage-cache.yml').read_text())
+        for job in (producer['jobs']['appimage'], seeder['jobs']['seed']):
+            steps = job['steps']
+            index = next(i for i, s in enumerate(steps) if str(s.get('uses', '')).startswith('Swatinem/rust-cache@'))
+            before = steps[index - 1]
+            self.assertEqual(before.get('run'), 'bash scripts/ci/rust-cache-toolchains.sh')
+            self.assertEqual(before.get('if'), steps[index].get('if'))
+
+    def _run_toolchain_pin(self, installed, uninstall_works=True):
+        pinned = '1.100.0-x86_64-unknown-linux-gnu'
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary = Path(temporary)
+            state = temporary / 'toolchains.json'
+            state.write_text(json.dumps(installed))
+            log = temporary / 'calls.log'
+            bin_dir = temporary / 'bin'
+            bin_dir.mkdir()
+            rustup = bin_dir / 'rustup'
+            rustup.write_text(f"""#!{sys.executable}
+import json, sys
+state, log, pinned = {str(state)!r}, {str(log)!r}, {pinned!r}
+args = sys.argv[1:]
+with open(log, 'a') as out:
+    out.write(' '.join(args) + '\\n')
+names = json.load(open(state))
+if args == ['toolchain', 'install']:
+    names = names if pinned in names else names + [pinned]
+elif args == ['show', 'active-toolchain']:
+    print(pinned + " (overridden by '/repo/rust-toolchain.toml')")
+elif args == ['toolchain', 'list', '--quiet']:
+    print('\\n'.join(names))
+elif args[:2] == ['toolchain', 'uninstall'] and {uninstall_works!r}:
+    names = [n for n in names if n != args[2]]
+json.dump(names, open(state, 'w'))
+""")
+            rustup.chmod(0o755)
+            rustc = bin_dir / 'rustc'
+            rustc.write_text('#!/bin/sh\necho rustc 1.100.0\n')
+            rustc.chmod(0o755)
+            env = dict(os.environ, PATH=f'{bin_dir}:{os.environ["PATH"]}')
+            result = subprocess.run(['bash', str(ROOT / 'scripts/ci/rust-cache-toolchains.sh')],
+                                    env=env, capture_output=True, text=True)
+            return result, json.loads(state.read_text()), log.read_text().splitlines()
+
+    def test_toolchain_pin_leaves_only_the_pinned_toolchain_on_either_image(self):
+        pinned = '1.100.0-x86_64-unknown-linux-gnu'
+        # Image 20261103: stable 1.99.1 preinstalled. Image 20261111: stable is
+        # 1.100.0 under another name. Fresh runner: pinned not installed yet.
+        for installed in (['stable-x86_64-unknown-linux-gnu', pinned],
+                          ['stable-x86_64-unknown-linux-gnu'],
+                          [pinned]):
+            with self.subTest(installed=installed):
+                result, left, calls = self._run_toolchain_pin(installed)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(left, [pinned])
+                self.assertEqual(calls[0], 'toolchain install')
+                self.assertNotIn(f'toolchain uninstall {pinned}', calls)
+
+    def test_toolchain_pin_fails_when_another_toolchain_survives(self):
+        # Control: an uninstall that leaves the toolchain must not pass silently.
+        result, left, calls = self._run_toolchain_pin(
+            ['stable-x86_64-unknown-linux-gnu', '1.100.0-x86_64-unknown-linux-gnu'], uninstall_works=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('toolchain uninstall stable-x86_64-unknown-linux-gnu', calls)
+        self.assertIn('Expected only', result.stderr)
+
     def test_beta_is_one_hosted_job_with_inline_admission_and_blocking_checks(self):
         import yaml
         workflow = yaml.safe_load((ROOT / '.github/workflows/forgejo-linux.yml').read_text())

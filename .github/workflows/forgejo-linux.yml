@@ -130,6 +130,11 @@ jobs:
       # only registry/git dependencies: workspace and vendored path crates always
       # compile from this checkout, so a restore can never stand in for product code.
       # A Cargo.lock change falls back to the newest entry for the same toolchain/env.
+      # rust-cache keys on every installed toolchain; runner images differ in
+      # their preinstalled stable, which split the key per image (#3043).
+      - name: Keep only the pinned Rust toolchain
+        if: steps.select.outputs.build == 'true' && github.event.schedule != '5 22 * * 2,6'
+        run: bash scripts/ci/rust-cache-toolchains.sh
       - uses: Swatinem/rust-cache@v2
         if: steps.select.outputs.build == 'true' && github.event.schedule != '5 22 * * 2,6'
         with:
