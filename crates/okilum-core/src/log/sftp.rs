@@ -3,6 +3,13 @@
 //! This adapter deliberately stops on a changed consumed prefix: SFTP v3 has no
 //! portable inode identity and cannot recover an unobserved rotated-away file.
 //! Callers must display `ContinuityLost`, rather than imply gap-free recovery.
+//!
+//! A follow keeps one SFTP connection while it stays healthy. Growth is read
+//! with an overlap of already consumed bytes, so an in-place truncation or
+//! rewrite at the cursor is noticed in the same request. At EOF the path is
+//! reopened on that connection (rotation check), and after a reopen or a new
+//! connection the retained proof window (the last 64 KiB plus any unfinished
+//! record) is verified before more bytes are accepted.
 use crate::ssh_askpass::{self, Clock, Deadline};
 use std::io::{self, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -15,8 +22,13 @@ pub mod directory;
 
 const CHUNK: usize = 32 * 1024;
 const PACKET_LIMIT: usize = CHUNK + 4096;
-/// Retained continuity proof is bounded; reaching this limit requires a new session.
-pub const HISTORY_LIMIT: usize = 8 * 1024 * 1024;
+/// Consumed bytes re-verified after a reopen or reconnect.
+const PROOF: usize = 64 * 1024;
+/// Consumed bytes re-read in front of each growth read while attached.
+const OVERLAP: usize = 4 * 1024;
+/// An unfinished record (no newline yet) is retained up to this size; beyond
+/// it the follow stops explicitly instead of evicting or skipping bytes.
+pub const RECORD_LIMIT: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Target {
@@ -216,6 +228,15 @@ pub trait Transport {
     fn open(&mut self, target: &Target) -> io::Result<()>;
     fn read_at(&mut self, offset: u64, limit: usize) -> io::Result<Vec<u8>>;
     fn disconnect(&mut self);
+    /// Open `target` again for reading, on the live connection when there is
+    /// one, so a follow can notice rotation without a new SSH handshake.
+    fn reopen(&mut self, target: &Target) -> io::Result<()> {
+        self.open(target)
+    }
+    /// Size of the open file, when the server reports one.
+    fn size(&mut self) -> io::Result<Option<u64>> {
+        Ok(None)
+    }
     /// Clock of this transport's askpass dialogs: operation deadlines pause
     /// while one of its own connections waits for the person, never for others.
     fn prompt_clock(&self) -> Option<Arc<Clock>> {
@@ -352,6 +373,38 @@ fn decode_data(kind: u8, mut body: &[u8], limit: usize) -> io::Result<Vec<u8>> {
         _ => Err(invalid("SFTP read failed")),
     }
 }
+fn open_handle(session: &mut Session, target: &Target) -> io::Result<()> {
+    let mut request = Vec::new();
+    string(&mut request, &target.path);
+    request.extend_from_slice(&1u32.to_be_bytes()); // SSH_FXF_READ only
+    request.extend_from_slice(&0u32.to_be_bytes()); // no attributes
+    let (kind, body) = session.request(3, &request)?;
+    if kind != 102 {
+        return Err(invalid("SFTP read-only open failed"));
+    }
+    session.handle = take_string(&mut body.as_slice())?.to_vec();
+    Ok(())
+}
+fn close_handle(session: &mut Session) -> io::Result<()> {
+    let mut request = Vec::new();
+    string(&mut request, &std::mem::take(&mut session.handle));
+    let (kind, body) = session.request(4, &request)?;
+    if kind != 101 || take_u32(&mut body.as_slice())? != 0 {
+        return Err(invalid("SFTP close failed"));
+    }
+    Ok(())
+}
+/// SSH_FXP_ATTRS: the size is optional and comes first after the flags.
+fn decode_size(kind: u8, mut body: &[u8]) -> io::Result<Option<u64>> {
+    if kind != 105 {
+        return Err(invalid("SFTP stat failed"));
+    }
+    if take_u32(&mut body)? & 1 == 0 {
+        return Ok(None);
+    }
+    let size = body.get(..8).ok_or_else(|| invalid("Short SFTP size"))?;
+    Ok(Some(u64::from_be_bytes(size.try_into().unwrap())))
+}
 impl Transport for OpenSsh {
     fn open(&mut self, target: &Target) -> io::Result<()> {
         self.disconnect();
@@ -360,17 +413,19 @@ impl Transport for OpenSsh {
         if version.len() < 5 || version[0] != 2 || version[1..5] != 3u32.to_be_bytes() {
             return Err(invalid("SFTP v3 required"));
         }
-        let mut request = Vec::new();
-        string(&mut request, &target.path);
-        request.extend_from_slice(&1u32.to_be_bytes()); // SSH_FXF_READ only
-        request.extend_from_slice(&0u32.to_be_bytes()); // no attributes
-        let (kind, body) = session.request(3, &request)?;
-        if kind != 102 {
-            return Err(invalid("SFTP read-only open failed"));
-        }
-        session.handle = take_string(&mut body.as_slice())?.to_vec();
+        open_handle(&mut session, target)?;
         self.session = Some(session);
         Ok(())
+    }
+    fn reopen(&mut self, target: &Target) -> io::Result<()> {
+        let Some(session) = self.session.as_mut() else {
+            return self.open(target);
+        };
+        let result = close_handle(session).and_then(|()| open_handle(session, target));
+        if result.is_err() {
+            self.disconnect();
+        }
+        result
     }
     fn read_at(&mut self, offset: u64, limit: usize) -> io::Result<Vec<u8>> {
         let session = self
@@ -386,6 +441,16 @@ impl Transport for OpenSsh {
         decode_data(kind, &body, limit)
     }
 
+    fn size(&mut self) -> io::Result<Option<u64>> {
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| invalid("SFTP disconnected"))?;
+        let mut request = Vec::new();
+        string(&mut request, &session.handle);
+        let (kind, body) = session.request(8, &request)?; // SSH_FXP_FSTAT
+        decode_size(kind, &body)
+    }
     fn disconnect(&mut self) {
         self.session = None;
     }
@@ -407,79 +472,184 @@ pub enum Update {
     ContinuityLost,
     LimitReached,
 }
-/// One bounded, read-only following session. Call `poll` on a background worker
-/// with caller-owned retry/backoff. A failed request never advances its cursor.
+/// One read-only following session. Call `poll` on a background worker with
+/// caller-owned retry/backoff. A failed request never advances its cursor.
 pub struct Follow<T: Transport> {
     target: Target,
     transport: T,
-    consumed: Vec<u8>,
+    /// Bytes consumed from the start of the file, partial records included.
+    offset: u64,
+    /// Consumed bytes ending at `offset`: at least the last `PROOF` bytes and
+    /// the whole unfinished record, which starts at `emitted`.
+    window: Vec<u8>,
     emitted: usize,
     terminal: bool,
+    /// The transport holds a live connection.
+    connected: bool,
+    /// The open handle is known to continue the consumed bytes.
+    attached: bool,
+    /// Start this many bytes before the end, at a line boundary (first open).
+    tail: Option<u64>,
+    started_at: u64,
+    /// Bytes up to the first newline after a tail start belong to a line
+    /// whose beginning was not read; they are consumed but never emitted.
+    skip_line: bool,
 }
 impl<T: Transport> Follow<T> {
     pub fn new(target: Target, transport: T) -> Self {
         Self {
             target,
             transport,
-            consumed: Vec::new(),
+            offset: 0,
+            window: Vec::new(),
             emitted: 0,
             terminal: false,
+            connected: false,
+            attached: false,
+            tail: None,
+            started_at: 0,
+            skip_line: false,
         }
     }
+    /// Begin at the first full line of the last `bytes` of the file instead of
+    /// its start, when the server reports a larger size on the first open.
+    pub fn tail(mut self, bytes: u64) -> Self {
+        self.tail = Some(bytes);
+        self
+    }
     pub fn offset(&self) -> u64 {
-        self.consumed.len() as u64
+        self.offset
+    }
+    /// File offset where reading began; 0 when the whole file is read.
+    pub fn started_at(&self) -> u64 {
+        self.started_at
+    }
+    /// Consumed bytes after the last emitted record (no newline yet).
+    pub fn unfinished(&self) -> usize {
+        self.window.len() - self.emitted
     }
     pub fn poll(&mut self) -> Update {
         if self.terminal {
             return Update::ContinuityLost;
         }
-        if self.consumed.len() == HISTORY_LIMIT {
+        if self.window.len() - self.emitted >= RECORD_LIMIT {
+            self.close();
             return Update::LimitReached;
         }
-        // Reopen and prove the entire prefix, including partial records, before
-        // accepting growth. Sampling guards cannot prove reconnect continuity.
-        let result = self.read_poll();
-        self.transport.disconnect();
-        match result {
+        match self.read_poll() {
+            Ok(Update::ContinuityLost) => {
+                self.terminal = true;
+                self.close();
+                Update::ContinuityLost
+            }
             Ok(update) => update,
-            Err(error) => Update::Disconnected(error.to_string()),
+            Err(error) => {
+                self.close();
+                Update::Disconnected(error.to_string())
+            }
         }
     }
+    fn close(&mut self) {
+        self.transport.disconnect();
+        self.connected = false;
+        self.attached = false;
+    }
     fn read_poll(&mut self) -> io::Result<Update> {
-        self.transport.open(&self.target)?;
-        let mut verified = 0;
-        while verified < self.consumed.len() {
-            let limit = CHUNK.min(self.consumed.len() - verified);
-            let bytes = self.transport.read_at(verified as u64, limit)?;
-            if bytes.is_empty()
-                || bytes.len() > limit
-                || bytes != self.consumed[verified..verified + bytes.len()]
-            {
-                self.terminal = true;
+        let overlap = if self.attached {
+            self.window.len().min(OVERLAP)
+        } else {
+            if self.connected {
+                self.transport.reopen(&self.target)?;
+            } else {
+                self.transport.open(&self.target)?;
+                self.connected = true;
+            }
+            if !self.prove()? {
                 return Ok(Update::ContinuityLost);
             }
-            verified += bytes.len();
-        }
-        let limit = CHUNK.min(HISTORY_LIMIT - self.consumed.len());
-        let bytes = self.transport.read_at(self.offset(), limit)?;
+            if let Some(tail) = self.tail {
+                let size = self.transport.size()?;
+                self.tail = None;
+                if let Some(size) = size.filter(|size| *size > tail) {
+                    // One byte early: if it is a newline, the first line
+                    // read is complete and only that byte is skipped.
+                    self.offset = size - tail - 1;
+                    self.started_at = self.offset + 1;
+                    self.skip_line = true;
+                }
+            }
+            self.attached = true;
+            0
+        };
+        let unfinished = self.window.len() - self.emitted;
+        let limit = CHUNK.min(overlap + RECORD_LIMIT - unfinished);
+        let mut bytes = self
+            .transport
+            .read_at(self.offset - overlap as u64, limit)?;
         if bytes.len() > limit {
             return Err(invalid("SFTP read exceeds requested length"));
         }
-        self.consumed.extend_from_slice(&bytes);
-        let end = self.consumed[self.emitted..]
+        let back = self.window.len() - overlap;
+        let seen = bytes.len().min(overlap);
+        if bytes[..seen] != self.window[back..back + seen] {
+            return Ok(Update::ContinuityLost);
+        }
+        if bytes.len() < overlap {
+            // Truncated at the cursor, or a short read: reopen and prove the
+            // whole window now (once; that pass reads with no overlap).
+            self.attached = false;
+            return self.read_poll();
+        }
+        if bytes.len() == overlap {
+            // EOF: the next poll reopens the path and proves the window,
+            // which also notices a rotated-away file.
+            self.attached = false;
+            return Ok(Update::CaughtUp);
+        }
+        bytes.drain(..overlap);
+        self.offset += bytes.len() as u64;
+        self.window.extend_from_slice(&bytes);
+        if self.skip_line {
+            match self.window[self.emitted..].iter().position(|b| *b == b'\n') {
+                Some(n) => {
+                    self.emitted += n + 1;
+                    self.skip_line = false;
+                }
+                None => self.emitted = self.window.len(),
+            }
+        }
+        let end = self.window[self.emitted..]
             .iter()
             .rposition(|b| *b == b'\n')
             .map_or(self.emitted, |n| self.emitted + n + 1);
-        if end == self.emitted {
-            return Ok(if bytes.is_empty() {
-                Update::CaughtUp
-            } else {
-                Update::Pending
-            });
-        }
-        let records = self.consumed[self.emitted..end].to_vec();
+        let records = self.window[self.emitted..end].to_vec();
         self.emitted = end;
-        Ok(Update::Records(records))
+        // Keep only the proof window and the unfinished record.
+        let trim = self.emitted.min(self.window.len().saturating_sub(PROOF));
+        self.window.drain(..trim);
+        self.emitted -= trim;
+        Ok(if records.is_empty() {
+            Update::Pending
+        } else {
+            Update::Records(records)
+        })
+    }
+    /// Re-read the retained window at its offset; short reads are allowed.
+    fn prove(&mut self) -> io::Result<bool> {
+        let start = self.offset - self.window.len() as u64;
+        let mut verified = 0;
+        while verified < self.window.len() {
+            let limit = CHUNK.min(self.window.len() - verified);
+            let bytes = self.transport.read_at(start + verified as u64, limit)?;
+            if bytes.is_empty()
+                || bytes.len() > limit
+                || bytes != self.window[verified..verified + bytes.len()]
+            {
+                return Ok(false);
+            }
+            verified += bytes.len();
+        }
+        Ok(true)
     }
 }
 impl<T: Transport> Drop for Follow<T> {

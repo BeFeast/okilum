@@ -10,6 +10,9 @@ pub const MAX_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_LINES: usize = 20_000;
 pub const MAX_LINE_BYTES: usize = 64 * 1024;
 pub const MAX_CHUNK_BYTES: usize = 1024 * 1024;
+/// Remote follows of a larger file begin this many bytes before its end, at a
+/// line boundary, so the loaded-history budget is left for new lines.
+pub const TAIL_START_BYTES: u64 = 1024 * 1024;
 
 /// A leased immutable snapshot consumed by the same row/filter/export view as
 /// files. Scope identifies one session; offsets remain stable within a session.
