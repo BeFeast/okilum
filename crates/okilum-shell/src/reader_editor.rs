@@ -1088,6 +1088,25 @@ impl Reader {
             input.prepare_highlighting(window, cx);
             input
         });
+        // The first frame of the editor wraps the whole note on the UI thread
+        // (#3073): log that re-wrap as its own phase, after the frame.
+        if let Some(trace) = reader_diagnostics::trace(cx) {
+            let bytes = store.text().len();
+            let measured = input.clone();
+            cx.on_next_frame(window, move |_, window, cx| {
+                cx.on_next_frame(window, move |_, _, cx| {
+                    let relayout = measured.read(cx).last_relayout();
+                    trace.event(
+                        "source_open_layout",
+                        serde_json::json!({
+                            "duration_ms": relayout.map(|r| r.duration.as_secs_f64() * 1000.),
+                            "rows": relayout.map(|r| r.rows),
+                            "bytes": bytes,
+                        }),
+                    );
+                });
+            });
+        }
         let current_input = cx.new(|cx| {
             let mut input = EditorState::new(window, cx)
                 .language(language)

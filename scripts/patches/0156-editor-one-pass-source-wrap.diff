@@ -1,0 +1,868 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+index d3957cd8..1b87a484 100644
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -2207,9 +2207,12 @@ impl<M: InputModeKind> Element for TextElement<M> {
+         let font = style.font();
+         let text_size = style.font_size.to_pixels(window.rem_size());
+ 
+-        self.state.update(cx, |state, cx| {
+-            state.display_map.set_font(font.clone(), text_size, cx);
++        // A new font is applied below with the wrap width and indent: one
++        // re-wrap of the document for all three (#3073). Nothing reads the
++        // display map before that.
++        let font_changed = self.state.update(cx, |state, cx| {
+             state.display_map.ensure_text_prepared(&state.text, cx);
++            !state.display_map.font_is(&font, text_size)
+         });
+ 
+         let state = self.state.read(cx);
+@@ -2260,10 +2263,23 @@ impl<M: InputModeKind> Element for TextElement<M> {
+             .map(|l| l.wrapping_indent != wrapping_indent)
+             .unwrap_or(true);
+ 
+-        if wrap_width_changed || wrapping_indent_changed {
++        if font_changed || wrap_width_changed || wrapping_indent_changed {
+             self.state.update(cx, |state, cx| {
+-                state.display_map.on_layout_changed(wrap_width, cx);
+-                state.display_map.set_wrapping_indent(wrapping_indent, cx);
++                // One re-wrap for all (#3073): each setter alone re-wraps
++                // the whole document.
++                let started = std::time::Instant::now();
++                if state.display_map.set_font_and_layout(
++                    font_changed.then(|| (font.clone(), text_size)),
++                    wrap_width,
++                    wrapping_indent,
++                    cx,
++                ) {
++                    state.last_relayout = Some(super::Relayout {
++                        duration: started.elapsed(),
++                        rows: state.text.lines_len(),
++                    });
++                    state.record_layout_diagnostic(|d| d.relayouts += 1);
++                }
+             });
+         }
+ 
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index 536c2f2e..caebd2dd 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -13,6 +13,18 @@ pub struct LayoutDiagnostics {
+     pub provider_applies: u64,
+     pub projection_composes: u64,
+     pub active_changes: u64,
++    /// Re-wraps of the whole document for a new wrap width or wrapping
++    /// indent (#3073).
++    pub relayouts: u64,
++}
++
++/// The last re-wrap of the whole document for a new wrap width or wrapping
++/// indent, as in the first frame of an editor (#3073).
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct Relayout {
++    pub duration: std::time::Duration,
++    /// Source rows laid out.
++    pub rows: usize,
+ }
+ 
+ /// One prepaint that laid out a new source revision or a new presentation of
+@@ -481,6 +493,7 @@ pub struct InputBaseState<M: InputModeKind> {
+     pub(super) cursor_surrounding_lines: Option<usize>,
+     pub(super) blink_cursor: Entity<BlinkCursor>,
+     layout_diagnostics: Option<Cell<LayoutDiagnostics>>,
++    pub(super) last_relayout: Option<Relayout>,
+     layout_frames: std::cell::RefCell<std::collections::VecDeque<LayoutFrame>>,
+     pub(super) loading: bool,
+     /// Range in UTF-8 length for the selected text.
+@@ -944,6 +957,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             cursor_surrounding_lines: None,
+             blink_cursor,
+             layout_diagnostics: None,
++            last_relayout: None,
+             layout_frames: Default::default(),
+             undo_manager,
+             selected_range: Selection::default(),
+@@ -1328,6 +1342,13 @@ impl<M: InputModeKind> InputBaseState<M> {
+         self.layout_diagnostics.as_ref().map(Cell::get)
+     }
+ 
++    /// The last re-wrap of the whole document for a new wrap width or
++    /// wrapping indent; `None` before the first. Always recorded: it happens
++    /// on the first frame and on a resize, not per keystroke.
++    pub fn last_relayout(&self) -> Option<Relayout> {
++        self.last_relayout
++    }
++
+     /// The frames laid out since the last call, oldest first (#1621). Empty
+     /// unless layout diagnostics are enabled.
+     pub fn take_layout_frames(&self) -> Vec<LayoutFrame> {
+diff --git a/crates/base/src/input/editor/display_map/display_map.rs b/crates/base/src/input/editor/display_map/display_map.rs
+index cf52b063..f7231f10 100644
+--- a/crates/base/src/input/editor/display_map/display_map.rs
++++ b/crates/base/src/input/editor/display_map/display_map.rs
+@@ -368,6 +368,44 @@ impl DisplayMap {
+         self.rebuild_fold_projection();
+     }
+ 
++    /// Apply a wrap width and a wrapping indent with one re-wrap of the
++    /// document, where `on_layout_changed` and `set_wrapping_indent` re-wrap
++    /// it once each (#3073). Returns whether the document was re-wrapped.
++    pub fn set_layout(
++        &mut self,
++        wrap_width: Option<Pixels>,
++        wrapping_indent: WrappingIndent,
++        cx: &mut App,
++    ) -> bool {
++        self.set_font_and_layout(None, wrap_width, wrapping_indent, cx)
++    }
++
++    /// [`Self::set_layout`] that also applies a font and size, still with one
++    /// re-wrap: the first frame of an editor changes all three (#3073).
++    pub fn set_font_and_layout(
++        &mut self,
++        font: Option<(Font, Pixels)>,
++        wrap_width: Option<Pixels>,
++        wrapping_indent: WrappingIndent,
++        cx: &mut App,
++    ) -> bool {
++        if let Some(source) = &mut self.source_wrap_map {
++            source.set_layout(font.clone(), wrap_width, wrapping_indent, cx);
++        }
++        let rewrapped = self.wrap_map.set_layout(font, wrap_width, wrapping_indent, cx);
++        self.rebuild_fold_projection();
++        rewrapped
++    }
++
++    /// Whether the document is wrapped with this font and size.
++    pub fn font_is(&self, font: &Font, font_size: Pixels) -> bool {
++        self.wrap_map.font_is(font, font_size)
++            && self
++                .source_wrap_map
++                .as_ref()
++                .is_none_or(|source| source.font_is(font, font_size))
++    }
++
+     /// Set font parameters
+     pub fn set_font(&mut self, font: Font, font_size: Pixels, cx: &mut App) {
+         if let Some(source) = &mut self.source_wrap_map {
+diff --git a/crates/base/src/input/editor/display_map/mod.rs b/crates/base/src/input/editor/display_map/mod.rs
+index 5e1cf12f..234da728 100644
+--- a/crates/base/src/input/editor/display_map/mod.rs
++++ b/crates/base/src/input/editor/display_map/mod.rs
+@@ -17,6 +17,7 @@ mod wrap_map;
+ // Re-export public API
+ pub use self::display_map::{DisplayMap, WrappingIndent};
+ pub(crate) use self::text_wrapper::LineLayout;
++pub use self::text_wrapper::wrap_ascii_line;
+ 
+ // Re-export FoldRange and extract_fold_ranges
+ pub use folding::FoldRange;
+diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/base/src/input/editor/display_map/text_wrapper.rs
+index 56902ed1..2c212da3 100644
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -169,6 +169,333 @@ impl<'a> sum_tree::Dimension<'a, LineSummary> for WrapRows {
+     }
+ }
+ 
++/// The rows of a slice that starts at a row start, split at LF exactly as
++/// `slice_line` splits them (a CR stays in its row), in one walk over the
++/// chunks. The slice ends where its last row ends, so it yields one row per
++/// LF plus the last row.
++struct SourceRows<'a, I: Iterator<Item = &'a str>> {
++    chunks: I,
++    /// What is left of the current chunk.
++    chunk: &'a str,
++    /// The start of a row that spans chunks.
++    pending: String,
++    spanning: bool,
++    finished: bool,
++}
++
++impl<'a, I: Iterator<Item = &'a str>> SourceRows<'a, I> {
++    fn new(chunks: I) -> Self {
++        Self { chunks, chunk: "", pending: String::new(), spanning: false, finished: false }
++    }
++
++    fn finish_row(&mut self, piece: &'a str) -> Cow<'a, str> {
++        if self.spanning {
++            self.spanning = false;
++            self.pending.push_str(piece);
++            Cow::Owned(std::mem::take(&mut self.pending))
++        } else {
++            Cow::Borrowed(piece)
++        }
++    }
++}
++
++impl<'a, I: Iterator<Item = &'a str>> Iterator for SourceRows<'a, I> {
++    type Item = Cow<'a, str>;
++
++    fn next(&mut self) -> Option<Cow<'a, str>> {
++        if self.finished {
++            return None;
++        }
++        loop {
++            let chunk = self.chunk;
++            if let Some(at) = chunk.find('\n') {
++                self.chunk = &chunk[at + 1..];
++                return Some(self.finish_row(&chunk[..at]));
++            }
++            match self.chunks.next() {
++                Some(next) => {
++                    if !chunk.is_empty() {
++                        self.pending.push_str(chunk);
++                        self.spanning = true;
++                    }
++                    self.chunk = next;
++                }
++                None => {
++                    self.finished = true;
++                    self.chunk = "";
++                    return Some(self.finish_row(chunk));
++                }
++            }
++        }
++    }
++}
++
++/// A re-wrap of this many rows or more is laid out on several threads
++/// (#3073): a 10 MiB note has about 205,000.
++const PARALLEL_ROWS: usize = 16 * 1024;
++
++/// Makes one thread's row wrapper: `wrap_line(line, width, first_only)`, or
++/// `None` from the wrapper for a row the calling thread must lay out.
++type WrapWorker<'a> = dyn Fn() -> Option<Box<dyn FnMut(&str, Pixels, bool) -> Option<Vec<gpui::Boundary>> + 'a>>
++    + Sync
++    + 'a;
++
++/// One source row laid out: its soft-wrapped visual rows.
++fn layout_row<F>(
++    line_str: &str,
++    wrap_width: Option<Pixels>,
++    wrapping_indent: WrappingIndent,
++    wrap_line: &mut F,
++) -> LineItem
++where
++    F: FnMut(&str, Pixels, bool) -> Vec<gpui::Boundary>,
++{
++    let mut wrapped_lines = SmallVec::<[Range<usize>; 1]>::new();
++    let mut prev_boundary_ix = 0;
++    let mut indent_chars = 0;
++
++    // If wrap_width is Pixels::MAX, skip wrapping to disable word wrap
++    if let Some(wrap_width) = wrap_width {
++        match wrapping_indent {
++            WrappingIndent::Same => {
++                // Here only have wrapped line, if there is no wrap meet, the `line_wraps`
++                // result will empty.
++                for boundary in wrap_line(line_str, wrap_width, false) {
++                    wrapped_lines.push(prev_boundary_ix..boundary.ix);
++                    prev_boundary_ix = boundary.ix;
++                    indent_chars = boundary.next_indent;
++                }
++            }
++            WrappingIndent::None => {
++                // The first visual line keeps the line's leading indentation, so it is
++                // wrapped as is.
++                let boundaries = wrap_line(line_str, wrap_width, true);
++                if let Some(first_ix) = boundaries.first().map(|b| b.ix) {
++                    wrapped_lines.push(prev_boundary_ix..first_ix);
++                    prev_boundary_ix = first_ix;
++
++                    for boundary in wrap_line(&line_str[first_ix..], wrap_width, false) {
++                        let ix = first_ix + boundary.ix;
++                        wrapped_lines.push(prev_boundary_ix..ix);
++                        prev_boundary_ix = ix;
++                    }
++                }
++            }
++        }
++    }
++
++    // Reset of the line
++    if prev_boundary_ix < line_str.len() || prev_boundary_ix == 0 {
++        wrapped_lines.push(prev_boundary_ix..line_str.len());
++    }
++
++    LineItem {
++        len: line_str.len(),
++        indent: indent_chars,
++        prefix_hang: px(0.),
++        wrapped_lines,
++    }
++}
++
++/// Source `rows` of `text` laid out by `layout`, in one walk over the chunks:
++/// `slice_line` per row descends the rope for each of a long note's rows
++/// (#3073). `None` where `layout` declined a row.
++fn layout_rows(
++    text: &Rope,
++    rows: Range<usize>,
++    layout: &mut dyn FnMut(&str) -> Option<LineItem>,
++) -> Vec<Option<LineItem>> {
++    let last = rows.end - 1;
++    let start = text.line_start_offset(rows.start);
++    let end = text.line_start_offset(last) + text.slice_line(last).len();
++    let slice = text.slice(start..end);
++    let mut source = SourceRows::new(slice.chunks());
++    let mut lines = Vec::with_capacity(rows.len());
++    // line not contains `\n`.
++    for _row in rows {
++        #[cfg(test)]
++        SOURCE_ROW_LOOKUPS.with(|count| count.set(count.get() + 1));
++        // Borrowed for lines within a single rope chunk.
++        let line_str: Cow<str> = source.next().unwrap_or(Cow::Borrowed(""));
++        lines.push(layout(&line_str));
++    }
++    debug_assert!(source.next().is_none(), "every source row was laid out");
++    lines
++}
++
++/// [`layout_rows`] split over up to four threads, each with a wrapper from
++/// `worker`; `None` for the rows a worker declined.
++fn layout_rows_in_parallel(
++    text: &Rope,
++    rows: Range<usize>,
++    wrap_width: Option<Pixels>,
++    wrapping_indent: WrappingIndent,
++    worker: &WrapWorker<'_>,
++) -> Vec<Option<LineItem>> {
++    let threads = std::thread::available_parallelism()
++        .map_or(1, |n| n.get())
++        .clamp(1, 4)
++        .min(rows.len());
++    let bounds: Vec<usize> = (0..=threads)
++        .map(|ix| rows.start + rows.len() * ix / threads)
++        .collect();
++    std::thread::scope(|scope| {
++        let parts: Vec<_> = bounds
++            .windows(2)
++            .map(|part| {
++                let part = part[0]..part[1];
++                scope.spawn(move || {
++                    let Some(mut wrap) = worker() else {
++                        return vec![None; part.len()];
++                    };
++                    layout_rows(text, part, &mut |line_str| {
++                        if !line_str.is_ascii() && crate::font_presentation::has_emoji(line_str) {
++                            return None;
++                        }
++                        let mut declined = false;
++                        let item = layout_row(line_str, wrap_width, wrapping_indent, &mut |line, width, first| {
++                            wrap(line, width, first).unwrap_or_else(|| {
++                                declined = true;
++                                Vec::new()
++                            })
++                        });
++                        (!declined).then_some(item)
++                    })
++                })
++            })
++            .collect();
++        parts
++            .into_iter()
++            .flat_map(|part| part.join().expect("a row layout thread panicked"))
++            .collect()
++    })
++}
++
++/// `gpui::LineWrapper::wrap_line` for a line of ASCII text (one text fragment),
++/// step for step and with the same character widths, so it gives the same
++/// boundaries and indents. It reads bytes from a table instead of a chain of
++/// decoded-char iterators: opening a 10 MiB note in Source wraps every row on
++/// the UI thread (#3073). Okilum's
++/// `issue3073_ascii_wrap_matches_the_line_wrapper` pins the equivalence.
++pub(crate) struct AsciiWrap {
++    widths: [Option<Pixels>; 128],
++}
++
++impl Default for AsciiWrap {
++    fn default() -> Self {
++        Self { widths: [None; 128] }
++    }
++}
++
++impl AsciiWrap {
++    /// `gpui::LineWrapper::is_word_char` restricted to ASCII.
++    #[inline]
++    fn is_word_char(c: u8) -> bool {
++        c.is_ascii_alphanumeric()
++            || matches!(
++                c,
++                b'-' | b'_' | b'.' | b'\'' | b'$' | b'%' | b'@' | b'#' | b'^' | b'~' | b','
++                    | b'=' | b':' | b';' | b'!' | b')' | b']' | b'}' | b'"'
++            )
++    }
++
++    #[inline]
++    fn width(&mut self, c: u8, width_of: &mut impl FnMut(char) -> Pixels) -> Pixels {
++        *self.widths[c as usize].get_or_insert_with(|| width_of(c as char))
++    }
++
++    /// The wrap boundaries of `line`, which must be ASCII; with `first_only`
++    /// only the first, as the line wrapper's iterator yields it first.
++    /// `width_of` gives a character's width as the line wrapper measures it.
++    pub(crate) fn wrap(
++        &mut self,
++        line: &[u8],
++        wrap_width: Pixels,
++        first_only: bool,
++        width_of: &mut impl FnMut(char) -> Pixels,
++    ) -> Vec<gpui::Boundary> {
++        debug_assert!(line.is_ascii());
++        let mut boundaries = Vec::new();
++        let mut width = px(0.);
++        let mut first_non_whitespace_ix = None;
++        let mut indent: Option<u32> = None;
++        let mut last_candidate_ix = 0;
++        let mut last_candidate_width = px(0.);
++        let mut last_wrap_ix = 0;
++        let mut prev_c = 0u8;
++        for (ix, &c) in line.iter().enumerate() {
++            if c == b'\n' {
++                continue;
++            }
++            if Self::is_word_char(c) {
++                if prev_c == b' ' && c != b' ' && first_non_whitespace_ix.is_some() {
++                    last_candidate_ix = ix;
++                    last_candidate_width = width;
++                }
++            } else if c != b' ' && first_non_whitespace_ix.is_some() {
++                last_candidate_ix = ix;
++                last_candidate_width = width;
++            }
++            if c != b' ' && first_non_whitespace_ix.is_none() {
++                first_non_whitespace_ix = Some(ix);
++            }
++
++            let item_width = self.width(c, width_of);
++            width += item_width;
++            if width > wrap_width && ix > last_wrap_ix {
++                if let (None, Some(first_non_whitespace_ix)) = (indent, first_non_whitespace_ix) {
++                    indent = Some(
++                        gpui::LineWrapper::MAX_INDENT
++                            .min((first_non_whitespace_ix - last_wrap_ix) as u32),
++                    );
++                }
++                if last_candidate_ix > 0 {
++                    last_wrap_ix = last_candidate_ix;
++                    width -= last_candidate_width;
++                    last_candidate_ix = 0;
++                } else {
++                    last_wrap_ix = ix;
++                    width = item_width;
++                }
++                if let Some(indent) = indent {
++                    width += self.width(b' ', width_of) * indent as f32;
++                }
++                boundaries.push(gpui::Boundary { ix: last_wrap_ix, next_indent: indent.unwrap_or(0) });
++                if first_only {
++                    break;
++                }
++                // The line wrapper returns this boundary before it records
++                // the character as the previous one.
++                continue;
++            }
++            prev_c = c;
++        }
++        boundaries
++    }
++}
++
++/// The wrap boundaries `gpui::LineWrapper::wrap_line` gives for an ASCII
++/// `line`, computed as the editor computes them; `None` when `line` is not
++/// ASCII. For tests that compare the two.
++#[doc(hidden)]
++pub fn wrap_ascii_line(
++    font: &Font,
++    font_size: Pixels,
++    line: &str,
++    wrap_width: Pixels,
++    cx: &App,
++) -> Option<Vec<(usize, u32)>> {
++    if !line.is_ascii() {
++        return None;
++    }
++    let text_system = cx.text_system().clone();
++    let font_id = text_system.resolve_font(font);
++    let boundaries = AsciiWrap::default().wrap(line.as_bytes(), wrap_width, false, &mut |c| {
++        text_system.layout_width(font_id, font_size, c)
++    });
++    Some(boundaries.into_iter().map(|b| (b.ix, b.next_indent)).collect())
++}
++
+ /// Used to prepare the text with soft wrap to be get lines to displayed in the Editor.
+ ///
+ /// After use lines to calculate the scroll size of the Editor.
+@@ -295,8 +622,41 @@ impl TextWrapper {
+         self.update_all(&self.text.clone(), cx);
+     }
+ 
++    /// Apply a wrap width and a wrapping indent with one re-wrap. The first
++    /// frame of an editor sets both, and each setter re-wraps the whole
++    /// document: twice on the UI thread for a 10 MiB note (#3073). Returns
++    /// whether the document was re-wrapped.
++    pub(crate) fn set_layout(
++        &mut self,
++        font: Option<(Font, Pixels)>,
++        wrap_width: Option<Pixels>,
++        wrapping_indent: WrappingIndent,
++        cx: &mut App,
++    ) -> bool {
++        let font_changed = font
++            .as_ref()
++            .is_some_and(|(font, size)| !self.font_is(font, *size));
++        if !font_changed && wrap_width == self.wrap_width && wrapping_indent == self.wrapping_indent {
++            return false;
++        }
++
++        if let Some((font, font_size)) = font {
++            self.font = font;
++            self.font_size = font_size;
++        }
++        self.wrap_width = wrap_width;
++        self.wrapping_indent = wrapping_indent;
++        self.update_all(&self.text.clone(), cx);
++        true
++    }
++
++    /// Whether rows are wrapped with this font and size.
++    pub(crate) fn font_is(&self, font: &Font, font_size: Pixels) -> bool {
++        self.font.eq(font) && self.font_size == font_size
++    }
++
+     pub(crate) fn set_font(&mut self, font: Font, font_size: Pixels, cx: &mut App) {
+-        if self.font.eq(&font) && self.font_size == font_size {
++        if self.font_is(&font, font_size) {
+             return;
+         }
+ 
+@@ -336,20 +696,61 @@ impl TextWrapper {
+         let font = self.font.clone();
+         let font_size = self.font_size;
+         let text_system = cx.text_system().clone();
++        let font_id = text_system.resolve_font(&font);
++        let mut ascii = AsciiWrap::default();
+         let mut emoji_system = None;
+-        self._update(
++        // A worker thread's wrapper: its own ASCII widths and line wrapper.
++        // Emoji rows need a window text system and stay on this thread.
++        let shared_text_system = &text_system;
++        let shared_font = &font;
++        let worker = move || {
++            let mut ascii = AsciiWrap::default();
++            let mut line_wrapper = shared_text_system.line_wrapper(shared_font.clone(), font_size);
++            let wrap: Box<dyn FnMut(&str, Pixels, bool) -> Option<Vec<gpui::Boundary>> + '_> =
++                Box::new(move |line_str: &str, wrap_width: Pixels, first_only: bool| {
++                    if line_str.is_ascii() {
++                        return Some(ascii.wrap(line_str.as_bytes(), wrap_width, first_only, &mut |c| {
++                            shared_text_system.layout_width(font_id, font_size, c)
++                        }));
++                    }
++                    if crate::font_presentation::has_emoji(line_str) {
++                        return None;
++                    }
++                    let fragments = [LineFragment::text(line_str)];
++                    let boundaries = line_wrapper.wrap_line(&fragments, wrap_width);
++                    Some(if first_only {
++                        boundaries.take(1).collect()
++                    } else {
++                        boundaries.collect()
++                    })
++                });
++            Some(wrap)
++        };
++        self._update_with(
+             changed_text,
+             range,
+             new_text,
+-            &mut |line_str, wrap_width| {
++            &mut |line_str, wrap_width, first_only| {
++                if line_str.is_ascii() {
++                    // An ASCII line is one text fragment (no emoji runs).
++                    return ascii.wrap(line_str.as_bytes(), wrap_width, first_only, &mut |c| {
++                        text_system.layout_width(font_id, font_size, c)
++                    });
++                }
+                 let fragments = if crate::font_presentation::has_emoji(line_str) {
+                     let system = emoji_system.get_or_insert_with(|| gpui::WindowTextSystem::new(text_system.clone()));
+                     crate::font_presentation::line_fragments(line_str, &font, font_size, system)
+                 } else {
+                     vec![LineFragment::text(line_str)]
+                 };
+-                line_wrapper.wrap_line(&fragments, wrap_width).collect()
++                let boundaries = line_wrapper.wrap_line(&fragments, wrap_width);
++                if first_only {
++                    boundaries.take(1).collect()
++                } else {
++                    boundaries.collect()
++                }
+             },
++            Some(&worker),
+         );
+     }
+ 
+@@ -360,7 +761,24 @@ impl TextWrapper {
+         new_text: &Rope,
+         wrap_line: &mut F,
+     ) where
+-        F: FnMut(&str, Pixels) -> Vec<gpui::Boundary>,
++        F: FnMut(&str, Pixels, bool) -> Vec<gpui::Boundary>,
++    {
++        self._update_with(changed_text, range, new_text, wrap_line, None);
++    }
++
++    /// [`Self::_update`]; with `parallel`, a re-wrap of [`PARALLEL_ROWS`] or
++    /// more rows runs on several threads, each with its own `parallel()`.
++    fn _update_with<F>(
++        &mut self,
++        changed_text: &Rope,
++        range: &Range<usize>,
++        new_text: &Rope,
++        wrap_line: &mut F,
++        parallel: Option<&WrapWorker<'_>>,
++    ) where
++        // `wrap_line(line, width, first_only)`: the boundaries, or only the
++        // first when the caller needs no more (#3073).
++        F: FnMut(&str, Pixels, bool) -> Vec<gpui::Boundary>,
+     {
+         // Remove the old changed lines.
+         let buffer_line_count = self.lines_count();
+@@ -426,61 +844,33 @@ impl TextWrapper {
+             debug_assert_eq!(tree.summary().buffer_rows, new_end_row - new_start_row + 1);
+             tree
+         } else {
+-            let mut new_lines = Vec::with_capacity(new_end_row.saturating_sub(new_start_row) + 1);
+-            // line not contains `\n`.
+-            for row in new_start_row..=new_end_row {
+-                #[cfg(test)]
+-                SOURCE_ROW_LOOKUPS.with(|count| count.set(count.get() + 1));
+-                let line = changed_text.slice_line(row);
+-                let mut wrapped_lines = SmallVec::<[Range<usize>; 1]>::new();
+-                let mut prev_boundary_ix = 0;
+-                let mut indent_chars = 0;
+-
+-                // If wrap_width is Pixels::MAX, skip wrapping to disable word wrap
+-                if let Some(wrap_width) = wrap_width {
+-                    // Borrowed for lines within a single rope chunk.
+-                    let line_str: Cow<str> = line.into();
+-                    match self.wrapping_indent {
+-                        WrappingIndent::Same => {
+-                            // Here only have wrapped line, if there is no wrap meet, the `line_wraps`
+-                            // result will empty.
+-                            for boundary in wrap_line(&line_str, wrap_width) {
+-                                wrapped_lines.push(prev_boundary_ix..boundary.ix);
+-                                prev_boundary_ix = boundary.ix;
+-                                indent_chars = boundary.next_indent;
+-                            }
+-                        }
+-                        WrappingIndent::None => {
+-                            // The first visual line keeps the line's leading indentation, so it is
+-                            // wrapped as is.
+-                            let boundaries = wrap_line(&line_str, wrap_width);
+-                            if let Some(first_ix) = boundaries.first().map(|b| b.ix) {
+-                                wrapped_lines.push(prev_boundary_ix..first_ix);
+-                                prev_boundary_ix = first_ix;
+-
+-                                for boundary in wrap_line(&line_str[first_ix..], wrap_width) {
+-                                    let ix = first_ix + boundary.ix;
+-                                    wrapped_lines.push(prev_boundary_ix..ix);
+-                                    prev_boundary_ix = ix;
+-                                }
+-                            }
++            let wrapping_indent = self.wrapping_indent;
++            let rows = new_end_row - new_start_row + 1;
++            let new_lines = match parallel {
++                Some(worker) if wrap_width.is_some() && rows >= PARALLEL_ROWS => {
++                    let mut lines = layout_rows_in_parallel(
++                        changed_text,
++                        new_start_row..new_end_row + 1,
++                        wrap_width,
++                        wrapping_indent,
++                        worker,
++                    );
++                    // Rows a worker cannot shape (emoji runs) are laid out here.
++                    for (ix, line) in lines.iter_mut().enumerate() {
++                        if line.is_none() {
++                            let line_str: Cow<str> = changed_text.slice_line(new_start_row + ix).into();
++                            *line = Some(layout_row(&line_str, wrap_width, wrapping_indent, wrap_line));
+                         }
+                     }
++                    lines.into_iter().map(Option::unwrap).collect()
+                 }
+-
+-                // Reset of the line
+-                if prev_boundary_ix < line.len() || prev_boundary_ix == 0 {
+-                    wrapped_lines.push(prev_boundary_ix..line.len());
+-                }
+-
+-                new_lines.push(LineItem {
+-                    len: line.len(),
+-                    indent: indent_chars,
+-                    prefix_hang: px(0.),
+-                    wrapped_lines,
+-                });
+-            }
+-
++                _ => layout_rows(changed_text, new_start_row..new_end_row + 1, &mut |line_str| {
++                    Some(layout_row(line_str, wrap_width, wrapping_indent, wrap_line))
++                })
++                .into_iter()
++                .map(Option::unwrap)
++                .collect::<Vec<_>>(),
++            };
+             SumTree::from_iter(new_lines, &())
+         };
+ 
+@@ -1480,7 +1870,7 @@ mod tests {
+             "שלום🙂\r\n\nrow\u{85}value\u{2028}\n".repeat(4096)
+         ));
+         let lookups = || SOURCE_ROW_LOOKUPS.with(|count| count.get());
+-        let mut no_wrap = |_: &str, _: Pixels| panic!("unwrapped source must not shape rows");
++        let mut no_wrap = |_: &str, _: Pixels, _: bool| panic!("unwrapped source must not shape rows");
+         let before = lookups();
+         wrapper._update(&original, &(0..0), &original, &mut no_wrap);
+         assert_eq!(
+@@ -1566,7 +1956,7 @@ mod tests {
+         let mut wrapped = TextWrapper::new(font, px(14.), Some(px(400.)));
+         let before = lookups();
+         let mut wrapped_rows = 0;
+-        wrapped._update(&typed, &(0..0), &typed, &mut |_, _| {
++        wrapped._update(&typed, &(0..0), &typed, &mut |_, _, _| {
+             wrapped_rows += 1;
+             vec![]
+         });
+@@ -1590,7 +1980,7 @@ mod tests {
+             "Hello, 世界!\r\nThis is second line.\nThis is third line.\n这里是第 4 行。",
+         );
+ 
+-        fn fake_wrap_line(_line: &str, _wrap_width: Pixels) -> Vec<Boundary> {
++        fn fake_wrap_line(_line: &str, _wrap_width: Pixels, _first_only: bool) -> Vec<Boundary> {
+             vec![]
+         }
+ 
+@@ -1787,7 +2177,7 @@ mod tests {
+     fn test_longest_row_after_shrink() {
+         let mut wrapper = TextWrapper::new(test_font(), px(14.), None);
+         let mut text = Rope::from("aa\nthis is the longest line\nbb");
+-        wrapper._update(&text, &(0..text.len()), &text, &mut |_, _| vec![]);
++        wrapper._update(&text, &(0..text.len()), &text, &mut |_, _, _| vec![]);
+         assert_eq!(wrapper.longest_row(), 1);
+ 
+         // Shrink line 1 so line 2-equivalent isn't longest.
+@@ -1797,7 +2187,7 @@ mod tests {
+         let range = start..end;
+         let new_text = "a very very long first line now";
+         text.replace(range.clone(), new_text);
+-        wrapper._update(&text, &range, &Rope::from(new_text), &mut |_, _| vec![]);
++        wrapper._update(&text, &range, &Rope::from(new_text), &mut |_, _, _| vec![]);
+         assert_eq!(wrapper.longest_row(), 0);
+     }
+ 
+@@ -1806,7 +2196,7 @@ mod tests {
+     fn test_edit_last_line_and_full_delete() {
+         let mut wrapper = TextWrapper::new(test_font(), px(14.), None);
+         let mut text = Rope::from("one\ntwo\nthree");
+-        wrapper._update(&text, &(0..text.len()), &text, &mut |_, _| vec![]);
++        wrapper._update(&text, &(0..text.len()), &text, &mut |_, _, _| vec![]);
+         assert_eq!(wrapper.lines_count(), 3);
+ 
+         // Replace the last line only.
+@@ -1814,14 +2204,14 @@ mod tests {
+         let range = start..text.len();
+         let new_text = "THREE EDITED";
+         text.replace(range.clone(), new_text);
+-        wrapper._update(&text, &range, &Rope::from(new_text), &mut |_, _| vec![]);
++        wrapper._update(&text, &range, &Rope::from(new_text), &mut |_, _, _| vec![]);
+         assert_eq!(wrapper.lines_count(), 3);
+         assert_eq!(wrapper.line(2).unwrap().len(), "THREE EDITED".len());
+ 
+         // Delete everything.
+         let range = 0..text.len();
+         text.replace(range.clone(), "");
+-        wrapper._update(&text, &range, &Rope::from(""), &mut |_, _| vec![]);
++        wrapper._update(&text, &range, &Rope::from(""), &mut |_, _, _| vec![]);
+         assert_eq!(wrapper.lines_count(), 1);
+         assert_eq!(wrapper.len(), 1);
+         assert_eq!(wrapper.line(0).unwrap().wrapped_lines.as_slice(), [0..0]);
+@@ -1879,7 +2269,7 @@ mod tests {
+     fn test_wrap_row_queries_after_incremental_splice() {
+         let mut wrapper = TextWrapper::new(test_font(), px(14.), Some(px(10.)));
+         let mut text = Rope::from("aa\nbbbb\nc");
+-        let mut fake_wrap_line = |line: &str, _wrap_width: Pixels| {
++        let mut fake_wrap_line = |line: &str, _wrap_width: Pixels, _first_only: bool| {
+             if line.len() > 2 {
+                 vec![Boundary {
+                     ix: 2,
+@@ -2192,7 +2582,7 @@ mod tests {
+         let mut wrapper = TextWrapper::new(test_font(), px(14.0), Some(px(10.)));
+         wrapper.wrapping_indent = WrappingIndent::Same;
+         let text = Rope::from("  abcdefghijklmnopqrstuv");
+-        let mut fake_wrap_line = |line: &str, _wrap_width: Pixels| {
++        let mut fake_wrap_line = |line: &str, _wrap_width: Pixels, _first_only: bool| {
+             if line.starts_with(' ') {
+                 vec![Boundary {
+                     ix: 5,
+@@ -2224,7 +2614,7 @@ mod tests {
+         let mut wrapper = TextWrapper::new(test_font(), px(14.0), Some(px(10.)));
+         wrapper.wrapping_indent = WrappingIndent::None;
+         let text = Rope::from("  abcdefghijklmnopqrstuv");
+-        let mut fake_wrap_line = |line: &str, _wrap_width: Pixels| {
++        let mut fake_wrap_line = |line: &str, _wrap_width: Pixels, _first_only: bool| {
+             if line.starts_with(' ') {
+                 vec![Boundary {
+                     ix: 5,
+diff --git a/crates/base/src/input/editor/display_map/wrap_map.rs b/crates/base/src/input/editor/display_map/wrap_map.rs
+index f93a7f3d..4e1e1ae3 100644
+--- a/crates/base/src/input/editor/display_map/wrap_map.rs
++++ b/crates/base/src/input/editor/display_map/wrap_map.rs
+@@ -121,6 +121,21 @@ impl WrapMap {
+         self.wrapper.set_wrapping_indent(wrapping_indent, cx);
+     }
+ 
++    /// Apply a wrap width and a wrapping indent with one re-wrap (#3073).
++    pub(super) fn set_layout(
++        &mut self,
++        font: Option<(Font, Pixels)>,
++        wrap_width: Option<Pixels>,
++        wrapping_indent: WrappingIndent,
++        cx: &mut App,
++    ) -> bool {
++        self.wrapper.set_layout(font, wrap_width, wrapping_indent, cx)
++    }
++
++    pub(super) fn font_is(&self, font: &Font, font_size: Pixels) -> bool {
++        self.wrapper.font_is(font, font_size)
++    }
++
+     /// Set font parameters
+     pub(super) fn set_font(&mut self, font: Font, font_size: Pixels, cx: &mut App) {
+         self.wrapper.set_font(font, font_size, cx);
+diff --git a/crates/base/src/input/mod.rs b/crates/base/src/input/mod.rs
+index 5475fab0..9d72ea9e 100644
+--- a/crates/base/src/input/mod.rs
++++ b/crates/base/src/input/mod.rs
+@@ -77,7 +77,7 @@ pub use diagnostics::{
+     Diagnostic, DiagnosticEntry, DiagnosticRelatedInformation, DiagnosticSet, DiagnosticSeverity,
+     DiagnosticSummary, DiagnosticTag, RelatedInformation,
+ };
+-pub use display_map::{BufferPoint, DisplayMap, DisplayPoint, FoldRange, WrappingIndent};
++pub use display_map::{BufferPoint, DisplayMap, DisplayPoint, FoldRange, WrappingIndent, wrap_ascii_line};
+ pub use editor::{Editor, EditorState};
+ pub use highlighting::{
+     DiagnosticColors, FoldIconRenderer, HighlightStyleResolver, InputEditorStyle, InputHighlighter,
+diff --git a/crates/component/src/input/mod.rs b/crates/component/src/input/mod.rs
+index 89be3435..db4fb029 100644
+--- a/crates/component/src/input/mod.rs
++++ b/crates/component/src/input/mod.rs
+@@ -31,6 +31,8 @@ pub use gpui_base::input::{
+     TabSize, TextDecoration, TextDecorationCollection, TextareaState, ToggleCodeActions, Undo,
+     WrappingIndent,
+ };
++#[doc(hidden)]
++pub use gpui_base::input::wrap_ascii_line;
+ pub use gpui_base::input::{EditorMode, InputMode, InputModeKind, TextareaMode};
+ #[doc(hidden)]
+ mod editor;
