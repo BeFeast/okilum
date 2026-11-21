@@ -18,12 +18,9 @@
 //!
 //! GPUI's entity leak detector runs when a test app is dropped. Under
 //! gpui-pre's teardown it therefore ran only for apps without a
-//! `VisualTestContext`; for the others it never ran. Freeing those apps
-//! would turn it on for them, and 27 shell tests then fail on handles that
-//! gpui-component's menus and text views keep (tracked separately from
-//! #1669). The guard keeps the detector exactly where it ran before: it
-//! still runs for apps that gpui-pre's teardown dropped, and stays off for
-//! the apps it now frees in addition.
+//! `VisualTestContext`. Since #3039 it runs for every test app: freeing an
+//! app with windows makes a handle that outlives the app (an `Rc` cycle, a
+//! thread-local) fail the test that created it.
 
 pub use gpui::*;
 
@@ -58,13 +55,6 @@ pub mod __test_support {
             // Same order as GPUI's own teardown: let queued work finish while
             // windows still exist, then free the test contexts and shut down.
             self.0.run_until_parked();
-            // The macro's context and this guard hold one reference each.
-            // Anything more is a VisualTestContext that gpui-pre's teardown
-            // never freed, so its leak detector never ran for this app.
-            // Keep it that way by never releasing the detector's counts.
-            if std::rc::Rc::strong_count(&self.0.app) > 2 {
-                std::mem::forget(self.0.app.borrow().ref_counts_drop_handle());
-            }
             self.0.quit();
         }
     }
