@@ -183,19 +183,21 @@ const EXPORT: &str = "10.10.0.14:/srv/nfs/Maestro";
 struct Nfs;
 impl Nfs {
     fn everywhere() -> Self {
-        Self::mount("/".into(), "nfs", EXPORT, None)
+        Self::mount("/".into(), "nfs", EXPORT, None, false)
     }
     fn mount(
         prefix: PathBuf,
         filesystem: &'static str,
         source: &'static str,
         backing: Option<PathBuf>,
+        zero_birth: bool,
     ) -> Self {
         identity_macos::SIMULATED_MOUNTS.with(|mounts| {
             mounts.borrow_mut().push(identity_macos::SimulatedMount {
                 prefix,
                 filesystem,
                 source,
+                zero_birth,
                 backing,
             })
         });
@@ -351,6 +353,20 @@ fn mount_as(
         filesystem,
         source,
         Some(server.to_path_buf()),
+        false,
+    );
+    (prefix, nfs)
+}
+/// An NFSv3 mount: macOS reports birth time zero for every object on it.
+fn mount_v3(base: &Path, server: &Path, name: &str, source: &'static str) -> (PathBuf, Nfs) {
+    let prefix = base.join(name);
+    mirror(server, &prefix);
+    let nfs = Nfs::mount(
+        prefix.clone(),
+        "nfs",
+        source,
+        Some(server.to_path_buf()),
+        true,
     );
     (prefix, nfs)
 }
@@ -475,6 +491,56 @@ fn identity_3211_sibling_exports_of_one_server_are_disjoint() {
     let (all, _all) = mount(&e.base, &e.server, "all", EXPORT);
     refused(&e.account, &all, "cannot prove");
     refused(&e.account, &all.join("Left"), "cannot prove");
+}
+
+/// #3212 review: one export mounted over NFSv4 (server birth times) and a
+/// nested one over NFSv3 (birth time zero). The same `Sub` then has one
+/// fileid and two birth times; the witness must still see the nesting, in
+/// both registration orders and with either side on NFSv3.
+#[test]
+fn identity_3211_mixed_nfs_versions_nested_export_stays_refused() {
+    for child_v3 in [true, false] {
+        let mount_child = |e: &Exports| {
+            let server = e.server.join("Vault").join("Sub");
+            let source = "nas.example:/srv/nfs/Maestro/Vault/Sub";
+            if child_v3 {
+                mount_v3(&e.base, &server, "child", source)
+            } else {
+                mount(&e.base, &server, "child", source)
+            }
+        };
+        let mount_all = |e: &Exports| {
+            if child_v3 {
+                mount(&e.base, &e.server, "all", EXPORT)
+            } else {
+                mount_v3(&e.base, &e.server, "all", EXPORT)
+            }
+        };
+        // The nested export first, held; then the wider export.
+        let e = exports(&["Vault/Sub"]);
+        let (child_mount, _child_mount) = mount_child(&e);
+        let (all, _all) = mount_all(&e);
+        let (nested, wide) = (
+            identity(&child_mount).unwrap(),
+            identity(&all.join("Vault").join("Sub")).unwrap(),
+        );
+        assert_eq!(nested.1, wide.1, "one fileid");
+        assert_ne!(nested.2, wide.2, "two birth times");
+        let child = Authority::open_in(&e.account, &child_mount).unwrap();
+        let hold = child.begin_drain("exclusive-operation").unwrap();
+        refused(&e.account, &all.join("Vault"), "cannot prove");
+        refused(&e.account, &all, "cannot prove");
+        assert!(child.admit().is_err(), "the child hold stays in force");
+        release(hold);
+
+        // The wider export first, held; then the nested one.
+        let e = exports(&["Vault/Sub"]);
+        let (all, _all) = mount_all(&e);
+        let (child_mount, _child_mount) = mount_child(&e);
+        let vault = Authority::open_in(&e.account, &all.join("Vault")).unwrap();
+        let _hold = vault.begin_drain("exclusive-operation").unwrap();
+        refused(&e.account, &child_mount, "cannot prove");
+    }
 }
 
 /// #3211: only NFS fileids are assigned by the server under every mount. A

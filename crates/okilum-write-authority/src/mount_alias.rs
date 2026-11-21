@@ -25,10 +25,12 @@
 //!
 //! - Two exports (#3211): mounts of different exports share no mount root, so
 //!   their chains cannot show enclosure. On NFS the server assigns fileid and
-//!   birth time, so the export witness reads them live: neither root lies on
+//!   so the export witness reads fileids live: neither root's fileid is on
 //!   the other's chain, and a bounded walk of each folder finds no directory
-//!   of the other's chain. Anything the walk cannot read, another filesystem
-//!   type, or a folder too large to walk stays refused.
+//!   with a fileid of the other's chain. Birth time is ignored there (NFSv3
+//!   reports none, NFSv4 the server's). Anything the walk cannot read, a
+//!   directory not on NFS, another filesystem type, or a folder too large to
+//!   walk stays refused.
 //!
 //! Other platforms and native volumes keep no record and are unaffected.
 use super::*;
@@ -78,9 +80,10 @@ fn mount_chain(chain: &[Identity]) -> Vec<Identity> {
     own
 }
 
-/// Export witness (#3211): no directory in or below `folder` is one of
-/// `chain`. `None`: the walk could not read everything or met its bound, so
-/// nothing is proved. Symbolic links are not followed.
+/// Export witness (#3211): no directory in or below `folder` has the NFS
+/// fileid of one of `chain`. `None`: the walk could not read everything, met
+/// a directory not on NFS, or met its bound, so nothing is proved. Symbolic
+/// links are not followed.
 fn walk_avoids(folder: &Path, chain: &[Identity]) -> Option<bool> {
     let mut pending = vec![folder.to_path_buf()];
     let mut seen = 0;
@@ -90,11 +93,11 @@ fn walk_avoids(folder: &Path, chain: &[Identity]) -> Option<bool> {
             return None;
         }
         let current = identity(&directory).ok()?;
+        if !nfs(&current) {
+            return None;
+        }
         let current = std::slice::from_ref(&current);
-        if chain
-            .iter()
-            .any(|stored| physical_candidate(current, stored))
-        {
+        if chain.iter().any(|stored| fileid_overlap(current, stored)) {
             return Some(false);
         }
         for entry in fs::read_dir(&directory).ok()? {
@@ -107,13 +110,29 @@ fn walk_avoids(folder: &Path, chain: &[Identity]) -> Option<bool> {
     Some(true)
 }
 
+/// One of `current` has the NFS fileid of `stored`, whatever the birth times
+/// (#3212 review: one folder over NFSv3 and NFSv4 has two birth times).
+fn fileid_overlap(current: &[Identity], stored: &Identity) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        current
+            .iter()
+            .any(|identity| identity.nfs_fileid_match(stored))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (current, stored);
+        false
+    }
+}
+
 /// Two folders on mounts with different mount roots (two exports, #3211).
 /// Their chains end at their mount roots, so an export nested in the other is
 /// invisible to them; it shows up only below the wider folder. Both folders
-/// are on NFS, whose fileid and birth time the server assigns under every
-/// mount, and they are disjoint only when neither root is on the other's
-/// chain and neither folder contains a directory of the other's chain.
-/// Everything else is `Unknown`.
+/// are on NFS, whose fileid the server assigns under every mount, and they
+/// are disjoint only when neither root's fileid is on the other's chain and
+/// neither folder contains a directory with a fileid of the other's chain.
+/// Birth time never excludes a match. Everything else is `Unknown`.
 fn export_witness(
     folder: &Path,
     chain: &[Identity],
@@ -124,7 +143,7 @@ fn export_witness(
         return Overlap::Unknown;
     }
     let (own, other) = (mount_chain(chain), mount_chain(root_chain));
-    if physical_candidate(&own, &root_chain[0]) || physical_candidate(&other, &chain[0]) {
+    if fileid_overlap(&own, &root_chain[0]) || fileid_overlap(&other, &chain[0]) {
         return Overlap::Unknown;
     }
     match (walk_avoids(folder, &other), walk_avoids(root, &own)) {

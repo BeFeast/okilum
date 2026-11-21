@@ -45,6 +45,13 @@ impl Identity {
             _ => false,
         }
     }
+    /// The same NFS fileid, birth time ignored (#3211, #3212 review). The
+    /// export witness uses it: macOS reports no birth time over NFSv3 but the
+    /// server's over NFSv4, so one folder mounted both ways has two birth
+    /// times. A fileid shared by two server filesystems only over-refuses.
+    pub(super) fn nfs_fileid_match(&self, other: &Self) -> bool {
+        self.is_filesystem(b"nfs") && other.is_filesystem(b"nfs") && self.1 == other.1
+    }
     /// The alias-invariant witness for UUID-less volumes (#3204). One export
     /// mounted as `10.10.0.14:/srv` and as `nas:/srv` gives two digests for one
     /// server object, but the server assigns inode (NFS fileid) and birth time,
@@ -75,17 +82,22 @@ pub fn read(path: &Path) -> Result<Identity> {
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(path)?;
     #[cfg(test)]
-    if let Some((backing, filesystem, source)) = simulated_mount(path) {
+    if let Some((backing, filesystem, source, zero_birth)) = simulated_mount(path) {
         // NFS answers ATTR_VOL_UUID with EINVAL (#3202, macOS 27 on NFSv3).
         let handle = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(backing)?;
-        return from_file_with(
+        let mut simulated = from_file_with(
             &handle,
             |_| Err(std::io::Error::from_raw_os_error(libc::EINVAL)),
             |_| mount_source_digest(filesystem.as_bytes(), source.as_bytes()),
-        );
+        )?;
+        if zero_birth {
+            // NFSv3 has no creation time; XNU then reports birth time zero.
+            simulated.2 = Some(0);
+        }
+        return Ok(simulated);
     }
     from_file(&handle)
 }
@@ -94,12 +106,14 @@ pub fn read(path: &Path) -> Result<Identity> {
 /// `prefix` carry no volume UUID, the filesystem type `filesystem` (`nfs`,
 /// `smbfs`) and the mount source `source`. With `backing`, the prefix is
 /// another spelling of that directory, as a second mount of the same export
-/// would be; identities then read the backing object.
+/// would be; identities then read the backing object. `zero_birth`: an NFSv3
+/// mount, whose birth times read as zero.
 #[cfg(test)]
 pub(super) struct SimulatedMount {
     pub prefix: PathBuf,
     pub filesystem: &'static str,
     pub source: &'static str,
+    pub zero_birth: bool,
     pub backing: Option<PathBuf>,
 }
 #[cfg(test)]
@@ -108,7 +122,7 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 #[cfg(test)]
-fn simulated_mount(path: &Path) -> Option<(PathBuf, &'static str, &'static str)> {
+fn simulated_mount(path: &Path) -> Option<(PathBuf, &'static str, &'static str, bool)> {
     SIMULATED_MOUNTS.with(|mounts| {
         let mounts = mounts.borrow();
         let mount = mounts
@@ -119,7 +133,7 @@ fn simulated_mount(path: &Path) -> Option<(PathBuf, &'static str, &'static str)>
             Some(backing) => backing.join(path.strip_prefix(&mount.prefix).ok()?),
             None => path.to_path_buf(),
         };
-        Some((backing, mount.filesystem, mount.source))
+        Some((backing, mount.filesystem, mount.source, mount.zero_birth))
     })
 }
 

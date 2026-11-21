@@ -66,10 +66,12 @@ def main():
     exports_test = "identity_macos_tests::identity_3211_two_nfs_exports_have_independent_scopes"
     sibling_test = "identity_macos_tests::identity_3211_sibling_exports_of_one_server_are_disjoint"
     unproved_test = "identity_macos_tests::identity_3211_unproved_exports_stay_refused"
+    mixed_test = "identity_macos_tests::identity_3211_mixed_nfs_versions_nested_export_stays_refused"
     tests = [(alias_test, "alias"), (child_test, "child-first"), (gone_test, "mount-gone"),
              (stale_test, "stale"), (nested_test, "nested-export"),
              (replaced_test, "replaced-ancestor"), (exports_test, "two-exports"),
-             (sibling_test, "sibling-exports"), (unproved_test, "unproved-exports")]
+             (sibling_test, "sibling-exports"), (unproved_test, "unproved-exports"),
+             (mixed_test, "mixed-nfs-versions")]
     for test, label in tests:
         run(test, f"{label}-positive")
     # #3204: each control removes one rule; its regression must then fail.
@@ -111,6 +113,10 @@ def main():
         (alias, original_alias, "let current = identity(&directory).ok()?;",
          "let Ok(current) = identity(&directory) else { continue };",
          unproved_test, "unreadable-skipped-negative"),
+        # #3212 review: birth time compared too, NFSv3 (zero) and NFSv4 hide the nesting.
+        (alias, original_alias, ".any(|identity| identity.nfs_fileid_match(stored))",
+         ".any(|identity| physical_candidate(std::slice::from_ref(identity), stored))",
+         mixed_test, "birth-time-compared-negative"),
     ]
     for path, original, old, replacement, test, label in controls:
         try:

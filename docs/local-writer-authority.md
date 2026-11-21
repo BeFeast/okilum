@@ -57,10 +57,14 @@ Mounts of two different exports share no mount root, so their chains cannot
 show that one export is nested in the other (`nas:/share/Vault/Sub` mounted
 apart from `nas:/share`, or a server-side bind mount). For them an export
 witness decides, read live at registration (#3211). Both folders must be on
-NFS, where the server assigns fileid and birth time under every mount;
-neither root may lie on the other's chain up to its mount root; and a walk of
-each folder (directories only, symbolic links not followed, at most 100 000
-directories) must find no directory of the other's chain. A nested export
+NFS, where the server assigns the fileid under every mount; neither root's
+fileid may be on the other's chain up to its mount root; and a walk of each
+folder (directories only, symbolic links not followed, at most 100 000
+directories, every one on NFS) must find no directory with a fileid of the
+other's chain. Birth time is ignored here: macOS reports none over NFSv3 and
+the server's over NFSv4, so one folder mounted both ways has two birth times.
+A fileid shared by two server filesystems (two exports that are both
+filesystem roots, for example) only over-refuses. A nested export
 shows up in that walk as its root (or an ancestor of it) below the wider
 folder, so it is refused, and so is a parent of both. Two independent exports
 then get separate scopes with independent holds. Anything else stays refused:
