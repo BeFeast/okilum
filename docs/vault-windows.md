@@ -86,6 +86,31 @@ startup. An unavailable default opens the existing start screen with its unavail
 notice, rather than silently selecting a different vault. No default keeps the
 existing launch behavior.
 
+## Recent vaults on the start screen (#3208)
+
+The start screen lists folders opened as vaults (`known_vault_roots`), newest
+first, at most 10 (`reader_recent_vaults::LIMIT`). A folder that only held a
+file opened on its own, or a folder view, is not listed. In the user's own
+history (not an `OKILUM_STATE_DIR` QA instance, not a test's state directory)
+folders nobody chooses as a vault are hidden when recorded and pruned on every
+startup: the system temp folders, any `qa-evidence` path, `~/Library/Application
+Support`, `~/Library/Caches`, `~/Library/Logs`, `AppData`, `.cache`,
+`.local/state` and the trash. A hidden folder keeps its last note but is neither
+listed nor reopened at startup. iCloud Drive (`~/Library/Mobile Documents`) is
+not excluded. Clear list hides every listed vault the same way; opening one as
+a vault lists it again. Remove forgets one entry (#1368).
+
+Each listed vault is checked off the UI thread, one thread per folder, with a
+1.5 s deadline in all, so a dead network mount cannot hold up the start screen.
+The reason is specific: `Network volume “X” not mounted` (or `Volume “X” not
+mounted` when `fstab` does not say it was a network filesystem; the volume
+directory under `/Volumes`, `/mnt`, `/media` or `/run/media` is gone or no longer
+a mount point), `Drive Z: not connected`, `Network share \\server\share not
+available`, `Network volume not responding`, `Folder missing`, `Not a folder`,
+`Can’t read: permission denied` (macOS privacy denial named as such), `Can’t
+open: <system message>`. A folder that opens but cannot take edits says `Can’t
+edit: read-only volume` or `Can’t edit: no write permission for this folder`.
+
 ## Window state integration (#592)
 
 New Window snapshots the initiating Reader before attaching the shared vault.

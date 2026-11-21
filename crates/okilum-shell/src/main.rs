@@ -141,6 +141,7 @@ mod reader_properties;
 mod reader_publication;
 mod reader_read_menu;
 mod reader_reading_controls;
+mod reader_recent_vaults;
 #[cfg(any(unix, windows))]
 mod reader_recovery;
 mod reader_replay;

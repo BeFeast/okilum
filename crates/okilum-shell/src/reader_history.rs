@@ -279,6 +279,22 @@ impl ReadingHistory {
         single_file: bool,
         opened_at: Option<u64>,
     ) -> Result<()> {
+        // #3208: a folder nobody chooses as a vault (a test fixture, a temp
+        // or app-support folder) keeps its last note but is never listed or
+        // reopened at startup from the user's own history.
+        let unchosen = crate::reader_recent_vaults::users_history(directory)
+            && crate::reader_recent_vaults::Places::current().unchosen(root);
+        Self::record_opened(directory, root, document, single_file, opened_at, unchosen)
+    }
+
+    fn record_opened(
+        directory: &Path,
+        root: &Path,
+        document: &str,
+        single_file: bool,
+        opened_at: Option<u64>,
+        unchosen: bool,
+    ) -> Result<()> {
         validate_document(root, document)?;
         let _lock = Self::lock(directory, std::iter::once(root))?;
         let mut state = Self::load(directory)?.unwrap_or(Self {
@@ -291,7 +307,11 @@ impl ReadingHistory {
             default_root: None,
             quick_files: Vec::new(),
         });
-        state.hidden_roots.remove(root);
+        if unchosen {
+            state.hidden_roots.insert(root.to_owned());
+        } else {
+            state.hidden_roots.remove(root);
+        }
         // #3123: a root already recorded as a full vault stays one when a
         // file inside it is opened on its own; only folders never opened as
         // a vault become quick-viewer roots.
@@ -427,6 +447,30 @@ impl ReadingHistory {
             if state.default_root.as_deref() == Some(root) {
                 state.default_root = None;
             }
+            state.persist(directory)?;
+        }
+        Ok(())
+    }
+
+    /// Hide several entries at once (#3208): Clear list, and folders nobody
+    /// chose as a vault. Like [`Self::remove_from_list`], each keeps its last
+    /// reading place, and opening it again as a vault lists it again.
+    pub fn hide_roots(directory: &Path, roots: &[PathBuf]) -> Result<()> {
+        let _lock = Self::lock(directory, std::iter::empty())?;
+        let Some(mut state) = Self::load(directory)? else {
+            return Ok(());
+        };
+        let mut changed = false;
+        for root in roots {
+            if state.last_documents.contains_key(root) {
+                changed |= state.hidden_roots.insert(root.clone());
+            }
+            if state.default_root.as_ref() == Some(root) {
+                state.default_root = None;
+                changed = true;
+            }
+        }
+        if changed {
             state.persist(directory)?;
         }
         Ok(())
@@ -1033,6 +1077,69 @@ mod tests {
                 .unwrap()
                 .as_deref(),
             Some("second.md")
+        );
+    }
+
+    /// #3208: a folder nobody chose as a vault is recorded for its last note
+    /// but never listed and never reopened at startup; opening it again does
+    /// not bring it back. Clear list hides every entry the same way.
+    #[test]
+    fn issue3208_unchosen_folders_stay_off_the_list_and_clear_hides_all() {
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let vault = fixture.path().join("Notes");
+        let qa = fixture.path().join("fixture-a");
+        for folder in [&vault, &qa] {
+            fs::create_dir(folder).unwrap();
+        }
+        ReadingHistory::record_opened(&state, &vault, "a.md", false, Some(1), false).unwrap();
+        ReadingHistory::record_opened(&state, &qa, "a.md", false, Some(2), true).unwrap();
+        ReadingHistory::record_opened(&state, &qa, "b.md", false, Some(3), true).unwrap();
+        let (last, listed) = ReadingHistory::startup_roots(&state).unwrap();
+        assert_eq!(listed, std::slice::from_ref(&vault));
+        assert_eq!(
+            last.as_ref(),
+            Some(&vault),
+            "the fixture never reopens at startup"
+        );
+        assert_eq!(
+            ReadingHistory::last_document(&state, &qa)
+                .unwrap()
+                .as_deref(),
+            Some("b.md"),
+            "its last note is kept"
+        );
+        assert_eq!(
+            ReadingHistory::known_vault_roots(&state).unwrap(),
+            std::slice::from_ref(&vault)
+        );
+        // Control: the same folder recorded as chosen is listed again.
+        ReadingHistory::record_opened(&state, &qa, "b.md", false, Some(4), false).unwrap();
+        assert_eq!(
+            ReadingHistory::startup_roots(&state).unwrap().1,
+            [qa.clone(), vault.clone()]
+        );
+
+        // Clear list: nothing is listed or restored, the default goes too,
+        // and the reading places stay.
+        ReadingHistory::set_default_vault(&state, Some(&vault)).unwrap();
+        ReadingHistory::hide_roots(&state, &[qa.clone(), vault.clone()]).unwrap();
+        assert_eq!(
+            ReadingHistory::startup_roots(&state).unwrap(),
+            (None, Vec::new())
+        );
+        assert_eq!(ReadingHistory::default_vault(&state).unwrap(), None);
+        assert_eq!(
+            ReadingHistory::last_document(&state, &vault)
+                .unwrap()
+                .as_deref(),
+            Some("a.md")
+        );
+        // Opening a vault again after Clear list lists it again.
+        ReadingHistory::record_usable_document(&state, &vault, "a.md").unwrap();
+        assert_eq!(
+            ReadingHistory::startup_roots(&state).unwrap().1,
+            std::slice::from_ref(&vault)
         );
     }
 }
