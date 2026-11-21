@@ -74,6 +74,8 @@ def main():
          child_test, "no-alias-routing-negative"),
         (entry, original_entry, "a.retire_unmounted()?;", "let _ = &a;",
          stale_test, "no-retire-negative"),
+        (entry, original_entry, "Self::set_aside_retired(&directory)?;", "",
+         stale_test, "no-set-aside-negative"),
     ]
     for path, original, old, replacement, test, label in controls:
         try:
