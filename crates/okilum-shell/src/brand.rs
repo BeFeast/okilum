@@ -10,6 +10,7 @@ use gpui::ElementId;
 use gpui::{px, rgb, svg, App, AssetSource, Hsla, SharedString, Styled, Svg};
 #[cfg(all(unix, feature = "brain"))]
 use gpui_component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
+use gpui_component::input::projection::TaskCheckAnimation;
 use gpui_component::{highlighter::HighlightTheme, Colorize as _, Theme};
 use okilum_shell::projects_picker;
 
@@ -438,6 +439,9 @@ pub struct ReaderPalette {
     pub find_mark_track: Hsla,
     /// Dims the document under an overlay.
     pub scrim: Hsla,
+    /// Theme decoration slots (#3154): heading rule, `hr`, blockquote, link
+    /// marker, bold gradient. Empty for themes that fill none.
+    pub decorations: gpui_base::text::TextDecorations,
 }
 
 /// Status roles may fall back to the brand tokens; every other role must be
@@ -546,9 +550,79 @@ fn resolve(theme: ThemeId) -> ThemeTokens {
                 find_mark_current: color("findMarkCurrent"),
                 find_mark_track: color("findMarkTrack"),
                 scrim: color("scrim"),
+                decorations: parse_decorations(
+                    layers
+                        .iter()
+                        .find_map(|layer| layer.get("decorations").and_then(|d| d.get(mode))),
+                ),
             },
         )
     })
+}
+
+/// The slot names a theme's `decorations.<mode>` may fill (#3154); the
+/// theme test rejects any other.
+#[cfg(test)]
+const DECORATION_SLOTS: [&str; 5] = ["headingRule", "hr", "blockquote", "linkMarker", "bold"];
+
+/// Theme decoration slots from a theme file's `decorations.<mode>` (#3154).
+/// A missing slot stays empty, and the renderer then draws as it did before
+/// slots existed. Lengths, heights and bottoms are shares (0..=1) of the box
+/// or line; thicknesses are pixels; angles are CSS degrees.
+fn parse_decorations(json: Option<&serde_json::Value>) -> gpui_base::text::TextDecorations {
+    use gpui_base::text::{
+        BlockquoteDecoration, Gradient, GradientBar, HorizontalRule, LinkMarker, TextDecorations,
+    };
+    let Some(json) = json else {
+        return TextDecorations::default();
+    };
+    let color = |v: &serde_json::Value, key: &str| -> Option<Hsla> {
+        v.get(key)
+            .map(|c| parse_color(c.as_str().expect("validated decoration colour")))
+    };
+    let number = |v: &serde_json::Value, key: &str, default: f32| -> f32 {
+        v.get(key).map_or(default, |n| {
+            n.as_f64().expect("validated decoration number") as f32
+        })
+    };
+    let gradient = |v: &serde_json::Value, angle: f32| -> Option<Gradient> {
+        Some(Gradient::new(
+            number(v, "angle", angle),
+            color(v, "from")?,
+            color(v, "to")?,
+        ))
+    };
+    let bar = |v: &serde_json::Value, length: f32, thickness: f32| -> Option<GradientBar> {
+        Some(GradientBar {
+            gradient: gradient(v, 90.)?,
+            length: number(v, "length", length),
+            thickness: px(number(v, "thickness", thickness)),
+        })
+    };
+    TextDecorations {
+        heading_rule: json.get("headingRule").and_then(|v| bar(v, 1., 1.)),
+        horizontal_rule: json.get("hr").and_then(|v| {
+            Some(HorizontalRule {
+                edge: color(v, "edge")?,
+                middle: color(v, "middle")?,
+                thickness: px(number(v, "thickness", 1.)),
+            })
+        }),
+        blockquote: json.get("blockquote").map(|v| BlockquoteDecoration {
+            background: v.get("background").and_then(|g| gradient(g, 135.)),
+            border: color(v, "border"),
+            top_bar: v.get("topBar").and_then(|b| bar(b, 0.6, 2.)),
+            bottom_bar: v.get("bottomBar").and_then(|b| bar(b, 0.25, 2.)),
+        }),
+        link_marker: json.get("linkMarker").and_then(|v| {
+            Some(LinkMarker {
+                fill: gradient(v, 90.)?,
+                height: number(v, "height", 0.2),
+                bottom: number(v, "bottom", 0.94),
+            })
+        }),
+        bold: json.get("bold").and_then(|v| gradient(v, 90.)),
+    }
 }
 
 fn tokens(theme: ThemeId, dark: bool) -> (Palette, ReaderPalette) {
@@ -571,22 +645,72 @@ pub fn reader_palette(cx: &App) -> ReaderPalette {
 
 /// For render callbacks that have no `App` (link presentation closures). Kept in
 /// step with the live theme by `apply_theme`.
-static APPLIED_DARK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-static APPLIED_THEME: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// The app has one `App`, so one process-wide value is exact. Tests run one
+/// `App` per thread in the same process: a process-wide value let one test's
+/// `apply_theme` repaint another test's Reader text in its theme. Test builds
+/// keep it per thread.
+#[cfg(not(test))]
+mod applied {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    static DARK: AtomicBool = AtomicBool::new(false);
+    static THEME: AtomicUsize = AtomicUsize::new(0);
+    pub(super) fn store(dark: bool, theme: usize) {
+        DARK.store(dark, Ordering::Relaxed);
+        THEME.store(theme, Ordering::Relaxed);
+    }
+    pub(super) fn load() -> (bool, usize) {
+        (DARK.load(Ordering::Relaxed), THEME.load(Ordering::Relaxed))
+    }
+}
+#[cfg(test)]
+mod applied {
+    use std::cell::Cell;
+    thread_local! {
+        static APPLIED: Cell<(bool, usize)> = const { Cell::new((false, 0)) };
+    }
+    pub(super) fn store(dark: bool, theme: usize) {
+        APPLIED.with(|applied| applied.set((dark, theme)));
+    }
+    pub(super) fn load() -> (bool, usize) {
+        APPLIED.with(Cell::get)
+    }
+}
 
 fn applied_theme() -> ThemeId {
     ThemeId::ALL
-        .get(APPLIED_THEME.load(std::sync::atomic::Ordering::Relaxed))
+        .get(applied::load().1)
         .copied()
         .unwrap_or_default()
 }
 
 pub fn reader_palette_current() -> ReaderPalette {
-    tokens(
-        applied_theme(),
-        APPLIED_DARK.load(std::sync::atomic::Ordering::Relaxed),
-    )
-    .1
+    tokens(applied_theme(), applied::load().0).1
+}
+
+/// A theme's optional task checkbox animation (#3155): `motion.taskCheck`
+/// in its token file, `{"durationMs": 1..=600, "bounce": 0..=0.5}`. Absent, the
+/// box toggles with no motion. Live Preview runs it only on a click.
+fn task_check_slot(theme: ThemeId) -> Option<TaskCheckAnimation> {
+    let file: serde_json::Value =
+        serde_json::from_str(theme.tokens()?).expect("validated token file");
+    let slot = file.get("motion")?.get("taskCheck")?;
+    let duration = slot["durationMs"]
+        .as_u64()
+        .filter(|ms| (1..=600).contains(ms))
+        .unwrap_or_else(|| panic!("theme {} taskCheck.durationMs must be 1..=600", theme.key()));
+    let bounce = slot["bounce"]
+        .as_f64()
+        .filter(|bounce| (0. ..=0.5).contains(bounce))
+        .unwrap_or_else(|| panic!("theme {} taskCheck.bounce must be 0..=0.5", theme.key()));
+    Some(TaskCheckAnimation::new(
+        std::time::Duration::from_millis(duration),
+        bounce as f32,
+    ))
+}
+
+pub fn task_check_animation(theme: ThemeId) -> Option<TaskCheckAnimation> {
+    static SLOTS: OnceLock<Vec<Option<TaskCheckAnimation>>> = OnceLock::new();
+    SLOTS.get_or_init(|| ThemeId::ALL.map(task_check_slot).to_vec())[theme.index()]
 }
 
 pub fn palette(cx: &App) -> Palette {
@@ -852,8 +976,15 @@ const TITLE_TINT_STRENGTH: (f32, f32) = (0.12, 0.18);
 pub fn apply_theme(cx: &mut App) {
     let p = palette(cx);
     let dark = Theme::global(cx).is_dark();
-    APPLIED_DARK.store(dark, std::sync::atomic::Ordering::Relaxed);
-    APPLIED_THEME.store(theme_id(cx).index(), std::sync::atomic::Ordering::Relaxed);
+    applied::store(dark, theme_id(cx).index());
+    // Paint-only: editors read it at the next click, nothing re-parses.
+    match task_check_animation(theme_id(cx)) {
+        Some(animation) => cx.set_global(animation),
+        None if cx.has_global::<TaskCheckAnimation>() => {
+            cx.remove_global::<TaskCheckAnimation>();
+        }
+        None => {}
+    }
     let syntax = syntax_theme(theme_id(cx), dark);
     let t = Theme::global_mut(cx);
     t.highlight_theme = syntax;
@@ -1069,6 +1200,33 @@ mod tests {
     use ::core::prelude::v1::test;
     use gpui_component::IconNamed;
     use gpui_component::ThemeMode;
+
+    #[test]
+    fn applied_theme_set_by_another_test_thread_does_not_repaint_this_one() {
+        // GPUI runs each test on its own thread in one process. #3153's
+        // Obsidianite test ran next to the code-fence test and repainted its
+        // Reader code surface through `reader_palette_for_theme`.
+        let other = std::thread::spawn(|| {
+            applied::store(false, ThemeId::Obsidianite.index());
+            applied_theme()
+        })
+        .join()
+        .unwrap();
+        assert_eq!(
+            other,
+            ThemeId::Obsidianite,
+            "positive control: the other thread applied it"
+        );
+        assert_eq!(
+            applied_theme(),
+            ThemeId::Okilum,
+            "this thread keeps its own applied theme"
+        );
+        assert_eq!(
+            reader_palette_current().code_bg,
+            tokens(ThemeId::Okilum, false).1.code_bg
+        );
+    }
 
     #[test]
     fn viewer_state_and_extract_glyphs_are_embedded_in_runtime_assets() {
@@ -1854,6 +2012,82 @@ mod tests {
     }
 
     #[test]
+    fn issue3154_decoration_slots_parse_strictly_and_obsidianite_fills_all_five() {
+        let obsidianite = ThemeId::from_key("obsidianite").expect("built-in theme");
+        for theme in ThemeId::ALL {
+            let file: Option<serde_json::Value> = theme
+                .tokens()
+                .map(|json| serde_json::from_str(json).unwrap());
+            let modes = file.as_ref().and_then(|file| file.get("decorations"));
+            if let Some(modes) = modes {
+                for (mode, slots) in modes.as_object().expect("decorations by mode") {
+                    assert!(["light", "dark"].contains(&mode.as_str()), "mode {mode}");
+                    for key in slots.as_object().expect("slots").keys() {
+                        assert!(
+                            DECORATION_SLOTS.contains(&key.as_str()),
+                            "{} {mode}: unknown slot {key}",
+                            theme.key()
+                        );
+                    }
+                }
+            }
+            for dark in [false, true] {
+                let d = tokens(theme, dark).1.decorations;
+                let named = modes
+                    .and_then(|m| m.get(if dark { "dark" } else { "light" }))
+                    .map_or(0, |m| m.as_object().unwrap().len());
+                let parsed = [
+                    d.heading_rule.is_some(),
+                    d.horizontal_rule.is_some(),
+                    d.blockquote.is_some(),
+                    d.link_marker.is_some(),
+                    d.bold.is_some(),
+                ]
+                .into_iter()
+                .filter(|filled| *filled)
+                .count();
+                assert_eq!(parsed, named, "{}: every named slot parses", theme.key());
+                if theme != obsidianite {
+                    // No slot: the renderer draws exactly as before.
+                    assert!(d.is_empty(), "{} fills no slot", theme.key());
+                }
+            }
+        }
+        for dark in [false, true] {
+            let (p, r) = tokens(obsidianite, dark);
+            let d = r.decorations;
+            assert_eq!(
+                (
+                    d.heading_rule.is_some(),
+                    d.horizontal_rule.is_some(),
+                    d.blockquote.is_some(),
+                    d.link_marker.is_some(),
+                    d.bold.is_some()
+                ),
+                (true, true, true, true, true),
+                "Obsidianite fills all five slots"
+            );
+            // Bold text stays readable letter by letter, ends and middle.
+            let bold = d.bold.unwrap();
+            for c in [bold.from, bold.to, bold.color_at(0.5)] {
+                assert!(contrast(c, p.canvas) >= 4.5, "bold {c:?} on canvas");
+                assert!(contrast(c, p.surface) >= 4.5, "bold {c:?} on surface");
+            }
+            let marker = d.link_marker.unwrap();
+            assert!(
+                marker.height > 0. && marker.height < 0.5,
+                "lower part, not the full line"
+            );
+        }
+        // The Obsidianite strong gradient, #87c2fd -> #dcb9fc.
+        let bold = tokens(obsidianite, true).1.decorations.bold.unwrap();
+        assert_eq!(
+            (bold.from, bold.to),
+            (rgb(0x87c2fd).into(), rgb(0xdcb9fc).into())
+        );
+    }
+
+    #[test]
     fn issue3152_obsidianite_dark_keeps_the_source_theme_colours() {
         // Obsidianite's `.theme-dark`: --background-primary, --text-normal,
         // --text-accent and --text-title-h1 (= accent), --background-secondary.
@@ -1888,6 +2122,40 @@ mod tests {
             file["basis"].as_str().unwrap().contains("MIT"),
             "Obsidianite is credited"
         );
+    }
+
+    #[gpui::test]
+    fn issue3155_task_check_animation_follows_the_theme(cx: &mut gpui::TestAppContext) {
+        // Obsidianite's checkbox: a 300 ms bounce with the check drawn in.
+        let obsidianite = task_check_animation(ThemeId::Obsidianite).expect("slot filled");
+        assert_eq!(
+            obsidianite.duration(),
+            std::time::Duration::from_millis(300)
+        );
+        assert!(obsidianite.bounce() > 0. && obsidianite.bounce() <= 0.5);
+        for theme in ThemeId::ALL {
+            if theme != ThemeId::Obsidianite {
+                assert_eq!(
+                    task_check_animation(theme),
+                    None,
+                    "{} has no slot",
+                    theme.key()
+                );
+            }
+        }
+        cx.update(crate::test_init);
+        cx.update(|cx| {
+            for (theme, expected) in [
+                (ThemeId::Obsidianite, Some(obsidianite)),
+                (ThemeId::Graphite, None),
+                (ThemeId::Obsidianite, Some(obsidianite)),
+                (ThemeId::Okilum, None),
+            ] {
+                cx.set_global(ThemeChoice(theme));
+                apply_theme(cx);
+                assert_eq!(cx.try_global::<TaskCheckAnimation>().copied(), expected);
+            }
+        });
     }
 
     #[test]
@@ -1933,6 +2201,11 @@ mod tests {
                     // #3153: per level, with `heading` as the fallback.
                     let levels = tokens(theme, mode == ThemeMode::Dark).1.headings;
                     assert_eq!(crate::reader_text_style(t).heading_colors, levels.map(Some));
+                    // #3154: the Reader draws the theme's decoration slots.
+                    assert_eq!(
+                        crate::reader_text_style(t).decorations,
+                        tokens(theme, mode == ThemeMode::Dark).1.decorations
+                    );
                 }
             }
         });

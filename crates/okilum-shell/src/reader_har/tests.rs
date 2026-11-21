@@ -155,7 +155,7 @@ fn har2836_opens_as_a_request_list_with_a_summary(cx: &mut TestAppContext) {
         [("har-view-requests", true), ("har-view-source", false)]
     );
     // Read-only: no Edit slot and no editor authority over the capture.
-    reader.read_with(visual, |reader, _| assert!(reader.editing.is_none()));
+    reader.read_with(visual, |reader, _| assert!(reader.pane.editing.is_none()));
     assert!(!reader_delimited::editable("capture.har"));
     assert!(reader_code_file::eligible("capture.har"));
 }

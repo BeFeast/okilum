@@ -22,7 +22,7 @@ fn open<'a>(cx: &'a mut TestAppContext, name: &str, source: &str) -> Open<'a> {
     });
     tick(visual, 130);
     let (file, input) = reader.read_with(visual, |r, _| {
-        let e = r.editing.as_ref().expect("real file Edit entry");
+        let e = r.pane.editing.as_ref().expect("real file Edit entry");
         (e.file_chrome.clone().unwrap(), e.input.clone())
     });
     frame(visual);
@@ -325,7 +325,7 @@ fn file2811_header_find_and_typing_do_not_render_slots_or_notify_panels(cx: &mut
     visual.simulate_keystrokes("home");
     let startup = settle_startup(&reader, visual);
     reader.read_with(visual, |r, _| {
-        let editing = r.editing.as_ref().unwrap();
+        let editing = r.pane.editing.as_ref().unwrap();
         assert!(editing.autosave_schedule.deadline.is_none());
         assert!(editing.autosaving.is_none());
         assert!(!editing.store.has_pending_revision());
@@ -391,7 +391,7 @@ fn file2811_header_find_and_typing_do_not_render_slots_or_notify_panels(cx: &mut
     });
     let initial = crate::reader_viewer_chrome::header_renders(reader.entity_id());
     let typing_started = visual.update(|_, cx| cx.background_executor().now());
-    let saves = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().saves);
+    let saves = reader.read_with(visual, |r, _| r.pane.editing.as_ref().unwrap().saves);
     let disk_path = temp.path().join("vault/test1.json");
     let disk_before = std::fs::read(&disk_path).unwrap();
     counts.set([0, 0]);
@@ -413,7 +413,7 @@ fn file2811_header_find_and_typing_do_not_render_slots_or_notify_panels(cx: &mut
         assert!(elapsed < crate::reader_editor::AUTOSAVE_PAUSE);
         reader.read_with(visual, |r, _| {
             assert_eq!(startup_publication(r), Some(startup));
-            let editing = r.editing.as_ref().unwrap();
+            let editing = r.pane.editing.as_ref().unwrap();
             assert_eq!(editing.saves, saves);
             assert!(editing.autosaving.is_none());
         });
@@ -463,7 +463,7 @@ fn file2811_format_menu_has_live_commands_language_and_busy_explanations(cx: &mu
     frame(visual);
     reader.read_with(visual, |r, _| {
         assert_eq!(
-            r.editing.as_ref().unwrap().operations.last_action,
+            r.pane.editing.as_ref().unwrap().operations.last_action,
             Some(Action::Validate),
             "menu actually dispatches Validate"
         )
@@ -471,7 +471,7 @@ fn file2811_format_menu_has_live_commands_language_and_busy_explanations(cx: &mu
     assert!(!visual.update(|w, cx| popup.focus_handle(cx).is_focused(w)));
     let (send, receive) = futures::channel::oneshot::channel();
     reader.update_in(visual, |r, w, cx| {
-        r.editing.as_mut().unwrap().operations.worker_gate = Some(receive);
+        r.pane.editing.as_mut().unwrap().operations.worker_gate = Some(receive);
         r.code_operation(Action::Format, w, cx);
     });
     frame(visual);
@@ -565,7 +565,7 @@ fn file2811_repair_from_read_enters_edit_and_stale_sheet_closes(cx: &mut TestApp
     );
     tick(visual, 150);
     click(visual, "code-repair");
-    assert!(reader.read_with(visual, |r, _| r.editing.is_some()));
+    assert!(reader.read_with(visual, |r, _| r.pane.editing.is_some()));
     measured(visual, "file-repair-sheet");
     let input = reader.read_with(visual, |r, _| r.source_input().unwrap());
     input.update_in(visual, |s, w, cx| s.replace_source_range(5..6, "2", w, cx));
@@ -881,7 +881,7 @@ fn file2811_actual_save_failure_and_conflict_disable_all_commands(cx: &mut TestA
     }
     reader.update(visual, |r, cx| {
         assert!(!r.save_source(cx));
-        assert!(r.editing.as_ref().unwrap().save_failed);
+        assert!(r.pane.editing.as_ref().unwrap().save_failed);
     });
     frame(visual);
     assert!(drawn(&input).1.starts_with("Saving failed."));
@@ -898,7 +898,7 @@ fn file2811_actual_save_failure_and_conflict_disable_all_commands(cx: &mut TestA
     std::fs::write(&path, "{\"disk\":2}").unwrap();
     reader.update(visual, |r, cx| {
         assert!(!r.save_source(cx));
-        assert!(r.editing.as_ref().unwrap().conflict_detected);
+        assert!(r.pane.editing.as_ref().unwrap().conflict_detected);
     });
     frame(visual);
     assert!(drawn(&input).1.starts_with("This file changed on disk."));
@@ -940,7 +940,7 @@ fn file2811_explicit_non_json_validation_refusal_and_shortcuts_use_the_new_host(
         bytes
     );
     reader.read_with(visual, |r, _| {
-        assert!(!r.editing.as_ref().unwrap().operations.busy)
+        assert!(!r.pane.editing.as_ref().unwrap().operations.busy)
     });
 }
 
@@ -975,7 +975,7 @@ fn file2811_primary_format_preserves_tokens_bom_crlf_and_one_undo(cx: &mut TestA
     );
     reader.read_with(visual, |r, _| {
         assert!(
-            r.editing.as_ref().unwrap().operations.notice.is_none(),
+            r.pane.editing.as_ref().unwrap().operations.notice.is_none(),
             "success no longer occupies the bottom line"
         )
     });
@@ -996,7 +996,7 @@ fn file2811_late_format_and_park_cannot_apply_to_a_newer_source(cx: &mut TestApp
     assert_eq!(text(&input, visual), original);
     let (send, receive) = futures::channel::oneshot::channel();
     reader.update_in(visual, |r, w, cx| {
-        r.editing.as_mut().unwrap().operations.worker_gate = Some(receive);
+        r.pane.editing.as_mut().unwrap().operations.worker_gate = Some(receive);
         r.code_operation(Action::Format, w, cx);
     });
     frame(visual);
@@ -1005,16 +1005,16 @@ fn file2811_late_format_and_park_cannot_apply_to_a_newer_source(cx: &mut TestApp
     frame(visual);
     assert_eq!(text(&input, visual), "{\"a\":2}");
     reader.read_with(visual, |r, _| {
-        assert!(!r.editing.as_ref().unwrap().operations.busy)
+        assert!(!r.pane.editing.as_ref().unwrap().operations.busy)
     });
     assert!(visual.update(|w, cx| !w.notifications(cx).is_empty()));
     let (send, receive) = futures::channel::oneshot::channel();
     reader.update_in(visual, |r, w, cx| {
-        r.editing.as_mut().unwrap().operations.worker_gate = Some(receive);
+        r.pane.editing.as_mut().unwrap().operations.worker_gate = Some(receive);
         r.code_operation(Action::Format, w, cx);
-        let editing = r.editing.take().unwrap();
+        let editing = r.pane.editing.take().unwrap();
         let (store, restore) = editing.park(cx);
-        r.editing = Some(restore(store));
+        r.pane.editing = Some(restore(store));
         input.update(cx, |i, cx| i.set_disabled(false, cx));
     });
     send.send(()).unwrap();
@@ -1225,7 +1225,7 @@ fn file2811_conflicting_repair_closes_the_sheet_without_applying_or_writing(
     std::fs::write(&path, remote).unwrap();
     reader.update(visual, |r, cx| {
         assert!(!r.save_source(cx));
-        assert!(r.editing.as_ref().unwrap().conflict_detected);
+        assert!(r.pane.editing.as_ref().unwrap().conflict_detected);
     });
     frame(visual);
     visual.update(|w, cx| w.clear_notifications(cx));
@@ -1316,7 +1316,7 @@ fn file2811_conflict_bottom_actions_are_not_covered_by_a_duplicate_toast(cx: &mu
     std::fs::write(&path, remote).unwrap();
     reader.update(visual, |r, cx| {
         assert!(!r.save_source(cx));
-        assert!(r.editing.as_ref().unwrap().conflict_detected);
+        assert!(r.pane.editing.as_ref().unwrap().conflict_detected);
     });
     frame(visual);
     assert!(drawn(&input).1.contains("This file changed on disk"));
@@ -1326,7 +1326,7 @@ fn file2811_conflict_bottom_actions_are_not_covered_by_a_duplicate_toast(cx: &mu
     );
     click(visual, "source-park");
     assert!(
-        reader.read_with(visual, |r, _| r.editing.is_none()),
+        reader.read_with(visual, |r, _| r.pane.editing.is_none()),
         "the actual Close, keeping draft action remains clickable"
     );
     assert_eq!(std::fs::read_to_string(path).unwrap(), remote);
@@ -1351,13 +1351,14 @@ fn xml2887_edit_button_typing_validate_format_and_save(cx: &mut TestAppContext) 
     reader.read_with(visual, |r, cx| {
         assert_eq!(r.selected_file(), name);
         assert!(r.code_file_editable(cx), "XML must be editable");
-        assert!(r.editing.is_none());
+        assert!(r.pane.editing.is_none());
     });
     // The user's path: the header Edit button, not a direct call.
     click(visual, "reader-edit");
     tick(visual, 130);
     let input = reader.read_with(visual, |r, _| {
-        r.editing
+        r.pane
+            .editing
             .as_ref()
             .expect("Edit button opens the XML editor")
             .input
@@ -1429,7 +1430,7 @@ fn xml2887_non_utf8_declaration_offers_no_edit_and_never_writes(cx: &mut TestApp
             assert_eq!(r.selected_file(), name);
             assert!(!r.code_file_editable(cx), "{name}");
             r.toggle_source(w, cx);
-            assert!(r.editing.is_none(), "{name}: Edit must not open");
+            assert!(r.pane.editing.is_none(), "{name}: Edit must not open");
         });
         frame(visual);
         assert!(visual.debug_bounds("reader-edit").is_none(), "{name}");
@@ -1578,13 +1579,16 @@ fn xml2912_large_file_formats_off_thread_and_cancels(cx: &mut TestAppContext) {
     let (reader, _file, input, visual, _temp) = open(cx, "big.xml", &original);
     let (send, receive) = futures::channel::oneshot::channel();
     reader.update_in(visual, |r, w, cx| {
-        r.editing.as_mut().unwrap().operations.worker_gate = Some(receive);
+        r.pane.editing.as_mut().unwrap().operations.worker_gate = Some(receive);
         r.code_operation(Action::Format, w, cx);
         assert!(
-            r.editing.as_ref().unwrap().operations.busy,
+            r.pane.editing.as_ref().unwrap().operations.busy,
             "queued, not run inline"
         );
-        assert_eq!(r.editing.as_ref().unwrap().input.read(cx).value(), original);
+        assert_eq!(
+            r.pane.editing.as_ref().unwrap().input.read(cx).value(),
+            original
+        );
     });
     frame(visual);
     assert_eq!(drawn(&input).1, "Formatting…");
@@ -1593,7 +1597,7 @@ fn xml2912_large_file_formats_off_thread_and_cancels(cx: &mut TestAppContext) {
     frame(visual);
     assert_eq!(text(&input, visual), original, "cancel applies nothing");
     reader.read_with(visual, |r, _| {
-        assert!(!r.editing.as_ref().unwrap().operations.busy)
+        assert!(!r.pane.editing.as_ref().unwrap().operations.busy)
     });
     // Positive control: the same file really formats.
     click(visual, "file-format");
@@ -1627,7 +1631,10 @@ fn xml2912_read_mode_format_matches_json_and_non_utf8_stays_read_only(cx: &mut T
             assert_eq!(r.selected_file(), name);
             assert_eq!(r.code_file_editable(cx), editable, "{name}");
             r.run_format_code(w, cx);
-            assert!(r.editing.is_none(), "{name}: Format does not open Edit");
+            assert!(
+                r.pane.editing.is_none(),
+                "{name}: Format does not open Edit"
+            );
         });
         frame(visual);
         assert!(visual.debug_bounds("file-format").is_none(), "{name}");
@@ -1719,9 +1726,9 @@ fn file2804_repair_depth_notice_is_exact_and_keeps_source(cx: &mut TestAppContex
     let (reader, _file, input, visual, temp) = open(cx, "repair-budget.json", &source);
     let (send, gate) = futures::channel::oneshot::channel();
     reader.update_in(visual, |r, w, cx| {
-        r.editing.as_mut().unwrap().operations.worker_gate = Some(gate);
+        r.pane.editing.as_mut().unwrap().operations.worker_gate = Some(gate);
         r.code_operation(Action::Repair, w, cx);
-        assert!(r.editing.as_ref().unwrap().operations.busy);
+        assert!(r.pane.editing.as_ref().unwrap().operations.busy);
     });
     frame(visual);
     let (_, busy, actions) = drawn(&input);
@@ -1738,7 +1745,7 @@ fn file2804_repair_depth_notice_is_exact_and_keeps_source(cx: &mut TestAppContex
         )
     );
     reader.read_with(visual, |r, _| {
-        let ops = &r.editing.as_ref().unwrap().operations;
+        let ops = &r.pane.editing.as_ref().unwrap().operations;
         assert!(!ops.busy && ops.running.is_none() && ops.preview.is_none());
     });
     assert_eq!(text(&input, visual), source);

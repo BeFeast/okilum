@@ -7,6 +7,7 @@
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub mod anchor;
 pub mod attachments;
+pub mod block_drop;
 pub mod context;
 pub mod download;
 pub mod fetch;
@@ -196,6 +197,89 @@ impl offer::Pasteboard for DroppedFiles {
     fn file_urls(&self) -> Vec<String> {
         self.urls()
     }
+}
+
+/// Text, rich text, a URL or image data dropped onto a note (#1615), routed
+/// like a paste of the same representations. GPUI read the contents when it
+/// was dropped, bounded and only the useful flavors; only the platform's
+/// rich-text reader is asked for more.
+pub struct DroppedData(pub gpui::ExternalData);
+
+impl offer::Pasteboard for DroppedData {
+    fn change_count(&self) -> i64 {
+        0
+    }
+    /// Only the types GPUI read: a skipped representation (over its size
+    /// limit, a second image, a private type) is not offered to the router.
+    fn types(&self) -> Vec<String> {
+        self.0
+            .types()
+            .iter()
+            .filter(|kind| self.0.contents(kind).is_some())
+            .map(ToString::to_string)
+            .collect()
+    }
+    fn data(&self, kind: &str) -> Option<Vec<u8>> {
+        self.0.contents(kind).map(<[u8]>::to_vec)
+    }
+    fn string(&self, kind: &str) -> Option<String> {
+        dropped_text(kind, self.0.contents(kind)?)
+    }
+    fn rich_text(&self, data: &[u8], rtfd: bool) -> Option<String> {
+        #[cfg(target_os = "macos")]
+        {
+            crate::platform::exact_macos_clipboard::rich_text_of(data, rtfd)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (data, rtfd);
+            None
+        }
+    }
+    fn rich_html(&self) -> Option<String> {
+        #[cfg(target_os = "macos")]
+        {
+            crate::platform::exact_macos_clipboard::rich_html_of(&self.types(), |kind| {
+                self.0.contents(kind)
+            })
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            None
+        }
+    }
+}
+
+/// A dropped text flavor as text: the UTF-16 types as UTF-16 (a byte-order
+/// mark wins, little-endian without one), every other type as UTF-8. A
+/// trailing NUL some writers add is not text.
+fn dropped_text(kind: &str, bytes: &[u8]) -> Option<String> {
+    let text = if kind.contains("utf16") {
+        if !bytes.len().is_multiple_of(2) {
+            return None;
+        }
+        let (big_endian, bytes) = match bytes {
+            [0xFE, 0xFF, rest @ ..] => (true, rest),
+            [0xFF, 0xFE, rest @ ..] => (false, rest),
+            _ => (false, bytes),
+        };
+        let units: Vec<u16> = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| {
+                if big_endian {
+                    u16::from_be_bytes(*pair)
+                } else {
+                    u16::from_le_bytes(*pair)
+                }
+            })
+            .collect();
+        String::from_utf16(&units).ok()?
+    } else {
+        String::from_utf8(bytes.to_vec()).ok()?
+    };
+    Some(text.trim_end_matches('\0').to_owned())
 }
 
 /// Settings → Editor: ask before copying a file larger than this many MB

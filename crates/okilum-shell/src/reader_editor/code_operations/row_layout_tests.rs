@@ -84,7 +84,8 @@ fn edit2803_short_edit_reuses_unchanged_unicode_and_tab_rows(cx: &mut TestAppCon
     f.reader.update_in(v, |r, w, cx| r.toggle_source(w, cx));
     tests::settle(v);
     let reopened = f.reader.read_with(v, |r, cx| {
-        r.editing
+        r.pane
+            .editing
             .as_ref()
             .unwrap()
             .input

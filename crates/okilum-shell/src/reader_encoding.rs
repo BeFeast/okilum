@@ -8,7 +8,7 @@ impl Reader {
             || self.pane.current_rel.is_empty()
             || self.encoding_repair_pending.is_some()
             || self.move_applying
-            || self.editing.is_some()
+            || self.pane.editing.is_some()
         {
             return;
         }
@@ -71,7 +71,7 @@ impl Reader {
             "Save or discard unsaved edits before restoring a version"
         );
         self.check_move_editors(std::slice::from_ref(&self.pane.current_rel), cx)?;
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             anyhow::ensure!(
                 self.leave_source(cx),
                 "The editor is still saving; open History again after it finishes"
@@ -219,7 +219,7 @@ mod tests {
         reader.update_in(visual, |r, window, cx| {
             assert!(r.note_encoding_damaged);
             r.toggle_source(window, cx);
-            assert!(r.editing.is_none());
+            assert!(r.pane.editing.is_none());
         });
         assert_eq!(
             std::fs::read(&path).unwrap(),
@@ -237,7 +237,7 @@ mod tests {
             assert!(!r.note_encoding_damaged);
             assert!(r.encoding_repair_pending.is_none());
             r.toggle_source(window, cx);
-            assert!(r.editing.is_some(), "Repair unlocks the real editor");
+            assert!(r.pane.editing.is_some(), "Repair unlocks the real editor");
             r.toggle_source(window, cx);
         });
         visual.run_until_parked();
@@ -261,7 +261,7 @@ mod tests {
         reader.update_in(visual, |r, window, cx| {
             assert!(r.note_encoding_damaged);
             r.toggle_source(window, cx);
-            assert!(r.editing.is_none());
+            assert!(r.pane.editing.is_none());
         });
         assert!(visual.debug_bounds("note-encoding-notice").is_some());
         assert!(std::fs::read_dir(&root).unwrap().all(|entry| !entry

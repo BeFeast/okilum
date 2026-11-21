@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 # Full required Linux gate, shared by the local runner and hosted PR pilot.
+# Optional part (#3198): `all` (default), `checks` (everything but the workspace
+# census) or `workspace` (only the census); the hosted gate runs the two halves
+# as parallel jobs so neither hits the 53 min bridge budget.
 set -euo pipefail
+part=${1:-all}
+case "$part" in
+    all | checks) ;;
+    workspace) exec bash scripts/ci/linux-rust-tests.sh workspace ;;
+    *)
+        printf 'check-linux.sh: unknown part %q (all, checks, workspace)\n' "$part" >&2
+        exit 2
+        ;;
+esac
 source "$(dirname "${BASH_SOURCE[0]}")/test-nofile.sh"
 cargo fmt --check
 # Shipped icons must be the approved Okilum mark (#977).
@@ -23,4 +35,4 @@ done
 python3 -m unittest discover -s scripts/ci -p 'test_*.py'
 python3 -m unittest discover -s scripts/perf -p 'test_*.py'
 python3 scripts/test-maintenance-matrix.py
-bash scripts/ci/linux-rust-tests.sh
+bash scripts/ci/linux-rust-tests.sh "$part"

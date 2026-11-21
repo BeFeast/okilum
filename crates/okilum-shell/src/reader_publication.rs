@@ -63,7 +63,7 @@ impl Reader {
         if source.is_none() && !graph_changed {
             return;
         }
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             if source.is_some_and(|source| {
                 source.verified && self.owns_source_publication(&source.digest)
             }) && self.deleted_current().is_none()

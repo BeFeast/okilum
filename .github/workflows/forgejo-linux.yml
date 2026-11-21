@@ -27,6 +27,14 @@ jobs:
   linux-checks:
     if: (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/forgejo-linux-pr/hourly-')) || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
+    # One cold full gate took 33-53 min and hit the 53 min bridge budget (#3198):
+    # the workspace census (~19 min of tests plus its own build) runs in a
+    # parallel job, everything else in the other. `needs.linux-checks.result`
+    # stays the verdict of both; no fail-fast, so each half keeps its evidence.
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [checks, workspace]
     # The vendored gpui-kit tests (scripts/ci/vendor-tests.sh) add ~25 min when they run.
     timeout-minutes: 90
     env:
@@ -69,7 +77,7 @@ jobs:
       - name: Prepare isolated Python test dependencies
         run: bash scripts/ci/setup-python-tests.sh
       - name: Run full Linux gate
-        run: bash scripts/ci/check-linux.sh
+        run: bash scripts/ci/check-linux.sh ${{ matrix.part }}
 
   # One source-pinned product build; both distributions consume its exact bytes.
   # Admission runs inside this job, so a beta occupies one hosted runner slot

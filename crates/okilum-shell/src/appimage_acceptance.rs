@@ -50,7 +50,7 @@ fn snapshot(cx: &mut App) -> Result<Value> {
                 reader.reader_window,
                 json!({"vault": reader.vault_root, "note": reader.pane.current_rel,
                 "ready": !reader.pane.current_rel.is_empty() && !reader.loading.as_ref().is_some_and(|l| l.active && !l.published),
-                    "editor": reader.editing.as_ref().map(|e| e.input().read(cx).value().to_string())}),
+                    "editor": reader.pane.editing.as_ref().map(|e| e.input().read(cx).value().to_string())}),
             )
         };
         state["bounds"] = handle.update(cx, |_, window, _| {
@@ -110,10 +110,11 @@ fn command(request: &Value, directory: &std::path::Path, cx: &mut App) -> Result
             let handle = reader.read(cx).reader_window;
             handle.update(cx, |_, window, cx| {
                 reader.update(cx, |reader, cx| {
-                    if reader.editing.is_none() {
+                    if reader.pane.editing.is_none() {
                         reader.toggle_source(window, cx);
                     }
                     reader
+                        .pane
                         .editing
                         .as_ref()
                         .context("Source editor did not open")?

@@ -24,7 +24,7 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-j", OpenTerminal, context),
         KeyBinding::new("ctrl-`", OpenTerminal, context),
         // Next to Reveal (alt-cmd-r) and Copy vault path (alt-cmd-c).
-        KeyBinding::new("alt-cmd-t", OpenInTerminal, Some("Reader")),
+        KeyBinding::new(crate::OPEN_IN_TERMINAL_KEY, OpenInTerminal, Some("Reader")),
     ]);
 }
 fn setting_path(project: &Path) -> anyhow::Result<PathBuf> {

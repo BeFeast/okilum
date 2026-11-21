@@ -416,7 +416,7 @@ fn code2810_edit_entry_cancels_tree_find_before_debounce(cx: &mut TestAppContext
     reader.update_in(visual, |r, w, cx| r.toggle_source(w, cx));
     settle(visual);
     assert!(
-        reader.read_with(visual, |r, _| r.editing.is_some()),
+        reader.read_with(visual, |r, _| r.pane.editing.is_some()),
         "real Edit entry completed"
     );
     code.read_with(visual, |s, _| {
@@ -436,7 +436,7 @@ fn code2810_edit_entry_cancels_tree_find_before_debounce(cx: &mut TestAppContext
     });
     // The real retained-preview exit must restart the pending query in Read.
     reader.update_in(visual, |r, w, cx| {
-        let input = r.editing.as_ref().unwrap().input().clone();
+        let input = r.pane.editing.as_ref().unwrap().input().clone();
         input.update(cx, |input, cx| input.replace_source_range(0..0, " ", w, cx));
         std::fs::write(
             temp.path().join("vault/data.json"),
@@ -454,7 +454,7 @@ fn code2810_edit_entry_cancels_tree_find_before_debounce(cx: &mut TestAppContext
     settle(visual);
     reader.read_with(visual, |r, _| {
         assert!(
-            r.editing.is_none(),
+            r.pane.editing.is_none(),
             "draft park did not exit Edit: notice={:?}, bounds={park:?}",
             r.link_notice
         );
@@ -473,7 +473,7 @@ fn code2810_edit_entry_cancels_tree_find_before_debounce(cx: &mut TestAppContext
     code.update_in(visual, |s, w, cx| s.step_match(1, w, cx));
     reader.update_in(visual, |r, w, cx| {
         r.toggle_source(w, cx);
-        let input = r.editing.as_ref().unwrap().input().clone();
+        let input = r.pane.editing.as_ref().unwrap().input().clone();
         input.update(cx, |input, cx| input.replace_source_range(0..0, " ", w, cx));
         std::fs::write(
             temp.path().join("vault/data.json"),

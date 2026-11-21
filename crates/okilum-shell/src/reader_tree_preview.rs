@@ -192,6 +192,83 @@ mod keyboard_tests;
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+    /// #3182 review: Today's note pressed while Quick Look shows an attachment
+    /// closes the preview, so the newly created note's editor is on screen.
+    #[cfg(unix)]
+    #[gpui::test]
+    fn todays_note_closes_quick_look_and_shows_the_new_note(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::test_init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Alpha.bin"), [1, 2]).unwrap();
+        std::fs::write(root.join("Start.md"), "# Start").unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let r = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("Start.md".into()),
+                        index_dir: Some(temp.path().join("index")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(r.clone());
+            Root::new(r, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.simulate_resize(size(px(1200.), px(700.)));
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            r.reveal_in_tree("Alpha.bin", window, cx);
+            r.tree.cursor = Some("Alpha.bin".into());
+            r.tree_focus.focus(window, cx);
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("space");
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(r.tree_preview.is_open(), "control: Quick Look is open");
+            assert!(r.tree_quick_look_shown(), "control: it draws over the note");
+        });
+        reader.read_with(visual, |r, _| {
+            let state = r.session_directory.clone().unwrap();
+            crate::reader_daily_notes::save(
+                &state,
+                &r.vault_root,
+                &okilum_core::daily_notes::Settings::default(),
+            )
+            .unwrap();
+        });
+        let rel = okilum_core::vault::note_path(
+            &okilum_core::daily_notes::Settings::default()
+                .relative_path(crate::reader_daily_notes::now())
+                .unwrap(),
+        );
+        assert!(!root.join(&rel).exists());
+        reader.update_in(visual, |r, window, cx| r.open_daily_note(window, cx));
+        visual.run_until_parked();
+        assert!(root.join(&rel).is_file(), "today's note was created");
+        reader.read_with(visual, |r, _| {
+            assert!(!r.tree_preview.is_open());
+            assert!(!r.tree_quick_look_shown());
+            assert_eq!(r.pane.current_rel, rel);
+            assert!(r.pane.editing.is_some());
+        });
+        assert!(
+            visual.debug_bounds("reader-source").is_some(),
+            "the new note's editor is drawn, not Quick Look"
+        );
+    }
+
     #[gpui::test]
     fn space_previews_selected_files_and_arrows_keep_compact_tree_focus(cx: &mut TestAppContext) {
         cx.update(|cx| {
@@ -231,11 +308,11 @@ mod tests {
             r.tree_focus.focus(window, cx);
         });
         visual.run_until_parked();
-        let history = reader.read_with(visual, |r, _| r.navigation.history.clone());
+        let history = reader.read_with(visual, |r, _| r.pane.navigation.history.clone());
         visual.simulate_keystrokes("space");
         visual.run_until_parked();
         reader.update_in(visual, |r, window, _| {
-            assert_eq!(r.navigation.history, history);
+            assert_eq!(r.pane.navigation.history, history);
             assert_eq!(r.pane.current_rel, "Start.md");
             assert!(r.pane.file_preview.is_none());
             assert!(r.tree_preview.is_open());

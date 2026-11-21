@@ -437,6 +437,47 @@ impl FileEditor {
         Ok(Some(draft.text.to_string()))
     }
 
+    /// `unsaved_draft_text` for a note that is not there, whose folder may be
+    /// gone too (#3182): the path is resolved through its deepest existing
+    /// folder, as the journal was keyed when the note was there. Read-only,
+    /// and nothing is created.
+    pub fn waiting_draft_text(path: &Path, state: &Path) -> Result<Option<String>> {
+        if path.parent().is_some_and(Path::exists) {
+            return Self::unsaved_draft_text(path, state);
+        }
+        let mut missing = Vec::new();
+        let mut at = path;
+        let resolved = loop {
+            match at.canonicalize() {
+                Ok(mut base) => {
+                    for part in missing.iter().rev() {
+                        base.push(part);
+                    }
+                    break base;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    missing.push(at.file_name().context("Source has no filename")?.to_owned());
+                    at = at.parent().context("Source has no existing folder")?;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        };
+        let key = format!(
+            "{:x}",
+            Sha256::digest(resolved.as_os_str().as_encoded_bytes())
+        );
+        let bytes = match fs::read(state.join(format!("{key}.json"))) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let draft: Draft = serde_json::from_slice(&bytes)?;
+        if draft.path != resolved || (!draft.pending_input && draft.text == draft.base) {
+            return Ok(None);
+        }
+        Ok(Some(draft.text.to_string()))
+    }
+
     /// Whether a live editor (any window, any process) holds `path`'s editor
     /// lock. A probe only: the answer can be stale at once. Callers that act
     /// on "idle" must hold `claim_idle`'s lock instead.
@@ -480,6 +521,33 @@ impl FileEditor {
             "{:x}",
             Sha256::digest(path.as_os_str().as_encoded_bytes())
         ))
+    }
+
+    /// Keep `path`'s unsaved recovery draft in recovery, but free the path
+    /// for a new note (#3182). The journal moves to another name in the same
+    /// folder: Recover notes still lists it under its own note path, clean-
+    /// journal pruning skips it (its name is not the path's key), and a note
+    /// created at `path` opens clean instead of adopting the old draft. Done
+    /// under the path's editor lock, so no editor adopts it meanwhile. Nothing
+    /// is deleted; a path without a journal is left alone.
+    pub fn set_aside_draft(path: &Path, state: &Path) -> Result<()> {
+        let key = Self::journal_key(path)?;
+        let Some(_lock) = Self::claim_idle(path, state)? else {
+            bail!(BEING_EDITED);
+        };
+        let journal = state.join(format!("{key}.json"));
+        let bytes = match fs::read(&journal) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        // Only a readable journal is moved; anything else stays where it is.
+        let _: Draft = serde_json::from_slice(&bytes).context("Unreadable recovery draft; kept")?;
+        let aside = state.join(format!("{key}-set-aside-{}.json", uuid::Uuid::new_v4()));
+        fs::rename(&journal, &aside)?;
+        #[cfg(unix)]
+        File::open(state)?.sync_all()?;
+        Ok(())
     }
 
     /// Reserve a not-yet-existing destination without adopting an old draft.
@@ -1334,6 +1402,11 @@ impl FileEditor {
             };
             let mut bytes = Vec::new();
             original.read_to_end(&mut bytes)?;
+            // Close it before unlinking any of its names. An NFS client keeps an
+            // unlinked name of an open file as a hidden `.nfs*` link (silly
+            // rename), so the captured note would report two links and fail the
+            // single-link check after capture (#3202, macOS NFS).
+            drop(original);
             if bytes != self.base_bytes() {
                 clean_recovery_file(directory, old_name, self.base_bytes())?;
                 clean_recovery_file(
@@ -1356,6 +1429,9 @@ impl FileEditor {
             // Remove that private alias, then capture whichever entry is current.
             // A replacement after our earlier byte check is captured and checked
             // below, never overwritten by a plain rename to the public name.
+            #[cfg(all(test, target_os = "linux"))]
+            network_save_tests::unlink_like_nfs(directory, old_name)?;
+            #[cfg(not(all(test, target_os = "linux")))]
             rustix::fs::unlinkat(directory, old_name, AtFlags::empty())?;
             linked = false;
             #[cfg(test)]
@@ -1380,12 +1456,21 @@ impl FileEditor {
             }
             // Even if another writer creates the public name during the gap,
             // this cannot clobber it. Old-fd writes remain on the captured inode.
-            match linkat(
-                directory,
-                prepared.as_str(),
-                directory,
-                note,
-                AtFlags::empty(),
+            #[cfg(test)]
+            let publish_error = network_save_tests::PUBLISH_LINK_ERROR.with(|v| v.take());
+            #[cfg(not(test))]
+            let publish_error: Option<rustix::io::Errno> = None;
+            match publish_error.map_or_else(
+                || {
+                    linkat(
+                        directory,
+                        prepared.as_str(),
+                        directory,
+                        note,
+                        AtFlags::empty(),
+                    )
+                },
+                Err,
             ) {
                 Ok(()) => {}
                 Err(rustix::io::Errno::EXIST) => {
@@ -1426,11 +1511,29 @@ impl FileEditor {
             Ok(true) => Ok(true),
             outcome => {
                 // Once capture ran, a failed reply may hide a completed link.
-                // Keep both complete versions and the durable intent. In
-                // particular, never remove the captured inode on EEXIST.
+                // An occupied public name keeps both complete versions and the
+                // durable intent; never remove the captured inode on EEXIST.
+                // An empty public name is never left behind (#3202): the captured
+                // original goes back under it before the error is returned.
                 if captured {
-                    return outcome
-                        .map_err(|error| error.context(UnconfirmedSave::UnknownPublication));
+                    match restore_captured_note(directory, old_name, note) {
+                        // The private alias is gone; nothing below may touch it.
+                        Ok(true) => linked = false,
+                        Ok(false) => {
+                            return outcome.map_err(|error| {
+                                error.context(UnconfirmedSave::UnknownPublication)
+                            })
+                        }
+                        Err(restore) => {
+                            return outcome.map_err(|error| {
+                                error
+                                    .context(format!(
+                                        "Cannot put the original note back: {restore:#}"
+                                    ))
+                                    .context(UnconfirmedSave::UnknownPublication)
+                            })
+                        }
+                    }
                 }
                 // A server can publish a rename but lose its reply. Once the
                 // prepared name disappeared, retain the preimage for recovery.
@@ -2389,6 +2492,35 @@ fn clean_owned_temp(directory: &File, name: &std::ffi::OsStr, temp: &File) -> Re
 }
 
 #[cfg(unix)]
+/// After a failed compatible save, link the captured original back to an empty
+/// public name. `false`: the name is occupied (perhaps by our own unconfirmed
+/// publication), so nothing is touched. Create-only; never clobbers.
+fn restore_captured_note(
+    directory: &File,
+    captured: &std::ffi::OsStr,
+    note: &std::ffi::OsStr,
+) -> Result<bool> {
+    use rustix::fs::{linkat, statat, unlinkat, AtFlags};
+    match statat(directory, note, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(_) => return Ok(false),
+        Err(rustix::io::Errno::NOENT) => {}
+        Err(error) => return Err(error.into()),
+    }
+    match linkat(directory, captured, directory, note, AtFlags::empty()) {
+        Ok(()) => {}
+        Err(rustix::io::Errno::EXIST) => return Ok(false),
+        Err(error) => return Err(error.into()),
+    }
+    directory.sync_all()?;
+    // The public name now owns the captured inode; drop the private alias so
+    // the note keeps a single link.
+    unlinkat(directory, captured, AtFlags::empty())
+        .context("The original note is back, but its private copy could not be removed")?;
+    directory.sync_all()?;
+    Ok(true)
+}
+
+#[cfg(unix)]
 fn clean_recovery_file(directory: &File, name: &std::ffi::OsStr, expected: &[u8]) -> Result<()> {
     use rustix::fs::{openat, unlinkat, AtFlags, Mode, OFlags};
     let fd = match openat(
@@ -2505,6 +2637,170 @@ mod network_save_tests {
         pub(super) static ERROR_AFTER_LINK: std::cell::Cell<Option<rustix::io::Errno>> = const { std::cell::Cell::new(None) };
         pub(super) static DELETE_AFTER_LINK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         pub(super) static ALTER_PREIMAGE_AFTER_PUBLISH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        /// Fails the exclusive publication link after the capture (#3202).
+        pub(super) static PUBLISH_LINK_ERROR: std::cell::Cell<Option<rustix::io::Errno>> = const { std::cell::Cell::new(None) };
+        /// Model an NFS client: unlinking a name of a file this process holds
+        /// open renames it to a hidden `.nfs*` link instead (silly rename).
+        pub(super) static NFS_SILLY_RENAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        /// Models a transient failure to delete a finished save's recovery intent.
+        pub(super) static KEEP_LINK_RECOVERY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    #[cfg(target_os = "linux")]
+    pub(super) fn unlink_like_nfs(directory: &File, name: &std::ffi::OsStr) -> Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        if NFS_SILLY_RENAME.with(|v| v.get()) {
+            let target =
+                rustix::fs::statat(directory, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)?;
+            let held = fs::read_dir("/proc/self/fd")?.flatten().any(|fd| {
+                fs::metadata(fd.path()).is_ok_and(|meta| {
+                    meta.is_file()
+                        && meta.dev() == target.st_dev as u64
+                        && meta.ino() == target.st_ino as u64
+                })
+            });
+            if held {
+                let hidden = format!(".nfs.{}", uuid::Uuid::new_v4().simple());
+                rustix::fs::renameat(directory, name, directory, hidden.as_str())?;
+                return Ok(());
+            }
+        }
+        rustix::fs::unlinkat(directory, name, rustix::fs::AtFlags::empty())?;
+        Ok(())
+    }
+    fn save_artifacts(root: &Path) -> Vec<String> {
+        let mut names: Vec<_> = fs::read_dir(root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name != "note.md")
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// #3202: a failed publication after the capture never leaves the note
+    /// path empty; the original goes back under its public name.
+    #[test]
+    fn failed_publication_after_capture_restores_the_original_note() {
+        use std::os::unix::fs::MetadataExt;
+        for error in [rustix::io::Errno::IO, rustix::io::Errno::ACCESS] {
+            crate::unix_publish::inject(rustix::io::Errno::NOTSUP, || {
+                let fixture = tempfile::tempdir().unwrap();
+                let root = fixture.path().join("vault");
+                fs::create_dir(&root).unwrap();
+                let note = root.join("note.md");
+                fs::write(&note, b"base\r\n").unwrap();
+                let mut editor = FileEditor::open(&note, &fixture.path().join("state")).unwrap();
+                editor.set_text("mine\r\n".into()).unwrap();
+                PUBLISH_LINK_ERROR.with(|v| v.set(Some(error)));
+                editor.save().unwrap_err();
+                assert!(
+                    PUBLISH_LINK_ERROR.with(|v| v.get()).is_none(),
+                    "control: the publication link was reached"
+                );
+                assert_eq!(fs::read(&note).unwrap(), b"base\r\n");
+                assert_eq!(fs::symlink_metadata(&note).unwrap().nlink(), 1);
+                assert!(
+                    save_artifacts(&root).is_empty(),
+                    "{:?}",
+                    save_artifacts(&root)
+                );
+                assert!(editor.dirty(), "the edit stays in the draft");
+                assert_eq!(editor.draft.text, "mine\r\n");
+                // The restored note saves normally afterwards.
+                assert_eq!(editor.save().unwrap(), Save::Saved);
+                assert_eq!(fs::read(&note).unwrap(), b"mine\r\n");
+            });
+        }
+    }
+
+    fn link_recovery_intents(state: &Path) -> usize {
+        fs::read_dir(state.join("source-history"))
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|e| e.path().extension().is_some_and(|x| x == "link-recovery"))
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    /// #3202 review: an unresolved recovery intent left after a completed
+    /// rollback refused every later save of the note, even after a restart.
+    /// A settled intent is cleared; an unsettled one keeps refusing.
+    #[test]
+    fn settled_stale_recovery_intent_no_longer_blocks_saves() {
+        crate::unix_publish::inject(rustix::io::Errno::NOTSUP, || {
+            let fixture = tempfile::tempdir().unwrap();
+            let root = fixture.path().join("vault");
+            let state = fixture.path().join("state");
+            fs::create_dir(&root).unwrap();
+            let note = root.join("note.md");
+            fs::write(&note, b"base\r\n").unwrap();
+            let mut editor = FileEditor::open(&note, &state).unwrap();
+            editor.set_text("mine\r\n".into()).unwrap();
+            PUBLISH_LINK_ERROR.with(|v| v.set(Some(rustix::io::Errno::IO)));
+            KEEP_LINK_RECOVERY.with(|v| v.set(true));
+            editor.save().unwrap_err();
+            KEEP_LINK_RECOVERY.with(|v| v.set(false));
+            assert_eq!(fs::read(&note).unwrap(), b"base\r\n");
+            assert!(save_artifacts(&root).is_empty());
+            assert_eq!(
+                link_recovery_intents(&state),
+                1,
+                "control: a stale intent exists"
+            );
+
+            // Unsettled: the public note holds neither recorded revision.
+            fs::write(&note, b"external\r\n").unwrap();
+            let refused = editor.save().unwrap_err();
+            assert_eq!(
+                refused.downcast_ref::<UnconfirmedSave>(),
+                Some(&UnconfirmedSave::UnknownPublication)
+            );
+            assert_eq!(link_recovery_intents(&state), 1);
+            assert_eq!(fs::read(&note).unwrap(), b"external\r\n");
+
+            // Settled: original bytes, no staged artifacts. A fresh editor
+            // (as after a restart) saves normally and the intent is cleared.
+            fs::write(&note, b"base\r\n").unwrap();
+            drop(editor);
+            let mut reopened = FileEditor::open(&note, &state).unwrap();
+            reopened.set_text("mine\r\n".into()).unwrap();
+            assert_eq!(reopened.save().unwrap(), Save::Saved);
+            assert_eq!(fs::read(&note).unwrap(), b"mine\r\n");
+            assert_eq!(link_recovery_intents(&state), 0);
+        });
+    }
+
+    /// #3202: on macOS NFS the compatible save failed every time and the note
+    /// vanished, because the preflight link was unlinked while the note was
+    /// still open (silly rename kept a second link on the captured inode).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn compatible_save_on_nfs_publishes_when_unlink_of_an_open_file_is_deferred() {
+        crate::unix_publish::inject(rustix::io::Errno::NOTSUP, || {
+            let fixture = tempfile::tempdir().unwrap();
+            let root = fixture.path().join("vault");
+            fs::create_dir(&root).unwrap();
+            let note = root.join("note.md");
+            fs::write(&note, b"base\r\n").unwrap();
+            let mut editor = FileEditor::open(&note, &fixture.path().join("state")).unwrap();
+            NFS_SILLY_RENAME.with(|v| v.set(true));
+            for (index, text) in ["mine\r\n", "again\r\n"].into_iter().enumerate() {
+                editor.set_text(text.into()).unwrap();
+                let saved = editor.save();
+                assert!(saved.is_ok(), "save {index}: {:#}", saved.unwrap_err());
+                assert_eq!(fs::read(&note).unwrap(), text.as_bytes());
+            }
+            NFS_SILLY_RENAME.with(|v| v.set(false));
+            assert!(
+                save_artifacts(&root)
+                    .iter()
+                    .all(|name| !name.starts_with(".nfs.")),
+                "no hidden NFS link was needed: {:?}",
+                save_artifacts(&root)
+            );
+        });
     }
     pub(super) type Boundary = std::cell::RefCell<Option<Box<dyn FnOnce()>>>;
     thread_local! {

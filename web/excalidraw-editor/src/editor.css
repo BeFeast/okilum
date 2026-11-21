@@ -1,0 +1,21 @@
+html, body, #root { height: 100%; margin: 0; }
+body { font-family: Assistant, system-ui, sans-serif; background: #fff; color: #1b1b1f; }
+@media (prefers-color-scheme: dark) { body { background: #121212; color: #e3e3e8; } }
+.okl-editor { position: relative; height: 100%; }
+.okl-actions { display: flex; gap: 0.5rem; }
+.okl-button {
+  font: inherit; font-size: 0.875rem; white-space: nowrap; padding: 0.4rem 0.8rem; border-radius: 0.5rem;
+  border: 1px solid #c9c9d2; background: #f4f4f7; color: inherit; cursor: pointer;
+}
+.okl-button:disabled { opacity: 0.5; cursor: default; }
+.okl-primary { background: #5b57d1; border-color: #5b57d1; color: #fff; }
+.okl-bar {
+  position: absolute; left: 50%; bottom: 4.5rem; transform: translateX(-50%); z-index: 10;
+  display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; max-width: calc(100% - 2rem);
+  padding: 0.5rem 0.75rem; border-radius: 0.75rem; background: #ffffff; color: #1b1b1f;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18); font-size: 0.875rem;
+}
+.okl-error { color: #c92a2a; }
+.okl-notice { max-width: 32rem; margin: 15vh auto; padding: 0 1rem; }
+.okl-notice h1 { font-size: 1.25rem; }
+.okl-loading { margin: 15vh auto; text-align: center; }
