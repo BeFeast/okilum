@@ -146,9 +146,11 @@ class PoolHostedEnv(unittest.TestCase):
             helper.write_text("")
             helper.chmod(0o775)
             receipt = root / "r" / "phases.json"
-            script = (f'source "{ROOT}/scripts/ci/pool-phase-lib.sh"; pool_receipt_init; '
+            # Start from the pool host default, so the test fails without the reset.
+            script = (f'umask 002; source "{ROOT}/scripts/ci/pool-phase-lib.sh"; pool_receipt_init; '
                       'umask; printf "%s\\n%s\\n" "$XDG_STATE_HOME" "$XDG_DATA_HOME"; '
-                      ': > "$XDG_STATE_HOME/x"; touch fresh; stat -c %a fresh')
+                      ': > "$XDG_STATE_HOME/x"; fresh=$(mktemp -u "$PWD/fresh.XXXXXX"); touch "$fresh"; '
+                      'stat -c %a "$fresh"')
             env = {**os.environ, "TMPDIR": str(root), "CARGO_TARGET_DIR": str(root / "target"),
                    "OKILUM_POOL_RECEIPT": str(receipt), "XDG_STATE_HOME": str(root / "ambient")}
             runs = [subprocess.run(["bash", "-c", script], cwd=root, env=env, capture_output=True,
@@ -159,6 +161,7 @@ class PoolHostedEnv(unittest.TestCase):
                 self.assertTrue(state.startswith(str(root / "okilum-pool-home.")), state)
                 self.assertTrue(Path(state).is_dir() and Path(data).is_dir())
             self.assertNotEqual(runs[0][1], runs[1][1])
+            self.assertNotEqual(runs[0][2], runs[1][2])
             self.assertFalse((root / "ambient").exists())
             self.assertEqual(helper.stat().st_mode & 0o777, 0o755)
 
