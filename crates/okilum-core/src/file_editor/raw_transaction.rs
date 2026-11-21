@@ -910,8 +910,13 @@ impl FileEditor {
 
     /// An unresolved intent is settled when the public note exists with
     /// exactly the original or the published bytes, the folder is the
-    /// recorded one, and neither private save name still exists.
+    /// recorded one, and neither private save name still exists. An intent
+    /// that holds bytes stored nowhere else (`retained_current`, written by
+    /// Keep current before its unlinks) is never settled automatically.
     fn link_recovery_is_settled(&self, intent: &LinkRecovery) -> Result<bool> {
+        if intent.retained_current.is_some() {
+            return Ok(false);
+        }
         let private = |name: &std::ffi::OsStr| {
             Path::new(name).components().count() == 1
                 && name.to_string_lossy().starts_with(".okilum-save-")
@@ -1463,6 +1468,47 @@ mod interrupted_link_tests {
                 assert_eq!(fs::read(&displaced).unwrap(), b"external old-fd bytes");
             }
         }
+    }
+
+    /// #3202 review: Keep current stores an external version only in the
+    /// intent, then unlinks the private names. After a crash there, and
+    /// another writer returning the note to the original bytes, an ordinary
+    /// save must not clear the intent: it may be the only copy of that version.
+    #[test]
+    fn stale_intent_with_retained_current_is_left_for_explicit_recovery() {
+        let (_fixture, note, state) = interrupted(2, false);
+        let inspection = FileEditor::inspect_interrupted_saves(&note, &state)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let mut intent = inspection.inner.intent.clone();
+        let external = b"external version kept only here\r\n".to_vec();
+        intent.retained_current = Some(external.clone());
+        crate::source_state::persist(
+            &inspection.inner.intent_path,
+            &serde_json::to_vec(&intent).unwrap(),
+        )
+        .unwrap();
+        let intent_path = inspection.inner.intent_path.clone();
+        let original = inspection.original_bytes().to_vec();
+        // Crash after the last unlink, before `resolved` was written.
+        for name in [&intent.displaced, &intent.prepared] {
+            fs::remove_file(note.parent().unwrap().join(name)).unwrap();
+        }
+        drop(inspection);
+        // Another writer returns the public note to the original bytes.
+        fs::write(&note, &original).unwrap();
+        let mut editor = FileEditor::open(&note, &state).unwrap();
+        editor.set_text("later edit\r\n".into()).unwrap();
+        let refused = editor.save().unwrap_err();
+        assert_eq!(
+            refused.downcast_ref::<UnconfirmedSave>(),
+            Some(&UnconfirmedSave::UnknownPublication)
+        );
+        let kept: LinkRecovery = serde_json::from_slice(&fs::read(&intent_path).unwrap()).unwrap();
+        assert_eq!(kept.retained_current, Some(external));
+        assert!(!kept.resolved);
+        assert_eq!(fs::read(&note).unwrap(), original);
     }
 
     #[test]
