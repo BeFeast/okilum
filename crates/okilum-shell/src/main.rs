@@ -141,6 +141,7 @@ mod reader_properties;
 mod reader_publication;
 mod reader_read_menu;
 mod reader_reading_controls;
+mod reader_recent_vaults;
 #[cfg(any(unix, windows))]
 mod reader_recovery;
 mod reader_replay;
@@ -254,6 +255,7 @@ mod reader_typed_view;
 mod reader_ui_state;
 mod reader_untitled;
 mod reader_update_restart;
+mod reader_welcome;
 mod search_label;
 #[cfg(any(unix, windows))]
 mod source_presentation;
@@ -1152,6 +1154,8 @@ struct Opts {
     query: Option<String>,
     jump: bool,
     copy_source: bool,
+    /// `--no-history`: this process records no recent vaults or files (#3208).
+    no_history: bool,
     /// An external `okilum:` link to open (#1049, docs/deep-links.md).
     link: Option<String>,
     /// Where the link lands in `note` once it is open (#1049).
@@ -9277,6 +9281,7 @@ OPTIONS:
     --query <TEXT>       Open full-text search with this query
     --jump               Open the first search hit, scrolled to the match
     --copy-source        Copy selections as Markdown source instead of plain text
+    --no-history         Record no recent vaults or files (or set OKILUM_NO_HISTORY=1)
     --html               Render the content pane as HTML instead of Markdown
     --uninstall-data     Remove this user's Okilum data, keeping your notes (Linux)
     --build-info         Print version and build facts for QA tools, then exit
@@ -9432,6 +9437,10 @@ fn main() {
             std::process::exit(2);
         }
     };
+
+    if opts.no_history {
+        reader_history::disable_recording();
+    }
 
     #[cfg(windows)]
     let opts = {
