@@ -254,8 +254,8 @@ mod reader_tree_rules;
 mod reader_typed_view;
 mod reader_ui_state;
 mod reader_untitled;
-mod reader_welcome;
 mod reader_update_restart;
+mod reader_welcome;
 mod search_label;
 #[cfg(any(unix, windows))]
 mod source_presentation;
