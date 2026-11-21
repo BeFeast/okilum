@@ -1017,18 +1017,29 @@ mod tests {
         }
         ReadingHistory::set_default_vault(&state, Some(qa.as_path())).unwrap();
         let places = Places::with_temp(vec![base.join("scratch")]);
+        // The fixture itself may sit in a scratch place (a build slot keeps
+        // TMPDIR under ~/.cache): `kept` stays only where it is not one.
+        let kept_is_chosen = !places.unchosen(&kept);
         let mut pruned = prune(&state, &places).unwrap();
         pruned.sort();
         let mut expected = vec![qa.clone(), scratch.clone()];
+        if !kept_is_chosen {
+            expected.push(kept.clone());
+        }
         expected.sort();
         assert_eq!(pruned, expected);
         let (last, listed) = ReadingHistory::startup_roots(&state).unwrap();
-        assert_eq!(listed, vec![kept.clone()]);
-        assert_eq!(
-            last,
-            Some(kept.clone()),
-            "an unchosen folder never reopens at startup"
-        );
+        if kept_is_chosen {
+            assert_eq!(listed, vec![kept.clone()]);
+            assert_eq!(
+                last,
+                Some(kept.clone()),
+                "an unchosen folder never reopens at startup"
+            );
+        } else {
+            assert!(listed.is_empty());
+            assert_eq!(last, None);
+        }
         assert_eq!(ReadingHistory::default_vault(&state).unwrap(), None);
         assert!(
             prune(&state, &places).unwrap().is_empty(),
