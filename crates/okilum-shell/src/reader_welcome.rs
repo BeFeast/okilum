@@ -1860,6 +1860,8 @@ fn row_menu(menu: PopupMenu, entry: WeakEntity<Entry>, row: Row, available: bool
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `gpui::*` brings its own `test`, which `#[gpui::test]` expands into.
+    use ::core::prelude::v1::test;
 
     #[test]
     fn issue3208_compose_lists_three_drafts_and_ten_rows() {
