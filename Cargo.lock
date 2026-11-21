@@ -6338,6 +6338,7 @@ dependencies = [
  "wayland-client",
  "wayland-protocols-wlr",
  "webp",
+ "windows 0.62.2",
  "windows-sys 0.61.2",
  "x11rb",
  "zbus",

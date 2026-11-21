@@ -84,6 +84,10 @@ mod reader_encoding;
 #[cfg(any(unix, windows))]
 mod reader_external_changes;
 mod reader_feedback;
+// #1502: Windows own-window capture; its pixel checks also run in tests elsewhere.
+#[cfg(any(windows, test))]
+#[cfg_attr(not(windows), allow(dead_code))]
+mod own_window_capture;
 mod reader_file_copy;
 mod reader_files;
 mod reader_find_field;
