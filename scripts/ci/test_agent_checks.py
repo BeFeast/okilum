@@ -700,6 +700,43 @@ class HelperFlowTests(unittest.TestCase):
             self.assertIn("--force-with-lease=refs/heads/agent-checks/topic:", push)
             self.assertIn(SHA + ":refs/heads/agent-checks/topic", push)
 
+    def test_failed_log_classification_reads_only_gating_jobs(self):
+        # #3207 review: a non-gating linux-pool disk-full log must not turn a
+        # hosted code failure into infrastructure; a hosted disk-full still does.
+        assertion = "linux\tRun Linux Rust suites offline\tassertion failed: left == right\n"
+        disk_full = "No space left on device\n"
+
+        def failed_run(hosted_log, pool_log):
+            info = {**receipt(), "attempt": 1, "url": "https://github.com/run/7", "conclusion": "failure"}
+            for index, job in enumerate(info["jobs"], start=100):
+                job["databaseId"] = index
+            linux = info["jobs"][0]
+            linux["conclusion"] = "failure"
+            linux["steps"].append({"name": "Run Linux Rust suites offline", "conclusion": "failure"})
+            info["jobs"].append({"name": "linux-pool", "conclusion": "failure", "databaseId": 999, "steps": [
+                {"name": "Dispatch Linux full gate to the build-slot pool", "conclusion": "failure"}]})
+            logs = {"100": hosted_log, "999": pool_log}
+            calls = []
+
+            def logs_for(args, **kwargs):
+                self.assertIn("--log-failed", args)
+                job = args[args.index("--job") + 1]
+                calls.append(job)
+                return subprocess.CompletedProcess(args, 0, stdout=logs[job])
+
+            with patch.object(helper.sys, "argv", ["gh-check"]), \
+                    patch.object(helper, "output", side_effect=self.git_output), \
+                    patch.object(helper, "run"), \
+                    patch.object(helper, "find_run", return_value=[{"id": 7, "status": "completed"}]), \
+                    patch.object(helper, "gh_json", return_value=info), \
+                    patch.object(helper.subprocess, "run", side_effect=logs_for), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                return helper.main(), calls
+
+        self.assertEqual(failed_run(assertion, ""), (1, ["100"]))
+        self.assertEqual(failed_run(assertion, disk_full), (1, ["100"]), "pool log must not reclassify")
+        self.assertEqual(failed_run(assertion + disk_full, ""), (75, ["100"]), "hosted disk-full is infra")
+
     def test_dirty_worktree_never_pushes_or_reuses_a_green_result(self):
         with patch.object(helper.sys, "argv", ["gh-check"]), \
                 patch.object(helper, "output", return_value=" M source.rs"), \

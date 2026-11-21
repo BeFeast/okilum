@@ -148,6 +148,29 @@ def infrastructure_failure(logs):
         marker in logs for marker in ("exit code 137", "signal: 9, SIGKILL"))
 
 
+def failed_gating_logs(run_id, info):
+    """Failed-step logs of the gating jobs only, as (complete, text).
+
+    A non-gating job (linux-pool) must not turn a hosted code failure into
+    infrastructure through its own disk-full or OOM log, so logs are read per
+    failed gating job, never for the whole run.
+    """
+    failed = [job for job in info.get("jobs", []) if job.get("name") not in NON_GATING_JOBS and (
+        job.get("conclusion") == "failure"
+        or any(step.get("conclusion") == "failure" for step in job.get("steps", [])))]
+    texts, complete = [], True
+    for job in failed:
+        if not job.get("databaseId"):
+            complete = False
+            continue
+        logs = subprocess.run(["gh", "run", "view", run_id, "-R", REPO, "--log-failed",
+                               "--job", str(job["databaseId"])],
+                              text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+        texts.append(logs.stdout)
+        complete = complete and logs.returncode == 0
+    return complete, "".join(texts)
+
+
 def find_run(branch, sha, event):
     # gh run list --workflow 404s until the workflow exists on the default
     # branch. The API works during bootstrap and identifies the exact file.
@@ -276,14 +299,13 @@ def main():
         return 75
     result = verdict(info, sha, args.benchmark, bool(args.publication_baseline), args.macos_sync, args.fast)
     if result:
-        logs = subprocess.run(["gh", "run", "view", run_id, "-R", REPO, "--log-failed"],
-                              text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
-        tail = logs.stdout.splitlines()[-100:]
+        complete, logs = failed_gating_logs(run_id, info)
+        tail = logs.splitlines()[-100:]
         print("\nFailed-step log tail:\n" + "\n".join(tail))
-        if logs.returncode:
+        if not complete:
             return 75
         # Shell exits for OOM/killed processes are infrastructure, not a code verdict.
-        if infrastructure_failure(logs.stdout):
+        if infrastructure_failure(logs):
             return 75
     print(f"Exact head {sha}: exit={result} {info['url']}")
     if args.fast:
