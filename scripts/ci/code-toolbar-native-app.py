@@ -2,8 +2,9 @@
 """Reader-hosted Tree budget: 3.5 MB, 414 paths, UI-thread Running <=16 ms.
 
 Every frame must run <=16 ms on the UI thread. Wall time must stay <=16 ms in
-all but 5 of 48 frames per pass, and <=100 ms always: hosted Windows renders
-through WARP on the same CPUs, so some frames wait Ready (#2845).
+all but 2 of 48 frames per pass and <=50 ms always on Windows, where hosted
+runners render through WARP on the same CPUs so some frames wait Ready
+(#2845); elsewhere all but 1 frame, and <=50 ms always.
 """
 import hashlib
 import json
@@ -32,7 +33,17 @@ def fixture():
     return text
 
 
+def wall_allowance(platform=None):
+    """Slow frames allowed per pass and their wall ceiling (#2845).
+
+    Only hosted Windows has an established Ready-time source (WARP); other
+    platforms allow one slow frame up to 50 ms.
+    """
+    return (2, 50) if (platform or sys.platform) == 'win32' else (1, 50)
+
+
 def main():
+    allowed, ceiling = wall_allowance()
     binary = str(Path(sys.argv[1]).resolve())
     smoke = '--smoke' in sys.argv[2:]
     parent = Path(os.environ['RUNNER_TEMP'])
@@ -66,13 +77,13 @@ def main():
             assert all(f['running_ms'] <= f['cpu_draw_ms'] * 1.05 + 1 for f in frames)
             if not smoke:
                 assert (receipt['running_budget_ms'], receipt['wall_budget_ms'],
-                        receipt['wall_misses_allowed'], receipt['wall_ceiling_ms']) == (16, 16, 5, 100)
+                        receipt['wall_misses_allowed'], receipt['wall_ceiling_ms']) == (16, 16, allowed, ceiling)
                 assert max(f['running_ms'] for f in frames) <= 16, 'UI-thread Running over 16 ms'
-                assert max(f['cpu_draw_ms'] for f in frames) <= 100, 'wall frame over 100 ms'
+                assert max(f['cpu_draw_ms'] for f in frames) <= ceiling, f'wall frame over {ceiling} ms'
                 misses = [f for f in frames if f['cpu_draw_ms'] > 16]
                 for f in misses:
                     print(f"WALL_MISS marks={marked} sample={f['sample']} wall_ms={f['cpu_draw_ms']:.2f} running_ms={f['running_ms']:.2f}", flush=True)
-                assert len(misses) <= 5, f'{len(misses)} of 48 frames over 16 ms wall'
+                assert len(misses) <= allowed, f'{len(misses)} of 48 frames over 16 ms wall'
             assert all(f['rows_built'] > 0 for f in frames)
             assert all(f.get('present_ms', -1) >= 0 for f in frames)
             assert len({f['scroll_y'] for f in frames}) == 48

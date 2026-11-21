@@ -280,7 +280,7 @@ fn issue1588_source_command_click_and_live_preview_disclosure(cx: &mut TestAppCo
         "project/imports/rules.md"
     );
     f.reader.update_in(f.visual, |r, window, cx| {
-        if r.editing.is_some() {
+        if r.pane.editing.is_some() {
             r.toggle_source(window, cx);
         }
         r.open_note_at("project/AGENTS.md", None, None, window, cx);

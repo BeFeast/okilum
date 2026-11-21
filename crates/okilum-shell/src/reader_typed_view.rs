@@ -199,7 +199,13 @@ pub(super) fn render(
     // Navigation transfers Markdown focus to the replacement TextView. This
     // surface hides that view, so keep its keyboard dispatch on the visible
     // Reader instead. Find/sidebar focus must remain untouched.
-    if reader.content.read(cx).focus_handle().is_focused(window) {
+    if reader
+        .pane
+        .content
+        .read(cx)
+        .focus_handle()
+        .is_focused(window)
+    {
         reader.focus_handle.focus(window, cx);
     }
     reader.pane.typed_navigation.active.set(true);
@@ -472,7 +478,12 @@ mod tests {
         let reader = entity.unwrap();
         visual.run_until_parked();
         reader.update_in(visual, |r, window, cx| {
-            r.content.read(cx).focus_handle().clone().focus(window, cx)
+            r.pane
+                .content
+                .read(cx)
+                .focus_handle()
+                .clone()
+                .focus(window, cx)
         });
         visual.simulate_keystrokes(if cfg!(target_os = "macos") {
             "cmd-f"
@@ -487,7 +498,12 @@ mod tests {
         visual.run_until_parked();
         // A rendered-link click focuses the Markdown TextView before dispatch.
         reader.update_in(visual, |r, window, cx| {
-            r.content.read(cx).focus_handle().clone().focus(window, cx);
+            r.pane
+                .content
+                .read(cx)
+                .focus_handle()
+                .clone()
+                .focus(window, cx);
         });
         let url = format!("{WIKI_SCHEME}Dashboard.md#Focus");
         visual.update(|window, cx| handle_link(&reader.downgrade(), &url, window, cx));
@@ -497,7 +513,7 @@ mod tests {
         assert!(visual.debug_bounds("native-tasks-dashboard").is_some());
         reader.read_with(visual, |r, _| {
             assert_eq!(r.pane.current_rel, "Dashboard.md");
-            assert!(r.navigation.pending_landing.is_none());
+            assert!(r.pane.navigation.pending_landing.is_none());
         });
         visual.simulate_keystrokes(if cfg!(target_os = "macos") {
             "cmd-f"
@@ -682,7 +698,7 @@ mod tests {
         visual.executor().advance_clock(Duration::from_millis(100));
         visual.run_until_parked();
         view.read_with(visual, |v, _| {
-            assert!(v.navigation.pending_landing.is_none());
+            assert!(v.pane.navigation.pending_landing.is_none());
             assert!(
                 v.pane.typed_navigation.scroll.offset().y > scrolled,
                 "heading link moves the visible surface"
@@ -705,7 +721,7 @@ mod tests {
         visual.run_until_parked();
         view.update_in(visual, |v, window, cx| v.toggle_source(window, cx));
         visual.run_until_parked();
-        view.read_with(visual, |v, _| assert!(v.editing.is_some()));
+        view.read_with(visual, |v, _| assert!(v.pane.editing.is_some()));
         assert!(visual.debug_bounds("native-tasks-dashboard").is_none());
         view.update_in(visual, |v, window, cx| v.toggle_source(window, cx));
         visual.run_until_parked();

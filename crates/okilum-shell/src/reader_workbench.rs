@@ -631,6 +631,9 @@ impl Reader {
                             menu.item(PopupMenuItem::new("New note").on_click(
                                 sidebar_action_click(menu_reader.clone(), SidebarAction::NewNote),
                             ))
+                            .item(PopupMenuItem::new("Today's note").on_click(
+                                sidebar_action_click(menu_reader.clone(), SidebarAction::DailyNote),
+                            ))
                             .item(PopupMenuItem::new("Reveal current note in Tree").on_click(
                                 move |_, window, cx| {
                                     let _ = reveal_reader.update(cx, |this, cx| {

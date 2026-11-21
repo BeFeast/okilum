@@ -1968,6 +1968,156 @@ fn issue3080_transfer_disk_full_needs_attention_keeps_files_and_resumes() -> Res
     Ok(())
 }
 
+/// #3105: computer C receives the vault from A by first merge and then shares it
+/// onward to B, which joins through C by first merge. C's own Share adds B to
+/// C's owned folder. C must keep passing its ownership checks: it refreshes,
+/// removes B, and still syncs with A afterwards.
+#[test]
+#[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
+fn issue3105_receiver_shares_onward_then_refreshes_and_removes_that_computer() -> Result<()> {
+    fn merge(controller: &Controller, peer: Uuid, vault: &str, here: &Path) -> Result<()> {
+        let preview = controller.preview_remote_vault(peer, vault, here)?;
+        let plan = preview.plan().clone();
+        let mut backend = controller.first_sync_backend(preview);
+        plan.apply(plan.consent(true).unwrap(), backend.as_mut())
+            .map_err(|error| anyhow::anyhow!("first merge: {error:?}"))
+    }
+    fn member(api: &okilum_sync::Syncthing, vault: &str, device: &str) -> Result<bool> {
+        Ok(api.folder(vault)?["devices"]
+            .as_array()
+            .context("folder members")?
+            .iter()
+            .any(|d| d["deviceID"] == device))
+    }
+    subreaper()?;
+    let root = tempfile::tempdir()?;
+    // first = A (source), second = C (receives from A).
+    let FirstSyncFixture {
+        source_runtime,
+        target_runtime,
+        source,
+        target,
+        source_services,
+        target_services,
+        first,
+        second,
+        here,
+        there,
+        peer,
+        vault,
+    } = first_sync_fixture(root.path())?;
+    let vault = &vault;
+    let a = source.connect()?;
+    let c = target.connect()?;
+    merge(&second, peer, vault, &here)?;
+    assert_eq!(first_sync_files(&here)?, first_sync_files(&there)?);
+
+    // C invites B and B joins the vault through C by first merge.
+    let (onward_runtime, onward, onward_services) =
+        first_sync_runtime(root.path(), "onward-runtime")?;
+    let elsewhere = root.path().join("elsewhere");
+    fs::create_dir(&elsewhere)?;
+    fs::write(elsewhere.join("onward.md"), b"only on the onward computer")?;
+    let third = Controller::open(
+        root.path().join("onward-controller"),
+        vec![onward.config_file.clone()],
+    )?;
+    let url = second
+        .begin_pairing_at(
+            "Receiver fixture",
+            "127.0.0.1:0".parse()?,
+            "127.0.0.1".parse()?,
+        )?
+        .offer_url
+        .context("onward invitation")?;
+    third.redeem(&url, "Onward fixture")?;
+    second.approve(
+        second
+            .snapshot()?
+            .pending
+            .context("onward request")?
+            .request_id,
+    )?;
+    let from_receiver = third.refresh()?.peers[0].id;
+    assert_eq!(third.catalog(from_receiver)?.len(), 1);
+    let b = onward.connect()?;
+    let address = |api: &okilum_sync::Syncthing| -> Result<Value> {
+        Ok(api.config()?["options"]["listenAddresses"][0].clone())
+    };
+    // Explicit device names, as in the fixture: a blank name is filled from
+    // Hello asynchronously and would legitimately invalidate a preview.
+    c.add_device(
+        &json!({"deviceID":onward.device_id,"name":"Onward fixture","addresses":[address(&b)?]}),
+    )?;
+    b.add_device(
+        &json!({"deviceID":target.device_id,"name":"Receiver fixture","addresses":[address(&c)?]}),
+    )?;
+    merge(&third, from_receiver, vault, &elsewhere)?;
+    assert_eq!(first_sync_files(&elsewhere)?, first_sync_files(&here)?);
+    assert!(
+        member(&c, vault, &onward.device_id)?,
+        "C's own Share must add the onward computer to C's folder"
+    );
+
+    // C's later Sync operations keep passing its ownership check.
+    second
+        .refresh()
+        .context("receiver refresh after sharing onward")?;
+    first.refresh()?;
+    println!("ISSUE3105_REFRESH_PASS: receiver refreshes after sharing onward");
+
+    // C removes B. B pauses and keeps its copy; C keeps A.
+    let kept = first_sync_files(&elsewhere)?;
+    second
+        .remove_computer(&onward.device_id)
+        .context("receiver removes the computer it shared onward to")?;
+    wait("onward computer applies its removal", || {
+        second.refresh()?;
+        third.refresh()?;
+        Ok(third.snapshot()?.status.contains("removed from Sync")
+            && b.folder(vault)?["paused"] == true
+            && !member(&c, vault, &onward.device_id)?)
+    })?;
+    assert_eq!(
+        first_sync_files(&elsewhere)?,
+        kept,
+        "removed copy was modified"
+    );
+    assert!(member(&c, vault, &source.device_id)?);
+    println!("ISSUE3105_REMOVAL_PASS: receiver removed the computer it shared onward to");
+
+    // C still refreshes and syncs in both directions with A.
+    fs::write(there.join("after-removal-there.md"), b"from the source")?;
+    fs::write(here.join("after-removal-here.md"), b"from the receiver")?;
+    wait("receiver keeps syncing with its source", || {
+        a.scan(vault)?;
+        c.scan(vault)?;
+        Ok(fs::read(here.join("after-removal-there.md"))
+            .is_ok_and(|bytes| bytes == b"from the source")
+            && fs::read(there.join("after-removal-here.md"))
+                .is_ok_and(|bytes| bytes == b"from the receiver"))
+    })?;
+    let snapshot = second
+        .refresh()
+        .context("receiver refresh after the removal")?;
+    ensure!(
+        !snapshot.status.contains("removed from Sync"),
+        "receiver lost its own Sync: {}",
+        snapshot.status
+    );
+    first.refresh()?;
+    assert!(
+        second.catalog(peer).is_ok(),
+        "receiver keeps its source pairing"
+    );
+    println!("ISSUE3105_SOURCE_PASS: receiver keeps syncing with its source");
+    drop((first, second, third));
+    source_runtime.disable()?;
+    target_runtime.disable()?;
+    onward_runtime.disable()?;
+    drop((source_services, target_services, onward_services));
+    Ok(())
+}
 #[test]
 #[ignore = "requires checksum-pinned fixture binary; explicitly selected by gh-check"]
 fn issue2043_scoped_hold_blocks_real_transfer_and_recovers_across_restart() -> Result<()> {

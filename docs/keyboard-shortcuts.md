@@ -59,12 +59,14 @@ double-click, modified selection and disclosure behavior remain the same.
 
 ## Show in Finder / folder / Explorer
 
-**Reveal (#612, #3110):** Option+Command+R on macOS, Alt+Super+R on Linux and
-Ctrl+Shift+S on Windows shows the open file, or the sidebar item under the tree
-cursor, selected in the system file manager. Windows does not get Win+Alt+R:
-the Xbox Game Bar starts a screen recording on it and the key never reaches
-Okilum. When Explorer can neither select the item nor open its folder, a toast
-says so instead of the action doing nothing.
+**Reveal (#612, #3110, #3133):** Option+Command+R on macOS, Alt+Super+R on
+Linux and Ctrl+Shift+U on Windows shows the open file, or the sidebar item under
+the tree cursor, selected in the system file manager. Windows does not get
+Win+Alt+R: the Xbox Game Bar starts a screen recording on it and the key never
+reaches Okilum. It does not get Ctrl+Shift+S either, which Windows apps use for
+Save All; Ctrl+Shift+E, the mnemonic choice, is Live Preview. When Explorer can
+neither select the item nor open its folder, a toast says so instead of the
+action doing nothing.
 
 ## Open in the default code editor
 
@@ -79,10 +81,12 @@ and can be rebound here.
 
 ## Open in terminal
 
-**Open in terminal (#2837):** Option+Command+T on macOS, Alt+Super+T on Linux
-and Alt+Win+T on Windows (next to Reveal, Option+Command+R) opens the system
-terminal in the folder of the open file, or of the sidebar item under the tree
-cursor; a folder opens itself. The same item is in the sidebar row menu, the
+**Open in terminal (#2837, #3134):** Option+Command+T on macOS, Alt+Super+T on
+Linux (next to Reveal, Option+Command+R) and Ctrl+Shift+A on Windows opens the
+system terminal in the folder of the open file, or of the sidebar item under the
+tree cursor; a folder opens itself. Windows does not get Win+Alt+T: the Xbox
+Game Bar shows or hides its recording timer on it and the key never reaches
+Okilum, and Ctrl+Shift+U is Reveal. The same item is in the sidebar row menu, the
 file header's Open with menu, note Document actions and the palette
 (type «terminal»); menus show the live key. The action is
 `project_terminal::OpenInTerminal` in the Reader context and can be rebound

@@ -255,6 +255,24 @@ class Conversion(unittest.TestCase):
         self.assert_gates(theme, report)
 
 
+class AppSyntaxSchema(unittest.TestCase):
+    # The app reads `syntax` keyed by tree-sitter capture name (#3156,
+    # brand.rs rejects unknown names): the toolkit palette has no `builtin`.
+    APP_CAPTURES = {"attribute", "boolean", "comment", "constant", "constructor", "embedded",
+                    "function", "keyword", "label", "number", "operator", "property",
+                    "punctuation", "string", "tag", "title", "type", "variable"}
+
+    def test_builtin_fills_function_only_when_the_theme_left_it_out(self):
+        self.assertEqual(conv.app_syntax({"builtin": "#50fa7b", "string": "#f1fa8c"}),
+                         {"function": "#50fa7b", "string": "#f1fa8c"})
+        self.assertEqual(conv.app_syntax({"builtin": "#50fa7b", "function": "#ff79c6"}),
+                         {"function": "#ff79c6"})
+
+    def test_every_slot_is_written_as_an_app_capture(self):
+        slots = {slot: "#123456" for slot in conv.SYNTAX_CLASSES}
+        self.assertLessEqual(set(conv.app_syntax(slots)), self.APP_CAPTURES)
+
+
 class ReviewFixes(unittest.TestCase):
     def test_non_linear_or_stopless_gradients_are_reported_not_fatal(self):
         css = PRE_1_0_DARK + """
@@ -293,7 +311,14 @@ class Contract(unittest.TestCase):
         self.assertGreater(len(read), 30)
         self.assertEqual(read - set(conv.TOKEN_ORDER), set())
         shipped = json.loads((ROOT / "crates/okilum-shell/assets/themes/obsidianite.json").read_text())
-        self.assertEqual(list(shipped["modes"]["dark"]), conv.TOKEN_ORDER)
+        for mode in ("light", "dark"):
+            keys = list(shipped["modes"][mode])
+            # Every required token, in order; besides them only the optional
+            # keys the app also reads (#3153 heading levels, #3156 syntax) or
+            # the converter fills (decorations).
+            self.assertEqual([k for k in keys if k in conv.TOKEN_ORDER], conv.TOKEN_ORDER, mode)
+            optional = set(conv.HEADING_LEVELS) | {"decorations", "syntax"}
+            self.assertEqual(set(keys) - set(conv.TOKEN_ORDER) - optional, set(), mode)
 
     def test_cli_writes_theme_and_report(self):
         with tempfile.TemporaryDirectory() as tmp:

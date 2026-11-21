@@ -219,7 +219,10 @@ fn show_for(owner: WindowId, meta: Metadata, send_immediately: bool, cx: &mut Ap
         } else {
             cx.new(|cx| FeedbackView::new(meta, window, cx))
         };
-        view.update(cx, |view, _| view.visible = true);
+        view.update(cx, |view, _| {
+            view.visible = true;
+            view.capture_target = owner_window;
+        });
         let weak = view.downgrade();
         window.on_window_should_close(cx, move |window, cx| {
             crate::reader_diagnostics::window_close_requested(
@@ -345,7 +348,7 @@ fn screenshot_hint() -> &'static str {
     if cfg!(target_os = "macos") {
         "Screenshot a window: ⇧⌘4, then Space. Paste or drop the image here."
     } else if cfg!(windows) {
-        "Screenshot: Win+Shift+S. Paste or drop the image here."
+        "Capture Okilum window attaches only this app's window. Or press Win+Shift+S, then paste or drop the image here."
     } else {
         "GNOME screenshot: PrtSc. Paste or drop the image here."
     }
@@ -408,6 +411,9 @@ enum ImageInput {
     /// Image data read from the platform pasteboard (#1609); a TIFF is
     /// converted to PNG first.
     Pasted(crate::note_paste::offer::PastedImage),
+    /// The owner window's own pixels (#1502), PNG-encoded off the UI thread.
+    #[cfg(windows)]
+    Captured(crate::own_window_capture::Captured),
 }
 type Sender = Arc<dyn Fn(Report) -> anyhow::Result<Receipt> + Send + Sync>;
 struct FeedbackView {
@@ -425,6 +431,8 @@ struct FeedbackView {
     /// What a paste did to the attachments, e.g. replaced the screenshot.
     image_note: Option<String>,
     attaching: bool,
+    /// The window Feedback was opened from; Capture reads only its pixels.
+    capture_target: Option<AnyWindowHandle>,
     image_generation: u64,
     /// Optional screen recording, sent as the multipart part "video".
     video: Option<model::Video>,
@@ -556,6 +564,7 @@ impl FeedbackView {
             image_error: None,
             image_note: None,
             attaching: false,
+            capture_target: None,
             image_generation: 0,
             video: None,
             video_error: None,
@@ -1090,6 +1099,10 @@ impl FeedbackView {
                                 Err(_) => Err(anyhow::anyhow!("Choose a PNG or JPEG screenshot.")),
                             }
                         }
+                        #[cfg(windows)]
+                        ImageInput::Captured(captured) => {
+                            model::image_bytes(&crate::own_window_capture::png(captured)?, false)
+                        }
                     }?;
                     limits.check_sizes(Some(image.0.len() as u64), None, None)?;
                     Ok::<_, anyhow::Error>(image)
@@ -1127,6 +1140,36 @@ impl FeedbackView {
         self.preflight_error = None;
         self.checkpoint(cx);
         cx.notify();
+    }
+    /// Attaches the owner window's pixels as the screenshot (#1502). Only that
+    /// Okilum window is read, never the desktop; the user still previews,
+    /// removes or replaces it and sends explicitly.
+    #[cfg(windows)]
+    fn capture_owner(&mut self, cx: &mut Context<Self>) {
+        use crate::own_window_capture::{capture, Failure};
+        if self.busy() {
+            return;
+        }
+        let result = self
+            .capture_target
+            .and_then(|owner| owner.update(cx, |_, window, _| capture(window)).ok())
+            .unwrap_or(Err(Failure::NotOwn));
+        match result {
+            Ok(captured) => {
+                self.image_note = Some(if self.image.is_some() || self.attaching {
+                    "Replaced the screenshot with a capture of the Okilum window.".into()
+                } else {
+                    "Attached a capture of the Okilum window; nothing else on the screen is included."
+                        .into()
+                });
+                self.image_input(ImageInput::Captured(captured), cx);
+            }
+            Err(failure) => {
+                self.image_note = None;
+                self.image_error = Some(failure.to_string());
+                cx.notify();
+            }
+        }
     }
     /// Says so when a paste replaces the screenshot: a report takes one.
     fn note_replacement(&mut self) {
@@ -1538,6 +1581,20 @@ impl Render for FeedbackView {
                             .label("Attach screenshot…")
                             .on_click(cx.listener(|this, _, _, cx| this.picker(cx))),
                     )
+                    .when(cfg!(windows), |row| {
+                        row.child(
+                            Button::new("feedback-capture-window")
+                                .debug_selector(|| "feedback-capture-window".into())
+                                .small()
+                                .ghost()
+                                .disabled(busy || self.capture_target.is_none())
+                                .label("Capture Okilum window")
+                                .on_click(cx.listener(|_this, _, _, _cx| {
+                                    #[cfg(windows)]
+                                    _this.capture_owner(_cx);
+                                })),
+                        )
+                    })
                     .child(
                         Button::new("feedback-attach-video")
                             .debug_selector(|| "feedback-attach-video".into())

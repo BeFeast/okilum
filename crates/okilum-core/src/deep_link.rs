@@ -632,9 +632,46 @@ pub fn block_line(source: &str, rendered: &str, block: usize) -> Option<u32> {
     u32::try_from(line).ok()
 }
 
+/// The byte offsets in `source` where its top-level body blocks start: the
+/// start of each block's first line, in order, never inside the frontmatter,
+/// a code block or a paragraph. These are the only places a drop before a
+/// rendered block may be relocated to (#1615).
+pub fn block_starts(source: &str) -> Vec<usize> {
+    use comrak::{parse_document, Arena};
+    let body = crate::render::without_frontmatter(source);
+    let prefix = source.len() - body.len();
+    let lines: Vec<usize> = std::iter::once(0)
+        .chain(body.match_indices('\n').map(|(at, _)| at + 1))
+        .collect();
+    let options = crate::render::comrak_options();
+    let arena = Arena::new();
+    let root = parse_document(&arena, body, &options);
+    root.children()
+        .filter_map(|top| {
+            let line = top.data.borrow().sourcepos.start.line;
+            lines.get(line.checked_sub(1)?).map(|at| prefix + at)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn block_starts_are_top_level_body_blocks_only() {
+        let source = "---\ntags: [a] # label\n---\n# Title\n\n```\n# not a heading\n```\n\nPara # x\nstill para.\n";
+        let starts = block_starts(source);
+        assert_eq!(
+            starts,
+            vec![
+                source.find("# Title").unwrap(),
+                source.find("```").unwrap(),
+                source.find("Para").unwrap(),
+            ]
+        );
+        assert!(block_starts("").is_empty());
+    }
 
     fn vault(link: &str) -> (String, String, Position) {
         match parse(link).unwrap() {

@@ -65,7 +65,7 @@ impl Element {
 
 #[derive(Clone, Debug)]
 pub struct Scene {
-    /// Exact scene data for the explicit Copy scene / Open in Excalidraw action.
+    /// Exact scene data for the explicit Copy scene action.
     pub json: Value,
     pub elements: Vec<Element>,
     /// Obsidian image references live outside the compressed scene.

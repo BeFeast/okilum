@@ -1264,7 +1264,9 @@ mod key_tests {
         visual.run_until_parked();
         reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
         visual.run_until_parked();
-        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let input = reader.read_with(visual, |r, _| {
+            r.pane.editing.as_ref().unwrap().input.clone()
+        });
         (
             Note {
                 reader,
@@ -1502,7 +1504,12 @@ mod key_tests {
         set(&note, visual, "a **bold** b\n\nother|");
         visual.run_until_parked();
         let concealed = note.reader.read_with(visual, |r, _| {
-            r.editing.as_ref().unwrap().live_preview.concealed_text()
+            r.pane
+                .editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .concealed_text()
         });
         let concealed = concealed.expect("Live Preview classified the note");
         assert!(
@@ -1520,6 +1527,7 @@ mod key_tests {
         keys(visual, "secondary-b");
         assert_eq!(shown(&note, visual), "a bo|ld b\n\nother");
         assert!(note.reader.read_with(visual, |r, _| r
+            .pane
             .editing
             .as_ref()
             .unwrap()
@@ -1532,7 +1540,7 @@ mod key_tests {
         let (note, visual) = open(cx);
         for live in [false, true] {
             note.reader.update_in(visual, |reader, window, cx| {
-                if reader.editing.as_ref().unwrap().live_preview.enabled != live {
+                if reader.pane.editing.as_ref().unwrap().live_preview.enabled != live {
                     reader.toggle_live_preview(window, cx);
                 }
             });
@@ -1574,7 +1582,7 @@ mod key_tests {
         let original_modified = std::fs::metadata(&path).unwrap().modified().unwrap();
         for live in [false, true] {
             note.reader.update_in(visual, |reader, window, cx| {
-                if reader.editing.as_ref().unwrap().live_preview.enabled != live {
+                if reader.pane.editing.as_ref().unwrap().live_preview.enabled != live {
                     reader.toggle_live_preview(window, cx);
                 }
             });

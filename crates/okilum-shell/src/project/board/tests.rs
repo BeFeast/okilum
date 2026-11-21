@@ -423,15 +423,25 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
     visual.simulate_resize(size(px(1400.), px(800.)));
     visual.run_until_parked();
     reader.update_in(visual, |reader, _, cx| {
-        reader.content.read(cx).list_state().scroll_to(ListOffset {
-            item_ix: 10,
-            offset_in_item: px(3.),
-        });
+        reader
+            .pane
+            .content
+            .read(cx)
+            .list_state()
+            .scroll_to(ListOffset {
+                item_ix: 10,
+                offset_in_item: px(3.),
+            });
         reader.cancel_pending_landing();
     });
     visual.run_until_parked();
     let reading_place = reader.read_with(visual, |reader, cx| {
-        reader.content.read(cx).list_state().logical_scroll_top()
+        reader
+            .pane
+            .content
+            .read(cx)
+            .list_state()
+            .logical_scroll_top()
     });
     assert!(
         reading_place.item_ix > 0,
@@ -479,16 +489,24 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
     reader.update_in(visual, |reader, window, cx| {
         // Model the reset list behind Board after a derived replacement.
         reader
+            .pane
             .content
             .read(cx)
             .list_state()
             .scroll_to(ListOffset::default());
         assert_eq!(
-            coordinates(reader.content.read(cx).list_state().logical_scroll_top()),
+            coordinates(
+                reader
+                    .pane
+                    .content
+                    .read(cx)
+                    .list_state()
+                    .logical_scroll_top()
+            ),
             coordinates(ListOffset::default())
         );
         assert_eq!(
-            coordinates(reader.navigation.places[&(vault.clone(), "start.md".into())]),
+            coordinates(reader.pane.navigation.places[&(vault.clone(), "start.md".into())]),
             coordinates(reading_place)
         );
         reader.reconcile_inventory_document(
@@ -510,7 +528,7 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
         );
         assert!(reader.project_navigation.board_visible);
         assert!(
-            reader.navigation.pending_landing.is_none(),
+            reader.pane.navigation.pending_landing.is_none(),
             "an unmounted document has no pending layout landing"
         );
         assert!(
@@ -525,13 +543,14 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
     assert!(visual.debug_bounds("project-board").is_some());
     reader.read_with(visual, |reader, _| {
         assert_eq!(
-            coordinates(reader.navigation.places[&(vault.clone(), "start.md".into())]),
+            coordinates(reader.pane.navigation.places[&(vault.clone(), "start.md".into())]),
             coordinates(reading_place),
             "background replacement must retain the saved reading place"
         );
     });
     reader.update_in(visual, |reader, window, cx| {
         reader
+            .pane
             .content
             .read(cx)
             .list_state()
@@ -541,7 +560,7 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
     visual.run_until_parked();
     reader.read_with(visual, |reader, _| {
         assert_eq!(
-            coordinates(reader.navigation.places[&(vault.clone(), "start.md".into())]),
+            coordinates(reader.pane.navigation.places[&(vault.clone(), "start.md".into())]),
             coordinates(reading_place),
             "selecting Board again must not overwrite its retained document's place"
         );
@@ -659,20 +678,30 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
             .contains("Keep my draft"));
     });
     reader.update_in(visual, |reader, _, cx| {
-        reader.content.read(cx).list_state().scroll_to(ListOffset {
-            item_ix: 10,
-            offset_in_item: px(3.),
-        });
+        reader
+            .pane
+            .content
+            .read(cx)
+            .list_state()
+            .scroll_to(ListOffset {
+                item_ix: 10,
+                offset_in_item: px(3.),
+            });
         reader.cancel_pending_landing();
         // An earlier visit's cache must not beat a newly scrolled visible note.
-        reader.navigation.places.insert(
+        reader.pane.navigation.places.insert(
             (vault.clone(), "project/note.md".into()),
             ListOffset::default(),
         );
     });
     visual.run_until_parked();
     let fresh_place = reader.read_with(visual, |reader, cx| {
-        reader.content.read(cx).list_state().logical_scroll_top()
+        reader
+            .pane
+            .content
+            .read(cx)
+            .list_state()
+            .logical_scroll_top()
     });
     assert!(
         fresh_place.item_ix > 0,
@@ -686,11 +715,11 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
     reader.read_with(visual, |reader, cx| {
         assert!(reader.project_navigation.board_visible);
         assert_eq!(
-            coordinates(reader.navigation.places[&(vault.clone(), "project/note.md".into())]),
+            coordinates(reader.pane.navigation.places[&(vault.clone(), "project/note.md".into())]),
             coordinates(fresh_place),
             "Back to Board captures the visible viewport before hiding it"
         );
-        assert!(reader.navigation.pending_landing.is_none());
+        assert!(reader.pane.navigation.pending_landing.is_none());
         let board = reader.project_navigation.boards[&folder].read(cx);
         assert_eq!(board.filter.executor.as_deref(), Some("Editing"));
         assert_eq!(board.filter.search, "#1767");

@@ -1885,6 +1885,17 @@ impl Settings {
                         .children(self.vault(cx).map(|reader| {
                             #[cfg(any(unix, windows))]
                             {
+                                reader_daily_notes::controls(&reader, cx)
+                            }
+                            #[cfg(not(any(unix, windows)))]
+                            {
+                                let _ = reader;
+                                div().into_any_element()
+                            }
+                        }))
+                        .children(self.vault(cx).map(|reader| {
+                            #[cfg(any(unix, windows))]
+                            {
                                 reader_reminder_settings::controls(&reader, cx)
                             }
                             #[cfg(not(any(unix, windows)))]
@@ -2154,6 +2165,11 @@ impl Render for Settings {
         }
         #[cfg(any(unix, windows))]
         self.refresh_template_folder(cx);
+        // Daily notes rows show the vault's choice, read once (#3182).
+        #[cfg(any(unix, windows))]
+        if let Some(reader) = self.vault(cx) {
+            reader.update(cx, |reader, _| reader.ensure_daily_prefs());
+        }
         if self.section == Section::Editor && self.upload_token.is_none() {
             self.upload_token = Some(cx.new(|cx| {
                 InputState::new(window, cx)

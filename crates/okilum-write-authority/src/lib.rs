@@ -412,6 +412,21 @@ impl Authority {
             let p = entry?.path();
             if p.extension().is_some_and(|e| e == "json") {
                 let b: Binding = read(&p)?;
+                // A UUID-less identity (NFS, SMB, macFUSE; #3202) names its
+                // export by the mount source spelling, so it cannot prove two
+                // roots disjoint: another mount spelling, a child or a parent of
+                // a registered root may be the same physical folder. Allow one
+                // UUID-less scope; a different one is refused while any other
+                // UUID-less binding is registered, whether or not it is readable.
+                #[cfg(target_os = "macos")]
+                ensure!(
+                    !ancestor_identities[0].is_mount_source()
+                        || !b.root_identity.is_mount_source()
+                        || b.root_identity == ancestor_identities[0],
+                    "{} is on a network or FUSE volume without a volume UUID, and another such folder ({}) already has a writer scope; only one is supported for now (#3204)",
+                    root.display(),
+                    b.root.display()
+                );
                 // Canonical path aliases such as bind mounts can still name
                 // the same physical root. Never mint a second authority for it.
                 if physical_candidate(&ancestor_identities, &b.root_identity) {

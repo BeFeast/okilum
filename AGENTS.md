@@ -1,16 +1,53 @@
 # AGENTS.md — Okilum
 
-Working process: **Okilum — how we work (v3, 02.11)**, supplied by the task
-owner, is authoritative. This file adds repository-specific constraints;
-linked documents define product behavior and engineering checks, not additional
-process or approval gates. `CLAUDE.md` only imports this file.
+## Purpose and layout
 
+Okilum is a local-first desktop Markdown knowledge environment (Rust, GPUI).
 Read `docs/PRD.md` before product-shaping changes; it is the product contract.
 This repository holds product code. The four-candidate spike sandbox is evidence,
 not a source for bulk imports; porting requires an issue and a stated reason.
 Keep design decisions in `docs/` or the project brain, not only in commit messages.
 
-## Product boundaries
+- `crates/` — the Rust workspace (`okilum-shell` desktop app, `okilum-core`, `okilum-gpui`, sync, write authority, T3, HTTP and packaging crates).
+- `docs/` — design and engineering documents (`docs/agent-checks.md`: the check suites; `docs/upstream/`: GPUI patch records).
+- `scripts/` — CI, release, signing and vendor tooling (`scripts/agent/gh-check.sh`).
+- `.github/workflows/`, `.forgejo/workflows/` — CI on GitHub (agent checks, native suites) and Forgejo (releases, publishing).
+- `tests/`, `fixtures/`, `web/`, `inbox/`, `experiments/`, `design/`, `specs/`.
+
+## Commands
+
+| Step | Command | Where | Time |
+|---|---|---|---|
+| Fast gate (before merge) | `H=github scripts/agent/gh-check.sh --fast` on the exact HEAD | GitHub, `agent-checks` | 5–15 min, median ~6.5 (16 green runs before 2026-11-21) |
+| Full set | `scripts/agent/gh-check.sh` (no `--fast`) + the Forgejo full gate | GitHub pool shards, Forgejo | not measured here; see `docs/agent-checks.md` |
+| Format | `cargo fmt` | any host, the only Cargo command allowed on maestro | — |
+| Local hardware checks | `okilum-slot run` (build slots) | build-slot pool | not measured |
+
+## Merge gate
+
+- Before merge (Oleg 13.11 ~14:20, ~15:10): `H=github scripts/agent/gh-check.sh
+  --fast` on the exact HEAD: formatting, script checks and workspace clippy on
+  Linux; no Rust test suites, no Windows/macOS run. The full set (`gh-check.sh` without `--fast`
+  and the Forgejo full gate) runs once a day before Stable and gates Stable
+  only; see `docs/agent-checks.md`. Use local build slots only for
+  GitHub outages or checks requiring local hardware. Never run Cargo on maestro
+  except `cargo fmt`.
+
+Merging (manager, 13.11):
+
+- A lane merges only PRs it authored itself. Green agent checks are not a
+  merge permission.
+- Never merge a PR whose latest review verdict is «fix first», or one with no
+  review when a review was requested.
+- PRs from manager-delegated agents (toolbar #2806–#2814, #2817, #2825/#2845,
+  #2837, #2847, updater #2855, and any PR the manager names) are merged by the
+  manager only.
+
+- Until 28.11 15:00 (pilot, project area): merge on the green fast gate after the install check on the target machine; per-PR review only for data loss, install/update, signing and security changes; updater/velopack behaviour changes need Oleg's word. Full CI and a cross-family review of the day's merges run at night.
+
+## Hard rules
+
+### Product boundaries
 
 - **The v0 reader remains read-only.** The AI Brain writing phase follows
   `docs/ai-brain-poc.md` and `docs/ai-brain-contracts.md`. Use lossless,
@@ -27,41 +64,25 @@ Keep design decisions in `docs/` or the project brain, not only in commit messag
 - **Surface ambiguity.** Unresolved identity or conflicting facts stay visible;
   never silently pick a winner.
 
-## Vendored `gpui-kit`
+### Vendored `gpui-kit`
 
 - Keep patches as diffs, applied idempotently by the vendor script. Fresh clones
   are unpatched: verify application before trusting a build.
 - **Core GPUI (`gpui-pre*`) patches are allowed with Oleg's OK.** If an approach needs one, keep the approach and bring it to Oleg through the manager with its cost: what changes, upkeep on GPUI upgrades, and alternatives. Once approved, ship it as its own small PR through the checksum-pinned vendor patch mechanism (as in `scripts/gpui-pre-windows-setup.py`), with tests and manager review; write the patch to be upstreamable (minimal, no Okilum-specific hooks). Every proposal includes an upstream plan: identify the actual owning repository/crate and publisher with source citations, assess whether the change is general enough to submit, and plan submission where possible. The `gpui-pre*` snapshots are published by [Jason Lee (`huacnlee`)](https://crates.io/api/v1/crates/gpui-pre/owners); their [package metadata](https://docs.rs/crate/gpui-pre/0.3.3/source/Cargo.toml.orig) identifies [zed-industries/zed](https://github.com/zed-industries/zed) as the source (`crates/gpui`, `crates/gpui_platform` and the OS backend crates), so distinguish the snapshot publisher from the code owner. Opening any upstream issue or PR requires Oleg's separate approval for that patch.
 - Exception (Oleg, 2026-11-12 09:05 Israel): the separately reviewed `gpui-pre-windows` DirectX atlas-upload vendor patch is allowed; core, editor, shaping, thresholds and stack reserve stay unchanged.
 - Approved (Oleg, 2026-11-13, #2825): the two cold first-window macOS patches, `gpui-pre-macos` (no `tabGroup` query without tabbing) and `gpui-pre-apple` (Metal library/pipelines built once off the main thread), pinned by `scripts/gpui-pre-apple-setup.py`; see `docs/upstream/gpui-pre-macos-first-window.md`.
+- Approved (Oleg, 2026-11-17, #1615): external drops of text, HTML, RTF, URLs and image data, `gpui-pre` (`ExternalData`, `FileDropEvent::DataEntered`/`DataSubmit`) and `gpui-pre-macos` (data drag types, contents read at the drop), macOS first; see `docs/upstream/gpui-external-data-drops.md`.
 - Keep the patch set small and upstream it to `longbridge/gpui-kit`.
 
-## Merging (manager, 13.11)
+### Tests and measurements
 
-- A lane merges only PRs it authored itself. Green agent checks are not a
-  merge permission.
-- Never merge a PR whose latest review verdict is «fix first», or one with no
-  review when a review was requested.
-- PRs from manager-delegated agents (toolbar #2806–#2814, #2817, #2825/#2845,
-  #2837, #2847, updater #2855, and any PR the manager names) are merged by the
-  manager only.
-
-## Tests and measurements
-
-- Before merge (Oleg 13.11 ~14:20, ~15:10): `H=github scripts/agent/gh-check.sh
-  --fast` on the exact HEAD: formatting, script checks and workspace clippy on
-  Linux; no Rust test suites, no Windows/macOS run. The full set (`gh-check.sh` without `--fast`
-  and the Forgejo full gate) runs once a day before Stable and gates Stable
-  only; see `docs/agent-checks.md`. Use local build slots only for
-  GitHub outages or checks requiring local hardware. Never run Cargo on maestro
-  except `cargo fmt`.
 - idunn is used interactively by Oleg: keep there only what needs idunn, and run
-  every build/test as `flock /home/god/work/okilum-idunn-build.lock nice -n 19 ionice -c3 …`.
+  every build/test as `flock ~/work/okilum-idunn-build.lock nice -n 19 ionice -c3 …`.
 - A regression test must fail without the fix. Probes need controls that exercise
   the measured path, so an unfired test cannot look like success.
 - Compare timings on the same hardware in the same session.
 
-## Conventions
+### Conventions
 
 - Code, comments, commits and PR text in English.
 - Rust edition/toolchain pinned; commit `Cargo.lock`.
@@ -70,3 +91,11 @@ Keep design decisions in `docs/` or the project brain, not only in commit messag
   CI and every development host use the same compiler through rustup; it is not
   a reason to stay on an older release (Oleg's decision, 2026-11-12).
 - No secrets in the repository; use Infisical references.
+
+## Public-repo hygiene
+
+The repository is public (Forgejo, mirrored to GitHub). Commit no secrets, personal absolute paths, or new internal addresses; use Infisical references.
+
+## Process
+
+Working process lives in the private project area `Dev/Areas/okilum/AGENTS.md` («Okilum — how we work») of the management vault; it wins on process. Linked documents define product behavior and engineering checks, not additional process or approval gates. `CLAUDE.md` only imports this file.

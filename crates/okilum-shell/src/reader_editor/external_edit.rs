@@ -357,13 +357,21 @@ fn refresh_menu_facts(input: &Entity<EditorState>, cx: &mut App) {
 impl Reader {
     /// See [`menu_fact`]; for the editor's context menu snapshot.
     pub(crate) fn external_block_fact(&self, text: &str, cursor: usize) -> Option<bool> {
-        menu_fact(text, cursor, self.editing.as_ref().map(|e| &e.external))
+        menu_fact(
+            text,
+            cursor,
+            self.pane.editing.as_ref().map(|e| &e.external),
+        )
     }
 
     /// The note editor's input, its text and the block around the caret, when
     /// the block may be opened externally.
     fn external_block(&self, cx: &App) -> Option<(Entity<EditorState>, String, Block)> {
-        let editing = self.editing.as_ref().filter(|editing| editing.markdown)?;
+        let editing = self
+            .pane
+            .editing
+            .as_ref()
+            .filter(|editing| editing.markdown)?;
         let input = editing.input.clone();
         let (text, cursor) = {
             let state = input.read(cx);
@@ -429,7 +437,7 @@ impl Reader {
         };
         session.label = label.clone();
         let id = session.id;
-        let editing = self.editing.as_mut()?;
+        let editing = self.pane.editing.as_mut()?;
         // One session per block: the old file goes with the old session.
         editing
             .external
@@ -469,7 +477,7 @@ impl Reader {
 
     /// «Stop external editing» for the caret's block.
     pub(super) fn stop_block_externally(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(editing) = self.editing.as_mut() else {
+        let Some(editing) = self.pane.editing.as_mut() else {
             return;
         };
         let (text, cursor) = {
@@ -492,7 +500,7 @@ impl Reader {
     }
 
     fn stop_external_session(&mut self, id: u64, cx: &mut Context<Self>) {
-        if let Some(editing) = self.editing.as_mut() {
+        if let Some(editing) = self.pane.editing.as_mut() {
             editing.external.0.retain(|session| session.id != id);
             refresh_menu_facts(&editing.input, cx);
         }
@@ -524,7 +532,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(session) = self.editing.as_mut().and_then(|e| e.external.get(id)) else {
+        let Some(session) = self.pane.editing.as_mut().and_then(|e| e.external.get(id)) else {
             return false;
         };
         // Missing for a moment while an editor replaces the file: wait.
@@ -561,7 +569,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(editing) = self.editing.as_mut() else {
+        let Some(editing) = self.pane.editing.as_mut() else {
             return;
         };
         let input = editing.input.clone();
@@ -672,7 +680,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(editing) = self.editing.as_mut() else {
+        let Some(editing) = self.pane.editing.as_mut() else {
             return;
         };
         let input = editing.input.clone();
@@ -925,7 +933,9 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
         visual.run_until_parked();
-        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let input = reader.read_with(visual, |r, _| {
+            r.pane.editing.as_ref().unwrap().input.clone()
+        });
         input.update_in(visual, |input, window, cx| {
             input.focus_handle(cx).focus(window, cx)
         });
@@ -986,7 +996,7 @@ mod tests {
     fn shown_fact(note: &Note, visual: &mut VisualTestContext) -> Option<bool> {
         note.reader.read_with(visual, |r, cx| {
             // Request the same demand-driven facts as opening the menu.
-            r.editing.as_ref().unwrap().menu_facts().code_block(cx)
+            r.pane.editing.as_ref().unwrap().menu_facts().code_block(cx)
         })
     }
 
@@ -1012,7 +1022,7 @@ mod tests {
 
     fn sessions(note: &Note, visual: &mut VisualTestContext) -> usize {
         note.reader.read_with(visual, |r, _| {
-            r.editing.as_ref().map_or(0, |e| e.external.0.len())
+            r.pane.editing.as_ref().map_or(0, |e| e.external.0.len())
         })
     }
 
@@ -1198,7 +1208,9 @@ mod tests {
         note.reader
             .update_in(visual, |r, window, cx| r.toggle_source(window, cx));
         visual.run_until_parked();
-        assert!(note.reader.read_with(visual, |r, _| r.editing.is_none()));
+        assert!(note
+            .reader
+            .read_with(visual, |r, _| r.pane.editing.is_none()));
         assert!(!path.exists());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         save(visual, &path, "fn main() { late }\n");
