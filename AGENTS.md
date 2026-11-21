@@ -82,6 +82,18 @@ Merging (manager, 13.11):
   the measured path, so an unfired test cannot look like success.
 - Compare timings on the same hardware in the same session.
 
+### Scratch & cleanup (Oleg, 2026-11-20)
+
+idunn reached 92% full on 2026-11-20, about 400 GB of it agent leftovers (per-copy `target/`, binaries in evidence, unbounded ship rollbacks, root-owned pcaps). `~/.local/bin/idunn-reaper` (daily 04:30) enforces these rules on idunn; on other hosts follow them yourself.
+
+- Scratch lives only in `~/work/<project>-<issue|lane>/`, evidence only in `~/work/qa-evidence/<topic>/`. Never use `~/src`, `~/Developer`, `~/.cache`, `~/.local/share` or `~/.local/state` as scratch; the `~/src/toroid-staged/*`, `~/src/toroid-verify-*` and `~/src/axe3-*` copies are legacy and are reaped after 7 idle days.
+- Rust builds go through the shared build-slot pool (`okilum-slot` or `build-slot run --project okilum`) or one shared `CARGO_TARGET_DIR`; no per-copy `target/`.
+- Evidence stores a binary's sha256 or receipt, never the AppImage, package or test binary itself.
+- At the end of a lane its owner deletes `target/` and binaries and keeps logs and JSON. Something needed longer gets a `.keep-until YYYY-MM-DD` file in its folder, at most 7 days ahead.
+- Sprint and review copies (`~/work/okilum-<issue>`) build through the pool, not with their own `CARGO_TARGET_DIR`: on 2026-11-20 about 200 GB of such targets were left behind after merge. Build scripts that create per-build directories (for example `~/work/bm-native-<sha8>`) delete them when the build ends.
+- Toroid lanes on the same host follow the same rules (ship rollbacks kept to 3, pcaps deleted after a queue); see the toroid repository's `AGENTS.md`.
+- Reaper thresholds: qa-evidence entries 72 h idle (non-text files over 50 MB after 24 h), `~/work` entries 7 days (cargo targets 3 days), legacy `~/src` scratch 7 days (pcaps 2 days), targets under `~/src`, `~/dev`, `~/Developer` 14 days; halved when `/home` has less than 60 GB free. Idle means the newest mtime in the whole tree. A checkout with uncommitted, unpushed or stashed work, or without a remote, is reported and kept (only its `target/` goes).
+
 ### Conventions
 
 - Code, comments, commits and PR text in English.
