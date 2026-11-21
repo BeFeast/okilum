@@ -28,12 +28,12 @@ short=$(printf '%s' "$sha" | cut -c1-12)
 # back to any capable free host after 30 s, so a busy host costs no wait.
 case $mode in
     pre-merge) shards=("pre-merge 7 - - 30") ;;
-    linux-single) shards=("all 7 docker,sudo,userbus,dbus - 70") ;;
+    linux-single) shards=("all 7 docker,sudo,userbus,dbus,pidns - 70") ;;
     linux-full)
         shards=(
             "base 4 docker baldr 25"
             "rust-b 7 userbus,dbus baldr 25"
-            "admission 3 tmpfs,sudo slava 25"
+            "admission 3 tmpfs,pidns slava 25"
             "rust-a 7 userbus,dbus okilum-dev 25"
             "sync 4 - okilum-build-nas 25"
             "desktop 7 dbus okilum-build-nas 25"
@@ -43,7 +43,7 @@ case $mode in
 esac
 # The benchmark branch measures warm rebuilds in one slot.
 if [[ $mode == linux-full && ${GITHUB_REF:-} == refs/heads/agent-checks-benchmark/* ]]; then
-    shards=("all 7 docker,sudo,userbus,dbus - 70")
+    shards=("all 7 docker,sudo,userbus,dbus,pidns - 70")
 fi
 
 archive=

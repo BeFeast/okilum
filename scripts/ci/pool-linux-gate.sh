@@ -7,12 +7,12 @@
 # merge rule still requires; pool-aggregate.py merges the shard receipts.
 #
 #   base       docker   AppImage runtime, Python suites, Help/brand, admission crash checkpoints
-#   admission  tmpfs    admission remaining-0 + negative controls, real disk-full transfer
+#   admission  tmpfs,pidns  PID-namespace controls, admission remaining-0 + negative controls, real disk-full transfer
 #   sync       -        source sharing, admission remaining-1, local writer authority
 #   desktop    -        clippy, fmt + desktop build, sync serve pairing, reveal stress, vault regression
 #   rust-a     userbus  okilum-core suite, Linux Rust groups outside the workspace census
 #   rust-b     userbus  Linux Rust workspace census
-#   all        docker,sudo,userbus  every phase in one slot (manual runs and the benchmark branch)
+#   all        docker,sudo,userbus,pidns  every phase in one slot (manual runs and the benchmark branch)
 set -euo pipefail
 shard=${1:-all}
 case $shard in
@@ -24,6 +24,12 @@ export OKILUM_POOL_SHARD=$shard
 source "$(dirname "${BASH_SOURCE[0]}")/pool-phase-lib.sh"
 pool_receipt_init
 pool_ensure_git
+
+# Admission's host-discovery run and its controls need capability pidns,
+# probed in this slot (pool_require_pidns, pool-phase-lib.sh).
+case $shard in
+    admission|all) pool_require_pidns ;;
+esac
 
 export CARGO_INCREMENTAL=0
 export CARGO_PROFILE_DEV_DEBUG=0
@@ -99,7 +105,7 @@ if has base; then
     '
     pool_phase "Run CI, releases and updater Python suites" bash -c '
         python3 scripts/appimage/heic-control.py / &&
-        bash scripts/ci/test-group.sh agent-ci-python 300 python3 -I -m unittest discover -s scripts/ci -p "test_*.py" -v &&
+        bash scripts/ci/test-group.sh agent-ci-python 300 env OKILUM_UNITTEST_EXCLUDE=test_pid_namespace python3 -I -m unittest discover -s scripts/ci -p "test_*.py" -v &&
         bash scripts/ci/test-group.sh agent-releases-python 90 python3 -I -m unittest discover -s scripts/releases -p "test_*.py" -v &&
         bash scripts/ci/test-group.sh agent-updater-python 90 python3 -I -m unittest discover -s scripts/updater -p "test_*.py" -v &&
         bash scripts/ci/test-group.sh agent-syncthing-python 90 python3 -I -m unittest discover -s scripts/syncthing -p "test_*.py" -v &&
@@ -128,6 +134,11 @@ if has sync; then
         cargo test --locked -p okilum-sync-controller --lib --test direct_bidirectional --no-run
         tini -s -- bash scripts/ci/test-group.sh agent-sync-sharing 600 bash scripts/ci/sync-source-sharing.sh --runs 2 --parallel 2
     '
+fi
+if has admission; then
+    # Only here (Oleg 21.11 via the manager): mandatory, on a probed pidns host.
+    pool_phase "Verify PID-namespace isolation controls" \
+        env OKILUM_PIDNS_CONTROLS=1 python3 -I -m unittest discover -s scripts/ci -p test_pid_namespace.py -v
 fi
 # Managed admission is split into three processes on three shards
 # (sync-managed-admission-runs.py): each keeps its own unchanged 600 s

@@ -9,6 +9,7 @@ import tempfile
 import time
 import shutil
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import yaml
@@ -365,125 +366,63 @@ class PoolShardSelection(unittest.TestCase):
             self.assertIn(f'pool_phase "{step}"', gate, step)
 
 
-PIDNS = runpy.run_path(str(ROOT / "scripts/ci/pid-namespace.py"), run_name="pidns")
-
-
-def passwordless_sudo():
-    try:
-        return subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=10).returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-
 
 class PoolHostDiscoveryIsolation(unittest.TestCase):
     """#3186 review: a sibling slot's same-uid Syncthing must not reach host discovery."""
 
-    def test_pool_admission_isolates_host_discovery_and_runs_where_sudo_is(self):
+    def test_pool_admission_isolates_host_discovery_on_probed_pidns_hosts(self):
         runs = (ROOT / "scripts/ci/sync-managed-admission-runs.py").read_text()
         self.assertIn("pidns['probe'](work)", runs)
         self.assertIn("pidns['command'](command, env, root, guard=root)", runs)
         self.assertIn("assert not foreign_syncthing()", runs)  # unchanged outside the pool
         dispatch = (ROOT / "scripts/ci/pool-dispatch.sh").read_text()
-        self.assertRegex(dispatch, r'"admission \d+ [a-z,]*\bsudo\b')
+        # The probed capability, not plain sudo (okilum-dev has sudo but refuses the /proc mount).
+        self.assertRegex(dispatch, r'"admission \d+ [a-z,]*\bpidns\b')
+        self.assertRegex(dispatch, r'"all \d+ [a-z,]*\bpidns\b')
+        self.assertNotRegex(dispatch, r'"(pre-merge|base|rust-a|rust-b|sync|desktop) \d+ [a-z,]*\bpidns\b')
+        gate = (ROOT / "scripts/ci/pool-linux-gate.sh").read_text()
+        lib = (ROOT / "scripts/ci/pool-phase-lib.sh").read_text()
+        probe = lib[lib.index("pool_require_pidns() {"):]
+        self.assertIn("sudo -n unshare --pid --fork --kill-child --mount-proc -- true", probe[:probe.index("\n}\n")])
+        self.assertIn("    admission|all) pool_require_pidns ;;", gate)
 
-    @unittest.skipUnless(passwordless_sudo(), "needs passwordless sudo (pool hosts and hosted runners)")
-    def test_a_concurrent_sibling_syncthing_is_invisible_inside_and_status_and_env_pass_through(self):
-        with tempfile.TemporaryDirectory() as directory:
-            work = Path(directory)
-            PIDNS["probe"](work)  # raises unless the decoy is visible outside only
-            sibling_dir = work / "sibling"
-            sibling_dir.mkdir()
-            shutil.copy2(shutil.which("bash"), sibling_dir / "syncthing")
-            sibling = subprocess.Popen(["bash", "-c", "read -r -t 60 _ || true"],
-                                       executable=str(sibling_dir / "syncthing"), stdin=subprocess.PIPE)
-            try:
-                scan = ("import runpy, sys, os; ns = runpy.run_path(sys.argv[1], run_name='x'); "
-                        "print(ns['same_uid_syncthing']()); print(os.environ['POOL_TEST_VALUE']); sys.exit(7)")
-                argv, env_file, _ = PIDNS["command"](
-                    [sys.executable, "-I", "-c", scan, str(ROOT / "scripts/ci/pid-namespace.py")],
-                    {**os.environ, "POOL_TEST_VALUE": "kept"}, work)
-                deadline = time.monotonic() + 5
-                while sibling.pid not in PIDNS["same_uid_syncthing"]() and time.monotonic() < deadline:
-                    time.sleep(.02)
-                self.assertIn(sibling.pid, PIDNS["same_uid_syncthing"]())
-                result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                                        timeout=60)
-                self.assertEqual(result.returncode, 7, result.stderr)
-                self.assertEqual(result.stdout.split(), ["[]", "kept"])
-                self.assertFalse(Path(env_file).exists())
-                self.assertIsNone(sibling.poll())
-            finally:
-                sibling.kill()
-                sibling.wait()
-                sibling.stdin.close()
+    def test_namespace_controls_run_only_in_the_admission_shard(self):
+        """Pre-merge and base exclude them from discovery by name; admission runs them, mandatory."""
+        exclude = "OKILUM_UNITTEST_EXCLUDE=test_pid_namespace python3 -I -m unittest discover -s scripts/ci"
+        premerge = (ROOT / "scripts/ci/pool-pre-merge.sh").read_text()
+        gate = (ROOT / "scripts/ci/pool-linux-gate.sh").read_text()
+        base = gate[gate.index("if has base; then\n    pool_phase \"Verify agent helper controls\""):]
+        base = base[:base.index("\nfi\n")]
+        for name, source in (("pre-merge", premerge), ("base", base)):
+            full = [line for line in source.splitlines() if "discover -s scripts/ci -p" in line and "test_*" in line]
+            self.assertTrue(full, name)
+            for line in full:
+                self.assertIn(exclude, line, name)
+        phase = gate[gate.index('pool_phase "Verify PID-namespace isolation controls"'):]
+        phase = phase[:phase.index("\nfi\n")]
+        self.assertIn("OKILUM_PIDNS_CONTROLS=1", phase)
+        self.assertIn("test_pid_namespace", phase)
+        self.assertRegex(gate, r'if has admission; then\n(    #.*\n)*    pool_phase "Verify PID-namespace isolation controls"')
+        self.assertEqual(gate.count("test_pid_namespace"), 2)  # the base exclusion and this phase
 
-    @unittest.skipUnless(passwordless_sudo(), "needs passwordless sudo (pool hosts and hosted runners)")
-    def test_killing_the_run_ends_the_whole_namespace(self):
-        with tempfile.TemporaryDirectory() as directory:
-            argv, _, token = PIDNS["command"](["bash", "-c", "sleep 600 & wait"], dict(os.environ), Path(directory))
-            process = subprocess.Popen(argv, stdin=subprocess.DEVNULL)
-            deadline = time.monotonic() + 10
-            while time.monotonic() < deadline and not self.marked(token, "sleep"):
-                time.sleep(.05)
-            self.assertTrue(self.marked(token, "sleep"))
-            PIDNS["kill_marked"](token)
-            self.assertNotEqual(process.wait(timeout=30), 0)
-            self.assertFalse(self.marked(token))
+        def ids(env):
+            with unittest.mock.patch.dict(os.environ, env):
+                suite = unittest.defaultTestLoader.discover(str(ROOT / "scripts/ci"), pattern="test_pid_namespace.py")
+            found = []
 
-    @unittest.skipUnless(passwordless_sudo(), "needs passwordless sudo (pool hosts and hosted runners)")
-    def test_a_successful_run_that_leaks_a_fixture_fails_before_the_namespace_ends(self):
-        """Leaving PID 1 kills survivors, so the outside guard alone would see none."""
-        guard = runpy.run_path(str(ROOT / "scripts/ci/sync-fixture-processes.py"), run_name="fixtures")
-        with tempfile.TemporaryDirectory() as directory:
-            work = Path(directory)
-            fixture_dir = work / "cache/okilum-sync-fixture/bin"
-            fixture_dir.mkdir(parents=True)
-            shutil.copy2(shutil.which("bash"), fixture_dir / "syncthing")
-            fifo = work / "hold"
-            os.mkfifo(fifo)
-            home = work / "evidence/home"
-            home.mkdir(parents=True)
-            # A matching fixture: exe .../okilum-sync-fixture/.../syncthing, --home under the root.
-            # Inside the fixture $0 is --home, $1 its home and $2 the fifo it waits on.
-            start = ('"$0" -c \'read -r -t 60 _ <> "$2"\' --home "$2" "$1" & '
-                     'for _ in $(seq 100); do [ -e /proc/$!/exe ] && break; sleep 0.05; done; ')
-            for leave, expected in ((True, 70), (False, 0)):
-                with self.subTest(leave_fixture=leave):
-                    script = start + ('exit 0' if leave else 'kill -9 $!; wait $! 2>/dev/null; exit 0')
-                    argv, _, token = PIDNS["command"](
-                        ["bash", "-c", script, str(fixture_dir / "syncthing"), str(fifo), str(home)],
-                        dict(os.environ), work, guard=work / "evidence")
-                    result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                                            timeout=60)
-                    self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
-                    survivors = "survivors=1" if leave else "survivors=0"
-                    self.assertIn(f"Fixture guard: root={work.resolve() / 'evidence'} {survivors}", result.stdout)
-                    if leave:
-                        self.assertIn("ORPHAN fixture", result.stdout)
-                        self.assertIn("left fixture processes", result.stderr)
-                    # The namespace is gone either way: nothing survives outside.
-                    self.assertEqual(guard["fixtures"](work / "evidence"), [])
-                    self.assertFalse(self.marked(token))
-            # A failing command keeps its own code even when it also leaked.
-            argv, _, _ = PIDNS["command"](
-                ["bash", "-c", start + "exit 3", str(fixture_dir / "syncthing"), str(fifo), str(home)],
-                dict(os.environ), work, guard=work / "evidence")
-            result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
-            self.assertEqual(result.returncode, 3, result.stderr)
-            self.assertIn("ORPHAN fixture", result.stdout)
+            def walk(item):
+                if isinstance(item, unittest.TestSuite):
+                    for child in item:
+                        walk(child)
+                else:
+                    found.append(item.id())
+            walk(suite)
+            return found
+        # The exclusion removes them even where they would otherwise be mandatory.
+        present = ids({"OKILUM_PIDNS_CONTROLS": "1", "OKILUM_UNITTEST_EXCLUDE": ""})
+        self.assertEqual(len([i for i in present if ".PidNamespaceControls." in i]), 3, present)
+        self.assertEqual(ids({"OKILUM_PIDNS_CONTROLS": "1", "OKILUM_UNITTEST_EXCLUDE": "test_pid_namespace"}), [])
 
-    @staticmethod
-    def marked(token, comm=None):
-        found = []
-        for entry in Path("/proc").iterdir():
-            try:
-                if entry.name.isdecimal() and f"OKILUM_PIDNS_TOKEN={token}".encode() in \
-                        (entry / "environ").read_bytes().split(b"\0"):
-                    if comm is None or (entry / "comm").read_text().strip() == comm:
-                        found.append(int(entry.name))
-            except (OSError, ProcessLookupError):
-                continue
-        return found
 
 
 # The real shard branching (pool-linux-gate.sh) and phase library, with every
@@ -499,6 +438,7 @@ pool_phase() {
     fi
 }
 pool_ensure_git() { :; }
+pool_require_pidns() { :; }
 '''
 
 

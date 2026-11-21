@@ -49,8 +49,14 @@ pool slot it therefore runs in a private PID namespace (`pid-namespace.py`,
 positive control shows a same-uid decoy `syncthing` outside is invisible
 inside. Leaving the namespace kills whatever is left in it, so its PID 1 runs
 the fixture guard for the test's evidence root first and fails a successful
-test that left a fixture alive. The `admission` shard needs `sudo`; outside
-the pool the test runs as before. Managed admission keeps its unchanged 600 s deadline
+test that left a fixture alive. This needs `sudo unshare --pid --mount-proc`,
+which `sudo` alone does not guarantee (okilum-dev refuses the `/proc` mount):
+the `admission` and `all` shards need build-slot capability `pidns`, and the
+slot probes it again first (no verdict without it). The namespace controls
+(`scripts/ci/test_pid_namespace.py`) run only in the `admission` shard, as
+phase `Verify PID-namespace isolation controls`; pre-merge and `base` exclude
+that module from their discovery by name (`OKILUM_UNITTEST_EXCLUDE`), and any
+other discovery skips it. Outside the pool the test runs as before. Managed admission keeps its unchanged 600 s deadline
 per process set: `crash`, `remaining-0` and `remaining-1` each check the full
 compiled inventory and run on their own shard, so no part waits behind
 another (`OKILUM_ADMISSION_PART`; default `all`). The two Rust shards use the

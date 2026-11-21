@@ -228,6 +228,9 @@ jobs:
       - name: Verify pinned Sync fixture lifecycle, source sharing and remote inspection
         if: steps.pool.outputs.kind == 'verdict'
         run: bash scripts/ci/pool-phase.sh "Verify pinned Sync fixture lifecycle, source sharing and remote inspection"
+      - name: Verify PID-namespace isolation controls
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Verify PID-namespace isolation controls"
       - name: Verify managed launch and configuration admission
         if: steps.pool.outputs.kind == 'verdict'
         run: bash scripts/ci/pool-phase.sh "Verify managed launch and configuration admission"

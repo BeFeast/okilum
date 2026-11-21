@@ -42,7 +42,7 @@ pool_phase "Verify agent helper controls" bash -c '
 '
 pool_phase "Run CI, releases and updater Python suites" bash -c '
     python3 scripts/appimage/heic-control.py / &&
-    bash scripts/ci/test-group.sh agent-ci-python 300 python3 -I -m unittest discover -s scripts/ci -p "test_*.py" -v &&
+    bash scripts/ci/test-group.sh agent-ci-python 300 env OKILUM_UNITTEST_EXCLUDE=test_pid_namespace python3 -I -m unittest discover -s scripts/ci -p "test_*.py" -v &&
     bash scripts/ci/test-group.sh agent-releases-python 90 python3 -I -m unittest discover -s scripts/releases -p "test_*.py" -v &&
     bash scripts/ci/test-group.sh agent-updater-python 90 python3 -I -m unittest discover -s scripts/updater -p "test_*.py" -v &&
     bash scripts/ci/test-group.sh agent-syncthing-python 90 python3 -I -m unittest discover -s scripts/syncthing -p "test_*.py" -v &&

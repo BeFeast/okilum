@@ -120,6 +120,18 @@ pool_phase() {
     fi
 }
 
+# The admission host-discovery run and its controls need a private PID
+# namespace with its own /proc (pid-namespace.py). Build-slot capability
+# `pidns` is advertised only for hosts where this works, and the slot checks
+# it again: without it a shard gives no verdict (75), never a code failure.
+# okilum-dev has sudo but refuses the /proc mount (fast run 44895442497).
+pool_require_pidns() {
+    if ! sudo -n unshare --pid --fork --kill-child --mount-proc -- true; then
+        echo "pool: sudo unshare --pid --mount-proc fails in this slot (capability pidns); no verdict" >&2
+        exit 75
+    fi
+}
+
 pool_prepare_python() {
     # setup-python-tests.sh records the venv on GITHUB_PATH. Inside a slot that
     # file does not exist, so point it at a scratch file and then use the venv.
