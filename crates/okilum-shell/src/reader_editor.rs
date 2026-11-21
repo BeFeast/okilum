@@ -41,8 +41,8 @@ use gpui_component::input::{Editor, EditorState, WrappingIndent};
 pub(crate) use writing_modes::{toggle_focus_mode, toggle_typewriter_mode};
 
 /// The editor «Open block in …» names (#1993).
-pub(crate) fn external_editor_label() -> String {
-    external_edit::editor_label()
+pub(crate) fn external_editor_label(cx: &App) -> String {
+    external_edit::editor_label(cx)
 }
 
 /// What a paste that inserted nothing tells the user (#1602); it is never
