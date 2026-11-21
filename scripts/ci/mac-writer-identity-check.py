@@ -55,33 +55,21 @@ def main():
         run(no_uuid_test, "no-uuid-refused-negative", negative=True)
     finally:
         native.write_text(original_native)
-    alias_test = "identity_macos_tests::identity_3202_mount_source_alias_cannot_bypass_a_hold"
-    run(alias_test, "mount-alias-positive")
+    second_test = "identity_macos_tests::identity_3202_second_uuid_less_root_is_refused_while_one_is_registered"
+    run(second_test, "second-uuid-less-positive")
     try:
-        # #3202 review: without alias discovery, a second mount spelling of the
-        # same export minted a second authority and bypassed the hold.
-        alias = "if stored.mount_alias_candidate(identity) {"
-        assert original_entry.count(alias) == 1
-        entry.write_text(original_entry.replace(alias, "if false && stored.mount_alias_candidate(identity) {"))
-        run(alias_test, "mount-alias-bypass-negative", negative=True)
-    finally:
-        entry.write_text(original_entry)
-    enclosed_test = "identity_macos_tests::identity_3202_held_child_fences_its_parent_through_another_mount"
-    run(enclosed_test, "mount-alias-child-positive")
-    try:
-        # #3202 review: a parent opened through a second mount spelling missed a
-        # held child registered through the first and minted an overlapping authority.
-        guard = "|| !physically_encloses(&ancestor_identities[0], &b.root),"
-        assert original_entry.count(guard) == 1
-        entry.write_text(original_entry.replace(guard, "|| true,"))
-        run(enclosed_test, "mount-alias-child-bypass-negative", negative=True)
+        # #3202: a second UUID-less root may be another spelling, child or parent
+        # of the registered one; without the rule it minted a second authority.
+        rule = "!ancestor_identities[0].is_mount_source()"
+        assert original_entry.count(rule) == 1
+        entry.write_text(original_entry.replace(rule, "true"))
+        run(second_test, "second-uuid-less-negative", negative=True)
     finally:
         entry.write_text(original_entry)
     run(device_test, "native-restored")
     run(legacy_test, "migration-restored")
     run(no_uuid_test, "no-uuid-restored")
-    run(alias_test, "mount-alias-restored")
-    run(enclosed_test, "mount-alias-child-restored")
+    run(second_test, "second-uuid-less-restored")
     assert native.read_text() == original_native and entry.read_text() == original_entry
 
 

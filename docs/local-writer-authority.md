@@ -39,16 +39,12 @@ of the filesystem type and mount source (`host:/export`, `//user@host/share`)
 from `fstatfs` on the same handle. A remount of the same source keeps the
 binding; the same folder seen first through a native UUID is a different
 volume and fails closed. Other attribute errors stay errors. One export can be
-mounted under two source spellings (an IP address and a hostname), so the
-digest alone cannot prove two roots disjoint: when looking for an existing
-authority, two UUID-less identities of the same filesystem type with equal inode
-and birth time are the same folder. The second spelling resolves to the existing
-authority and meets its holds; a false match only over-fences. The other
-order is refused: a root whose existing scope sits physically inside it under
-another path spelling (a child registered through the first mount, the parent
-opened through the second) cannot be promoted, because that child's handles
-resolve enclosing scopes by path. Opening the parent there fails until the
-vault is opened through the first spelling.
+mounted under two source spellings (an IP address and a hostname), so a
+mount-source identity cannot prove two roots disjoint. While any UUID-less
+binding is registered, readable or not, a different UUID-less root (another
+spelling, a child or parent outside its path, another folder on the export) is
+refused; same-path reopen and folders inside the vault resolve to that scope.
+Several UUID-less roots are tracked separately (#3204).
 
 On Linux (#2710), schema 2 likewise treats `st_dev` as diagnostic only. One
 no-follow descriptor supplies inode, birthtime and `fstatfs` filesystem ID. On

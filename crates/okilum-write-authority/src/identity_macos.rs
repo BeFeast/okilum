@@ -30,27 +30,14 @@ impl Identity {
             && self.2.is_some()
             && self.2 == current.2
     }
-    /// Mount-source identities name an export by the spelling of its source, so
-    /// one export mounted as `10.10.0.14:/srv` and `maestro:/srv` yields two
-    /// volume digests for one physical folder (#3202 review). For authority
-    /// discovery, two UUID-less identities of the same filesystem type with the
-    /// same inode and birth time are treated as the same folder: an alias then
-    /// resolves to the existing authority (or meets its hold) instead of minting
-    /// a second one. A false match only over-fences; it never admits a writer.
-    pub(super) fn mount_alias_candidate(&self, other: &Self) -> bool {
-        match (self.3, other.3) {
-            (Some(a), Some(b)) => {
-                a[..4] == MOUNT_SOURCE_MARKER
-                    && a[..8] == b[..8]
-                    && (self.1, self.2) == (other.1, other.2)
-            }
-            _ => false,
-        }
+    /// A mount-source identity from a volume without a native UUID (#3202).
+    pub(super) fn is_mount_source(&self) -> bool {
+        self.3.is_some_and(|uuid| uuid[..4] == MOUNT_SOURCE_MARKER)
     }
 }
 
 /// First four bytes of a UUID-less volume digest. A native UUID that happens
-/// to start with it is only ever over-fenced by `mount_alias_candidate`.
+/// to start with it is only ever over-fenced (see `Authority::open_in`).
 const MOUNT_SOURCE_MARKER: [u8; 4] = *b"OKmt";
 
 pub fn read(path: &Path) -> Result<Identity> {
@@ -177,8 +164,8 @@ fn volume_uuid(handle: &File) -> std::io::Result<Option<[u8; 16]>> {
 /// gives the same export a new device on every remount), so they cannot persist.
 /// The filesystem type and mount source (`host:/export`, `//user@host/share`)
 /// name the same export across remounts; inode and birth time then select the
-/// object within it. Distinct spellings of one source are aliases; see
-/// `Identity::mount_alias_candidate`.
+/// object within it. Another spelling of the same source gives another digest,
+/// so `Authority::open_in` allows only one UUID-less scope at a time.
 fn mount_source_identity(handle: &File) -> Result<[u8; 16]> {
     let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
     if unsafe { libc::fstatfs(handle.as_raw_fd(), &mut stat) } != 0 {
@@ -199,8 +186,7 @@ pub(super) fn mount_source_digest(filesystem: &[u8], source: &[u8]) -> Result<[u
         !filesystem.is_empty() && !source.is_empty(),
         "Stable writer volume identity is unavailable"
     );
-    // Marker, then the filesystem type (alias discovery compares these eight
-    // bytes), then the mount source spelling.
+    // Marker, then the filesystem type, then the mount source spelling.
     let digest = |parts: &[&[u8]]| {
         let mut digest = Sha256::new();
         digest.update(b"okilum-writer-mount-source-v1\0");

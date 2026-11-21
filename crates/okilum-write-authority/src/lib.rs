@@ -233,24 +233,8 @@ fn physical_candidate(current: &[Identity], stored: &Identity) -> bool {
         if stored.3.is_none() && stored.legacy_matches(identity) {
             return true;
         }
-        // UUID-less Mac volumes cannot prove two mount spellings disjoint (#3202).
-        #[cfg(target_os = "macos")]
-        if stored.mount_alias_candidate(identity) {
-            return true;
-        }
         false
     })
-}
-/// Whether a strict ancestor of `scope` is physically `root`, under any path
-/// spelling. Unreadable ancestors cannot prove enclosure.
-#[cfg(target_os = "macos")]
-fn physically_encloses(root: &Identity, scope: &Path) -> bool {
-    let ancestors = scope
-        .ancestors()
-        .skip(1)
-        .filter_map(|path| identity(path).ok())
-        .collect::<Vec<_>>();
-    physical_candidate(&ancestors, root)
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct Binding {
@@ -428,6 +412,21 @@ impl Authority {
             let p = entry?.path();
             if p.extension().is_some_and(|e| e == "json") {
                 let b: Binding = read(&p)?;
+                // A UUID-less identity (NFS, SMB, macFUSE; #3202) names its
+                // export by the mount source spelling, so it cannot prove two
+                // roots disjoint: another mount spelling, a child or a parent of
+                // a registered root may be the same physical folder. Allow one
+                // UUID-less scope; a different one is refused while any other
+                // UUID-less binding is registered, whether or not it is readable.
+                #[cfg(target_os = "macos")]
+                ensure!(
+                    !ancestor_identities[0].is_mount_source()
+                        || !b.root_identity.is_mount_source()
+                        || b.root_identity == ancestor_identities[0],
+                    "{} is on a network or FUSE volume without a volume UUID, and another such folder ({}) already has a writer scope; only one is supported for now (#3204)",
+                    root.display(),
+                    b.root.display()
+                );
                 // Canonical path aliases such as bind mounts can still name
                 // the same physical root. Never mint a second authority for it.
                 if physical_candidate(&ancestor_identities, &b.root_identity) {
@@ -449,18 +448,6 @@ impl Authority {
                     ensure!(a.state()?.phase == Phase::Open,
                         "Physical vault identity has an unfinished hold at another root; explicit recovery required");
                 }
-                // A scope inside this root reached through another path spelling
-                // (a second mount of one UUID-less export, #3202). Its handles
-                // resolve enclosing scopes by path, so promotion cannot fence
-                // them: refuse rather than mint an overlapping authority.
-                #[cfg(target_os = "macos")]
-                ensure!(
-                    b.root.starts_with(&root)
-                        || !physically_encloses(&ancestor_identities[0], &b.root),
-                    "{} is already registered as a writer scope through another path ({}); open the vault through that path",
-                    root.display(),
-                    b.root.display()
-                );
                 if b.root.starts_with(&root) && b.root != root {
                     let child = Self {
                         account: account.clone(),

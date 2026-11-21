@@ -217,11 +217,19 @@ fn identity_3202_volume_without_uuid_admits_writers_across_remounts() {
     }
     persist(&authority.binding_path, &remounted, false).unwrap();
     let reopened = Authority::open_in(&authority.account, authority.root()).unwrap();
-    reopened.operation().unwrap();
+    {
+        let _operation = reopened.operation().unwrap();
+        fs::write(authority.root().join("note.md"), b"Edited on NFS\r\n").unwrap();
+    }
     reopened.admit().unwrap();
+    // Notes inside the vault resolve to the same scope.
+    let nested = authority.root().join("folder");
+    fs::create_dir(&nested).unwrap();
+    let inside = Authority::open_in(&authority.account, &nested).unwrap();
+    assert_eq!(inside.binding_path, authority.binding_path);
     assert_eq!(
         fs::read(authority.root().join("note.md")).unwrap(),
-        b"Canonical bytes\r\n"
+        b"Edited on NFS\r\n"
     );
 }
 
@@ -282,70 +290,63 @@ fn identity_3202_native_binding_does_not_accept_a_volume_without_uuid() {
 }
 
 #[test]
-fn identity_3202_mount_source_alias_cannot_bypass_a_hold() {
-    let _nfs = Nfs::everywhere();
+fn identity_3202_native_roots_are_not_limited() {
     let (temporary, authority) = fixture();
-    // The same export mounted again by hostname: another path and mount source
-    // spelling for the same server object (same inode and birth time).
-    let alias = temporary.path().canonicalize().unwrap().join("by-hostname");
-    fs::create_dir(&alias).unwrap();
-    let _second_mount = Nfs::mount(
-        alias.clone(),
-        "maestro.oklabs.uk:/srv/nfs/Maestro",
-        Some(authority.root().to_path_buf()),
-    );
-    let through_alias = identity(&alias).unwrap();
-    let original = identity(authority.root()).unwrap();
-    assert_ne!(
-        through_alias, original,
-        "source spellings give distinct digests"
-    );
-    assert_eq!((through_alias.1, through_alias.2), (original.1, original.2));
-
-    let _hold = authority.begin_drain("exclusive-operation").unwrap();
-    // The alias resolves to the one existing authority, which is held.
-    let resolved = Authority::open_in(&authority.account, &alias).unwrap();
-    assert_eq!(resolved.root(), authority.root());
-    assert_eq!(resolved.binding_path, authority.binding_path);
-    assert!(resolved.admit().is_err(), "hold must fence the alias");
-    assert!(
-        !authority
-            .account
-            .join(format!("{}.json", key(&alias)))
-            .exists(),
-        "no second authority for the same physical folder"
-    );
+    let other = temporary.path().join("other");
+    fs::create_dir(&other).unwrap();
+    let second = Authority::open_in(&authority.account, &other).unwrap();
+    assert_ne!(second.binding_path, authority.binding_path);
+    second.operation().unwrap();
+    authority.operation().unwrap();
 }
 
+/// A UUID-less identity names its export by the mount source spelling, so a
+/// different UUID-less root may be the same physical folder. While one
+/// UUID-less binding exists, every other UUID-less root is refused.
 #[test]
-fn identity_3202_held_child_fences_its_parent_through_another_mount() {
+fn identity_3202_second_uuid_less_root_is_refused_while_one_is_registered() {
     let _nfs = Nfs::everywhere();
     let temporary = tempfile::tempdir().unwrap();
     let base = temporary.path().canonicalize().unwrap();
-    let vault = base.join("by-ip").join("Vault");
+    let export = base.join("by-ip");
+    let vault = export.join("Vault");
     fs::create_dir_all(vault.join("Sub")).unwrap();
-    fs::write(vault.join("Sub").join("note.md"), b"Canonical bytes\r\n").unwrap();
+    fs::create_dir_all(export.join("Other")).unwrap();
+    fs::write(vault.join("note.md"), b"Canonical bytes\r\n").unwrap();
     let account = base.join("account");
-    // The child scope is registered and held through the first mount.
-    let child = Authority::open_in(&account, &vault.join("Sub")).unwrap();
-    let _hold = child.begin_drain("exclusive-operation").unwrap();
-    // The parent is then opened through a second mount of the same export.
+    let first = Authority::open_in(&account, &vault).unwrap();
+    // The same export mounted again by hostname.
     let alias = base.join("by-hostname");
-    fs::create_dir_all(alias.join("Vault")).unwrap();
+    fs::create_dir_all(alias.join("Vault").join("Sub")).unwrap();
     let _second_mount = Nfs::mount(
         alias.clone(),
         "maestro.oklabs.uk:/srv/nfs/Maestro",
-        Some(base.join("by-ip")),
+        Some(export.clone()),
     );
-    let parent = alias.join("Vault");
-    let error = Authority::open_in(&account, &parent).unwrap_err();
-    assert!(
-        format!("{error:#}").contains("through another path"),
-        "{error:#}"
-    );
-    assert!(
-        !account.join(format!("{}.json", key(&parent))).exists(),
-        "no overlapping authority for the parent"
-    );
-    assert!(child.admit().is_err(), "the child hold stays in force");
+    let refused = |root: &Path| {
+        let error = Authority::open_in(&account, root).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("without a volume UUID"),
+            "{}: {error:#}",
+            root.display()
+        );
+        assert!(
+            !account.join(format!("{}.json", key(root))).exists(),
+            "{}: no second authority",
+            root.display()
+        );
+    };
+    refused(&alias.join("Vault")); // alias spelling of the same root
+    refused(&alias.join("Vault").join("Sub")); // child through the alias
+    refused(&export); // parent through the first mount
+    refused(&export.join("Other")); // unrelated folder on the export
+                                    // Same-path reopen still works.
+    Authority::open_in(&account, &vault)
+        .unwrap()
+        .operation()
+        .unwrap();
+    // The first mount is gone: its binding still stands.
+    fs::rename(&vault, base.join("unmounted")).unwrap();
+    refused(&export.join("Other"));
+    drop(first);
 }
