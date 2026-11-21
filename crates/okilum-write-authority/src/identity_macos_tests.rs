@@ -175,3 +175,87 @@ fn identity_2692_concurrent_migration_publishes_one_preserved_binding() {
         state_before
     );
 }
+
+struct WithoutVolumeUuid;
+impl WithoutVolumeUuid {
+    fn set() -> Self {
+        identity_macos::WITHOUT_VOLUME_UUID.with(|flag| flag.set(true));
+        Self
+    }
+}
+impl Drop for WithoutVolumeUuid {
+    fn drop(&mut self) {
+        identity_macos::WITHOUT_VOLUME_UUID.with(|flag| flag.set(false));
+    }
+}
+
+#[test]
+fn identity_3202_volume_without_uuid_admits_writers_across_remounts() {
+    let _nfs = WithoutVolumeUuid::set();
+    let (_temporary, authority) = fixture();
+    let current = identity(authority.root()).unwrap();
+    let uuid = current.3.expect("mount-source identity");
+    assert_ne!(uuid, [0; 16]);
+    assert_eq!(current, identity(authority.root()).unwrap());
+    authority.admit().unwrap();
+    // NFS assigns a new st_dev on every remount; the mount source does not change.
+    let mut remounted = authority.binding.clone();
+    for identity in identities(&mut remounted) {
+        identity.0 += 1024;
+    }
+    persist(&authority.binding_path, &remounted, false).unwrap();
+    let reopened = Authority::open_in(&authority.account, authority.root()).unwrap();
+    reopened.operation().unwrap();
+    reopened.admit().unwrap();
+    assert_eq!(
+        fs::read(authority.root().join("note.md")).unwrap(),
+        b"Canonical bytes\r\n"
+    );
+}
+
+#[test]
+fn identity_3202_mount_source_is_scoped_and_errors_stay_errors() {
+    let nfs = identity_macos::mount_source_digest(b"nfs", b"10.10.0.14:/srv/nfs/Maestro").unwrap();
+    assert_eq!(
+        nfs,
+        identity_macos::mount_source_digest(b"nfs", b"10.10.0.14:/srv/nfs/Maestro").unwrap()
+    );
+    assert_ne!(
+        nfs,
+        identity_macos::mount_source_digest(b"nfs", b"10.10.0.14:/srv/nfs/Other").unwrap()
+    );
+    assert_ne!(
+        nfs,
+        identity_macos::mount_source_digest(b"smbfs", b"10.10.0.14:/srv/nfs/Maestro").unwrap()
+    );
+    assert!(identity_macos::mount_source_digest(b"nfs", b"").is_err());
+
+    let (_temporary, authority) = fixture();
+    let handle = File::open(authority.root()).unwrap();
+    let native = identity_macos::from_file(&handle).unwrap();
+    for missing in [libc::EINVAL, libc::ENOTSUP, libc::ENOATTR] {
+        let fallback = identity_macos::from_file_with(&handle, |_| {
+            Err(std::io::Error::from_raw_os_error(missing))
+        })
+        .unwrap();
+        assert_eq!((fallback.1, fallback.2), (native.1, native.2));
+        assert_ne!(
+            fallback, native,
+            "no-UUID identity cannot alias a native UUID"
+        );
+    }
+    let zero = identity_macos::from_file_with(&handle, |_| Ok(None)).unwrap();
+    assert!(zero.3.is_some_and(|uuid| uuid != [0; 16]));
+    let error = identity_macos::from_file_with(&handle, |_| {
+        Err(std::io::Error::from_raw_os_error(libc::EIO))
+    })
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("Cannot read stable writer volume identity"));
+}
+
+#[test]
+fn identity_3202_native_binding_does_not_accept_a_volume_without_uuid() {
+    let (_temporary, authority) = fixture();
+    let _nfs = WithoutVolumeUuid::set();
+    assert!(Authority::open_in(&authority.account, authority.root()).is_err());
+}
