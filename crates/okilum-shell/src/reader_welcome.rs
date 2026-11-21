@@ -271,6 +271,7 @@ pub(crate) fn apply_harness(entry: &mut Entry, window: &mut Window, cx: &mut Con
                     .filter
                     .update(cx, |input, cx| input.set_value(text.to_owned(), window, cx));
                 entry.view.query = text.to_owned();
+                entry.view.selected = 0;
             }
             Some(("selected", number)) => {
                 if let Ok(number) = number.parse() {
@@ -341,7 +342,8 @@ fn subsequence(haystack: &str, needle: &str) -> bool {
         .all(|wanted| haystack.any(|found| found == wanted))
 }
 
-/// Substring of the name, else of the path, else the letters in order.
+/// Substring of the name, else of the path, else the name's letters in
+/// order. A path's scattered letters match almost anything, so they never do.
 pub(crate) fn hit(query: &str, name: &str, path: &str) -> Option<Hit> {
     let query = query.trim();
     if query.is_empty() {
@@ -353,7 +355,17 @@ pub(crate) fn hit(query: &str, name: &str, path: &str) -> Option<Hit> {
     if find_ci(path, query).is_some() {
         return Some(Hit::Path);
     }
-    (subsequence(name, query) || subsequence(path, query)).then_some(Hit::Loose)
+    subsequence(name, query).then_some(Hit::Loose)
+}
+
+/// The matches to list: substring matches when there are any; the loose
+/// letters-in-order matches only as a fallback when there are none (#3208).
+pub(crate) fn keep_hits<T>(hits: Vec<(T, Hit)>) -> Vec<T> {
+    let exact = hits.iter().any(|(_, hit)| *hit != Hit::Loose);
+    hits.into_iter()
+        .filter(|(_, hit)| !exact || *hit != Hit::Loose)
+        .map(|(item, _)| item)
+        .collect()
 }
 
 /// The rows on screen: drafts first, then vaults; filtered by the query (all
@@ -378,21 +390,18 @@ pub(crate) fn visible_rows(entry: &Entry, cx: &App) -> Vec<Row> {
             .collect();
     }
     let home = super::reader_untitled::home();
-    drafts
+    let hits = drafts
         .iter()
-        .filter(|draft| hit(query, &draft.label, "").is_some())
-        .map(|draft| Row::Draft(draft.file.clone()))
-        .chain(
-            entry
-                .roots
-                .iter()
-                .filter(|root| {
-                    let path = ShownPath::of(root, home.as_deref()).full();
-                    hit(query, &vault_name::shown(root, cx), &path).is_some()
-                })
-                .map(|root| Row::Vault(root.clone())),
-        )
-        .collect()
+        .filter_map(|draft| {
+            hit(query, &draft.label, "").map(|hit| (Row::Draft(draft.file.clone()), hit))
+        })
+        .chain(entry.roots.iter().filter_map(|root| {
+            let path = ShownPath::of(root, home.as_deref()).full();
+            hit(query, &vault_name::shown(root, cx), &path)
+                .map(|hit| (Row::Vault(root.clone()), hit))
+        }))
+        .collect();
+    keep_hits(hits)
 }
 
 /// A path as the start screen shows it: an anchor that always stays (`~`,
@@ -1884,6 +1893,24 @@ mod tests {
         assert_eq!(hit("work", "Brain", "~/work/brain"), Some(Hit::Path));
         assert_eq!(hit("wnt", "Work Notes", "~/x"), Some(Hit::Loose));
         assert_eq!(hit("zzz", "Work Notes", "~/x"), None);
+        // A path's scattered letters never match: w…o…r…k is everywhere.
+        assert_eq!(
+            hit(
+                "work",
+                "okilum-log-samples",
+                "~/welcome-demo/Developer/okilum"
+            ),
+            None
+        );
+        // Loose matches only when nothing matches as a substring.
+        assert_eq!(
+            keep_hits(vec![(1, Hit::Loose), (2, Hit::Path), (3, Hit::Name)]),
+            vec![2, 3]
+        );
+        assert_eq!(
+            keep_hits(vec![(1, Hit::Loose), (2, Hit::Loose)]),
+            vec![1, 2]
+        );
         assert_eq!(hit("  ", "Work Notes", "~/x"), None);
         // Non-ASCII: byte ranges stay on character boundaries.
         assert_eq!(find_ci("Заметки Работа", "работа"), Some(15..27));
