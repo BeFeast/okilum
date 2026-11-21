@@ -154,7 +154,7 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
                     .map(|(_, roots, _)| {
                         roots
                             .iter()
-                            .filter(|root| !unavailable(*root))
+                            .filter(|root| !unavailable(root))
                             .filter_map(|root| {
                                 super::vault_name::read(root).map(|name| (root.clone(), name))
                             })
