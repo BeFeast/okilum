@@ -160,11 +160,23 @@ fn expected_rows(
     boundaries + usize::from(last < line.len() || last == 0)
 }
 
-/// A note whose rows span rope chunks, end in CR, are empty, are not ASCII
-/// (no emoji, so gpui wraps them as one text fragment) and end with a LF.
+/// Rows of a note at or above which the editor lays rows out on several
+/// threads (`PARALLEL_ROWS` in vendor patch 0156).
+const PARALLEL_ROWS: usize = 16 * 1024;
+
+/// An emoji row: the editor shapes it with emoji runs on the calling thread.
+const EMOJI_ROW: &str = "brain 🧠 coder 👩\u{200d}💻 flag 🇮🇱 and a few more words to wrap";
+
+/// A note long enough to be laid out on several threads, whose rows span
+/// rope chunks, end in CR, are empty, are not ASCII (no emoji, so gpui wraps
+/// them as one text fragment), carry emoji, and that ends with a LF.
 fn mixed_note() -> String {
     let mut rng = Lcg(653);
-    let mut lines = ascii_lines();
+    let mut lines = Vec::new();
+    for _ in 0..28 {
+        lines.extend(ascii_lines());
+        lines.push(EMOJI_ROW.repeat(3));
+    }
     lines.push("Шла Саша по шоссе и сосала сушку ".repeat(30));
     lines.push("שלום עולם ".repeat(40));
     lines.push("crlf row\r".into());
@@ -189,6 +201,11 @@ fn issue3073_display_map_rows_match_the_line_wrapper(cx: &mut TestAppContext) {
         assert!(
             lines.iter().any(|line| line.len() > 4_096),
             "positive control: rows span rope chunks"
+        );
+        assert!(
+            lines.len() > PARALLEL_ROWS,
+            "positive control: {} rows take the parallel layout",
+            lines.len()
         );
         let font = source_font();
         let em =
@@ -215,8 +232,20 @@ fn issue3073_display_map_rows_match_the_line_wrapper(cx: &mut TestAppContext) {
                 );
                 let mut total = 0;
                 let mut multi = 0;
+                // An emoji row, laid out alone (one thread), is the reference
+                // for the emoji rows the threads hand back.
+                let emoji_rows = {
+                    let mut alone = DisplayMap::new(font.clone(), FONT_SIZE, None);
+                    alone.set_text(&Rope::from(EMOJI_ROW.repeat(3)), cx);
+                    alone.set_layout(Some(width), indent, cx);
+                    alone.display_row_count()
+                };
                 for (ix, line) in lines.iter().enumerate() {
-                    let expected = expected_rows(&mut wrapper, line, width, indent);
+                    let expected = if line.contains('🧠') {
+                        emoji_rows
+                    } else {
+                        expected_rows(&mut wrapper, line, width, indent)
+                    };
                     let rows = map
                         .buffer_line_to_display_row_range(ix)
                         .expect("every line is shown")
