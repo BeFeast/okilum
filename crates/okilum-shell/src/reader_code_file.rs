@@ -936,7 +936,7 @@ impl Reader {
             }
         }))
         .on_action(cx.listener(|this, _: &GoToError, window, cx| {
-            if this.editing.is_some() {
+            if this.pane.editing.is_some() {
                 this.file_editor_go_to_error(window, cx);
                 return;
             }
@@ -1008,7 +1008,7 @@ impl Reader {
         }
     }
     fn read_code_view(&self) -> Option<Entity<CodePreview>> {
-        if self.editing.is_some() {
+        if self.pane.editing.is_some() {
             return None;
         }
         self.pane.file_preview.as_ref()?.code.clone()

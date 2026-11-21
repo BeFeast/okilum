@@ -190,7 +190,8 @@ fn text_copy_menu_copies_disk_bytes_and_unsaved_buffer_without_writing(cx: &mut 
     visual.simulate_click(edit.center(), Modifiers::default());
     visual.run_until_parked();
     reader.update_in(visual, |r, w, cx| {
-        r.editing
+        r.pane
+            .editing
             .as_ref()
             .unwrap()
             .set_value("{\"draft\":true}", w, cx)
@@ -277,7 +278,7 @@ fn file_header_never_wraps_and_preserves_title_edit_dirty_save_and_more(cx: &mut
     reader.update_in(visual, |r, w, cx| r.toggle_source(w, cx));
     visual.run_until_parked();
     reader.update_in(visual, |r, w, cx| {
-        r.editing.as_ref().unwrap().set_value("unsaved", w, cx)
+        r.pane.editing.as_ref().unwrap().set_value("unsaved", w, cx)
     });
     visual.simulate_resize(size(px(600.), px(800.)));
     visual.run_until_parked();
@@ -798,7 +799,7 @@ fn edit2803_typing_in_an_open_file_does_not_render_the_header_slots(cx: &mut Tes
     });
     visual.run_until_parked();
     let input = reader.read_with(visual, |reader, _| {
-        reader.editing.as_ref().unwrap().input().clone()
+        reader.pane.editing.as_ref().unwrap().input().clone()
     });
     input.update_in(visual, |input, window, cx| input.focus(window, cx));
     visual.run_until_parked();

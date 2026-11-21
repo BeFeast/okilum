@@ -31,19 +31,19 @@ impl Owner {
             root: reader.vault_root.clone(),
             state: reader.session_directory.clone()?,
             index_directory: reader.index_dir.clone(),
-            navigation: reader.navigation.generation,
+            navigation: reader.pane.navigation.generation,
             document: reader.pane.current_rel.clone(),
-            content: reader.content.clone(),
+            content: reader.pane.content.clone(),
         })
     }
     fn current(&self, reader: &Reader) -> bool {
         reader.vault_root == self.root
             && reader.session_directory.as_ref() == Some(&self.state)
             && reader.index_dir == self.index_directory
-            && reader.navigation.generation == self.navigation
+            && reader.pane.navigation.generation == self.navigation
             && reader.pane.current_rel == self.document
-            && reader.content == self.content
-            && reader.editing.is_none()
+            && reader.pane.content == self.content
+            && reader.pane.editing.is_none()
     }
 }
 impl TaskAction {

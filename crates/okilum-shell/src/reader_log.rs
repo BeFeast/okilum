@@ -5234,12 +5234,12 @@ impl Reader {
         view.read(cx).focus_handle().clone().focus(window, cx);
         preview.log = Some(view);
         self.pane.file_preview = Some(preview);
-        self.navigation.history = vec![rel.clone()];
-        self.navigation.history_positions = vec![ListOffset {
+        self.pane.navigation.history = vec![rel.clone()];
+        self.pane.navigation.history_positions = vec![ListOffset {
             item_ix: 0,
             offset_in_item: px(0.),
         }];
-        self.navigation.history_ix = 0;
+        self.pane.navigation.history_ix = 0;
         self.pane.find_open = false;
         self.link_notice = None;
         self.show_window_title(Some(rel.to_string()), window, cx);
@@ -5766,7 +5766,7 @@ mod tests {
             assert!(reader.single_file && reader.searcher.is_none());
             assert_eq!(reader.selected_file(), "app.jsonl");
             assert!(reader.pane.file_preview.as_ref().unwrap().text.is_none());
-            assert_eq!(reader.navigation.history, ["app.jsonl"]);
+            assert_eq!(reader.pane.navigation.history, ["app.jsonl"]);
             assert!(reader.vault.entries.iter().any(|e| e.path == "older.log"));
         });
         let view = log_view(&reader, visual);
@@ -5850,7 +5850,7 @@ mod tests {
             reader.update(cx, |reader, _| {
                 assert!(!reader.loading.as_ref().unwrap().published);
                 assert!(reader.pane.file_preview.is_none());
-                reader.queued_open_note = Some("notes.md".into());
+                reader.pane.queued_open_note = Some("notes.md".into());
             });
             entity = Some(reader.clone());
             Root::new(reader, window, cx)
@@ -5859,7 +5859,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| {
             assert!(
-                reader.queued_open_note.is_none(),
+                reader.pane.queued_open_note.is_none(),
                 "publication consumed the request"
             );
             assert_eq!(reader.selected_file(), "notes.md");

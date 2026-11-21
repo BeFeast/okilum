@@ -196,13 +196,15 @@ pub(super) fn dismiss(window: &mut Window, cx: &mut App) -> bool {
 
 impl Reader {
     fn sync_recovery_toast(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let recovery = (self.recovery_offer && !self.recovery_dismissed && self.editing.is_none())
-            .then(|| {
-                (
-                    self.selected_file().to_owned(),
-                    self.navigation.preparation_generation,
-                )
-            });
+        let recovery = (self.pane.recovery_offer
+            && !self.pane.recovery_dismissed
+            && self.pane.editing.is_none())
+        .then(|| {
+            (
+                self.selected_file().to_owned(),
+                self.pane.navigation.preparation_generation,
+            )
+        });
         if recovery != self.displayed_recovery {
             self.displayed_recovery = recovery.clone();
             // Editing with the restored draft (or another note) makes the
@@ -214,7 +216,7 @@ impl Reader {
             let queued = self.recovery_toast_generation;
             if let Some((path, generation)) = recovery {
                 let reader = cx.weak_entity();
-                let message = if self.recovery_startup {
+                let message = if self.pane.recovery_startup {
                     "Unsaved edits from your previous session are available."
                 } else {
                     "Unsaved edits are available."
@@ -228,7 +230,7 @@ impl Reader {
                         .read_with(cx, |this, _| {
                             this.recovery_toast_generation == queued
                                 && this.displayed_recovery.as_ref() == Some(&offered)
-                                && this.editing.is_none()
+                                && this.pane.editing.is_none()
                         })
                         .unwrap_or(false);
                     if !still_offered {
@@ -247,10 +249,10 @@ impl Reader {
                                     .on_click(move |_, window, cx| {
                                         let _ = reader.update(cx, |this, cx| {
                                             if this.selected_file() == path
-                                                && this.navigation.preparation_generation
+                                                && this.pane.navigation.preparation_generation
                                                     == generation
-                                                && this.recovery_offer
-                                                && this.editing.is_none()
+                                                && this.pane.recovery_offer
+                                                && this.pane.editing.is_none()
                                             {
                                                 this.toggle_source(window, cx);
                                             }
@@ -536,10 +538,10 @@ mod tests {
         };
         let offer = |visual: &mut VisualTestContext| {
             reader.update_in(visual, |r, _, cx| {
-                r.recovery_startup = true;
-                r.recovery_checked = true;
-                r.recovery_dismissed = false;
-                r.recovery_offer = true;
+                r.pane.recovery_startup = true;
+                r.pane.recovery_checked = true;
+                r.pane.recovery_dismissed = false;
+                r.pane.recovery_offer = true;
                 cx.notify();
             });
         };
@@ -553,7 +555,7 @@ mod tests {
         );
         reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
         visual.run_until_parked();
-        reader.read_with(visual, |r, _| assert!(r.editing.is_some()));
+        reader.read_with(visual, |r, _| assert!(r.pane.editing.is_some()));
         // Let the removed notice finish its exit transition; still far
         // below the offer's own 4 s lifetime.
         visual.executor().advance_clock(Duration::from_secs(1));
@@ -566,8 +568,8 @@ mod tests {
         visual.executor().advance_clock(Duration::from_secs(5));
         visual.run_until_parked();
         reader.update_in(visual, |r, window, cx| {
-            r.recovery_offer = true;
-            r.recovery_dismissed = false;
+            r.pane.recovery_offer = true;
+            r.pane.recovery_dismissed = false;
             r.sync_notice_toast(window, cx);
             r.toggle_source(window, cx);
         });
@@ -584,11 +586,11 @@ mod tests {
         visual.executor().advance_clock(Duration::from_secs(5));
         visual.run_until_parked();
         reader.update_in(visual, |r, window, cx| {
-            r.recovery_offer = true;
+            r.pane.recovery_offer = true;
             r.sync_notice_toast(window, cx);
-            r.recovery_offer = false;
+            r.pane.recovery_offer = false;
             r.sync_notice_toast(window, cx);
-            r.recovery_offer = true;
+            r.pane.recovery_offer = true;
             r.sync_notice_toast(window, cx);
         });
         visual.run_until_parked();
@@ -696,16 +698,16 @@ mod tests {
         // Unclean launch without a newer draft is silent; an actual recovery offer
         // appears in the same overlay without changing document geometry.
         reader.update_in(visual, |r, _, cx| {
-            r.recovery_startup = true;
-            r.recovery_checked = true;
-            r.recovery_offer = false;
+            r.pane.recovery_startup = true;
+            r.pane.recovery_checked = true;
+            r.pane.recovery_offer = false;
             cx.notify();
         });
         visual.run_until_parked();
         visual.update(|window, cx| assert!(window.notifications(cx).is_empty()));
         assert_eq!(visual.debug_bounds("reader-document").unwrap(), before);
         reader.update_in(visual, |r, _, cx| {
-            r.recovery_offer = true;
+            r.pane.recovery_offer = true;
             cx.notify();
         });
         visual.run_until_parked();
@@ -715,7 +717,7 @@ mod tests {
         visual.run_until_parked();
         visual.update(|window, cx| assert!(window.notifications(cx).is_empty()));
         reader.update_in(visual, |r, _, cx| {
-            r.recovery_offer = false;
+            r.pane.recovery_offer = false;
             r.pane.link_choices = vec![("start.md".into(), None)];
             r.link_notice = Some("Choose the matching note".into());
             cx.notify();

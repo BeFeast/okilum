@@ -66,10 +66,10 @@ fn run_worker(
             scope.range.start,
             usize::from(before.starts_with('\u{feff}')) * 3
         );
-        r.editing.as_mut().unwrap().operations.worker_gate = Some(gate);
+        r.pane.editing.as_mut().unwrap().operations.worker_gate = Some(gate);
         r.code_operation(action, window, cx);
         assert!(
-            r.editing.as_ref().unwrap().operations.busy,
+            r.pane.editing.as_ref().unwrap().operations.busy,
             "worker admission fired"
         );
     });
@@ -89,7 +89,7 @@ fn run_worker(
         .expect("actual queued worker still owns the gate");
     frame(visual);
     reader.read_with(visual, |r, _| {
-        let ops = &r.editing.as_ref().unwrap().operations;
+        let ops = &r.pane.editing.as_ref().unwrap().operations;
         assert!(
             !ops.busy && ops.running.is_none(),
             "worker delivered to the real host"
