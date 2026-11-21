@@ -18,8 +18,9 @@ slots (Oleg 21.11: 4–6 shards, PR gate tickets first in build-slot, target
 `main` uses normal priority. Host capabilities come from the build-slot
 coordinator (`--needs`). A critical ticket skips the `--host` preference
 delay, so every shard is pinned with `--require-host` within each host's
-memory budget. Sync fixtures stay off ZFS okilum-build-nas, where managed
-admission overran its 600 s deadline. Each shard runs with umask 022 and its own `XDG_STATE_HOME` and
+memory budget. Managed admission and Sync source sharing stay off ZFS
+okilum-build-nas, where managed admission overran its 600 s deadline; the
+desktop shard there still pairs through a real Syncthing. Each shard runs with umask 022 and its own `XDG_STATE_HOME` and
 `XDG_DATA_HOME`, as on a fresh hosted runner (`pool_hosted_env`): a pool host
 keeps one account across runs.
 
