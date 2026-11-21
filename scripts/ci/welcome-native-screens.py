@@ -7,9 +7,12 @@ list Oleg reported: a dozen real vaults, one with a long path, QA fixtures,
 an app-support folder with a UUID name, a temporary folder, a folder that
 only held a file opened on its own, a folder that is gone, and the newest
 vault on a volume that is not mounted, so startup cannot restore it and
-shows the start screen. Runs the real `okilum` binary once at its default
-window size and once narrow, and captures the screen after it has drawn.
-The state file after each run is kept next to the capture.
+shows the start screen, plus an unsaved untitled draft. Runs the real
+`okilum` binary once per state and captures the screen after it has drawn:
+the long list at the default and a narrow window size, the filter, held ⌘
+(Ctrl) numbers, Clear list confirmation (through the non-publishing
+`welcome-ui-harness`, `OKILUM_WELCOME_HARNESS`), and first launch with no
+history. The state file after each run is kept next to the capture.
 
 Hosted runners are throwaway machines: the seeded folders live under the
 runner's home and the Reader state is the runner's own.
@@ -125,20 +128,41 @@ def seed(work):
         'last_documents': documents,
         'quick_roots': [str(quick)],
         'recent_roots': [str(root) for root in recent],
+        # theme-showcase was on a network volume when last opened.
+        'network_roots': [str(unavailable)],
+        'last_opened': {str(root): int(time.time()) - 3600 * 26 * i
+                        for i, root in enumerate(vaults)},
     }
     return history
 
 
-def launch(binary, out, label, history, frame):
+def seed_draft(state):
+    """An unsaved untitled draft (#1528), as New file leaves one."""
+    folder = state / 'untitled' / '0f6c7a52-2d0e-4f7e-9d43-3b1f0c9a8e11'
+    folder.mkdir(parents=True)
+    (folder / 'draft.json').write_text(json.dumps({'origin': None, 'created': int(time.time())}),
+                                       encoding='utf-8')
+    (folder / 'Untitled.md').write_text('# Meeting notes\n\nAgenda\n', encoding='utf-8',
+                                        newline='\n')
+
+
+def launch(binary, out, label, history, frame, harness=None, draft=True):
     state = state_directory()
     shutil.rmtree(state, ignore_errors=True)
     state.mkdir(parents=True)
-    (state / 'update-session.json').write_text(json.dumps(history, indent=1), encoding='utf-8')
-    (out / f'{label}-state-before.json').write_text(json.dumps(history, indent=1), encoding='utf-8')
+    if history is not None:
+        (state / 'update-session.json').write_text(json.dumps(history, indent=1),
+                                                   encoding='utf-8')
+        (out / f'{label}-state-before.json').write_text(json.dumps(history, indent=1),
+                                                        encoding='utf-8')
+    if draft:
+        seed_draft(state)
     if frame:
         (state / 'window-frames.json').write_text(json.dumps({'frames': {'entry#0': frame}}),
                                                   encoding='utf-8')
     env = {k: v for k, v in os.environ.items() if not k.startswith('OKILUM_')}
+    if harness:
+        env['OKILUM_WELCOME_HARNESS'] = harness
     work = Path(tempfile.mkdtemp(prefix=f'welcome-{label}-'))
     log = open(out / f'{label}.log', 'w', encoding='utf-8')
     proc = subprocess.Popen([binary, '--index-dir', str(work / 'index')],
@@ -168,10 +192,22 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='welcome-seed-'))
     history = seed(work)
-    launch(binary, out, 'default', history, None)
-    narrow = {'x': 40.0, 'y': 40.0, 'width': 640.0, 'height': 820.0, 'display': None,
+    only = set(filter(None, os.environ.get('WELCOME_SCREENS_ONLY', '').split(',')))
+    narrow = {'x': 40.0, 'y': 40.0, 'width': 440.0, 'height': 820.0, 'display': None,
               'fullscreen': False, 'maximized': False}
-    launch(binary, out, 'narrow', history, narrow)
+    runs = [
+        ('default', history, None, None, True),
+        ('narrow', history, narrow, None, True),
+        ('filter', history, None, 'query=work', True),
+        ('numbers', history, None, 'numbers', True),
+        ('clear-list', history, None, 'confirm_clear', True),
+        ('keyboard', history, None, 'keyboard;selected=3', True),
+        ('first-launch', None, None, None, False),
+    ]
+    for label, seeded, frame, harness, draft in runs:
+        if only and label not in only:
+            continue
+        launch(binary, out, label, seeded, frame, harness, draft)
 
 
 if __name__ == '__main__':

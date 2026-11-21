@@ -249,6 +249,38 @@ impl View {
     }
 }
 
+/// Non-publishing visual QA (#3208): `OKILUM_WELCOME_HARNESS` puts the
+/// start screen into a state for a screenshot without input automation.
+/// Parts separated by `;`: `query=<text>`, `selected=<n>`, `numbers`,
+/// `show_all`, `confirm_clear`, `keyboard`.
+#[cfg(feature = "welcome-ui-harness")]
+pub(crate) fn apply_harness(entry: &mut Entry, window: &mut Window, cx: &mut Context<Entry>) {
+    let Ok(spec) = std::env::var("OKILUM_WELCOME_HARNESS") else {
+        return;
+    };
+    for part in spec.split(';').map(str::trim) {
+        match part.split_once('=') {
+            Some(("query", text)) => {
+                entry
+                    .view
+                    .filter
+                    .update(cx, |input, cx| input.set_value(text.to_owned(), window, cx));
+                entry.view.query = text.to_owned();
+            }
+            Some(("selected", number)) => {
+                if let Ok(number) = number.parse() {
+                    entry.view.selected = number;
+                }
+            }
+            None if part == "numbers" => entry.view.numbers = true,
+            None if part == "show_all" => entry.view.show_all = true,
+            None if part == "confirm_clear" => entry.view.confirm_clear = true,
+            None if part == "keyboard" => entry.view.keyboard = true,
+            _ => {}
+        }
+    }
+}
+
 /// How many drafts and vaults are listed, and how many wait behind Show
 /// all: at most `LIMIT` rows, at most three of them drafts (#3208).
 pub(crate) fn compose(drafts: usize, vaults: usize, show_all: bool) -> (usize, usize, usize) {

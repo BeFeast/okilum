@@ -1,8 +1,9 @@
-# Native visual evidence for the start screen's recent vaults (#3208): builds
-# the real binary and captures the start screen with a long, junk-laden recent
-# list and an unavailable vault, at the default and a narrow window size, on
-# hosted Linux, macOS and Windows runners. Synthetic folders in the throwaway
-# runner's home only; no secrets.
+# Native visual evidence for the start screen (#3208): builds the real binary
+# with the non-publishing welcome-ui-harness feature and captures every state
+# (long junk-laden list with an unavailable vault and a draft, narrow window,
+# filter, held-modifier numbers, Clear list confirmation, keyboard focus,
+# first launch) on hosted Linux, macOS and Windows runners. Synthetic folders
+# in the throwaway runner's home only; no secrets.
 name: welcome-native
 on:
   push:
@@ -77,7 +78,7 @@ jobs:
           "OKILUM_WINDOWS_ICON=$icon" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Build the real app
         shell: bash
-        run: cargo build --locked -p okilum-shell --bin okilum
+        run: cargo build --locked -p okilum-shell --bin okilum --features welcome-ui-harness
       - name: Capture the start screen with a long recent list
         shell: bash
         run: |

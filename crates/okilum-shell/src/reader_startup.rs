@@ -671,6 +671,8 @@ impl Entry {
         entry.select_first_available(cx);
         let first_launch = entry.first_launch();
         entry.view.focus_initial(first_launch, window, cx);
+        #[cfg(feature = "welcome-ui-harness")]
+        super::reader_welcome::apply_harness(&mut entry, window, cx);
         entry
     }
 
