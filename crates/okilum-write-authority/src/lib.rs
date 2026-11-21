@@ -651,20 +651,42 @@ impl Authority {
                 continue;
             }
             let b: Binding = read(&p)?;
+            let other = Self {
+                account: old.account.clone(),
+                directory: old.account.join(key(&b.root)),
+                binding_path: p,
+                binding: b,
+            };
+            let b = &other.binding;
             if physical_candidate(&ancestors, &b.root_identity) {
                 ensure!(
                     !identity(&b.root)
                         .is_ok_and(|current| physical_candidate(&[current], &b.root_identity)),
                     "Another vault authority owns this folder; re-attach refused"
                 );
-                let other = Self {
-                    account: old.account.clone(),
-                    directory: old.account.join(key(&b.root)),
-                    binding_path: p,
-                    binding: b,
-                };
+                // #3204: the same UUID-less folder bound through a mount that
+                // is gone. Re-attaching here would leave two scopes for it.
+                ensure!(
+                    !mount_source(&b.root_identity),
+                    "{} is bound through another mount of this network volume ({}); open it through that path, or open it here to retire that binding, before re-attaching",
+                    bound.display(),
+                    b.root.display()
+                );
                 ensure!(other.state()?.phase == Phase::Open,
                     "Physical vault identity has an unfinished hold at another root; explicit recovery required");
+            }
+            // #3204: a UUID-less scope inside the re-attached folder through
+            // another mount keeps its own fences, so re-attaching here would
+            // admit writers past them. Unproved overlap refuses too.
+            if !b.root.starts_with(&bound) {
+                match other.overlap(&bound, &ancestors)? {
+                    Overlap::Disjoint => {}
+                    Overlap::Encloses(_) | Overlap::Unknown => anyhow::bail!(
+                        "{} contains, or may contain, the writer scope {} on another mount of a network volume; re-attach refused (#3204)",
+                        bound.display(),
+                        b.root.display()
+                    ),
+                }
             }
         }
         let binding = Binding {

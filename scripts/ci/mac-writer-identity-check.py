@@ -63,9 +63,10 @@ def main():
     stale_test = "identity_macos_tests::identity_3204_stale_binding_is_retired_through_another_mount"
     nested_test = "identity_macos_tests::identity_3204_nested_export_cannot_bypass_a_hold"
     replaced_test = "identity_macos_tests::identity_3204_replaced_ancestor_never_proves_disjointness"
+    rebind_test = "identity_macos_tests::identity_3204_rebind_onto_a_root_containing_another_scope_is_refused"
     tests = [(alias_test, "alias"), (child_test, "child-first"), (gone_test, "mount-gone"),
              (stale_test, "stale"), (nested_test, "nested-export"),
-             (replaced_test, "replaced-ancestor")]
+             (replaced_test, "replaced-ancestor"), (rebind_test, "rebind-contains")]
     for test, label in tests:
         run(test, f"{label}-positive")
     # #3204: each control removes one rule; its regression must then fail.
@@ -89,6 +90,9 @@ def main():
         (alias, original_alias, "let ancestry = mount_ancestry(&chain);",
          "let ancestry = self.recorded_ancestry()?.unwrap_or_default();",
          replaced_test, "stale-record-negative"),
+        # #3209 review: re-attach skipped the enclosed-scope check.
+        (entry, original_entry, "match other.overlap(&bound, &ancestors)? {",
+         "match Overlap::Disjoint {", rebind_test, "rebind-no-overlap-negative"),
     ]
     for path, original, old, replacement, test, label in controls:
         try:

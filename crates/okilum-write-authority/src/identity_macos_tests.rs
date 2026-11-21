@@ -633,3 +633,36 @@ fn identity_3204_scope_without_ancestry_record_is_conservative() {
     fs::remove_dir_all(&first).unwrap();
     refused(&e.account, &second.join("Vault"), "cannot prove");
 }
+
+/// #3209 review: `M1/A` and `M2/B` are disjoint vaults on one export; B is
+/// held. The whole export is then mounted at `M1/A`, so the re-attached root
+/// would contain B through another path. Re-attach must refuse: A's writers
+/// would otherwise publish into B past its hold.
+#[test]
+fn identity_3204_rebind_onto_a_root_containing_another_scope_is_refused() {
+    let e = exports(&["A", "B"]);
+    let (first, _first) = mount(&e.base, &e.server, "by-ip", EXPORT);
+    let (second, _second) = mount(&e.base, &e.server, "by-hostname", ALIAS);
+    let a = Authority::open_in(&e.account, &first.join("A")).unwrap();
+    let b = Authority::open_in(&e.account, &second.join("B")).unwrap();
+    let hold = b.begin_drain("exclusive-operation").unwrap();
+    let binding = fs::read(&a.binding_path).unwrap();
+    // The export mounted again at M1/A.
+    mirror(&e.server, &first.join("A"));
+    let _whole = Nfs::mount(first.join("A"), ALIAS, Some(e.server.clone()));
+    let replaced = Authority::open_in(&e.account, &first.join("A")).unwrap_err();
+    assert_eq!(replaced_root(&replaced).as_deref(), Some(a.root()));
+    let error = Authority::rebind_in(&e.account, &first.join("A")).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("re-attach refused"),
+        "{error:#}"
+    );
+    assert_eq!(
+        fs::read(&a.binding_path).unwrap(),
+        binding,
+        "A is not rebound"
+    );
+    assert!(a.admit().is_err(), "A stays refused");
+    assert!(b.admit().is_err(), "B's hold stays in force");
+    release(hold);
+}
