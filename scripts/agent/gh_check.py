@@ -18,6 +18,8 @@ INFRA_STEPS = {
     "Verify pinned Rust toolchain", "Restore Rust downloads and target cache",
     "Fetch locked public dependencies", "Save Rust downloads and target cache",
     "Prepare isolated Python test dependencies",
+    "Dispatch pre-merge gate to the build-slot pool",
+    "Dispatch Linux full gate to the build-slot pool",
     "Restore Windows core cache", "Preserve vendor patch line endings",
 }
 
@@ -42,7 +44,8 @@ def gh_json(*args):
 FAST_REQUIRED = {"Prepare and verify pinned vendor and comrak", "Check formatting",
                  "Verify agent helper controls", "Run CI, releases and updater Python suites",
                  "Verify bundled Sync Help and brand", "Lint every workspace target offline",
-                 "Check release binaries without test features"}
+                 "Check release binaries without test features",
+                 "Verify every pool shard and phase passed"}
 
 
 def fast_verdict(info):
@@ -50,7 +53,7 @@ def fast_verdict(info):
     jobs = info.get("jobs", [])
     names = {job.get("name") for job in jobs}
     if (len(names) != len(jobs) or "pre-merge" not in names
-            or not names <= {"pre-merge", "linux", "windows-recovery", "macos-sync"}):
+            or not names <= {"pre-merge", "linux", "linux-pool", "windows-recovery", "macos-sync"}):
         return 75
     gate = next(job for job in jobs if job.get("name") == "pre-merge")
     others = [job for job in jobs if job.get("name") != "pre-merge"]
@@ -66,15 +69,24 @@ def fast_verdict(info):
     return 1
 
 
+# The sharded build-slot pool gate (`linux-pool`, dispatched with --pool-linux)
+# runs beside the hosted `linux` job and never decides the full verdict until a
+# pool run is green in <= 20 min (Oleg 21.11).
+NON_GATING_JOBS = {"linux-pool"}
+
+
 def verdict(info, sha, benchmark=False, publication_controls=False, macos_sync=False, fast=False):
     """Missing/mismatched/partial/cancelled work never counts as a verdict."""
     if info.get("headSha") != sha or info.get("status") != "completed":
         return 75
     if fast:
         return fast_verdict(info)
-    jobs = info.get("jobs", [])
+    all_jobs = info.get("jobs", [])
+    if len({job.get("name") for job in all_jobs}) != len(all_jobs):
+        return 75
+    jobs = [job for job in all_jobs if job.get("name") not in NON_GATING_JOBS]
     names = {job.get("name") for job in jobs}
-    if (len(names) != len(jobs) or not {"linux", "windows-recovery"} <= names
+    if (not {"linux", "windows-recovery"} <= names
             or not names <= {"linux", "windows-recovery", "macos-sync", "pre-merge"}
             or any(job.get("name") == "pre-merge" and job.get("conclusion") != "skipped" for job in jobs)
             or (macos_sync and "macos-sync" not in names)):
@@ -136,6 +148,29 @@ def infrastructure_failure(logs):
         marker in logs for marker in ("exit code 137", "signal: 9, SIGKILL"))
 
 
+def failed_gating_logs(run_id, info):
+    """Failed-step logs of the gating jobs only, as (complete, text).
+
+    A non-gating job (linux-pool) must not turn a hosted code failure into
+    infrastructure through its own disk-full or OOM log, so logs are read per
+    failed gating job, never for the whole run.
+    """
+    failed = [job for job in info.get("jobs", []) if job.get("name") not in NON_GATING_JOBS and (
+        job.get("conclusion") == "failure"
+        or any(step.get("conclusion") == "failure" for step in job.get("steps", [])))]
+    texts, complete = [], True
+    for job in failed:
+        if not job.get("databaseId"):
+            complete = False
+            continue
+        logs = subprocess.run(["gh", "run", "view", run_id, "-R", REPO, "--log-failed",
+                               "--job", str(job["databaseId"])],
+                              text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+        texts.append(logs.stdout)
+        complete = complete and logs.returncode == 0
+    return complete, "".join(texts)
+
+
 def find_run(branch, sha, event):
     # gh run list --workflow 404s until the workflow exists on the default
     # branch. The API works during bootstrap and identifies the exact file.
@@ -175,14 +210,18 @@ def main():
                         help="pre-merge gate: formatting, Python and script checks, workspace clippy, "
                              "release-binary check; no tests")
     parser.add_argument("--publication-baseline", help="public main SHA for same-host editor controls; requires --dispatch")
+    parser.add_argument("--pool-linux", action="store_true",
+                        help="also run the non-gating sharded pool Linux gate (linux-pool); requires --dispatch")
     args = parser.parse_args()
     if args.publication_baseline and (not args.dispatch or not re.fullmatch(r"[0-9a-f]{40}", args.publication_baseline)):
         parser.error("--publication-baseline requires --dispatch and a full lowercase SHA")
     if args.macos_sync and not args.dispatch:
         parser.error("--macos-sync requires --dispatch")
+    if args.pool_linux and not args.dispatch:
+        parser.error("--pool-linux requires --dispatch")
     if args.rerun and args.dispatch:
         parser.error("choose --rerun or --dispatch")
-    if args.fast and (args.benchmark or args.macos_sync or args.publication_baseline):
+    if args.fast and (args.benchmark or args.macos_sync or args.publication_baseline or args.pool_linux):
         parser.error("--fast is the pre-merge gate; full-only controls need a full check")
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
@@ -215,6 +254,8 @@ def main():
             dispatch += ["-f", "macos_sync_check=true"]
         if args.publication_baseline:
             dispatch += ["-f", "publication_baseline=" + args.publication_baseline]
+        if args.pool_linux:
+            dispatch += ["-f", "pool_linux=true"]
         run(*dispatch)
     found = None
     # GitHub's run index is eventually consistent. Polling lives only inside
@@ -258,14 +299,13 @@ def main():
         return 75
     result = verdict(info, sha, args.benchmark, bool(args.publication_baseline), args.macos_sync, args.fast)
     if result:
-        logs = subprocess.run(["gh", "run", "view", run_id, "-R", REPO, "--log-failed"],
-                              text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
-        tail = logs.stdout.splitlines()[-100:]
+        complete, logs = failed_gating_logs(run_id, info)
+        tail = logs.splitlines()[-100:]
         print("\nFailed-step log tail:\n" + "\n".join(tail))
-        if logs.returncode:
+        if not complete:
             return 75
         # Shell exits for OOM/killed processes are infrastructure, not a code verdict.
-        if infrastructure_failure(logs.stdout):
+        if infrastructure_failure(logs):
             return 75
     print(f"Exact head {sha}: exit={result} {info['url']}")
     if args.fast:

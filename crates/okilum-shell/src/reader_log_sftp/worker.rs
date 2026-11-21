@@ -1,7 +1,7 @@
 //! SFTP transport runs off the UI thread; published history is leased and bounded.
 use okilum_core::log::{
     sftp::{Follow, OpenSsh, Target, Transport, Update},
-    stream::{Assembler, Snapshot},
+    stream::{Assembler, Snapshot, TAIL_START_BYTES},
 };
 use std::{
     io,
@@ -75,9 +75,17 @@ impl<T: Transport> Transport for Cancellable<T> {
         self.check()?;
         self.inner.open(target)
     }
+    fn reopen(&mut self, target: &Target) -> io::Result<()> {
+        self.check()?;
+        self.inner.reopen(target)
+    }
     fn read_at(&mut self, offset: u64, limit: usize) -> io::Result<Vec<u8>> {
         self.check()?;
         self.inner.read_at(offset, limit)
+    }
+    fn size(&mut self) -> io::Result<Option<u64>> {
+        self.check()?;
+        self.inner.size()
     }
     fn disconnect(&mut self) {
         self.inner.disconnect();
@@ -102,6 +110,14 @@ fn wait(cancel: &AtomicBool, delay: Duration) {
             break;
         }
         std::thread::sleep(remaining.min(Duration::from_millis(100)));
+    }
+}
+
+/// Status note while the earlier part of a large file is not loaded.
+fn started<T: Transport>(source: &Follow<T>) -> String {
+    match source.started_at() {
+        0 => String::new(),
+        at => format!(" · started at byte {at}, last 1 MiB; earlier lines not loaded"),
     }
 }
 
@@ -157,7 +173,8 @@ fn run_paced(
             inner: transport,
             cancel: cancel.clone(),
         },
-    );
+    )
+    .tail(TAIL_START_BYTES);
     let mut data: Option<Arc<Snapshot>> = None;
     let mut connected = false;
     let mut failures = 0u32;
@@ -182,7 +199,7 @@ fn run_paced(
             Update::Records(bytes) => match assembler.append(&bytes) {
                 Ok(snapshot) => {
                     if snapshot.is_some() { data = snapshot; }
-                    if !send(Frame { data: data.clone(), message: "Reading SFTP log…".into(), active: true, error: false }) { return; }
+                    if !send(Frame { data: data.clone(), message: format!("Reading SFTP log…{}", started(&source)), active: true, error: false }) { return; }
                 }
                 Err(error) => break (error.to_string(), true),
             },
@@ -190,9 +207,9 @@ fn run_paced(
                 if recovered && !send(Frame { data: None, message: "Reconnected · reading SFTP log…".into(), active: true, error: false }) { return; }
             },
             Update::CaughtUp => {
-                let emitted = data.as_ref().map_or(0, |snapshot| snapshot.bytes().len() as u64);
-                let pending = source.offset().saturating_sub(emitted);
-                let suffix = if pending == 0 { String::new() } else { format!(" · {pending} trailing bytes without a complete line") };
+                let pending = source.unfinished();
+                let mut suffix = started(&source);
+                if pending > 0 { suffix += &format!(" · {pending} trailing bytes without a complete line"); }
                 if !follow { break (format!("Loaded snapshot{suffix}"), false); }
                 if !send(Frame { data: data.clone(), message: format!("Following SFTP log{suffix}"), active: true, error: false }) { return; }
                 pause(FOLLOW_TICK);
@@ -213,7 +230,7 @@ fn run_paced(
                 pause(delay);
             },
             Update::ContinuityLost => break ("File continuity lost (rotation, truncation or rewrite). Loaded rows retained; start a new session explicitly.".into(), true),
-            Update::LimitReached => break ("SFTP history limit reached (8 MiB); loaded rows retained. Start a new session explicitly.".into(), true),
+            Update::LimitReached => break ("A line without a newline exceeds 8 MiB; loaded rows retained. Start a new session explicitly.".into(), true),
         }
     };
     drop(source); // Close the exact owned transport before reporting terminal state.

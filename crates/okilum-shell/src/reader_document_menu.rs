@@ -8,7 +8,7 @@ impl Reader {
         if let Some(offset) = self.source_scroll_offset(cx) {
             return offset.y >= px(-0.5);
         }
-        let offset = self.content.read(cx).list_state().logical_scroll_top();
+        let offset = self.pane.content.read(cx).list_state().logical_scroll_top();
         offset.item_ix == 0 && offset.offset_in_item <= px(0.5)
     }
 
@@ -167,7 +167,7 @@ impl Reader {
             .is_some_and(|p| reader_delimited::editable(&p.rel))
             && self.code_file_editable(cx);
         #[cfg(any(unix, windows))]
-        let editing = self.editing.is_some();
+        let editing = self.pane.editing.is_some();
         #[cfg(any(unix, windows))]
         let reader = cx.entity().downgrade();
         let available = if self.body_bounds.size.width > px(0.) {
@@ -207,7 +207,7 @@ impl Reader {
             spare -= 32.;
         }
         // One toggle to the other editor mode (#992).
-        let show_presentation = !is_file && self.editing.is_some() && spare >= 32.;
+        let show_presentation = !is_file && self.pane.editing.is_some() && spare >= 32.;
         if show_presentation {
             spare -= 32.;
         }
@@ -245,6 +245,23 @@ impl Reader {
         if labels {
             spare -= labels_width;
         }
+        // «Open in <Editor>» (#1400) yields first; Document actions keep
+        // every editor under «Open in ▸». Its label needs room of its own.
+        let mut open_in_labelled = false;
+        let show_open_in = match open_in::toolbar_widths(cx, window) {
+            Some((wide, narrow)) if spare >= narrow + 4. => {
+                spare -= narrow + 4.;
+                #[cfg(any(unix, windows))]
+                if labels && spare >= wide - narrow {
+                    spare -= wide - narrow;
+                    open_in_labelled = true;
+                }
+                #[cfg(not(any(unix, windows)))]
+                let _ = wide;
+                true
+            }
+            _ => false,
+        };
         let collapse_parents = parent_width > compact_parent + spare.max(0.);
         let root = self.vault_root.clone();
         let rel = self.selected_file().to_owned();
@@ -261,7 +278,7 @@ impl Reader {
                 "reader-history-back",
                 IconName::ArrowLeft,
                 reader_shortcuts::hint("Back", &HistoryBack, cx),
-                self.navigation.history_ix == 0,
+                self.pane.navigation.history_ix == 0,
                 false,
                 cx.listener(|this, _, window, cx| this.history_move(-1, window, cx)),
                 cx,
@@ -270,7 +287,7 @@ impl Reader {
                 "reader-history-forward",
                 IconName::ArrowRight,
                 reader_shortcuts::hint("Forward", &HistoryForward, cx),
-                self.navigation.history_ix + 1 >= self.navigation.history.len(),
+                self.pane.navigation.history_ix + 1 >= self.pane.navigation.history.len(),
                 false,
                 cx.listener(|this, _, window, cx| this.history_move(1, window, cx)),
                 cx,
@@ -349,6 +366,14 @@ impl Reader {
                 false,
                 full,
                 |_, _, cx| toggle_note_width(cx),
+                cx,
+            ));
+        }
+        if show_open_in {
+            row = row.children(open_in::toolbar_button(
+                root.clone(),
+                rel.clone(),
+                open_in_labelled,
                 cx,
             ));
         }
@@ -554,40 +579,44 @@ impl Reader {
             return;
         }
         if let Some(position) = self
+            .pane
             .navigation
             .history_positions
-            .get_mut(self.navigation.history_ix)
+            .get_mut(self.pane.navigation.history_ix)
         {
-            *position = self.content.read(cx).list_state().logical_scroll_top();
+            *position = self.pane.content.read(cx).list_state().logical_scroll_top();
         }
-        if let Some(index) = self.navigation.history_nav {
-            self.navigation.history_ix = index;
+        if let Some(index) = self.pane.navigation.history_nav {
+            self.pane.navigation.history_ix = index;
         } else if self
+            .pane
             .navigation
             .history
-            .get(self.navigation.history_ix)
+            .get(self.pane.navigation.history_ix)
             .is_none_or(|entry| !entry.is_empty())
         {
-            self.navigation
+            self.pane
+                .navigation
                 .history
-                .truncate(self.navigation.history_ix + 1);
-            self.navigation
+                .truncate(self.pane.navigation.history_ix + 1);
+            self.pane
+                .navigation
                 .history_positions
-                .truncate(self.navigation.history_ix + 1);
-            self.navigation.history.push(String::new());
-            self.navigation.history_positions.push(ListOffset {
+                .truncate(self.pane.navigation.history_ix + 1);
+            self.pane.navigation.history.push(String::new());
+            self.pane.navigation.history_positions.push(ListOffset {
                 item_ix: 0,
                 offset_in_item: px(0.),
             });
-            self.navigation.history_ix = self.navigation.history.len() - 1;
+            self.pane.navigation.history_ix = self.pane.navigation.history.len() - 1;
         }
         self.close_quick_open(window, cx);
         self.clear_hover(cx);
         self.cancel_pending_landing();
-        self.navigation.preparation_generation =
-            self.navigation.preparation_generation.wrapping_add(1);
-        self.navigation.generation = self.navigation.generation.wrapping_add(1);
-        self.pending_open_document = None;
+        self.pane.navigation.preparation_generation =
+            self.pane.navigation.preparation_generation.wrapping_add(1);
+        self.pane.navigation.generation = self.pane.navigation.generation.wrapping_add(1);
+        self.pane.pending_open_document = None;
         self.pane.timeline = None;
         self.pane.current_rel.clear();
         self.pane.current_title.clear();
@@ -595,10 +624,10 @@ impl Reader {
         self.pane.note_canonical_source = None;
         self.note_encoding_damaged = false;
         self.pane.file_preview = None;
-        self.editing = None;
+        self.pane.editing = None;
         self.pane.table_overlay = None;
         self.pane.find_open = false;
-        self.usable_document = false;
+        self.pane.usable_document = false;
         self.pane.outline.clear();
         self.outline_list.reset(0);
         // Through set_backlinks: the cards' ranges and the list must change with it (#1313).
@@ -611,7 +640,7 @@ impl Reader {
         self.pane.link_original_source = None;
         self.pane.link_rendered_source = None;
         self.pane.link_identities = Arc::default();
-        self.last_recorded_document = None;
+        self.pane.last_recorded_document = None;
         if let Some(send) = &self.session_records {
             let _ = send.try_send(reader_loading::SessionRecord {
                 root: self.vault_root.clone(),
@@ -1070,7 +1099,7 @@ mod tests {
         reader.read_with(visual, |this, _| {
             assert!(this.pane.current_rel.is_empty());
             assert_eq!(this.vault_root, root);
-            assert_eq!(this.navigation.history, vec!["One.md", ""]);
+            assert_eq!(this.pane.navigation.history, vec!["One.md", ""]);
         });
         visual.run_until_parked();
         assert!(visual.debug_bounds("reader-empty-vault").is_some());
@@ -1208,7 +1237,8 @@ mod tests {
             .filter(|source| !source || cfg!(any(unix, windows)))
         {
             reader.update_in(visual, |this, window, cx| {
-                this.content
+                this.pane
+                    .content
                     .read(cx)
                     .list_state()
                     .scroll_to(ListOffset::default());
@@ -1241,16 +1271,21 @@ mod tests {
             }
             if !source {
                 reader.update_in(visual, |r, window, cx| {
-                    r.content.read(cx).focus_handle().clone().focus(window, cx)
+                    r.pane
+                        .content
+                        .read(cx)
+                        .focus_handle()
+                        .clone()
+                        .focus(window, cx)
                 });
                 visual.run_until_parked();
                 let before = reader.read_with(visual, |r, cx| {
-                    r.content.read(cx).list_state().logical_scroll_top()
+                    r.pane.content.read(cx).list_state().logical_scroll_top()
                 });
                 visual.simulate_keystrokes("pagedown");
                 visual.run_until_parked();
                 let after = reader.read_with(visual, |r, cx| {
-                    r.content.read(cx).list_state().logical_scroll_top()
+                    r.pane.content.read(cx).list_state().logical_scroll_top()
                 });
                 assert!(
                     after.item_ix > before.item_ix || after.offset_in_item > before.offset_in_item,

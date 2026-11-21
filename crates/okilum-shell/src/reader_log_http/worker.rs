@@ -16,11 +16,25 @@ pub(super) struct Frame {
 }
 pub(super) trait Input: Send {
     fn poll(&mut self) -> Result<(Vec<u8>, Status), Error>;
+    /// File offset where reading began; 0 when the whole file is read.
+    fn started_at(&self) -> u64 {
+        0
+    }
 }
 impl Input for HttpLog {
     fn poll(&mut self) -> Result<(Vec<u8>, Status), Error> {
         let bytes = HttpLog::poll(self)?;
         Ok((bytes, self.status().clone()))
+    }
+    fn started_at(&self) -> u64 {
+        HttpLog::started_at(self)
+    }
+}
+/// Status note while the earlier part of a large file is not loaded.
+fn started(input: &dyn Input) -> String {
+    match input.started_at() {
+        0 => String::new(),
+        at => format!(" · started at byte {at}, last 1 MiB; earlier lines not loaded"),
     }
 }
 pub(super) type Factory = Arc<dyn Fn(&str) -> Result<Box<dyn Input>> + Send + Sync>;
@@ -66,9 +80,10 @@ impl Worker {
                             }
                         };
                         let pending = assembler.pending_bytes();
+                        let started = started(input.as_ref());
                         match status {
-                            Status::Connected => (data, format!("Connected · {} bytes awaiting newline", pending), Duration::from_millis(500), true),
-                            Status::Disconnected { retry_after } => (data, format!("Disconnected · reconnecting in {}s · {} bytes awaiting newline", retry_after.as_secs(), pending), retry_after, true),
+                            Status::Connected => (data, format!("Connected · {pending} bytes awaiting newline{started}"), Duration::from_millis(500), true),
+                            Status::Disconnected { retry_after } => (data, format!("Disconnected · reconnecting in {}s · {pending} bytes awaiting newline{started}", retry_after.as_secs()), retry_after, true),
                             Status::Stopped(error) => (data, format!("Stopped: {error}"), Duration::ZERO, false),
                         }
                     }

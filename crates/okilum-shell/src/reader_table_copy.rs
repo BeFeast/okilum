@@ -269,7 +269,7 @@ mod tests {
         fn untouched(&mut self) -> (Vec<u8>, String, usize, Pixels) {
             let bytes = std::fs::read(self.root.join("note.md")).unwrap();
             self.reader.read_with(self.visual, |reader, cx| {
-                let content = reader.content.read(cx);
+                let content = reader.pane.content.read(cx);
                 let top = content.list_state().logical_scroll_top();
                 (
                     bytes,
@@ -356,6 +356,7 @@ mod tests {
         let first = f.bounds("table-cell-3-2").center();
         f.reader.update(f.visual, |reader, cx| {
             reader
+                .pane
                 .content
                 .update(cx, |content, cx| content.select_all(cx))
         });
@@ -388,6 +389,7 @@ mod tests {
         let first = f.bounds("table-cell-3-2").center();
         f.reader.update(f.visual, |reader, cx| {
             reader
+                .pane
                 .content
                 .update(cx, |content, cx| content.select_all(cx))
         });
@@ -412,7 +414,7 @@ mod tests {
         // An accepted replacement cannot substitute another revision for the
         // selection that was already captured by this object popup.
         f.reader.update(f.visual, |reader, cx| {
-            reader.content.update(cx, |content, cx| {
+            reader.pane.content.update(cx, |content, cx| {
                 content.set_text_with_source(
                     "Later accepted render",
                     Some("Later accepted render".into()),

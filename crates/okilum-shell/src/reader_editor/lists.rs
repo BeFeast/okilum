@@ -935,7 +935,7 @@ impl Reader {
     /// The note editor, when a list command may run in it now: a Markdown
     /// note, focused and editable, no completion owning the key.
     pub(super) fn list_input(&self, window: &Window, cx: &App) -> Option<Entity<EditorState>> {
-        let editing = self.editing.as_ref()?;
+        let editing = self.pane.editing.as_ref()?;
         let input = editing.input.read(cx);
         (editing.markdown
             && input.focus_handle(cx).is_focused(window)
@@ -954,7 +954,7 @@ impl Reader {
         let applied = input.update(cx, |state, cx| {
             state.replace_source_edits(&edit.edits, edit.selection.clone(), window, cx)
         });
-        if let Some(editing) = self.editing.as_mut() {
+        if let Some(editing) = self.pane.editing.as_mut() {
             editing.list_revert =
                 applied
                     .then_some(edit.revert)
@@ -1016,6 +1016,7 @@ impl Reader {
     /// Backspace right after a continuation takes back only its marker.
     pub(super) fn list_backspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(pending) = self
+            .pane
             .editing
             .as_mut()
             .and_then(|editing| editing.list_revert.take())
@@ -1429,7 +1430,9 @@ mod key_tests {
         visual.run_until_parked();
         reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
         visual.run_until_parked();
-        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let input = reader.read_with(visual, |r, _| {
+            r.pane.editing.as_ref().unwrap().input.clone()
+        });
         (
             Note {
                 reader,
@@ -1650,6 +1653,7 @@ mod key_tests {
             .update_in(visual, |r, window, cx| r.set_live_preview(true, window, cx));
         visual.run_until_parked();
         assert!(note.reader.read_with(visual, |r, _| r
+            .pane
             .editing
             .as_ref()
             .unwrap()
@@ -1671,6 +1675,7 @@ mod key_tests {
         undo(visual);
         assert_eq!(shown(&note, visual), "1. a\n2. b|c");
         assert!(note.reader.read_with(visual, |r, _| r
+            .pane
             .editing
             .as_ref()
             .unwrap()

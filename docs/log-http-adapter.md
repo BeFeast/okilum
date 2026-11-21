@@ -9,6 +9,15 @@ bytes. The owner must retain incomplete UTF-8/record fragments across polls,
 append only returned bytes, and display `status()` even when no bytes arrived.
 No source settings, body cache or credentials are written by the adapter.
 
+The desktop flow starts near the end of a large file: the first request is a
+suffix range (`bytes=-1048576`, the last 1 MiB plus the byte before it). The
+`206` must cover exactly the last bytes of the file; the cursor moves to its
+start and the bytes up to the first newline are consumed but not shown, so the
+view begins at a complete line. If that extra byte is a newline, nothing is cut.
+A smaller file comes back whole and is read from its start; an empty file
+answers `416 bytes */0`. The status line names the start offset while earlier
+lines are not loaded. This leaves the loaded-history budget for new lines.
+
 Every request uses a bounded Range and identity encoding. A `200` response
 stops with `RangeUnsupported` before consuming the body. A `206` must contain
 an exact contiguous Content-Range and complete body; a `416` is idle only when
@@ -53,7 +62,7 @@ local filters, histogram, raw copy and export. Scope identifies one stream sessi
 record byte offsets preserve selections/marks across appends. This interface is
 transport-independent; it does not implement Kubernetes/SFTP process ownership.
 
-This completes the HTTPS desktop flow, not SFTP or all of #1390. Same-size source
+SFTP is a separate adapter (`docs/sftp-log-adapter.md`). Same-size source
 rewrites remain undetectable under the adapter's append-only contract. Native
 clipboard/visual and real HTTPS endpoint acceptance remain separate evidence.
 
@@ -62,6 +71,7 @@ clipboard/visual and real HTTPS endpoint acceptance remain separate evidence.
 `http/protocol.rs` has dependency-free cursor/range/backoff regression tests.
 `http/tests.rs` uses a loopback mock HTTP server, never a production endpoint:
 it proves a partial body disconnect retains the cursor, backoff sends nothing,
-recovery delivers appended records once, EOF remains idle, and ignoring Range
-stops before downloading a full body. HTTPS trust/proxy behavior is inherited
+recovery delivers appended records once, EOF remains idle, ignoring Range
+stops before downloading a full body (also for the first suffix request), and a
+tail start skips the cut line across polls and then follows. HTTPS trust/proxy behavior is inherited
 from `okilum-http`; live TLS and GUI acceptance remain for the parent.

@@ -7,12 +7,30 @@ source "$(dirname "${BASH_SOURCE[0]}")/test-nofile.sh"
 # Switching back to single-package roots otherwise recompiles the same GUI
 # and core dependencies inside short operation groups after cold admission.
 packages=(-p okilum-write-authority -p okilum-core -p okilum-shell -p okilum-t3)
+# The daily hosted gate runs the workspace census in its own parallel job (#3198)
+# and the pool gate runs it on its own shard: `all` (default) runs every suite,
+# `checks` all but workspace-full, `workspace` only workspace-full. The part is
+# the first argument, else OKILUM_LINUX_RUST_PART (pool shards), else `all`.
+part=${1:-${OKILUM_LINUX_RUST_PART:-all}}
+case "$part" in
+    all | checks | workspace) ;;
+    *)
+        printf 'linux-rust-tests.sh: unknown part %q (all, checks, workspace)\n' "$part" >&2
+        exit 2
+        ;;
+esac
+ran=0
 # Keep every failure, while allowing independent suites to finish their evidence.
 failed=0
 suite() {
     local group=$1 limit=$2
     local account=()
+    if [[ $part == workspace && $group != workspace-full ]] ||
+        [[ $part == checks && $group == workspace-full ]]; then
+        return 0
+    fi
     shift 2
+    ran=$((ran + 1))
     if [[ ${1:-} == cargo && ${2:-} == test ]]; then
         case "$group" in
             appimage|http-updates|sprint-distribution|portable-reader) ;;
@@ -101,6 +119,11 @@ suite issue2044 120 cargo test --locked -p okilum-shell --bin okilum issue2044_ 
 # Census every unit/integration/doc case, run the remaining cases at ordinary
 # concurrency, and require the full selected inventory in all three processes.
 # Assertions, the production pool, internal concurrency and this deadline stay.
+if [[ $part == workspace ]]; then
+    # Alone in a cold job: compile the census selection (same packages and
+    # features as workspace-rust-tests.py COMMAND) before its deadline starts.
+    cargo test --locked -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3 --no-run || failed=1
+fi
 suite workspace-full 1320 python3 scripts/ci/workspace-rust-tests.py
 # #1915: explicit filters make unsupported-flag coverage inspectable in CI.
 suite unix-publish 120 cargo test --locked -p okilum-core --lib unix_publish:: --no-fail-fast
@@ -138,4 +161,9 @@ suite reader-trash-fs-vault-trash-inventory-tests 120 cargo test --locked -p oki
 
 # #588: one-use fresh preparation never regenerates partial state.
 suite sidecar-macos-preparation 120 cargo test --locked -p okilum-sync-controller --lib sidecar::macos::preparation:: --no-fail-fast
+if [[ $ran -eq 0 ]]; then
+    echo "no Linux suite ran for part $part" >&2
+    exit 1
+fi
+printf 'LINUX_RUST_PART part=%s groups=%s failed=%s\n' "$part" "$ran" "$failed"
 exit "$failed"

@@ -98,10 +98,18 @@ viewer instead of the generic unreadable-image message (#2177).
 - PNG handed to GPUI: at most 256 MiB, positive dimensions no greater than
   16384 per side and 64,000,000 pixels, checked before raster decoding.
 
-Multi-image containers show the first top-level still (`preview-1.png`), as
-libheif's converter orders them. They are not a photo-album/sequence UI. The
-CLI may decode other top-level/auxiliary images into the private directory;
-the process bounds still apply and all outputs are removed with that directory.
+Multi-image containers show the primary image (`pitm`). They are not a
+photo-album/sequence UI. libheif's converter writes every non-hidden
+top-level image in item order, and the primary is not always first: Nokia
+C007, C008 and C014 list it last. So the private snapshot gets the `infe`
+hidden flag on every other item, one bit each with no size or offset change
+(`reader_files/heic/primary.rs`; Python twin `scripts/appimage/heif_boxes.py`).
+libheif still uses hidden items as grid tiles, `iden` sources, alpha planes
+and thumbnails, and writes only `preview.png` (#2177). If the item list
+cannot be read, the bytes are left as they are and the first numbered output
+is shown. The CLI may still decode auxiliary images into the private
+directory; the process bounds still apply and all outputs are removed with
+that directory.
 The file-size bound is per output, not a total scratch-disk quota. The OS
 address-space cap is a process bound, not proof of a codec preallocation guard.
 No source-size, timeout, allocation or codec error becomes a successful preview.
@@ -120,16 +128,19 @@ Reader's visible error/replacement/deletion/restoration lifecycle. Those Rust
 controls run on the exact source through hosted checks; installed beta evidence
 is separate.
 
-Host libheif 1.21.2 `heif-convert`, under the viewer's `prlimit` bounds,
-decodes the three valid controls that the pinned T3 CSP decoder rejects
-(SHA-256 matching `docs/evidence/composer-heif-parity/fixtures.json`):
-Nokia `C013` (two 300×300 cropped stills, primary first), Nokia `MIAF007`
-(360×640) and libheif `clap_cropped` (64×64) (checked 2026-11-17). This shows
-that the viewer path accepts them; it is not an independent pixel reference.
+`scripts/appimage/heif-reference.py` compares the viewer path with an
+independent pixel reference on the 12 pinned valid files in
+`docs/evidence/composer-heif-parity/fixtures.json`. The reference uses no
+libheif code: its own container parse plus FFmpeg's HEVC decoder. It includes
+the three valid controls the pinned T3 CSP decoder rejects (C013, MIAF007,
+clap_cropped). Results, method, thresholds and negative controls:
+[heif-viewer-reference](evidence/heif-viewer-reference/README.md). With libheif
+1.21.2 and 1.23.7, 11 of 12 match. C006's limited-range alpha is not expanded
+by libheif. The AppImage's libheif 1.12.0 matches 9 of 12: no `iden` support
+(C008, C014 show the unreadable message), and 10-bit MIAF002 colours are off.
 
 This is bounded product-viewer support, not a whole-HEIF-corpus or T3
-pixel-parity certification. [#2177](https://git.oklabs.uk/BeFeast/okilum/issues/2177)
-remains open for the broader valid corpus and its independent pixel references.
+pixel-parity certification.
 The historical [HEIF reports](evidence/composer-heif-parity/README.md), failed
 quality controls and UNKNOWN results are unchanged. In particular, the new
 process limits do not claim the historical instrumented libde265 SPS guard or

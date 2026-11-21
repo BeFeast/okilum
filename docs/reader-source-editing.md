@@ -273,6 +273,12 @@ the same owner (X11) or offer (Wayland); a change, timeout or oversized flavor
 midway refuses the paste, and a flavor the owner will not convert reroutes the
 whole paste through GPUI's clipboard. The paste log line names the native types
 offered and the flavors read.
+`scripts/check-smart-paste-native.py` drives a built binary under headless
+sway with the offers Firefox, Chromium, Nautilus, Dolphin, VS Code and a
+screenshot tool make (`scripts/wl_multi_copy.c` serves several MIME types at
+once) and checks the saved note, the attachments, the log line and that only
+the routed flavors were transferred; Linux beta 7830, built before this change,
+fails all twelve cases.
 Plain text containing HTML syntax stays literal instead of being guessed as an
 HTML clipboard offer. Windows note HTML uses the bounded path described above.
 Completed local attachment writes publish their exact saved paths to inventory, so a
@@ -656,23 +662,50 @@ stay hidden when no template collection exists.
 
 ## Daily notes (#3182)
 
-Today's note (the calendar button in the sidebar header, the vault menu and the
-Now menu) opens today's note, or creates it and opens it for writing. Its path is
-the daily notes folder plus the name format; a `/` in the format makes folders,
-so `YYYY/MM/YYYY-MM-DD` gives `Daily/2026/11/2026-11-20.md`. Supported tokens are
-the template ones: `YYYY`, `MM`, `DD`, `HH`, `mm`, `ss`, and `[literal]` text. A
-new note comes from the daily note template, expanded like any template
-(`{{title}}` is the file name, `{{date}}` and `{{time}}` follow the templates
-settings), or is just its title when no template is chosen. An existing note is
-opened as it is and never rewritten; a missing template creates nothing and says
-so.
+Daily notes follow Obsidian's core Daily notes plugin. Today's note (the
+calendar button in the sidebar header, the vault menu and the Now menu) creates
+today's note from the note template on the first press of the day and opens it
+for writing. Each later press the same day appends an entry at the end of the
+note, `## HH:MM` (local time) by default or the entry template chosen in Settings
+→ Vault («Later entries»), and puts the cursor on the line under its first line.
+The note template is applied only when the file is created. The append goes
+through the note's editor: an open editor saves first, and a change on disk at the
+same moment adds nothing. A daily note never goes into the vault root.
 
-Settings → Vault sets the folder, the name format and the template. The choice is
-stored with app state per vault, outside the vault. Until one is made, Obsidian's
-`.obsidian/daily-notes.json` (`folder`, `format`, `template`) applies, read only;
-otherwise the vault root, `YYYY-MM-DD` and no template. A template at the vault
-root is refused, and today's note is never created inside the folder its template
-comes from (without one: the templates folder).
+Recovery drafts never block Today's note. If today's note was deleted after an
+unsaved edit, its draft is still kept: Today's note asks «Restore draft» (the
+draft becomes today's note again) or «Start fresh from template» (the draft is set
+aside and stays in File → Recover notes…; the new note opens clean). If today's
+note exists and has unsaved edits from before, it opens with the normal «Restore
+unsaved edits» offer and nothing is appended until they are dealt with.
+
+Where the settings come from, in order:
+
+1. The choice made in Okilum, stored with app state per vault, outside the vault.
+2. The vault's `.obsidian/daily-notes.json` (`folder`, `format`, `template`), used
+   as is and read only. An empty `folder` means `Daily`.
+3. Nothing set: the first press opens a small «Set up daily notes» dialog instead
+   of writing anything. It proposes the folder `Daily` and the template from the
+   templates folder whose name says daily (`Daily.md`, `Daily Note.md`, …). Create
+   saves the choice, creates the folder on first use and opens today's note;
+   Cancel writes nothing. A folder that is the vault root is refused.
+
+The path is the folder plus the name format (default `YYYY-MM-DD`); a `/` in the
+format makes folders, so `YYYY/MM/YYYY-MM-DD` gives `Daily/2026/11/2026-11-20.md`.
+The template list shows the Markdown notes of the templates folder (Settings,
+`.obsidian/templates.json`, or `@Schema/Templates`), and `Templates/` when that
+has none; «Other file in this vault…» picks any note. The template is expanded
+like any template: `{{title}}` is the file name, `{{date}}` and `{{time}}` follow
+the templates settings, and `{{date:FORMAT}}` / `{{time:FORMAT}}` take Moment
+tokens `YYYY YY MMMM MMM MM M dddd ddd DD D HH H mm ss` and `[literal]` text; an
+unsupported token leaves the variable as written. No template: the note is just
+its title. A missing template creates nothing and says so. Today's note is never
+created inside the folder its template comes from (without one: the templates
+folder).
+
+Settings → Vault shows the folder, the name format and the template, and one line
+with what Today's note will use and where it comes from (Okilum, Obsidian, or not
+set up yet with the values the dialog will propose).
 
 ## System Trash and Undo (#466)
 

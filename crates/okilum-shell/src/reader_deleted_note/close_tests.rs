@@ -55,7 +55,11 @@ fn open(
         reader.update_in(&mut visual, |r, window, cx| {
             r.toggle_source(window, cx);
             r.set_live_preview(live, window, cx);
-            r.editing.as_ref().unwrap().set_value(EDITED, window, cx);
+            r.pane
+                .editing
+                .as_ref()
+                .unwrap()
+                .set_value(EDITED, window, cx);
         });
         visual.run_until_parked();
     }
@@ -224,7 +228,8 @@ fn close_dont_save_refuses_a_failed_recovery_write(cx: &mut TestAppContext) {
     std::fs::remove_file(&journal).unwrap();
     std::fs::create_dir(&journal).unwrap();
     reader.update_in(&mut visual, |r, window, cx| {
-        r.editing
+        r.pane
+            .editing
             .as_ref()
             .unwrap()
             .set_value("newer unprotected contents", window, cx);
@@ -232,7 +237,7 @@ fn close_dont_save_refuses_a_failed_recovery_write(cx: &mut TestAppContext) {
     click(&mut visual, "deleted-note-dont-save");
     assert!(cx.update(|cx| cx.windows().contains(&handle)));
     reader.read_with(cx, |r, cx| {
-        assert!(r.editing.is_some());
+        assert!(r.pane.editing.is_some());
         assert_eq!(
             r.deleted_contents(cx).as_deref(),
             Some("newer unprotected contents")
@@ -269,7 +274,7 @@ fn quit_choices(cx: &mut TestAppContext, mode: Option<bool>) {
     // TestPlatform::quit is a no-op; verify the real continuation crossed the
     // save guard without a fresh prompt or a canonical recreation.
     reader.read_with(cx, |r, _| {
-        assert!(r.editing.is_none());
+        assert!(r.pane.editing.is_none());
         assert!(r.deleted_note.is_none());
         assert!(!r.deleted_note_asking);
     });
@@ -323,7 +328,7 @@ fn quit_asks_each_window_and_cancelling_the_second_keeps_its_contents(cx: &mut T
             |cx| cx.windows().contains(&first_window) && cx.windows().contains(&second_window)
         )
     );
-    first.read_with(cx, |r, _| assert!(r.editing.is_none()));
+    first.read_with(cx, |r, _| assert!(r.pane.editing.is_none()));
     second.read_with(cx, |r, cx| {
         assert_eq!(r.deleted_contents(cx).as_deref(), Some(EDITED))
     });

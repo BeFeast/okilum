@@ -63,6 +63,34 @@ fn appended_bytes_after_body_disconnect_are_delivered_exactly_once() {
 }
 
 #[test]
+fn tail_start_skips_the_cut_line_across_polls_then_follows() {
+    let (mut log, server) = fixture(vec![
+        ("bytes=-7", "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 13-19/20\r\nContent-Length: 7\r\nConnection: close\r\n\r\nond lin"),
+        ("bytes=20-1048595", "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 20-26/27\r\nContent-Length: 7\r\nConnection: close\r\n\r\ne\nthird"),
+        ("bytes=27-1048602", "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 27-27/28\r\nContent-Length: 1\r\nConnection: close\r\n\r\n\n"),
+    ]);
+    log.cursor = Cursor::from_tail(6);
+    assert!(log.poll().unwrap().is_empty(), "no newline yet: all cut");
+    assert_eq!(log.started_at(), 14);
+    assert_eq!(log.poll().unwrap(), b"third");
+    assert_eq!(log.poll().unwrap(), b"\n");
+    assert_eq!(log.offset(), 28);
+    server.join().unwrap();
+}
+
+#[test]
+fn server_ignoring_a_tail_range_is_reported_not_downloaded() {
+    let (mut log, server) = fixture(vec![(
+        "bytes=-1048576",
+        "HTTP/1.1 200 OK\r\nContent-Length: 999999999\r\nConnection: close\r\n\r\n",
+    )]);
+    log.cursor = Cursor::from_tail(crate::log::stream::TAIL_START_BYTES);
+    assert_eq!(log.poll(), Err(Error::RangeUnsupported));
+    assert_eq!(log.offset(), 0);
+    server.join().unwrap();
+}
+
+#[test]
 fn server_ignoring_range_is_stopped_before_reading_its_body() {
     let (mut log, server) = fixture(vec![(
         "bytes=0-1048575",

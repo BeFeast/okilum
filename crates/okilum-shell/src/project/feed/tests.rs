@@ -936,20 +936,29 @@ fn manager_ttfm_row_construction_does_not_count_as_visible_paint(cx: &mut TestAp
         let ttfm = super::super::ttfm::Ttfm::open(std::time::Instant::now(), true, cx);
         feed.ttfm = Some(ttfm.clone());
         feed.row_calls.set(0);
-        // MessageScroller also builds rows solely to measure their height.
-        drop(feed.row(0, cx));
-        assert_eq!(
-            feed.row_calls.get(),
-            1,
-            "positive control: a real row was built"
-        );
-        assert!(
-            ttfm.needs_paint(),
-            "row construction must not complete TTFM"
-        );
-        cx.notify();
         ttfm
     });
+    // MessageScroller also builds rows solely to measure their height. Build
+    // one inside a draw, as the scroller does: outside a draw GPUI allocates
+    // the element in a thread-local arena that never drops it, so its TextView
+    // would keep the message state alive past the app (#3039).
+    // The draw refreshes the window afterwards, which renders the feed again,
+    // so measure right after the row is built.
+    let built = Rc::new(Cell::new(None));
+    visual.draw(point(px(0.), px(0.)), size(px(760.), px(900.)), {
+        let (feed, ttfm, built) = (feed.clone(), ttfm.clone(), built.clone());
+        move |_, cx| {
+            feed.update(cx, |feed, cx| {
+                drop(feed.row(0, cx));
+                built.set(Some((feed.row_calls.get(), ttfm.needs_paint())));
+            });
+            div()
+        }
+    });
+    let (rows, needs_paint) = built.get().expect("the draw built the row");
+    assert_eq!(rows, 1, "positive control: a real row was built");
+    assert!(needs_paint, "row construction must not complete TTFM");
+    feed.update(visual, |_, cx| cx.notify());
     visual.update(|window, cx| {
         window.refresh();
         window.draw(cx).clear(cx);

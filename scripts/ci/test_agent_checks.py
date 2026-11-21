@@ -306,6 +306,9 @@ class VerdictTests(unittest.TestCase):
 
     def test_positive_control_all_required_checks_pass(self):
         self.assertEqual(helper.verdict(receipt(), SHA), 0)
+        # The pool's overall shard check gates pre-merge only; hosted `linux`
+        # decides the full verdict and has no pool steps (Oleg 21.11).
+        self.assertIn('Verify every pool shard and phase passed', helper.FAST_REQUIRED)
         self.assertEqual(helper.verdict(receipt(), SHA, benchmark=True), 75)
         info = receipt()
         info['jobs'][0]['steps'] += [dict(name=n, conclusion='success') for n in (
@@ -350,6 +353,7 @@ class VerdictTests(unittest.TestCase):
                                ("Prepare and verify pinned vendor and comrak", 1),
                                ("Install system libraries", 75),
                                ("Reclaim unused hosted SDKs for Rust artifacts", 75),
+                               ("Dispatch Linux full gate to the build-slot pool", 75),
                                ("Prepare isolated Python test dependencies", 75),
                                ("actions/checkout@v4", 75)):
             data = receipt()
@@ -417,22 +421,33 @@ class VerdictTests(unittest.TestCase):
                          "${{ " + fast + " || github.event_name == 'schedule' }}")
         for name in ("linux", "windows-recovery"):
             self.assertEqual(jobs[name]["if"], "${{ !" + fast + " }}")
+        # The pool Linux gate never runs on a fast or push ref and never fails the run.
+        self.assertEqual(jobs["linux-pool"]["if"],
+                         "${{ github.event_name == 'workflow_dispatch' && inputs.pool_linux }}")
+        self.assertIs(jobs["linux-pool"]["continue-on-error"], True)
         steps = jobs["pre-merge"]["steps"]
         self.assertTrue(helper.FAST_REQUIRED <= {s.get("name") for s in steps})
-        runs = [step.get("run", "") for step in steps]
-        self.assertIn("cargo clippy --workspace --all-targets --locked -- -D warnings", runs)
-        # #2916: clippy over all targets enables dev-dependency features (gpui
-        # test-support), so the gate also checks the release binaries without
-        # them, with the packages, binaries and profile the AppImage builds.
-        check = next(s for s in steps if s.get("name") == "Check release binaries without test features")
-        self.assertEqual(release_shape(check["run"], "check"), appimage_release_shape())
-        for run in runs:
+        self.assertEqual(jobs["pre-merge"]["runs-on"], "okilum-pool")
+        # Hosted Ubuntu decides the full verdict until a pool run is green in
+        # <= 20 min (Oleg 21.11); the sharded pool gate runs as `linux-pool`.
+        self.assertEqual(jobs["linux"]["runs-on"], "ubuntu-24.04")
+        self.assertEqual(jobs["linux-pool"]["runs-on"], "okilum-pool")
+        self.assertNotIn("pool-dispatch.sh", yaml.dump(jobs["linux"]))
+        # The commands run in the pool scripts. GitHub steps only report phases,
+        # so a hosted Actions cache is neither saved nor required here.
+        script = (ROOT / "scripts/ci/pool-pre-merge.sh").read_text()
+        self.assertIn("cargo clippy --workspace --all-targets --locked -- -D warnings", script)
+        check = next(line.strip() for line in script.splitlines()
+                     if line.strip().startswith("cargo check --release"))
+        self.assertEqual(release_shape(check, "check"), appimage_release_shape())
+        for blob in (script, *[step.get("run", "") for step in steps]):
             for heavy in ("cargo build", "cargo test", "cargo run", "nextest",
                           "at-vault-regression-control", "linux-rust-tests"):
-                self.assertNotIn(heavy, run)
-        # The pre-merge cache must survive edits to this workflow.
-        cache = next(s for s in steps if s.get("id") == "cache")
-        self.assertNotIn("agent-checks.yml", cache["with"]["key"])
+                self.assertNotIn(heavy, blob)
+        for job_name in ("pre-merge", "linux-pool"):
+            dumped = yaml.dump(jobs[job_name])
+            self.assertNotIn("actions/cache", dumped)
+            self.assertNotIn("hosted-ubuntu-apt", dumped)
 
     def test_only_main_saves_cargo_caches(self):
         # 10 GB repository quota (#2880, #2881): branch saves evicted main's caches.
@@ -495,6 +510,39 @@ class VerdictTests(unittest.TestCase):
         doubled = clean + "          save-if: z\n"
         self.assertEqual(duplicate_mapping_keys(doubled, "w.yml"), ["w.yml:7 save-if"])
         self.assertEqual(len(duplicate_mapping_keys("on: 1\non: 2\n", "w.yml")), 1)
+
+    def test_pool_linux_job_never_decides_a_verdict(self):
+        # Oleg 21.11: hosted `linux` gates until a pool run is green in <= 20 min.
+        pool_steps = [{"name": "Dispatch Linux full gate to the build-slot pool", "conclusion": "success"},
+                      {"name": "Run Linux Rust suites offline", "conclusion": "failure"},
+                      {"name": "Verify every pool shard and phase passed", "conclusion": "failure"}]
+        for conclusion in ("failure", "success", "skipped", "cancelled"):
+            data = receipt()
+            data["jobs"].append({"name": "linux-pool", "conclusion": conclusion,
+                                 "steps": copy.deepcopy(pool_steps)})
+            self.assertEqual(helper.verdict(data, SHA), 0, conclusion)
+        # A hosted code failure stays a code failure; a pool infra step cannot mask it.
+        data = receipt()
+        data["conclusion"] = "failure"
+        data["jobs"][0]["conclusion"] = "failure"
+        data["jobs"][0]["steps"].append({"name": "Run Linux Rust suites offline", "conclusion": "failure"})
+        data["jobs"].append({"name": "linux-pool", "conclusion": "failure", "steps": [
+            {"name": "Dispatch Linux full gate to the build-slot pool", "conclusion": "failure"}]})
+        self.assertEqual(helper.verdict(data, SHA), 1)
+        # A green pool job does not stand in for a missing hosted one.
+        data = receipt()
+        data["jobs"][0]["name"] = "linux-pool"
+        self.assertEqual(helper.verdict(data, SHA), 75)
+        # Duplicate job names are still no verdict.
+        data = receipt()
+        data["jobs"] += [{"name": "linux-pool", "conclusion": "skipped", "steps": []}] * 2
+        self.assertEqual(helper.verdict(data, SHA), 75)
+        # The fast gate tolerates the skipped pool job and still refuses a ran one.
+        fast = self.pre_merge_receipt()
+        fast["jobs"].append({"name": "linux-pool", "conclusion": "skipped", "steps": []})
+        self.assertEqual(helper.verdict(fast, SHA, fast=True), 0)
+        fast["jobs"][-1]["conclusion"] = "success"
+        self.assertEqual(helper.verdict(fast, SHA, fast=True), 75)
 
     def test_partial_empty_or_skipped_jobs_are_not_success(self):
         for jobs in ([], [{"name": "linux", "conclusion": "skipped", "steps": []}]):
@@ -598,6 +646,7 @@ class VerdictTests(unittest.TestCase):
         self.assertIn("persist-credentials: false", workflow)
         self.assertIn("contents: read", workflow)
         self.assertIn("cancel-in-progress: true", workflow)
+        self.assertIn("runs-on: okilum-pool", workflow)
         self.assertIn("runs-on: ubuntu-24.04", workflow)
         for other in (ROOT / ".github/workflows").glob("*.yml"):
             if other.name != "agent-checks.yml":
@@ -650,6 +699,43 @@ class HelperFlowTests(unittest.TestCase):
             push = next(c.args for c in run.call_args_list if "push" in c.args)
             self.assertIn("--force-with-lease=refs/heads/agent-checks/topic:", push)
             self.assertIn(SHA + ":refs/heads/agent-checks/topic", push)
+
+    def test_failed_log_classification_reads_only_gating_jobs(self):
+        # #3207 review: a non-gating linux-pool disk-full log must not turn a
+        # hosted code failure into infrastructure; a hosted disk-full still does.
+        assertion = "linux\tRun Linux Rust suites offline\tassertion failed: left == right\n"
+        disk_full = "No space left on device\n"
+
+        def failed_run(hosted_log, pool_log):
+            info = {**receipt(), "attempt": 1, "url": "https://github.com/run/7", "conclusion": "failure"}
+            for index, job in enumerate(info["jobs"], start=100):
+                job["databaseId"] = index
+            linux = info["jobs"][0]
+            linux["conclusion"] = "failure"
+            linux["steps"].append({"name": "Run Linux Rust suites offline", "conclusion": "failure"})
+            info["jobs"].append({"name": "linux-pool", "conclusion": "failure", "databaseId": 999, "steps": [
+                {"name": "Dispatch Linux full gate to the build-slot pool", "conclusion": "failure"}]})
+            logs = {"100": hosted_log, "999": pool_log}
+            calls = []
+
+            def logs_for(args, **kwargs):
+                self.assertIn("--log-failed", args)
+                job = args[args.index("--job") + 1]
+                calls.append(job)
+                return subprocess.CompletedProcess(args, 0, stdout=logs[job])
+
+            with patch.object(helper.sys, "argv", ["gh-check"]), \
+                    patch.object(helper, "output", side_effect=self.git_output), \
+                    patch.object(helper, "run"), \
+                    patch.object(helper, "find_run", return_value=[{"id": 7, "status": "completed"}]), \
+                    patch.object(helper, "gh_json", return_value=info), \
+                    patch.object(helper.subprocess, "run", side_effect=logs_for), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                return helper.main(), calls
+
+        self.assertEqual(failed_run(assertion, ""), (1, ["100"]))
+        self.assertEqual(failed_run(assertion, disk_full), (1, ["100"]), "pool log must not reclassify")
+        self.assertEqual(failed_run(assertion + disk_full, ""), (75, ["100"]), "hosted disk-full is infra")
 
     def test_dirty_worktree_never_pushes_or_reuses_a_green_result(self):
         with patch.object(helper.sys, "argv", ["gh-check"]), \
@@ -752,44 +838,50 @@ class HelperFlowTests(unittest.TestCase):
         self.assertCountEqual(seen, names)
         self.assertEqual(sum(threads), 4)
 
+    @staticmethod
+    def fake_linux_suite_root(directory):
+        """Copy the real Linux suite list beside recording stubs; returns (root, scripts, fake)."""
+        root = Path(directory)
+        scripts = root / 'scripts/ci'
+        scripts.mkdir(parents=True)
+        for name in ('linux-rust-tests.sh', 'test-nofile.sh', 'test-group.sh', 'test-group.py',
+                     'workspace-rust-tests.py'):
+            shutil.copy2(ROOT / 'scripts/ci' / name, scripts / name)
+        # This control measures command inventory and first-failure retention,
+        # not process supervision. Record every wrapper invocation and run
+        # each fake command directly; the next control runs the real watchdog.
+        (scripts / 'test-group.sh').write_text(
+            'if [[ ${1:-} == --isolated-writer-account ]]; then\n'
+            '  shift; printf "%s\\n" "$1" >> "$ACCOUNT_LOG"\nfi\n'
+            'printf "%s %s\\n" "$1" "$2" >> "$GROUP_LOG"\n'
+            'shift 2\nexec "$@"\n')
+        (scripts / 'vendor-tests.sh').write_text('echo vendor-tests >> "$CALL_LOG"\n')
+        (scripts / 'local-writer-admission.sh').write_text(
+            'echo local-writer-admission >> "$CALL_LOG"\n')
+        fake = root / 'bin'
+        fake.mkdir()
+        cargo = fake / 'cargo'
+        cargo.write_text('#!/usr/bin/env bash\n'
+                         'echo "$* sprint=${OKILUM_SPRINT_BUILD:-0}" >> "$CALL_LOG"\n'
+                         'if [[ "$FAIL_FIRST" = 1 && ! -e "$FAIL_MARKER" ]]; then\n'
+                         '  touch "$FAIL_MARKER"; exit 7\n'
+                         'fi\n'
+                         'if [[ " $* " == *" -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3 "* ]]; then\n'
+                         '  if [[ " $* " == *" --list "* ]]; then\n'
+                         '    printf "ordinary::case0: test\\nordinary::case2: test\\nreader_log::sample: test\\nplatform::reveal::tests::sample: test\\n"\n'
+                         '  else\n'
+                         '    printf "Running unittests src/lib.rs (stub)\\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\\n"\n'
+                         '  fi\n'
+                         'fi\n')
+        cargo.chmod(0o755)
+        # The shared suite also runs web reachability checks. Stub every
+        # test runner so this failure-propagation control stays isolated.
+        shutil.copy2(cargo, fake / 'node')
+        return root, scripts, fake
+
     def test_linux_suites_keep_the_first_failure_and_still_execute_later_checks(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            scripts = root / 'scripts/ci'
-            scripts.mkdir(parents=True)
-            for name in ('linux-rust-tests.sh', 'test-nofile.sh', 'test-group.sh', 'test-group.py',
-                         'workspace-rust-tests.py'):
-                shutil.copy2(ROOT / 'scripts/ci' / name, scripts / name)
-            # This control measures command inventory and first-failure retention,
-            # not process supervision. Record every wrapper invocation and run
-            # each fake command directly; the next control runs the real watchdog.
-            (scripts / 'test-group.sh').write_text(
-                'if [[ ${1:-} == --isolated-writer-account ]]; then\n'
-                '  shift; printf "%s\\n" "$1" >> "$ACCOUNT_LOG"\nfi\n'
-                'printf "%s %s\\n" "$1" "$2" >> "$GROUP_LOG"\n'
-                'shift 2\nexec "$@"\n')
-            (scripts / 'vendor-tests.sh').write_text('echo vendor-tests >> "$CALL_LOG"\n')
-            (scripts / 'local-writer-admission.sh').write_text(
-                'echo local-writer-admission >> "$CALL_LOG"\n')
-            fake = root / 'bin'
-            fake.mkdir()
-            cargo = fake / 'cargo'
-            cargo.write_text('#!/usr/bin/env bash\n'
-                             'echo "$* sprint=${OKILUM_SPRINT_BUILD:-0}" >> "$CALL_LOG"\n'
-                             'if [[ "$FAIL_FIRST" = 1 && ! -e "$FAIL_MARKER" ]]; then\n'
-                             '  touch "$FAIL_MARKER"; exit 7\n'
-                             'fi\n'
-                             'if [[ " $* " == *" -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3 "* ]]; then\n'
-                             '  if [[ " $* " == *" --list "* ]]; then\n'
-                             '    printf "ordinary::case0: test\\nordinary::case2: test\\nreader_log::sample: test\\nplatform::reveal::tests::sample: test\\n"\n'
-                             '  else\n'
-                             '    printf "Running unittests src/lib.rs (stub)\\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\\n"\n'
-                             '  fi\n'
-                             'fi\n')
-            cargo.chmod(0o755)
-            # The shared suite also runs web reachability checks. Stub every
-            # test runner so this failure-propagation control stays isolated.
-            shutil.copy2(cargo, fake / 'node')
+            root, scripts, fake = self.fake_linux_suite_root(directory)
             counts = []
             for fail in ('0', '1'):
                 log = root / ('calls-' + fail)
@@ -842,6 +934,43 @@ class HelperFlowTests(unittest.TestCase):
                 self.assertEqual(wrapped[-1], 'sidecar-macos-preparation 120')
                 counts.append(len(calls))
             self.assertEqual(counts[0], counts[1])
+
+    def test_linux_suite_parts_split_the_full_list_into_two_disjoint_halves(self):
+        # #3198: the daily hosted gate runs `checks` and `workspace` as parallel
+        # jobs. Together they must run exactly the `all` groups, each once.
+        with tempfile.TemporaryDirectory() as directory:
+            root, scripts, fake = self.fake_linux_suite_root(directory)
+            def run(*part):
+                log, groups = root / ('calls-' + '-'.join(part or ('none',))), root / ('groups-' + '-'.join(part or ('none',)))
+                result = subprocess.run(['bash', str(scripts / 'linux-rust-tests.sh'), *part], cwd=root,
+                                        env={**os.environ, 'PATH': str(fake) + os.pathsep + os.environ['PATH'],
+                                             'CALL_LOG': str(log), 'GROUP_LOG': str(groups), 'FAIL_FIRST': '0',
+                                             'ACCOUNT_LOG': str(root / 'accounts'),
+                                             'FAIL_MARKER': str(root / 'failed')},
+                                        capture_output=True, text=True, timeout=30)
+                read = lambda path: path.read_text().splitlines() if path.exists() else []
+                return result, read(log), [line.split()[0] for line in read(groups)]
+            result, calls, everything = run()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(run('all')[2], everything)
+            self.assertIn('workspace-full', everything)  # positive control
+            result, checks_calls, checks = run('checks')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result, workspace_calls, workspace = run('workspace')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn('workspace-full', checks)
+            self.assertEqual([group for group in workspace if not group.startswith('workspace-')],
+                             [])
+            self.assertEqual([group for group in everything if group != 'workspace-full'
+                              and not group.startswith('workspace-')], checks)
+            self.assertEqual([group for group in everything if group.startswith('workspace-')], workspace)
+            # The census selection is compiled before the census deadline starts.
+            self.assertIn('--no-run', workspace_calls[0])
+            self.assertIn('-p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3', workspace_calls[0])
+            self.assertFalse(any('--no-run' in call for call in calls + checks_calls))
+            result, calls, groups = run('bogus')
+            self.assertEqual((result.returncode, calls, groups), (2, [], []))
+            self.assertIn('unknown part', result.stderr)
 
     def test_native_frame_measurement_waits_for_ordinary_cases_and_keeps_its_failure(self):
         for shared in (False, True):

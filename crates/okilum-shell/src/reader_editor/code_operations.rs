@@ -365,7 +365,7 @@ impl Reader {
         self.code_operation(Action::Validate, window, cx);
     }
     pub(super) fn schedule_code_inventory(&mut self, cx: &mut Context<Self>) {
-        let Some(editing) = self.editing.as_mut().filter(|e| e.markdown) else {
+        let Some(editing) = self.pane.editing.as_mut().filter(|e| e.markdown) else {
             return;
         };
         let input_id = editing.input.entity_id();
@@ -391,6 +391,7 @@ impl Reader {
             let snapshot = reader
                 .update(cx, |reader, cx| {
                     let editing = reader
+                        .pane
                         .editing
                         .as_ref()
                         .filter(|e| e.input.entity_id() == input_id)?;
@@ -418,6 +419,7 @@ impl Reader {
             let _ = reader.update(cx, |reader, cx| {
                 let before = reader.code_operation_target_key(cx);
                 let Some(editing) = reader
+                    .pane
                     .editing
                     .as_mut()
                     .filter(|e| e.input.entity_id() == input_id)
@@ -444,7 +446,7 @@ impl Reader {
     // Keep the last toolbar while the debounced fence inventory catches up.
     // Actions still require the exact current revision through code_scope().
     fn code_scope_for_display(&self, cx: &App, retain_inventory: bool) -> Option<Scope> {
-        let editing = self.editing.as_ref()?;
+        let editing = self.pane.editing.as_ref()?;
         if retain_inventory {
             if let Some(running) = &editing.operations.running {
                 return Some(running.scope.clone());
@@ -506,7 +508,7 @@ impl Reader {
     #[cfg(test)]
     fn code_target(&self, cx: &App) -> Option<Target> {
         let scope = self.code_scope(cx)?;
-        let input = self.editing.as_ref()?.input.read(cx);
+        let input = self.pane.editing.as_ref()?.input.read(cx);
         let text = input
             .source_snapshot()
             .text
@@ -527,7 +529,12 @@ impl Reader {
     }
 
     fn refresh_code_host(&self, cx: &mut Context<Self>) {
-        if let Some(file) = self.editing.as_ref().and_then(|e| e.file_chrome.clone()) {
+        if let Some(file) = self
+            .pane
+            .editing
+            .as_ref()
+            .and_then(|e| e.file_chrome.clone())
+        {
             file.update(cx, |_, cx| cx.notify());
         } else {
             cx.notify();
@@ -535,7 +542,7 @@ impl Reader {
     }
 
     fn cancel_code_operation(&mut self, cx: &mut Context<Self>) {
-        if let Some(editing) = self.editing.as_mut() {
+        if let Some(editing) = self.pane.editing.as_mut() {
             if let Some(running) = &editing.operations.running {
                 running.control.cancel();
                 editing.operations.notice = Some("Cancelling…".into());
@@ -554,7 +561,7 @@ impl Reader {
         }
         let binding_root = self.vault_root.clone();
         let binding_file = self.selected_file().to_owned();
-        let editing = self.editing.as_mut().unwrap();
+        let editing = self.pane.editing.as_mut().unwrap();
         if editing.operations.busy
             || editing.conflict_detected
             || editing.save_failed
@@ -740,7 +747,7 @@ impl Reader {
             let _ = this.update_in(cx, |this, window, cx| {
                 let composition_ready = this.ime_allows(ime_guard::Trigger::Text, cx);
                 let binding_ready = this.vault_root == binding_root && this.selected_file() == binding_file;
-                let Some(editing) = this.editing.as_mut().filter(|e| e.input == input) else { return; };
+                let Some(editing) = this.pane.editing.as_mut().filter(|e| e.input == input) else { return; };
                 if editing.operations.generation != generation { return; }
                 // Snapshot cancellation before dropping its cancel-on-retirement guard.
                 let cancelled = control.cancelled();
@@ -778,19 +785,19 @@ impl Reader {
                         });
                         // A refused edit changes nothing; never report it as applied.
                         if !applied {
-                            let editing = this.editing.as_mut().unwrap();
+                            let editing = this.pane.editing.as_mut().unwrap();
                             editing.operations.notice = Some("Format could not be applied; the source is unchanged.".into());
                             editing.operations.notice_stamp = Some(input.read(cx).source_stamp());
                             this.publish_file_operation_notice(window, cx); this.refresh_code_host(cx); return;
                         }
                         status_range.end = status_range.start + text.len();
-                        this.editing.as_mut().unwrap().operations.notice = Some(
+                        this.pane.editing.as_mut().unwrap().operations.notice = Some(
                             "Formatted. Validation refreshed; Undo restores the original source.".into());
                     }
                     Some(model::Formatted::Unchanged(reason)) => editing.operations.notice = Some(reason),
                     None => {}
                 }
-                let editing = this.editing.as_mut().unwrap();
+                let editing = this.pane.editing.as_mut().unwrap();
                 editing.operations.status = status.map(|status| (input.read(cx).source_stamp(), status_range, target.language.clone(), status));
                 if let Some(result) = repair {
                     match result {
@@ -808,7 +815,7 @@ impl Reader {
                         }
                     }
                 }
-                this.editing.as_mut().unwrap().operations.notice_stamp = Some(input.read(cx).source_stamp());
+                this.pane.editing.as_mut().unwrap().operations.notice_stamp = Some(input.read(cx).source_stamp());
                 this.publish_file_operation_notice(window, cx);
                 this.refresh_code_host(cx);
             });
@@ -825,7 +832,7 @@ impl Reader {
         }
         let binding_root = self.vault_root.clone();
         let binding_file = self.selected_file().to_owned();
-        let editing = self.editing.as_mut().unwrap();
+        let editing = self.pane.editing.as_mut().unwrap();
         let Some(preview) = editing.operations.preview.as_ref() else {
             return;
         };
@@ -859,7 +866,7 @@ impl Reader {
         let applied = input.update(cx, |state, cx| {
             apply_source_edits(state, &preview.target, preview.edits, markdown, window, cx)
         });
-        let editing = self.editing.as_mut().unwrap();
+        let editing = self.pane.editing.as_mut().unwrap();
         // A refused edit changes nothing; never report it as applied.
         if !applied {
             editing.operations.notice =
@@ -889,6 +896,7 @@ impl Reader {
     /// main stack for the whole nested Reader render (#2825).
     pub(super) fn render_code_operations(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if self
+            .pane
             .editing
             .as_ref()
             .is_some_and(|editing| !editing.markdown)
@@ -896,13 +904,13 @@ impl Reader {
             return None;
         }
         let target = self.code_scope_for_display(cx, true)?;
-        self.editing.as_ref()?;
+        self.pane.editing.as_ref()?;
         Some(self.code_operations_panel(target, cx))
     }
 
     #[inline(never)]
     fn code_operations_panel(&self, target: Scope, cx: &mut Context<Self>) -> AnyElement {
-        let editing = self.editing.as_ref().unwrap();
+        let editing = self.pane.editing.as_ref().unwrap();
         let state = &editing.operations;
         let disabled = state.busy
             || editing.conflict_detected
@@ -1060,7 +1068,7 @@ impl Reader {
             true,
             false,
             cx.listener(|this, _, _, cx| {
-                if let Some(editing) = this.editing.as_mut() {
+                if let Some(editing) = this.pane.editing.as_mut() {
                     editing.operations.preview = None;
                     editing.operations.status = None;
                     editing.operations.notice = Some("Repair cancelled.".into());
@@ -1089,7 +1097,7 @@ impl Reader {
         }) {
             return;
         }
-        let Some(editing) = self.editing.as_mut() else {
+        let Some(editing) = self.pane.editing.as_mut() else {
             return;
         };
         if editing.operations.busy {
@@ -1224,7 +1232,7 @@ mod tests {
         });
         visual.run_until_parked();
         let input = reader.read_with(visual, |reader, _| {
-            reader.editing.as_ref().unwrap().input.clone()
+            reader.pane.editing.as_ref().unwrap().input.clone()
         });
         let start = source.find('{').unwrap();
         input.update(visual, |state, cx| {
@@ -1304,7 +1312,7 @@ mod tests {
         });
         f.reader.update_in(visual, |reader, window, cx| {
             reader.save_source_in_background(window, cx);
-            assert!(reader.editing.as_ref().unwrap().autosaving.is_some());
+            assert!(reader.pane.editing.as_ref().unwrap().autosaving.is_some());
             assert_eq!(
                 std::fs::read_to_string(f.directory.path().join("vault/note.md")).unwrap(),
                 original,
@@ -1447,6 +1455,7 @@ mod tests {
         f.reader.read_with(visual, |reader, cx| {
             assert_eq!(reader.code_operation_target_key(cx), key);
             assert!(reader
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -1465,6 +1474,7 @@ mod tests {
         click(visual, "source-code-validate");
         f.reader.read_with(visual, |reader, _| {
             assert!(reader
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -1479,6 +1489,7 @@ mod tests {
         f.reader.read_with(visual, |reader, cx| {
             assert_eq!(value(&f, cx), original);
             assert!(reader
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -1492,6 +1503,7 @@ mod tests {
         f.reader.read_with(visual, |reader, cx| {
             assert_eq!(value(&f, cx), original);
             let preview = reader
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -1511,6 +1523,7 @@ mod tests {
         click(visual, "source-code-repair-cancel");
         f.reader.read_with(visual, |reader, cx| {
             assert!(reader
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -1525,6 +1538,7 @@ mod tests {
             assert_eq!(value(&f, cx), original.replace("{ a: 1 }", "{ \"a\": 1 }"));
             assert_eq!(
                 reader
+                    .pane
                     .editing
                     .as_ref()
                     .unwrap()
@@ -1557,6 +1571,7 @@ mod tests {
         assert!(visual.debug_bounds("source-code-repair-apply").is_none());
         f.reader.read_with(visual, |reader, cx| {
             assert!(reader
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -1565,6 +1580,7 @@ mod tests {
                 .is_none());
             assert_eq!(value(&f, cx), newer);
             assert!(reader
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -1601,7 +1617,7 @@ mod tests {
         visual.run_until_parked();
         f.reader.read_with(visual, |reader, cx| {
             assert_eq!(value(&f, cx), original.replace('1', "3"));
-            let state = &reader.editing.as_ref().unwrap().operations;
+            let state = &reader.pane.editing.as_ref().unwrap().operations;
             assert!(!state.busy);
             assert!(state.notice.as_ref().unwrap().contains("Source changed"));
         });
@@ -1649,17 +1665,17 @@ mod tests {
         let (f, visual) = open(cx, original);
         f.reader.update_in(visual, |reader, window, cx| {
             reader.code_operation(Action::Format, window, cx);
-            assert!(reader.editing.as_ref().unwrap().operations.busy);
-            let editing = reader.editing.take().unwrap();
+            assert!(reader.pane.editing.as_ref().unwrap().operations.busy);
+            let editing = reader.pane.editing.take().unwrap();
             let (store, restore) = editing.park(cx);
-            reader.editing = Some(restore(store));
+            reader.pane.editing = Some(restore(store));
             f.input
                 .update(cx, |input, cx| input.set_disabled(false, cx));
         });
         visual.run_until_parked();
         f.reader.read_with(visual, |reader, cx| {
             assert_eq!(value(&f, cx), original);
-            assert!(!reader.editing.as_ref().unwrap().operations.busy);
+            assert!(!reader.pane.editing.as_ref().unwrap().operations.busy);
         });
         // The reassembled editor accepts a fresh operation normally.
         click(visual, "source-code-format");
@@ -1695,6 +1711,7 @@ mod tests {
             reader.select_code_language(&old, "jsonc", cx);
             assert_eq!(reader.code_target(cx).unwrap().language, "python");
             assert!(reader
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()
@@ -1763,14 +1780,14 @@ mod tests {
         let mut app = cx.new_app();
         let (fixture, visual) = open(&mut app, "```json\n{\"a\":1}\n```\n");
         fixture.reader.update(visual, |reader, cx| {
-            let state = &mut reader.editing.as_mut().unwrap().operations;
+            let state = &mut reader.pane.editing.as_mut().unwrap().operations;
             state.inventory = None;
             state.inventory_requested = None;
             reader.schedule_code_inventory(cx);
         });
         visual.run_until_parked();
         fixture.reader.read_with(visual, |reader, cx| {
-            let editing = reader.editing.as_ref().unwrap();
+            let editing = reader.pane.editing.as_ref().unwrap();
             assert_eq!(
                 editing.operations.inventory_requested,
                 Some(editing.input.read(cx).source_stamp())
@@ -1830,6 +1847,7 @@ mod tests {
             assert!(text.contains("2e3"));
             assert_eq!(
                 reader
+                    .pane
                     .editing
                     .as_ref()
                     .unwrap()
@@ -1846,7 +1864,7 @@ mod tests {
         f.reader
             .read_with(visual, |_, cx| assert_eq!(value(&f, cx), original));
         f.reader.update(visual, |reader, cx| {
-            reader.editing.as_mut().unwrap().operations.language =
+            reader.pane.editing.as_mut().unwrap().operations.language =
                 Some(("Before\n```json\n".len(), "jsonc".into()));
             cx.notify();
         });
@@ -1854,6 +1872,7 @@ mod tests {
         f.reader.read_with(visual, |reader, cx| {
             assert_eq!(value(&f, cx), original);
             assert!(reader
+                .pane
                 .editing
                 .as_ref()
                 .unwrap()

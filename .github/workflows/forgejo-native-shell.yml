@@ -122,6 +122,31 @@ jobs:
         cargo test --locked -p okilum-shell --bin okilum updater:: -- --nocapture --test-threads=1
         exit $LASTEXITCODE
 
+    - name: Run uninstall Sync identity regression
+      shell: pwsh
+      run: |
+        # #3109: the Velopack hook stops Sync first and keeps Okilum\Sync on NTFS.
+        $env:OKILUM_WINDOWS_ICON = Join-Path $env:GITHUB_WORKSPACE 'target/windows-dist/okilum.ico'
+        $list = & cargo test --locked -p okilum-shell --bin okilum app_footprint::tests:: -- --list
+        if ($LASTEXITCODE) { exit $LASTEXITCODE }
+        $list
+        # FIX FIRST on #3112: junctions, 8.3 names and dangling links are resolved or refused.
+        foreach ($name in @(
+            'windows_hook_stops_sync_first_and_keeps_its_identity_in_the_state_root',
+            'windows_hook_removes_nothing_when_sync_cannot_be_stopped',
+            'windows_hook_removes_nothing_when_a_path_cannot_be_resolved',
+            'windows_hook_refuses_a_dangling_junction_root',
+            'windows_junctioned_local_app_data_keeps_sync_identity',
+            'windows_junctioned_roots_are_never_followed',
+            'windows_dangling_junction_refuses_the_plan',
+            'windows_short_names_match_their_long_spelling')) {
+          if (-not ($list | Select-String "${name}: test$")) {
+            Write-Error "Windows uninstall control $name was not discovered"; exit 1
+          }
+        }
+        cargo test --locked -p okilum-shell --bin okilum app_footprint::tests:: -- --nocapture --test-threads=1
+        exit $LASTEXITCODE
+
     - name: Run owned non-modal tool regressions
       shell: pwsh
       run: |
@@ -134,6 +159,23 @@ jobs:
         }
         cargo test --locked -p okilum-shell --bin okilum owned_ -- --nocapture --test-threads=1
         exit $LASTEXITCODE
+
+    - name: Run own-window capture regressions
+      shell: pwsh
+      run: |
+        # #1502: PrintWindow on our own HWND, GDI and the GPUI-style
+        # DirectComposition swap chain, plus the Feedback button route.
+        $env:OKILUM_WINDOWS_ICON = Join-Path $env:GITHUB_WORKSPACE 'target/windows-dist/okilum.ico'
+        foreach ($filter in @('own_window_capture', 'feedback1502_')) {
+          $list = & cargo test --locked -p okilum-shell --bin okilum $filter -- --list
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $list
+          if (-not ($list | Select-String ': test$')) { Write-Error "No test matches $filter"; exit 1 }
+          cargo test --locked -p okilum-shell --bin okilum $filter -- --nocapture --test-threads=1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+        }
+        $list = & cargo test --locked -p okilum-shell --bin okilum own_window_capture_reads_direct_composition_swap_chain -- --list
+        if (-not ($list | Select-String ': test$')) { Write-Error 'DirectComposition control did not match'; exit 1 }
 
     - name: Run exact update window restoration and dirty single-file regressions
       shell: pwsh

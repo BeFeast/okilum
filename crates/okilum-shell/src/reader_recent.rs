@@ -281,13 +281,13 @@ impl Reader {
                 inventory: self.quick_open.inventory.clone(),
                 appearance: self.recent_gallery_appearance(cx),
                 focused: false,
-                navigation: self.navigation.generation,
+                navigation: self.pane.navigation.generation,
                 _subscriptions: vec![input_events, opened, lifecycle, appearance],
             });
         }
         self.recent_switcher.gallery_open = true;
         if let Some(session) = &mut self.recent_switcher.gallery {
-            session.navigation = self.navigation.generation;
+            session.navigation = self.pane.navigation.generation;
         }
         self.load_recent_external(cx);
         self.refresh_recent_gallery(cx);
@@ -450,7 +450,8 @@ impl Reader {
             .gallery
             .as_ref()
             .is_some_and(|session| {
-                session.root != self.vault_root || session.navigation != self.navigation.generation
+                session.root != self.vault_root
+                    || session.navigation != self.pane.navigation.generation
             })
         {
             self.recent_switcher.cancel();
@@ -708,7 +709,7 @@ impl Reader {
         }
         self.recent_switcher.invalidate_release();
         let generation = self.recent_switcher.release_generation;
-        let navigation = self.navigation.generation;
+        let navigation = self.pane.navigation.generation;
         cx.spawn_in(window, async move |reader, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(100))
@@ -717,7 +718,7 @@ impl Reader {
                 if reader.recent_switcher.release_generation != generation {
                     return;
                 }
-                if reader.navigation.generation != navigation {
+                if reader.pane.navigation.generation != navigation {
                     reader.recent_switcher.cancel();
                     cx.notify();
                     return;
@@ -1090,7 +1091,7 @@ mod tests {
         reader.read_with(visual, |r, _| assert_eq!(r.pane.current_rel, "B.md"));
         let previous_input = reader.update_in(visual, |r, window, cx| {
             r.toggle_source(window, cx);
-            r.editing.as_ref().unwrap().test_input()
+            r.pane.editing.as_ref().unwrap().test_input()
         });
         visual.run_until_parked();
         visual.simulate_keystrokes("ctrl-tab");
@@ -1103,7 +1104,7 @@ mod tests {
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert_eq!(r.pane.current_rel, "B.md");
-            assert!(r.editing.is_some());
+            assert!(r.pane.editing.is_some());
         });
         // Wayland can clear Control while the window still reports active,
         // then deliver deactivation. No navigation may happen in between.
@@ -1153,6 +1154,7 @@ mod tests {
                 "real release accepted the target"
             );
             let editing = r
+                .pane
                 .editing
                 .as_ref()
                 .expect("file selection restored the chosen editor");
@@ -1172,7 +1174,7 @@ mod tests {
         visual.simulate_input("mine");
         visual.run_until_parked();
         let dirty_source = reader.read_with(visual, |r, cx| {
-            let editing = r.editing.as_ref().unwrap();
+            let editing = r.pane.editing.as_ref().unwrap();
             assert_eq!(editing.test_input(), current_input);
             let source = editing.test_input().read(cx).value().to_string();
             assert!(
@@ -1196,7 +1198,7 @@ mod tests {
                 r.pane.current_rel, "A.md",
                 "external conflict refuses real navigation"
             );
-            let editing = r.editing.as_ref().unwrap();
+            let editing = r.pane.editing.as_ref().unwrap();
             assert_eq!(
                 editing.test_input(),
                 current_input,
