@@ -895,15 +895,58 @@ impl FileEditor {
             }
             let intent: LinkRecovery = serde_json::from_slice(&read_bounded_recovery(&path)?)?;
             if intent.note == self.draft.path && !intent.resolved {
+                if self.link_recovery_is_settled(&intent)? {
+                    // The rollback or publication provably completed and no
+                    // staged artifact remains: nothing is left to recover
+                    // (#3202 review). Anything else keeps refusing.
+                    fs::remove_file(&path)?;
+                    continue;
+                }
                 return Err(UnconfirmedSave::UnknownPublication.into());
             }
         }
         Ok(())
     }
 
+    /// An unresolved intent is settled when the public note exists with
+    /// exactly the original or the published bytes, the folder is the
+    /// recorded one, and neither private save name still exists.
+    fn link_recovery_is_settled(&self, intent: &LinkRecovery) -> Result<bool> {
+        let private = |name: &std::ffi::OsStr| {
+            Path::new(name).components().count() == 1
+                && name.to_string_lossy().starts_with(".okilum-save-")
+                && Some(name) != self.draft.path.file_name()
+        };
+        if intent.schema != 1
+            || intent.displaced == intent.prepared
+            || !private(intent.displaced.as_os_str())
+            || !private(intent.prepared.as_os_str())
+            || self.directory.ancestor_identities() != intent.ancestors
+        {
+            return Ok(false);
+        }
+        for name in [&intent.displaced, &intent.prepared] {
+            if self.directory.recovery_revision(name)?.is_some() {
+                return Ok(false);
+            }
+        }
+        let Some(current) = self
+            .directory
+            .recovery_revision(self.draft.path.file_name().unwrap())?
+        else {
+            return Ok(false);
+        };
+        let hash = Sha256::digest(&current.bytes);
+        Ok(hash.as_slice() == intent.before_hash || hash.as_slice() == intent.after_hash)
+    }
+
     pub(super) fn forget_link_recovery(&self, history: &Path) {
         // Completed saves have already archived the original and acknowledged
         // the draft. A failed removal merely leaves explicit recovery to inspect.
+        #[cfg(test)]
+        if network_save_tests::KEEP_LINK_RECOVERY.with(|v| v.get()) {
+            return;
+        }
         let _ = fs::remove_file(history.with_extension("link-recovery"));
     }
 

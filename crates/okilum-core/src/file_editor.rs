@@ -2642,6 +2642,8 @@ mod network_save_tests {
         /// Model an NFS client: unlinking a name of a file this process holds
         /// open renames it to a hidden `.nfs*` link instead (silly rename).
         pub(super) static NFS_SILLY_RENAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        /// Models a transient failure to delete a finished save's recovery intent.
+        pub(super) static KEEP_LINK_RECOVERY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
     #[cfg(target_os = "linux")]
     pub(super) fn unlink_like_nfs(directory: &File, name: &std::ffi::OsStr) -> Result<()> {
@@ -2709,6 +2711,65 @@ mod network_save_tests {
                 assert_eq!(fs::read(&note).unwrap(), b"mine\r\n");
             });
         }
+    }
+
+    fn link_recovery_intents(state: &Path) -> usize {
+        fs::read_dir(state.join("source-history"))
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|e| e.path().extension().is_some_and(|x| x == "link-recovery"))
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    /// #3202 review: an unresolved recovery intent left after a completed
+    /// rollback refused every later save of the note, even after a restart.
+    /// A settled intent is cleared; an unsettled one keeps refusing.
+    #[test]
+    fn settled_stale_recovery_intent_no_longer_blocks_saves() {
+        crate::unix_publish::inject(rustix::io::Errno::NOTSUP, || {
+            let fixture = tempfile::tempdir().unwrap();
+            let root = fixture.path().join("vault");
+            let state = fixture.path().join("state");
+            fs::create_dir(&root).unwrap();
+            let note = root.join("note.md");
+            fs::write(&note, b"base\r\n").unwrap();
+            let mut editor = FileEditor::open(&note, &state).unwrap();
+            editor.set_text("mine\r\n".into()).unwrap();
+            PUBLISH_LINK_ERROR.with(|v| v.set(Some(rustix::io::Errno::IO)));
+            KEEP_LINK_RECOVERY.with(|v| v.set(true));
+            editor.save().unwrap_err();
+            KEEP_LINK_RECOVERY.with(|v| v.set(false));
+            assert_eq!(fs::read(&note).unwrap(), b"base\r\n");
+            assert!(save_artifacts(&root).is_empty());
+            assert_eq!(
+                link_recovery_intents(&state),
+                1,
+                "control: a stale intent exists"
+            );
+
+            // Unsettled: the public note holds neither recorded revision.
+            fs::write(&note, b"external\r\n").unwrap();
+            let refused = editor.save().unwrap_err();
+            assert_eq!(
+                refused.downcast_ref::<UnconfirmedSave>(),
+                Some(&UnconfirmedSave::UnknownPublication)
+            );
+            assert_eq!(link_recovery_intents(&state), 1);
+            assert_eq!(fs::read(&note).unwrap(), b"external\r\n");
+
+            // Settled: original bytes, no staged artifacts. A fresh editor
+            // (as after a restart) saves normally and the intent is cleared.
+            fs::write(&note, b"base\r\n").unwrap();
+            drop(editor);
+            let mut reopened = FileEditor::open(&note, &state).unwrap();
+            reopened.set_text("mine\r\n".into()).unwrap();
+            assert_eq!(reopened.save().unwrap(), Save::Saved);
+            assert_eq!(fs::read(&note).unwrap(), b"mine\r\n");
+            assert_eq!(link_recovery_intents(&state), 0);
+        });
     }
 
     /// #3202: on macOS NFS the compatible save failed every time and the note
