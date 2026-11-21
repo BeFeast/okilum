@@ -84,6 +84,10 @@ mod reader_encoding;
 #[cfg(any(unix, windows))]
 mod reader_external_changes;
 mod reader_feedback;
+// #1502: Windows own-window capture; its pixel checks also run in tests elsewhere.
+#[cfg(any(windows, test))]
+#[cfg_attr(not(windows), allow(dead_code))]
+mod own_window_capture;
 mod reader_file_copy;
 mod reader_files;
 mod reader_find_field;
@@ -187,6 +191,8 @@ mod input_frame_cost_tests;
 mod input_navigation_tests;
 #[cfg(test)]
 mod input_newline_tests;
+#[cfg(test)]
+mod issue3073_tests;
 mod reader_agent_imports;
 #[cfg(test)]
 mod reader_agent_imports_tests;
@@ -1919,6 +1925,12 @@ struct Reader {
     /// Why the last daily notes choice in Settings was not applied.
     #[cfg(any(unix, windows))]
     daily_notes_error: Option<String>,
+    /// Templates offered for daily notes, read with the preference.
+    #[cfg(any(unix, windows))]
+    daily_templates: reader_daily_notes::Templates,
+    /// The first-press daily notes dialog, while it is open.
+    #[cfg(any(unix, windows))]
+    daily_setup: Option<Entity<reader_daily_notes::Setup>>,
     /// Show the reminders note through the native Tasks view (#919).
     #[cfg(any(unix, windows))]
     reminders_view: bool,
@@ -2320,6 +2332,10 @@ impl Reader {
             daily_notes: None,
             #[cfg(any(unix, windows))]
             daily_notes_error: None,
+            #[cfg(any(unix, windows))]
+            daily_templates: Default::default(),
+            #[cfg(any(unix, windows))]
+            daily_setup: None,
             #[cfg(any(unix, windows))]
             reminders_view: false,
             #[cfg(any(unix, windows))]
@@ -5987,6 +6003,21 @@ impl Reader {
                             .flex_1()
                             .min_h_0()
                             .w_full()
+                            // #1615: files and data dropped onto the rendered
+                            // note go into Edit, before the block under the
+                            // pointer.
+                            .drag_over::<ExternalPaths>(|style, _, _, cx| {
+                                style.bg(brand::palette(cx).selected.opacity(0.12))
+                            })
+                            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                                this.drop_on_reader(paths.into(), window, cx)
+                            }))
+                            .drag_over::<ExternalData>(|style, _, _, cx| {
+                                style.bg(brand::palette(cx).selected.opacity(0.12))
+                            })
+                            .on_drop(cx.listener(|this, data: &ExternalData, window, cx| {
+                                this.drop_on_reader(data.into(), window, cx)
+                            }))
                             // The TextView drops link clicks while text is
                             // selected, so a right-click on a link would open
                             // nothing; open the link's menu here (#943).

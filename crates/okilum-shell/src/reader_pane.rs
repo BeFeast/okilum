@@ -191,6 +191,11 @@ impl Surface {
         self.id
     }
 
+    /// The file this surface's editor owns, while it is editing.
+    pub(super) fn edited_path(&self) -> Option<&Path> {
+        self.editing.as_ref().map(reader_editor::Editing::path)
+    }
+
     /// For work that must not outlive the document's navigation generation.
     pub(super) fn navigation_ticket(&self) -> Ticket {
         Ticket {
@@ -317,6 +322,99 @@ impl Reader {
             work(self, window, cx);
         }
         self.publish_pending_document(window, cx);
+    }
+}
+
+/// Shown when Edit is refused because another pane of this window edits the file.
+pub(super) const EDITED_ELSEWHERE: &str =
+    "This note is being edited in the other pane. Its saved text is shown here.";
+
+/// Why a pane could not be closed, unsplit or have its document replaced.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PaneExit {
+    /// No pane with this id in the window.
+    Missing,
+    /// Closing or unsplitting would leave the window without a document.
+    LastPane,
+    /// The existing save/protect/conflict lifecycle refused; the pane, its
+    /// editor and its draft stay as they were.
+    Refused,
+}
+
+/// Window-level editor ownership (#773, stage 3). The owner registry is
+/// derived from each surface's editor handle, so there is no second map to
+/// keep in step with the many places that open or drop an editor.
+impl Reader {
+    /// Every document surface of this window: one until the second pane exists.
+    pub(super) fn surfaces(&self) -> impl Iterator<Item = &Surface> {
+        std::iter::once(&self.pane)
+    }
+
+    /// The pane whose editor owns `path`, if any.
+    pub(super) fn editor_owner(&self, path: &Path) -> Option<PaneId> {
+        self.surfaces()
+            .find(|surface| surface.edited_path() == Some(path))
+            .map(Surface::id)
+    }
+
+    /// Ok when `pane` may open an editor for `path`; otherwise the owning pane.
+    /// The other pane keeps showing the saved source; nothing is cloned or
+    /// transferred.
+    pub(super) fn claim_editor(&self, pane: PaneId, path: &Path) -> Result<(), PaneId> {
+        match self.editor_owner(path) {
+            Some(owner) if owner != pane => Err(owner),
+            _ => Ok(()),
+        }
+    }
+
+    /// Leaving `pane`'s document (navigation, replace, close, unsplit) runs the
+    /// existing save/protect/conflict lifecycle. On refusal everything stays.
+    pub(super) fn guard_pane_exit(
+        &mut self,
+        pane: PaneId,
+        cx: &mut Context<Self>,
+    ) -> Result<(), PaneExit> {
+        if pane != self.pane.id() {
+            return Err(PaneExit::Missing);
+        }
+        if self.leave_source(cx) {
+            Ok(())
+        } else {
+            Err(PaneExit::Refused)
+        }
+    }
+
+    /// Closes `pane` after its exit guard. The last pane is refused before the
+    /// guard runs, so its editor and draft are never touched.
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "#773 stage 4 adds the second pane")
+    )]
+    pub(super) fn close_pane(
+        &mut self,
+        pane: PaneId,
+        cx: &mut Context<Self>,
+    ) -> Result<(), PaneExit> {
+        if !self.surfaces().any(|surface| surface.id() == pane) {
+            return Err(PaneExit::Missing);
+        }
+        if self.surfaces().count() == 1 {
+            return Err(PaneExit::LastPane);
+        }
+        self.guard_pane_exit(pane, cx)
+    }
+
+    /// Keeps the active pane and closes the other one through `close_pane`.
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "#773 stage 4 adds the second pane")
+    )]
+    pub(super) fn unsplit(&mut self, cx: &mut Context<Self>) -> Result<(), PaneExit> {
+        let active = self.pane.id();
+        let Some(other) = self.surfaces().map(Surface::id).find(|id| *id != active) else {
+            return Err(PaneExit::LastPane);
+        };
+        self.close_pane(other, cx)
     }
 }
 
