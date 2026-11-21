@@ -44,21 +44,29 @@ One export can be mounted under two source spellings (an IP address and a
 hostname), so the digest alone cannot relate two paths (#3204). The server
 assigns inode (NFS fileid) and birth time, so two UUID-less identities of the
 same filesystem type with equal inode and birth time are one folder when
-looking for a writer scope; a false match only over-fences. Several UUID-less
-vaults (two folders on one export, or on two exports) get separate scopes.
-Each UUID-less scope records the identities of its strict ancestors on its own
-mount in `ancestry.json` in its private directory when it is registered
-(bindings from #3202 get it the next time their root is readable). With it:
+looking for a writer scope; a false match only over-fences.
 
-- the same folder through another spelling resolves to the existing scope and
-  meets its holds;
-- a child opened through another mount resolves to the enclosing scope;
-- a parent opened through another mount finds the child from the child's
-  record, even when the child's mount is gone: an unfinished hold or a live
-  writer refuses the parent, otherwise the child is promoted and its handles
-  resolve the parent scope at admission (one fencing scope, as for path
-  children);
-- a binding whose path no longer reaches its folder (mount gone, or another
+A new UUID-less root gets its own scope only when it is proved disjoint from
+every existing UUID-less scope. Proof needs that scope's folder reached now,
+through its own path or through the new root's mount at the same path below
+the mount root, and both folders below one physical mount root, so each
+ancestor chain shows any enclosure. Anything else is refused: another export
+(it may be nested, as `nas:/share/Vault/Sub` inside `nas:/share`), another
+filesystem type, or a folder that cannot be reached now. Several vaults on one
+export, through one mount or its aliases, get separate scopes. Each UUID-less
+scope also keeps a record of its same-mount ancestors (`ancestry.json` in its
+private directory), used only to route admission and never as proof of
+disjointness.
+
+- The same folder through another spelling resolves to the existing scope and
+  meets its holds; a child opened through another mount resolves to the
+  enclosing scope.
+- A parent opened through another mount finds the child from its chain read
+  now, even when the child's own mount is gone: an unfinished hold or a live
+  writer refuses the parent; otherwise the child is promoted, its record is
+  rewritten from that chain, and its handles resolve the parent scope at
+  admission (one fencing scope, as for path children).
+- A binding whose path no longer reaches its folder (mount gone, or another
   folder there) is retired, when idle, once its folder is opened through
   another path; a hold or a live writer keeps it and refuses the new path. A
   child whose alias parent was retired admits writers again. Retiring moves
@@ -66,9 +74,7 @@ mount in `ancestry.json` in its private directory when it is registered
   directory aside and starts a new epoch with new lock files, so handles of the
   retired scope stay fenced.
 
-A pre-#3204 UUID-less binding without a record whose root cannot be read
-refuses a new UUID-less root that it might lie inside, until it is mounted
-again. The same export remounted under another spelling at the same path is a
+The same export remounted under another spelling at the same path is a
 changed identity and goes through the explicit re-attach flow.
 
 On Linux (#2710), schema 2 likewise treats `st_dev` as diagnostic only. One

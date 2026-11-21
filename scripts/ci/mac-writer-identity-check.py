@@ -25,7 +25,9 @@ def main():
     QA.mkdir(parents=True, exist_ok=True)
     native = pathlib.Path("crates/okilum-write-authority/src/identity_macos.rs")
     entry = pathlib.Path("crates/okilum-write-authority/src/lib.rs")
+    alias = pathlib.Path("crates/okilum-write-authority/src/mount_alias.rs")
     original_native, original_entry = native.read_text(), entry.read_text()
+    original_alias = alias.read_text()
     device_test = "identity_macos_tests::identity_2692_native_uuid_and_device_renumbering"
     legacy_test = "identity_macos_tests::identity_2692_legacy_binding_migrates_without_changing_state"
     run(device_test, "native-positive")
@@ -59,23 +61,34 @@ def main():
     child_test = "identity_macos_tests::identity_3204_child_first_then_parent_through_alias_keeps_one_scope"
     gone_test = "identity_macos_tests::identity_3204_held_child_fences_parent_after_its_mount_is_gone"
     stale_test = "identity_macos_tests::identity_3204_stale_binding_is_retired_through_another_mount"
-    for test, label in [(alias_test, "alias"), (child_test, "child-first"),
-                        (gone_test, "mount-gone"), (stale_test, "stale")]:
+    nested_test = "identity_macos_tests::identity_3204_nested_export_cannot_bypass_a_hold"
+    replaced_test = "identity_macos_tests::identity_3204_replaced_ancestor_never_proves_disjointness"
+    tests = [(alias_test, "alias"), (child_test, "child-first"), (gone_test, "mount-gone"),
+             (stale_test, "stale"), (nested_test, "nested-export"),
+             (replaced_test, "replaced-ancestor")]
+    for test, label in tests:
         run(test, f"{label}-positive")
     # #3204: each control removes one rule; its regression must then fail.
     controls = [
         (native, original_native, "&& (self.1, self.2) == (other.1, other.2)", "&& false",
          alias_test, "no-alias-match-negative"),
-        (entry, original_entry, "Some(encloses) => encloses,", "Some(_) => false,",
-         child_test, "no-ancestry-enclosure-negative"),
-        (entry, original_entry, "Some(encloses) => encloses,", "Some(_) => false,",
-         gone_test, "no-ancestry-after-unmount-negative"),
+        (entry, original_entry, "Overlap::Encloses(ancestry) => Some(ancestry),",
+         "Overlap::Encloses(_) => None,", child_test, "no-ancestry-enclosure-negative"),
+        (entry, original_entry, "Overlap::Encloses(ancestry) => Some(ancestry),",
+         "Overlap::Encloses(_) => None,", gone_test, "no-ancestry-after-unmount-negative"),
         (entry, original_entry, "        self.alias_enclosing()\n", "        Ok(None)\n",
          child_test, "no-alias-routing-negative"),
         (entry, original_entry, "a.retire_unmounted()?;", "let _ = &a;",
          stale_test, "no-retire-negative"),
         (entry, original_entry, "Self::set_aside_retired(&directory)?;", "",
          stale_test, "no-set-aside-negative"),
+        # #3209 review: a chain ending at another mount root proved disjointness.
+        (alias, original_alias, "if !physical_candidate(std::slice::from_ref(top), root_top) {",
+         "if false {", nested_test, "incomplete-ancestry-negative"),
+        # #3209 review: the stored record proved disjointness after Vault was replaced.
+        (alias, original_alias, "let ancestry = mount_ancestry(&chain);",
+         "let ancestry = self.recorded_ancestry()?.unwrap_or_default();",
+         replaced_test, "stale-record-negative"),
     ]
     for path, original, old, replacement, test, label in controls:
         try:
@@ -87,10 +100,10 @@ def main():
     run(device_test, "native-restored")
     run(legacy_test, "migration-restored")
     run(no_uuid_test, "no-uuid-restored")
-    for test, label in [(alias_test, "alias"), (child_test, "child-first"),
-                        (gone_test, "mount-gone"), (stale_test, "stale")]:
+    for test, label in tests:
         run(test, f"{label}-restored")
     assert native.read_text() == original_native and entry.read_text() == original_entry
+    assert alias.read_text() == original_alias
 
 
 if __name__ == "__main__":

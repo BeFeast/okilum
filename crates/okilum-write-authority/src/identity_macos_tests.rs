@@ -361,12 +361,10 @@ fn refused(account: &Path, root: &Path, reason: &str) {
 
 #[test]
 fn identity_3204_several_uuid_less_vaults_have_separate_scopes() {
-    let e = exports(&["A", "B"]);
-    let other = e.base.join("other-server");
-    fs::create_dir_all(other.join("C")).unwrap();
+    let e = exports(&["A", "B", "C"]);
     let (first, _first) = mount(&e.base, &e.server, "by-ip", EXPORT);
-    let (second, _second) = mount(&e.base, &other, "other", "nas.example:/srv/nfs/Other");
-    // Two folders on one export and one on another export.
+    let (second, _second) = mount(&e.base, &e.server, "by-hostname", ALIAS);
+    // Folders on one export, through one mount and through its alias.
     let a = Authority::open_in(&e.account, &first.join("A")).unwrap();
     let b = Authority::open_in(&e.account, &first.join("B")).unwrap();
     let c = Authority::open_in(&e.account, &second.join("C")).unwrap();
@@ -383,6 +381,80 @@ fn identity_3204_several_uuid_less_vaults_have_separate_scopes() {
         .unwrap();
     release(hold);
     a.operation().unwrap();
+    // Another export cannot be proved disjoint (it may be nested): refused.
+    let other = e.base.join("other-server");
+    fs::create_dir_all(other.join("D")).unwrap();
+    let (third, _third) = mount(&e.base, &other, "other", "nas.example:/srv/nfs/Other");
+    refused(&e.account, &third.join("D"), "cannot prove");
+}
+
+/// #3209 review: `nas:/share/Vault/Sub` and `nas:/share` mounted separately.
+/// The child's chain ends at its mount root, so nothing proves the parent
+/// opened through the wider export does not contain it.
+#[test]
+fn identity_3204_nested_export_cannot_bypass_a_hold() {
+    let e = exports(&["Vault/Sub"]);
+    let (child_mount, _child_mount) = mount(
+        &e.base,
+        &e.server.join("Vault").join("Sub"),
+        "child",
+        "nas.example:/srv/nfs/Maestro/Vault/Sub",
+    );
+    let (all, _all) = mount(&e.base, &e.server, "all", EXPORT);
+    let child = Authority::open_in(&e.account, &child_mount).unwrap();
+    let hold = child.begin_drain("exclusive-operation").unwrap();
+    refused(&e.account, &all.join("Vault"), "cannot prove");
+    refused(&e.account, &all, "cannot prove");
+    assert!(child.admit().is_err(), "the child hold stays in force");
+    release(hold);
+
+    // The other order: the wider export first, then the nested one.
+    let e = exports(&["Vault/Sub"]);
+    let (all, _all) = mount(&e.base, &e.server, "all", EXPORT);
+    let (child_mount, _child_mount) = mount(
+        &e.base,
+        &e.server.join("Vault").join("Sub"),
+        "child",
+        "nas.example:/srv/nfs/Maestro/Vault/Sub",
+    );
+    let vault = Authority::open_in(&e.account, &all.join("Vault")).unwrap();
+    let _hold = vault.begin_drain("exclusive-operation").unwrap();
+    refused(&e.account, &child_mount, "cannot prove");
+}
+
+/// #3209 review: `Vault` is replaced while `Sub` (the registered root) is
+/// kept, so the stored record names the old `Vault`. With the first mount
+/// gone, the stale record must not prove that `B/Vault` lies outside `Sub`.
+#[test]
+fn identity_3204_replaced_ancestor_never_proves_disjointness() {
+    let e = exports(&["Vault/Sub"]);
+    let (first, _first) = mount(&e.base, &e.server, "by-ip", EXPORT);
+    let (second, _second) = mount(&e.base, &e.server, "by-hostname", ALIAS);
+    let child = Authority::open_in(&e.account, &first.join("Vault").join("Sub")).unwrap();
+    let recorded = child.recorded_ancestry().unwrap().unwrap();
+    drop(child.begin_drain("exclusive-operation").unwrap()); // the holder exits
+                                                             // Replace Vault on the server, keeping Sub.
+    fs::rename(e.server.join("Vault"), e.server.join("OldVault")).unwrap();
+    fs::create_dir(e.server.join("Vault")).unwrap();
+    fs::rename(
+        e.server.join("OldVault").join("Sub"),
+        e.server.join("Vault").join("Sub"),
+    )
+    .unwrap();
+    mirror(&e.server, &second);
+    assert_eq!(
+        identity(&second.join("Vault").join("Sub")).unwrap().1,
+        child.binding.root_identity.1,
+        "the root is kept"
+    );
+    assert_ne!(
+        identity(&second.join("Vault")).unwrap().1,
+        recorded[0].1,
+        "the record names the old Vault"
+    );
+    fs::remove_dir_all(&first).unwrap();
+    refused(&e.account, &second.join("Vault"), "unfinished writer hold");
+    assert!(child.binding_path.exists());
 }
 
 #[test]
@@ -548,16 +620,15 @@ fn identity_3204_scope_without_ancestry_record_is_conservative() {
     let e = exports(&["Vault/Sub"]);
     let (first, _first) = mount(&e.base, &e.server, "by-ip", EXPORT);
     let (second, _second) = mount(&e.base, &e.server, "by-hostname", ALIAS);
-    // A #3202 binding has no record; it is written while the root is readable.
+    // A #3202 binding has no record; its own path still shows the enclosure.
     let child = Authority::open_in(&e.account, &first.join("Vault").join("Sub")).unwrap();
     let record = child.directory.join("ancestry.json");
     fs::remove_file(&record).unwrap();
     let hold = child.begin_drain("exclusive-operation").unwrap();
     refused(&e.account, &second.join("Vault"), "unfinished writer hold");
-    assert!(record.exists());
     release(hold);
-    // Unreadable and without a record: enclosure is unknown, so refused.
-    fs::remove_file(&record).unwrap();
+    // Unreachable and without a record: overlap is unknown, so refused.
+    assert!(!record.exists());
     fs::remove_dir_all(&first).unwrap();
-    refused(&e.account, &second.join("Vault"), "cannot be read now");
+    refused(&e.account, &second.join("Vault"), "cannot prove");
 }

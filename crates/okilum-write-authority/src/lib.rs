@@ -44,7 +44,7 @@ mod identity_windows_tests;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 mod migration;
 mod mount_alias;
-use mount_alias::{mount_source, MAX_SCOPE_HOPS};
+use mount_alias::{mount_source, Overlap, MAX_SCOPE_HOPS};
 
 const BINDING_SCHEMA: u32 = if cfg!(any(target_os = "macos", target_os = "linux", windows)) {
     2
@@ -403,9 +403,6 @@ impl Authority {
         #[cfg(any(target_os = "macos", target_os = "linux", windows))]
         Self::migrate_legacy_bindings(&account, &root)?;
         if let Some(a) = Self::existing(&account, &root)? {
-            // UUID-less scopes from before #3204: record the mount ancestry now
-            // that the root is readable. Missing records are handled conservatively.
-            let _ = a.ancestry();
             a.retire_unmounted_enclosure()?;
             return Ok(a);
         }
@@ -463,21 +460,23 @@ impl Authority {
                     binding: b,
                 };
                 // A UUID-less scope inside this root through another mount
-                // (#3204), found by its durable ancestry even when its mount is
-                // gone. Unknown ancestry never proves that it lies outside.
+                // (#3204). Overlap that cannot be ruled out is refused.
                 let path_child =
                     child.binding.root.starts_with(&root) && child.binding.root != root;
-                let alias_child = !path_child
-                    && child.binding.root != root
-                    && match child.encloses_by_alias(&ancestor_identities[0])? {
-                        Some(encloses) => encloses,
-                        None => anyhow::bail!(
-                            "{} may contain the writer scope {}, which is on a network volume that cannot be read now; mount it again and retry",
+                let alias_child = if path_child || child.binding.root == root {
+                    None
+                } else {
+                    match child.overlap(&root, &ancestor_identities)? {
+                        Overlap::Disjoint => None,
+                        Overlap::Encloses(ancestry) => Some(ancestry),
+                        Overlap::Unknown => anyhow::bail!(
+                            "{} is on a network or FUSE volume, and Okilum cannot prove that it does not overlap the writer scope {}: they are on different mounts or exports, or that folder cannot be checked now. Open both through the same mount, or mount it again (#3204)",
                             root.display(),
                             child.binding.root.display()
                         ),
-                    };
-                if path_child || alias_child {
+                    }
+                };
+                if path_child || alias_child.is_some() {
                     let admission = file(&child.directory.join("admission.lock"), false)?;
                     admission.lock()?;
                     // A temporarily moved/deleted child root still owns its
@@ -492,6 +491,10 @@ impl Authority {
                         "Enclosed folder has an unfinished writer hold; release or recover it before opening the enclosing vault");
                     let writers = file(&child.directory.join("writers.lock"), false)?;
                     writers.try_lock().context("Enclosed folder is publishing; retry opening the enclosing vault after it finishes")?;
+                    // Its handles route to this scope through the record.
+                    if let Some(ancestry) = alias_child {
+                        child.rewrite_ancestry(ancestry)?;
+                    }
                     enclosed.push((admission, writers));
                 }
             }

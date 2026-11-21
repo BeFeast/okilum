@@ -8,11 +8,15 @@
 //!
 //! - Same folder: `Identity::mount_alias_candidate` (filesystem type, inode,
 //!   birth time) matches a folder under every spelling.
-//! - Enclosure: each UUID-less scope records the identities of its strict
-//!   ancestors on its own mount (`ancestry.json` in its private directory) when
-//!   it is registered. That record outlives the mount, so a parent opened
-//!   through another mount finds the child even when the child's mount is gone,
-//!   and child handles resolve the parent scope at admission.
+//! - Enclosure: a new UUID-less root is disjoint from an existing UUID-less
+//!   scope only when that is proved: the scope's folder is reached now (through
+//!   its own path, or through the new root's mount at the same path below the
+//!   mount root) and both lie below one physical mount root, so each one's
+//!   ancestor chain shows any enclosure. Otherwise (nested or other exports, a
+//!   folder that cannot be reached) the new root is refused. A scope inside the
+//!   new root is promoted; its record of ancestors (`ancestry.json`) is then
+//!   rewritten from the chain read now, and its handles use it to resolve the
+//!   enclosing scope at admission. The record never proves disjointness.
 //! - Stale binding: a UUID-less binding whose path no longer reaches its folder
 //!   (the mount is gone, or holds another folder) is retired, when it is idle,
 //!   once its folder is opened through another path. A hold or a live writer
@@ -56,6 +60,15 @@ pub(super) fn mount_ancestry(chain: &[Identity]) -> Vec<Identity> {
     Vec::new()
 }
 
+/// How an existing UUID-less scope relates to a folder being registered.
+pub(super) enum Overlap {
+    Disjoint,
+    /// The scope lies inside the folder; its ancestry as read now.
+    Encloses(Vec<Identity>),
+    /// Overlap cannot be ruled out: refuse.
+    Unknown,
+}
+
 impl Authority {
     /// Record the mount ancestry of a newly registered UUID-less scope.
     pub(super) fn record_ancestry(directory: &Path, chain: &[Identity]) -> Result<()> {
@@ -65,39 +78,81 @@ impl Authority {
         Ok(())
     }
 
-    /// The recorded mount ancestry; empty for native scopes. `None` when a
-    /// UUID-less scope registered before #3204 has no record and its root
-    /// cannot be read to write one now: its enclosure is then unknown.
-    pub(super) fn ancestry(&self) -> Result<Option<Vec<Identity>>> {
-        if !mount_source(&self.binding.root_identity) {
-            return Ok(Some(Vec::new()));
-        }
+    /// The recorded mount ancestry, if any. It routes admission to an
+    /// enclosing scope; it is never proof that two scopes are disjoint.
+    pub(super) fn recorded_ancestry(&self) -> Result<Option<Vec<Identity>>> {
         let path = self.directory.join(ANCESTRY);
-        if path.try_exists()? {
-            return read(&path).map(Some);
+        if !path.try_exists()? {
+            return Ok(None);
         }
-        let Ok(chain) = self
-            .binding
-            .root
-            .ancestors()
-            .map(identity)
-            .collect::<Result<Vec<_>>>()
-        else {
+        read(&path).map(Some)
+    }
+
+    /// Replace the record with ancestry read now (a promoted child, #3204).
+    /// Callers hold this scope's admission lock.
+    pub(super) fn rewrite_ancestry(&self, ancestry: Vec<Identity>) -> Result<()> {
+        persist(&self.directory.join(ANCESTRY), &ancestry, false)
+    }
+
+    /// The current identities of this UUID-less scope's folder and all its
+    /// ancestors, read through its own path or, when that no longer reaches
+    /// the folder, through `mount` (the mount root of the folder being opened)
+    /// at the same path below the mount root. `None`: neither reaches it.
+    fn current_chain(&self, mount: &Path) -> Result<Option<Vec<Identity>>> {
+        let reach = |path: &Path| -> Option<Vec<Identity>> {
+            let chain = path
+                .ancestors()
+                .map(identity)
+                .collect::<Result<Vec<_>>>()
+                .ok()?;
+            physical_candidate(std::slice::from_ref(&chain[0]), &self.binding.root_identity)
+                .then_some(chain)
+        };
+        if let Some(chain) = reach(&self.binding.root) {
+            return Ok(Some(chain));
+        }
+        // The record's length places the folder below its old mount root. A
+        // stale or wrong record only fails to reach the folder.
+        let Some(recorded) = self.recorded_ancestry()? else {
             return Ok(None);
         };
-        if chain[0] != self.binding.root_identity {
+        let Some(own_mount) = self.binding.root.ancestors().nth(recorded.len()) else {
             return Ok(None);
+        };
+        let Ok(below) = self.binding.root.strip_prefix(own_mount) else {
+            return Ok(None);
+        };
+        Ok(reach(&mount.join(below)))
+    }
+
+    /// How this scope relates to a new UUID-less `root`, given the identities
+    /// of `root` and all its ancestors (`root_chain`). Disjointness needs proof
+    /// (#3204): this folder's ancestry is read now, and both folders lie below
+    /// one physical mount root, so each chain shows any enclosure. Different
+    /// mounts of nested or other exports, or a folder that cannot be reached
+    /// now, are `Unknown`. The stored record never proves disjointness.
+    pub(super) fn overlap(&self, root: &Path, root_chain: &[Identity]) -> Result<Overlap> {
+        if !mount_source(&self.binding.root_identity) || !mount_source(&root_chain[0]) {
+            return Ok(Overlap::Disjoint);
         }
+        let root_ancestry = mount_ancestry(root_chain);
+        let root_top = root_ancestry.last().unwrap_or(&root_chain[0]);
+        let mount = root
+            .ancestors()
+            .nth(root_ancestry.len())
+            .context("Writer root has no mount root")?;
+        let Some(chain) = self.current_chain(mount)? else {
+            return Ok(Overlap::Unknown);
+        };
         let ancestry = mount_ancestry(&chain);
-        if let Err(error) = persist(&path, &ancestry, true) {
-            // Another process recorded it first.
-            return if path.try_exists()? {
-                read(&path).map(Some)
-            } else {
-                Err(error)
-            };
+        let top = ancestry.last().unwrap_or(&chain[0]);
+        if !physical_candidate(std::slice::from_ref(top), root_top) {
+            return Ok(Overlap::Unknown);
         }
-        Ok(Some(ancestry))
+        if physical_candidate(&ancestry, &root_chain[0]) {
+            return Ok(Overlap::Encloses(ancestry));
+        }
+        Ok(Overlap::Disjoint)
     }
 
     /// The outermost registered scope that physically encloses this UUID-less
@@ -107,11 +162,9 @@ impl Authority {
         if !mount_source(&self.binding.root_identity) {
             return Ok(None);
         }
-        let record = self.directory.join(ANCESTRY);
-        if !record.try_exists()? {
+        let Some(ancestry) = self.recorded_ancestry()? else {
             return Ok(None);
-        }
-        let ancestry: Vec<Identity> = read(&record)?;
+        };
         if ancestry.is_empty() {
             return Ok(None);
         }
@@ -140,17 +193,6 @@ impl Authority {
             }
         }
         Ok(outermost.map(|(_, scope)| scope))
-    }
-
-    /// Whether `self` physically encloses `root` through another path. `None`:
-    /// unknown, because `self` predates the ancestry record and is unreadable.
-    pub(super) fn encloses_by_alias(&self, root: &Identity) -> Result<Option<bool>> {
-        if !mount_source(&self.binding.root_identity) || !mount_source(root) {
-            return Ok(Some(false));
-        }
-        Ok(self
-            .ancestry()?
-            .map(|ancestry| physical_candidate(&ancestry, root)))
     }
 
     /// The binding's path no longer reaches its folder: the mount is gone or
