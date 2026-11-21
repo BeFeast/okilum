@@ -53,7 +53,7 @@ def fast_verdict(info):
     jobs = info.get("jobs", [])
     names = {job.get("name") for job in jobs}
     if (len(names) != len(jobs) or "pre-merge" not in names
-            or not names <= {"pre-merge", "linux", "windows-recovery", "macos-sync"}):
+            or not names <= {"pre-merge", "linux", "linux-pool", "windows-recovery", "macos-sync"}):
         return 75
     gate = next(job for job in jobs if job.get("name") == "pre-merge")
     others = [job for job in jobs if job.get("name") != "pre-merge"]
@@ -69,15 +69,24 @@ def fast_verdict(info):
     return 1
 
 
+# The sharded build-slot pool gate (`linux-pool`, dispatched with --pool-linux)
+# runs beside the hosted `linux` job and never decides the full verdict until a
+# pool run is green in <= 20 min (Oleg 21.11).
+NON_GATING_JOBS = {"linux-pool"}
+
+
 def verdict(info, sha, benchmark=False, publication_controls=False, macos_sync=False, fast=False):
     """Missing/mismatched/partial/cancelled work never counts as a verdict."""
     if info.get("headSha") != sha or info.get("status") != "completed":
         return 75
     if fast:
         return fast_verdict(info)
-    jobs = info.get("jobs", [])
+    all_jobs = info.get("jobs", [])
+    if len({job.get("name") for job in all_jobs}) != len(all_jobs):
+        return 75
+    jobs = [job for job in all_jobs if job.get("name") not in NON_GATING_JOBS]
     names = {job.get("name") for job in jobs}
-    if (len(names) != len(jobs) or not {"linux", "windows-recovery"} <= names
+    if (not {"linux", "windows-recovery"} <= names
             or not names <= {"linux", "windows-recovery", "macos-sync", "pre-merge"}
             or any(job.get("name") == "pre-merge" and job.get("conclusion") != "skipped" for job in jobs)
             or (macos_sync and "macos-sync" not in names)):
@@ -94,8 +103,7 @@ def verdict(info, sha, benchmark=False, publication_controls=False, macos_sync=F
                 "Verify pinned Sync fixture lifecycle, source sharing and remote inspection",
                 "Verify managed launch and configuration admission",
                 "Verify real disk-full Sync transfer and first merge",
-                "Reject and reap surviving agent fixture daemons",
-                "Verify every pool shard and phase passed"}
+                "Reject and reap surviving agent fixture daemons"}
     if not benchmark:
         required.add("Verify additive vault regression controls")
     if publication_controls:
@@ -179,14 +187,18 @@ def main():
                         help="pre-merge gate: formatting, Python and script checks, workspace clippy, "
                              "release-binary check; no tests")
     parser.add_argument("--publication-baseline", help="public main SHA for same-host editor controls; requires --dispatch")
+    parser.add_argument("--pool-linux", action="store_true",
+                        help="also run the non-gating sharded pool Linux gate (linux-pool); requires --dispatch")
     args = parser.parse_args()
     if args.publication_baseline and (not args.dispatch or not re.fullmatch(r"[0-9a-f]{40}", args.publication_baseline)):
         parser.error("--publication-baseline requires --dispatch and a full lowercase SHA")
     if args.macos_sync and not args.dispatch:
         parser.error("--macos-sync requires --dispatch")
+    if args.pool_linux and not args.dispatch:
+        parser.error("--pool-linux requires --dispatch")
     if args.rerun and args.dispatch:
         parser.error("choose --rerun or --dispatch")
-    if args.fast and (args.benchmark or args.macos_sync or args.publication_baseline):
+    if args.fast and (args.benchmark or args.macos_sync or args.publication_baseline or args.pool_linux):
         parser.error("--fast is the pre-merge gate; full-only controls need a full check")
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
@@ -219,6 +231,8 @@ def main():
             dispatch += ["-f", "macos_sync_check=true"]
         if args.publication_baseline:
             dispatch += ["-f", "publication_baseline=" + args.publication_baseline]
+        if args.pool_linux:
+            dispatch += ["-f", "pool_linux=true"]
         run(*dispatch)
     found = None
     # GitHub's run index is eventually consistent. Polling lives only inside

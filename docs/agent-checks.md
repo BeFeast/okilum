@@ -1,17 +1,25 @@
 # Agent build/test checks on GitHub
 
-## Where the Linux jobs run (Oleg 20.11)
+## Where the Linux jobs run (Oleg 20.11, 21.11)
 
-`pre-merge` and `linux` run on the self-hosted label `okilum-pool`. The runner
-only checks out the commit and calls `build-slot`; the suites run on the shared
-build-slot pool (`scripts/ci/pool-dispatch.sh`, `pool-pre-merge.sh`,
-`pool-linux-gate.sh`). The workflow name stays `agent-checks`, the job names
-stay `pre-merge` and `linux`, and the step names `gh-check.sh` requires are
-unchanged. A pool failure (queue, timeout, missing receipt) fails the dispatch
-step, which the helper counts as infrastructure (exit 75). A failing phase
-fails the step of that name, which is a code verdict (exit 1). 
+`pre-merge` runs on the self-hosted label `okilum-pool`. The runner only
+checks out the commit and calls `build-slot`; the suites run on the shared
+build-slot pool (`scripts/ci/pool-dispatch.sh`, `pool-pre-merge.sh`). The
+workflow name stays `agent-checks`, the job name stays `pre-merge`, and the
+step names `gh-check.sh` requires are unchanged. A pool failure (queue,
+timeout, missing receipt) fails the dispatch step, which the helper counts as
+infrastructure (exit 75). A failing phase fails the step of that name, which
+is a code verdict (exit 1).
 
-`linux` is split into six shards that run in parallel on different pool
+The full verdict stays on the hosted Ubuntu `linux` job (`ubuntu-24.04`, the
+job as it was before #3186) until a pool run is green in ≤ 20 minutes
+(Oleg 21.11). The sharded pool gate (`pool-linux-gate.sh`) runs as the
+separate job `linux-pool`, only in a dispatched run with `pool_linux`
+(`gh-check.sh --dispatch --pool-linux`) and with `continue-on-error`.
+`gh-check.sh` ignores `linux-pool` for both verdicts: it can neither pass nor
+fail a full check, and the fast gate only accepts it skipped.
+
+`linux-pool` is split into six shards that run in parallel on different pool
 slots (Oleg 21.11: 4–6 shards, PR gate tickets first in build-slot, target
 ≤ 20 minutes for the verdict). `pool-dispatch.sh linux-full` starts one
 `build-slot run --priority critical` per shard; the nightly scheduled run on

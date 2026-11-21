@@ -43,8 +43,7 @@ def receipt():
                 "Verify pinned Sync fixture lifecycle, source sharing and remote inspection",
                 "Verify managed launch and configuration admission",
                 "Verify real disk-full Sync transfer and first merge",
-                "Reject and reap surviving agent fixture daemons", "Verify additive vault regression controls",
-                "Verify every pool shard and phase passed")]},
+                "Reject and reap surviving agent fixture daemons", "Verify additive vault regression controls")]},
         {"name": "windows-recovery", "conclusion": "success", "steps": [
             {"name": n, "conclusion": "success"} for n in (
                 "Prepare and verify Windows vendor", "Run native Windows recovery controls",
@@ -307,11 +306,8 @@ class VerdictTests(unittest.TestCase):
 
     def test_positive_control_all_required_checks_pass(self):
         self.assertEqual(helper.verdict(receipt(), SHA), 0)
-        # The pool's overall shard check is required: a run without it is no verdict.
-        info = receipt()
-        info['jobs'][0]['steps'] = [s for s in info['jobs'][0]['steps']
-                                    if s['name'] != 'Verify every pool shard and phase passed']
-        self.assertEqual(helper.verdict(info, SHA), 75)
+        # The pool's overall shard check gates pre-merge only; hosted `linux`
+        # decides the full verdict and has no pool steps (Oleg 21.11).
         self.assertIn('Verify every pool shard and phase passed', helper.FAST_REQUIRED)
         self.assertEqual(helper.verdict(receipt(), SHA, benchmark=True), 75)
         info = receipt()
@@ -425,10 +421,18 @@ class VerdictTests(unittest.TestCase):
                          "${{ " + fast + " || github.event_name == 'schedule' }}")
         for name in ("linux", "windows-recovery"):
             self.assertEqual(jobs[name]["if"], "${{ !" + fast + " }}")
+        # The pool Linux gate never runs on a fast or push ref and never fails the run.
+        self.assertEqual(jobs["linux-pool"]["if"],
+                         "${{ github.event_name == 'workflow_dispatch' && inputs.pool_linux }}")
+        self.assertIs(jobs["linux-pool"]["continue-on-error"], True)
         steps = jobs["pre-merge"]["steps"]
         self.assertTrue(helper.FAST_REQUIRED <= {s.get("name") for s in steps})
         self.assertEqual(jobs["pre-merge"]["runs-on"], "okilum-pool")
-        self.assertEqual(jobs["linux"]["runs-on"], "okilum-pool")
+        # Hosted Ubuntu decides the full verdict until a pool run is green in
+        # <= 20 min (Oleg 21.11); the sharded pool gate runs as `linux-pool`.
+        self.assertEqual(jobs["linux"]["runs-on"], "ubuntu-24.04")
+        self.assertEqual(jobs["linux-pool"]["runs-on"], "okilum-pool")
+        self.assertNotIn("pool-dispatch.sh", yaml.dump(jobs["linux"]))
         # The commands run in the pool scripts. GitHub steps only report phases,
         # so a hosted Actions cache is neither saved nor required here.
         script = (ROOT / "scripts/ci/pool-pre-merge.sh").read_text()
@@ -440,7 +444,7 @@ class VerdictTests(unittest.TestCase):
             for heavy in ("cargo build", "cargo test", "cargo run", "nextest",
                           "at-vault-regression-control", "linux-rust-tests"):
                 self.assertNotIn(heavy, blob)
-        for job_name in ("pre-merge", "linux"):
+        for job_name in ("pre-merge", "linux-pool"):
             dumped = yaml.dump(jobs[job_name])
             self.assertNotIn("actions/cache", dumped)
             self.assertNotIn("hosted-ubuntu-apt", dumped)
@@ -506,6 +510,39 @@ class VerdictTests(unittest.TestCase):
         doubled = clean + "          save-if: z\n"
         self.assertEqual(duplicate_mapping_keys(doubled, "w.yml"), ["w.yml:7 save-if"])
         self.assertEqual(len(duplicate_mapping_keys("on: 1\non: 2\n", "w.yml")), 1)
+
+    def test_pool_linux_job_never_decides_a_verdict(self):
+        # Oleg 21.11: hosted `linux` gates until a pool run is green in <= 20 min.
+        pool_steps = [{"name": "Dispatch Linux full gate to the build-slot pool", "conclusion": "success"},
+                      {"name": "Run Linux Rust suites offline", "conclusion": "failure"},
+                      {"name": "Verify every pool shard and phase passed", "conclusion": "failure"}]
+        for conclusion in ("failure", "success", "skipped", "cancelled"):
+            data = receipt()
+            data["jobs"].append({"name": "linux-pool", "conclusion": conclusion,
+                                 "steps": copy.deepcopy(pool_steps)})
+            self.assertEqual(helper.verdict(data, SHA), 0, conclusion)
+        # A hosted code failure stays a code failure; a pool infra step cannot mask it.
+        data = receipt()
+        data["conclusion"] = "failure"
+        data["jobs"][0]["conclusion"] = "failure"
+        data["jobs"][0]["steps"].append({"name": "Run Linux Rust suites offline", "conclusion": "failure"})
+        data["jobs"].append({"name": "linux-pool", "conclusion": "failure", "steps": [
+            {"name": "Dispatch Linux full gate to the build-slot pool", "conclusion": "failure"}]})
+        self.assertEqual(helper.verdict(data, SHA), 1)
+        # A green pool job does not stand in for a missing hosted one.
+        data = receipt()
+        data["jobs"][0]["name"] = "linux-pool"
+        self.assertEqual(helper.verdict(data, SHA), 75)
+        # Duplicate job names are still no verdict.
+        data = receipt()
+        data["jobs"] += [{"name": "linux-pool", "conclusion": "skipped", "steps": []}] * 2
+        self.assertEqual(helper.verdict(data, SHA), 75)
+        # The fast gate tolerates the skipped pool job and still refuses a ran one.
+        fast = self.pre_merge_receipt()
+        fast["jobs"].append({"name": "linux-pool", "conclusion": "skipped", "steps": []})
+        self.assertEqual(helper.verdict(fast, SHA, fast=True), 0)
+        fast["jobs"][-1]["conclusion"] = "success"
+        self.assertEqual(helper.verdict(fast, SHA, fast=True), 75)
 
     def test_partial_empty_or_skipped_jobs_are_not_success(self):
         for jobs in ([], [{"name": "linux", "conclusion": "skipped", "steps": []}]):
@@ -610,7 +647,7 @@ class VerdictTests(unittest.TestCase):
         self.assertIn("contents: read", workflow)
         self.assertIn("cancel-in-progress: true", workflow)
         self.assertIn("runs-on: okilum-pool", workflow)
-        self.assertNotIn("ubuntu-24.04", workflow)
+        self.assertIn("runs-on: ubuntu-24.04", workflow)
         for other in (ROOT / ".github/workflows").glob("*.yml"):
             if other.name != "agent-checks.yml":
                 self.assertNotIn("agent-checks/", other.read_text(), other.name)
