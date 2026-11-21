@@ -1011,7 +1011,10 @@ mod tests {
                 created_note: false,
             }
         );
-        assert!(roots.contains(&folder));
+        assert!(
+            !roots.contains(&folder),
+            "#3208: a quick viewer's folder is not a recent vault"
+        );
         assert!(
             ReadingHistory::known_vault_roots(&state)
                 .unwrap()
