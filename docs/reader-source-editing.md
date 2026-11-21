@@ -273,6 +273,12 @@ the same owner (X11) or offer (Wayland); a change, timeout or oversized flavor
 midway refuses the paste, and a flavor the owner will not convert reroutes the
 whole paste through GPUI's clipboard. The paste log line names the native types
 offered and the flavors read.
+`scripts/check-smart-paste-native.py` drives a built binary under headless
+sway with the offers Firefox, Chromium, Nautilus, Dolphin, VS Code and a
+screenshot tool make (`scripts/wl_multi_copy.c` serves several MIME types at
+once) and checks the saved note, the attachments, the log line and that only
+the routed flavors were transferred; Linux beta 7830, built before this change,
+fails all twelve cases.
 Plain text containing HTML syntax stays literal instead of being guessed as an
 HTML clipboard offer. Windows note HTML uses the bounded path described above.
 Completed local attachment writes publish their exact saved paths to inventory, so a
