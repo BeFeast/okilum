@@ -43,7 +43,8 @@ def receipt():
                 "Verify pinned Sync fixture lifecycle, source sharing and remote inspection",
                 "Verify managed launch and configuration admission",
                 "Verify real disk-full Sync transfer and first merge",
-                "Reject and reap surviving agent fixture daemons", "Verify additive vault regression controls")]},
+                "Reject and reap surviving agent fixture daemons", "Verify additive vault regression controls",
+                "Verify every pool shard and phase passed")]},
         {"name": "windows-recovery", "conclusion": "success", "steps": [
             {"name": n, "conclusion": "success"} for n in (
                 "Prepare and verify Windows vendor", "Run native Windows recovery controls",
@@ -306,6 +307,12 @@ class VerdictTests(unittest.TestCase):
 
     def test_positive_control_all_required_checks_pass(self):
         self.assertEqual(helper.verdict(receipt(), SHA), 0)
+        # The pool's overall shard check is required: a run without it is no verdict.
+        info = receipt()
+        info['jobs'][0]['steps'] = [s for s in info['jobs'][0]['steps']
+                                    if s['name'] != 'Verify every pool shard and phase passed']
+        self.assertEqual(helper.verdict(info, SHA), 75)
+        self.assertIn('Verify every pool shard and phase passed', helper.FAST_REQUIRED)
         self.assertEqual(helper.verdict(receipt(), SHA, benchmark=True), 75)
         info = receipt()
         info['jobs'][0]['steps'] += [dict(name=n, conclusion='success') for n in (
@@ -350,6 +357,7 @@ class VerdictTests(unittest.TestCase):
                                ("Prepare and verify pinned vendor and comrak", 1),
                                ("Install system libraries", 75),
                                ("Reclaim unused hosted SDKs for Rust artifacts", 75),
+                               ("Dispatch Linux full gate to the build-slot pool", 75),
                                ("Prepare isolated Python test dependencies", 75),
                                ("actions/checkout@v4", 75)):
             data = receipt()
@@ -419,20 +427,23 @@ class VerdictTests(unittest.TestCase):
             self.assertEqual(jobs[name]["if"], "${{ !" + fast + " }}")
         steps = jobs["pre-merge"]["steps"]
         self.assertTrue(helper.FAST_REQUIRED <= {s.get("name") for s in steps})
-        runs = [step.get("run", "") for step in steps]
-        self.assertIn("cargo clippy --workspace --all-targets --locked -- -D warnings", runs)
-        # #2916: clippy over all targets enables dev-dependency features (gpui
-        # test-support), so the gate also checks the release binaries without
-        # them, with the packages, binaries and profile the AppImage builds.
-        check = next(s for s in steps if s.get("name") == "Check release binaries without test features")
-        self.assertEqual(release_shape(check["run"], "check"), appimage_release_shape())
-        for run in runs:
+        self.assertEqual(jobs["pre-merge"]["runs-on"], "okilum-pool")
+        self.assertEqual(jobs["linux"]["runs-on"], "okilum-pool")
+        # The commands run in the pool scripts. GitHub steps only report phases,
+        # so a hosted Actions cache is neither saved nor required here.
+        script = (ROOT / "scripts/ci/pool-pre-merge.sh").read_text()
+        self.assertIn("cargo clippy --workspace --all-targets --locked -- -D warnings", script)
+        check = next(line.strip() for line in script.splitlines()
+                     if line.strip().startswith("cargo check --release"))
+        self.assertEqual(release_shape(check, "check"), appimage_release_shape())
+        for blob in (script, *[step.get("run", "") for step in steps]):
             for heavy in ("cargo build", "cargo test", "cargo run", "nextest",
                           "at-vault-regression-control", "linux-rust-tests"):
-                self.assertNotIn(heavy, run)
-        # The pre-merge cache must survive edits to this workflow.
-        cache = next(s for s in steps if s.get("id") == "cache")
-        self.assertNotIn("agent-checks.yml", cache["with"]["key"])
+                self.assertNotIn(heavy, blob)
+        for job_name in ("pre-merge", "linux"):
+            dumped = yaml.dump(jobs[job_name])
+            self.assertNotIn("actions/cache", dumped)
+            self.assertNotIn("hosted-ubuntu-apt", dumped)
 
     def test_only_main_saves_cargo_caches(self):
         # 10 GB repository quota (#2880, #2881): branch saves evicted main's caches.
@@ -598,7 +609,8 @@ class VerdictTests(unittest.TestCase):
         self.assertIn("persist-credentials: false", workflow)
         self.assertIn("contents: read", workflow)
         self.assertIn("cancel-in-progress: true", workflow)
-        self.assertIn("runs-on: ubuntu-24.04", workflow)
+        self.assertIn("runs-on: okilum-pool", workflow)
+        self.assertNotIn("ubuntu-24.04", workflow)
         for other in (ROOT / ".github/workflows").glob("*.yml"):
             if other.name != "agent-checks.yml":
                 self.assertNotIn("agent-checks/", other.read_text(), other.name)

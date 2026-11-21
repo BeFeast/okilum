@@ -7,10 +7,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/test-nofile.sh"
 # Switching back to single-package roots otherwise recompiles the same GUI
 # and core dependencies inside short operation groups after cold admission.
 packages=(-p okilum-write-authority -p okilum-core -p okilum-shell -p okilum-t3)
-# The daily hosted gate runs the workspace census in its own parallel job (#3198):
-# `all` (default) runs every suite, `checks` all but workspace-full, `workspace`
-# only workspace-full. Each half then fits the 53 min bridge budget.
-part=${1:-all}
+# The daily hosted gate runs the workspace census in its own parallel job (#3198)
+# and the pool gate runs it on its own shard: `all` (default) runs every suite,
+# `checks` all but workspace-full, `workspace` only workspace-full. The part is
+# the first argument, else OKILUM_LINUX_RUST_PART (pool shards), else `all`.
+part=${1:-${OKILUM_LINUX_RUST_PART:-all}}
 case "$part" in
     all | checks | workspace) ;;
     *)
@@ -18,6 +19,7 @@ case "$part" in
         exit 2
         ;;
 esac
+ran=0
 # Keep every failure, while allowing independent suites to finish their evidence.
 failed=0
 suite() {
@@ -28,6 +30,7 @@ suite() {
         return 0
     fi
     shift 2
+    ran=$((ran + 1))
     if [[ ${1:-} == cargo && ${2:-} == test ]]; then
         case "$group" in
             appimage|http-updates|sprint-distribution|portable-reader) ;;
@@ -158,4 +161,9 @@ suite reader-trash-fs-vault-trash-inventory-tests 120 cargo test --locked -p oki
 
 # #588: one-use fresh preparation never regenerates partial state.
 suite sidecar-macos-preparation 120 cargo test --locked -p okilum-sync-controller --lib sidecar::macos::preparation:: --no-fail-fast
+if [[ $ran -eq 0 ]]; then
+    echo "no Linux suite ran for part $part" >&2
+    exit 1
+fi
+printf 'LINUX_RUST_PART part=%s groups=%s failed=%s\n' "$part" "$ran" "$failed"
 exit "$failed"

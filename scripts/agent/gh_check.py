@@ -18,6 +18,8 @@ INFRA_STEPS = {
     "Verify pinned Rust toolchain", "Restore Rust downloads and target cache",
     "Fetch locked public dependencies", "Save Rust downloads and target cache",
     "Prepare isolated Python test dependencies",
+    "Dispatch pre-merge gate to the build-slot pool",
+    "Dispatch Linux full gate to the build-slot pool",
     "Restore Windows core cache", "Preserve vendor patch line endings",
 }
 
@@ -42,7 +44,8 @@ def gh_json(*args):
 FAST_REQUIRED = {"Prepare and verify pinned vendor and comrak", "Check formatting",
                  "Verify agent helper controls", "Run CI, releases and updater Python suites",
                  "Verify bundled Sync Help and brand", "Lint every workspace target offline",
-                 "Check release binaries without test features"}
+                 "Check release binaries without test features",
+                 "Verify every pool shard and phase passed"}
 
 
 def fast_verdict(info):
@@ -91,7 +94,8 @@ def verdict(info, sha, benchmark=False, publication_controls=False, macos_sync=F
                 "Verify pinned Sync fixture lifecycle, source sharing and remote inspection",
                 "Verify managed launch and configuration admission",
                 "Verify real disk-full Sync transfer and first merge",
-                "Reject and reap surviving agent fixture daemons"}
+                "Reject and reap surviving agent fixture daemons",
+                "Verify every pool shard and phase passed"}
     if not benchmark:
         required.add("Verify additive vault regression controls")
     if publication_controls:

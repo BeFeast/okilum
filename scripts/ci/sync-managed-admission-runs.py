@@ -7,7 +7,17 @@ The owning Python process checks and reaps the complete fixture tree on exit.
 
 A HOST_DISCOVERY test runs alone: its product path scans /proc for every
 same-uid Syncthing and correctly refuses any it does not own, so a concurrent
-group's live fixture runtime would fail it (#3069).
+group's live fixture runtime would fail it (#3069). On a build-slot pool slot
+(OKILUM_POOL_SHARD set) the other slots of the host run as the same user, so
+`alone` is not enough there: the test runs in a private PID namespace
+(pid-namespace.py, needs passwordless sudo), after a positive control shows a
+same-uid decoy Syncthing outside is invisible inside (#3186 review).
+
+OKILUM_ADMISSION_PART selects the processes (default all). The pool gate runs
+`crash` (both checkpoint halves), `remaining-0` and `remaining-1` (the other
+parent tests, split by sorted name) on three shards, so no process waits behind
+another. Each part keeps the unchanged 600 s deadline, and every part checks
+the complete compiled inventory before it selects its own tests.
 """
 import os
 from pathlib import Path
@@ -19,6 +29,7 @@ import tempfile
 import time
 
 lifecycle = runpy.run_path(str(Path(__file__).with_name('sync-fixture-lifecycle.py')))
+pidns = runpy.run_path(str(Path(__file__).with_name('pid-namespace.py')), run_name='pidns')
 CRASH_TEST = 'issue2043_crash_recovery_retains_versions_and_rejects_third_version'
 TESTS = {
     'issue2582_configuration_process_drains_and_later_real_effects_are_refused',
@@ -64,6 +75,36 @@ CHECKPOINTS = (
 )
 
 
+def select(part):
+    """The processes of one admission part, in start order."""
+    remaining = sorted(TESTS - {CRASH_TEST})
+    crash = [('crash-even', CHECKPOINTS[::2], None), ('crash-odd', CHECKPOINTS[1::2], None)]
+    if part == 'all':
+        return crash + [('remaining', (), None)]
+    if part == 'crash':
+        return crash
+    if part in ('remaining-0', 'remaining-1'):
+        index = int(part[-1])
+        return [(part, (), set(remaining[index::2]))]
+    raise SystemExit(f'unknown OKILUM_ADMISSION_PART: {part}')
+
+
+def groups_of(processes):
+    """(name, crash checkpoints, exact tests, runs alone); HOST_DISCOVERY runs alone first (#3069)."""
+    alone, groups = [], []
+    for name, checkpoints, tests in processes:
+        if checkpoints:
+            groups.append((name, checkpoints, [CRASH_TEST], False))
+            continue
+        discovery = HOST_DISCOVERY if tests is None else tests & HOST_DISCOVERY
+        if discovery:
+            alone.append(('host-discovery', (), sorted(discovery), True))
+        rest = None if tests is None else sorted(tests - HOST_DISCOVERY)
+        assert rest is None or rest, name
+        groups.append((name, (), rest, False))
+    return alone + groups
+
+
 def main():
     lifecycle['subreaper']()
     work = Path(tempfile.mkdtemp(prefix='sync-managed-admission-', dir=os.environ['TMPDIR']))
@@ -74,13 +115,7 @@ def main():
     assert discovered == TESTS | DISK_FULL | {'issue2582_child'}, discovered
     # The #3079 rejoin controls run inside 'remaining': a further parallel
     # process of multi-runtime fixtures made port reuse hit other tests.
-    # (name, crash checkpoints, exact tests, runs alone)
-    groups = [
-        ('host-discovery', (), sorted(HOST_DISCOVERY), True),
-        ('crash-even', CHECKPOINTS[::2], [CRASH_TEST], False),
-        ('crash-odd', CHECKPOINTS[1::2], [CRASH_TEST], False),
-        ('remaining', (), None, False),
-    ]
+    groups = groups_of(select(os.environ.get('OKILUM_ADMISSION_PART') or 'all'))
     print(f'Managed admission fixture evidence: {work}', flush=True)
     active, all_runs = [], []
     deadline = time.monotonic() + 600
@@ -89,23 +124,20 @@ def main():
         raise SystemExit(128 + signum)
     signal.signal(signal.SIGTERM, interrupted)
 
-    def foreign_syncthing():
-        # The same scope as direct::configuration_paths: this uid, exe named syncthing.
-        found = []
-        for entry in Path('/proc').iterdir():
-            try:
-                if not entry.name.isdecimal() or entry.stat().st_uid != os.geteuid():
-                    continue
-                if os.readlink(entry / 'exe').removesuffix(' (deleted)').rsplit('/', 1)[-1] == 'syncthing':
-                    found.append(int(entry.name))
-            except (FileNotFoundError, ProcessLookupError, PermissionError):
-                continue
-        return found
+    # The same scope as direct::configuration_paths: this uid, exe named syncthing.
+    foreign_syncthing = pidns['same_uid_syncthing']
+    isolate = bool(os.environ.get('OKILUM_POOL_SHARD'))
+    tokens = {}
 
     def start(name, checkpoints, selected, alone):
         if alone:
             assert not active, (name, [run[0] for run in active])
-            assert not foreign_syncthing(), (name, 'same-uid Syncthing before host discovery', foreign_syncthing())
+            if isolate:
+                # Sibling slots may legitimately run Syncthing fixtures; the
+                # namespace hides them and its init re-checks inside.
+                pidns['probe'](work)
+            else:
+                assert not foreign_syncthing(), (name, 'same-uid Syncthing before host discovery', foreign_syncthing())
         root = work / name
         root.mkdir(mode=0o700)
         (root / 'state').mkdir(mode=0o700)
@@ -123,9 +155,13 @@ def main():
         if checkpoints:
             env['OKILUM_FIRST_SYNC_CRASH_CASE'] = ','.join(checkpoints)
         log = root / 'acceptance.log'
+        if alone and isolate:
+            # The fixture guard below sees nothing once the namespace is gone;
+            # its PID 1 runs the same guard for this root first.
+            command, _, tokens[name] = pidns['command'](command, env, root, guard=root)
         with log.open('w') as output:
-            process = subprocess.Popen(command, env=env, stdout=output, stderr=subprocess.STDOUT,
-                                       preexec_fn=lifecycle['parent_death_signal']())
+            process = subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL, stdout=output,
+                                       stderr=subprocess.STDOUT, preexec_fn=lifecycle['parent_death_signal']())
         run = (name, checkpoints, process, log, selected, alone)
         active.append(run)
         all_runs.append(run)
@@ -156,13 +192,26 @@ def main():
             time.sleep(.05)
         assert not lifecycle['check'](work), 'surviving fixture process'
         lifecycle['reap']()
-        print(f'MANAGED_ADMISSION_PASS: {len(TESTS)} selected tests and {len(CHECKPOINTS)} crash checkpoints passed; fixture processes=0; children reaped', flush=True)
+        selected = set()
+        checkpoints_run = 0
+        for _, checkpoints, _, _, tests, _ in all_runs:
+            selected |= set(tests) if tests else TESTS - {CRASH_TEST} - HOST_DISCOVERY
+            checkpoints_run += len(checkpoints)
+        print(f'MANAGED_ADMISSION_PASS: part={os.environ.get("OKILUM_ADMISSION_PART") or "all"} '
+              f'{len(selected)} selected tests and {checkpoints_run} crash checkpoints passed; '
+              'fixture processes=0; children reaped', flush=True)
         return 0
     finally:
         for name, _, process, log, _, _ in all_runs:
             if process.poll() is None:
-                process.kill()
-            process.wait()
+                if name in tokens:
+                    # sudo is root-owned; ending the namespace init ends the run.
+                    pidns['kill_marked'](tokens[name])
+                try:
+                    process.kill()
+                except PermissionError:
+                    pass
+            process.wait(timeout=60)
             if any(run[0] == name for run in active):
                 print(f'=== Incomplete managed admission {name} ===\n{log.read_text()}', flush=True)
         lifecycle['check'](work, cleanup=True)

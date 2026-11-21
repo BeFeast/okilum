@@ -1,5 +1,71 @@
 # Agent build/test checks on GitHub
 
+## Where the Linux jobs run (Oleg 20.11)
+
+`pre-merge` and `linux` run on the self-hosted label `okilum-pool`. The runner
+only checks out the commit and calls `build-slot`; the suites run on the shared
+build-slot pool (`scripts/ci/pool-dispatch.sh`, `pool-pre-merge.sh`,
+`pool-linux-gate.sh`). The workflow name stays `agent-checks`, the job names
+stay `pre-merge` and `linux`, and the step names `gh-check.sh` requires are
+unchanged. A pool failure (queue, timeout, missing receipt) fails the dispatch
+step, which the helper counts as infrastructure (exit 75). A failing phase
+fails the step of that name, which is a code verdict (exit 1). 
+
+`linux` is split into six shards that run in parallel on different pool
+slots (Oleg 21.11: 4–6 shards, PR gate tickets first in build-slot, target
+≤ 20 minutes for the verdict). `pool-dispatch.sh linux-full` starts one
+`build-slot run --priority critical` per shard; the nightly scheduled run on
+`main` uses normal priority. Host capabilities come from the build-slot
+coordinator (`--needs`):
+
+| Shard | Needs | Phases |
+|---|---|---|
+| `base` | `docker` | AppImage runtime image, helper controls, CI/releases/updater Python suites, Sync Help and brand, managed admission crash checkpoints |
+| `admission` | `tmpfs` | managed admission `remaining-0` and the negative controls, real disk-full transfer (private tmpfs) |
+| `sync` | — | Sync source sharing, managed admission `remaining-1`, local writer authority |
+| `desktop` | `dbus` | workspace clippy, `cargo fmt --check` and desktop build, pairing through `okilum sync serve`, reveal stress, vault regression controls |
+| `rust-a` | `userbus`, `dbus` | `okilum-core` suite, Linux Rust groups outside the workspace census |
+| `rust-b` | `userbus`, `dbus` | Linux Rust workspace census |
+
+Every shard also verifies the toolchain, vendor, locked dependencies and the
+Python environment, and reaps fixture daemons. `pool-aggregate.py` merges the
+shard receipts: a phase recorded by several shards passes only when every
+record passed, and a phase that an earlier failure skipped is recorded as
+skipped, so another shard's pass of the same phase cannot stand in for it.
+Any failing phase is a code verdict; a lost shard (queue, ssh, OOM kill,
+incomplete receipt) without a code failure fails the dispatch step, which is
+infrastructure. A shard counts only with a valid build-slot receipt whose
+`exit` equals the shard's exit code and whose `oom_kill` is an explicit count:
+a missing, malformed or incomplete slot receipt is infrastructure, never a
+pass. The last step of both pool jobs, `Verify every pool shard and phase
+passed` (`pool-phase.sh --overall`), fails unless every dispatched shard
+passed and no record anywhere failed or was skipped; `gh-check.sh` requires
+it, so a phase without its own reporter step cannot leave a green gate.
+
+Managed admission's host-discovery test refuses every same-uid Syncthing it
+does not own, and the other slots of a pool host run as the same user. On a
+pool slot it therefore runs in a private PID namespace (`pid-namespace.py`,
+`sudo unshare --pid --mount-proc`, then back to the calling user), after a
+positive control shows a same-uid decoy `syncthing` outside is invisible
+inside. Leaving the namespace kills whatever is left in it, so its PID 1 runs
+the fixture guard for the test's evidence root first and fails a successful
+test that left a fixture alive. This needs `sudo unshare --pid --mount-proc`,
+which `sudo` alone does not guarantee (okilum-dev refuses the `/proc` mount):
+the `admission` and `all` shards need build-slot capability `pidns`, and the
+slot probes it again first (no verdict without it). The namespace controls
+(`scripts/ci/test_pid_namespace.py`) run only in the `admission` shard, as
+phase `Verify PID-namespace isolation controls`; pre-merge and `base` exclude
+that module from their discovery by name (`OKILUM_UNITTEST_EXCLUDE`), and any
+other discovery skips it. Outside the pool the test runs as before. Managed admission keeps its unchanged 600 s deadline
+per process set: `crash`, `remaining-0` and `remaining-1` each check the full
+compiled inventory and run on their own shard, so no part waits behind
+another (`OKILUM_ADMISSION_PART`; default `all`). The two Rust shards use the
+same `linux-rust-tests.sh` parts as the daily hosted matrix (#3198): `rust-a`
+runs `checks`, `rust-b` runs `workspace` (`OKILUM_LINUX_RUST_PART`). `pool-dispatch.sh
+linux-single` runs every phase in one slot. Windows and
+macOS jobs are unchanged. Landing is unchanged: a reviewed PR with a green
+`agent-checks` run is merged as before (`AGENTS.md`).
+
 ## When which check runs (Oleg 13.11 ~14:20, ~15:10)
 
 - **Before merge:** formatting, script checks and a Linux workspace compile,
