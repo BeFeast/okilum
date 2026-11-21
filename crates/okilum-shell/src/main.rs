@@ -187,6 +187,8 @@ mod input_frame_cost_tests;
 mod input_navigation_tests;
 #[cfg(test)]
 mod input_newline_tests;
+#[cfg(test)]
+mod issue3073_tests;
 mod reader_agent_imports;
 #[cfg(test)]
 mod reader_agent_imports_tests;

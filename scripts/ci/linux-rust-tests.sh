@@ -7,12 +7,17 @@ source "$(dirname "${BASH_SOURCE[0]}")/test-nofile.sh"
 # Switching back to single-package roots otherwise recompiles the same GUI
 # and core dependencies inside short operation groups after cold admission.
 packages=(-p okilum-write-authority -p okilum-core -p okilum-shell -p okilum-t3)
-# The pool gate runs the workspace census and the other groups on separate
-# shards: OKILUM_LINUX_RUST_PART=groups|workspace (default all, one process).
-part=${OKILUM_LINUX_RUST_PART:-all}
-case $part in
-    all|groups|workspace) ;;
-    *) echo "unknown OKILUM_LINUX_RUST_PART: $part" >&2; exit 64 ;;
+# The daily hosted gate runs the workspace census in its own parallel job (#3198)
+# and the pool gate runs it on its own shard: `all` (default) runs every suite,
+# `checks` all but workspace-full, `workspace` only workspace-full. The part is
+# the first argument, else OKILUM_LINUX_RUST_PART (pool shards), else `all`.
+part=${1:-${OKILUM_LINUX_RUST_PART:-all}}
+case "$part" in
+    all | checks | workspace) ;;
+    *)
+        printf 'linux-rust-tests.sh: unknown part %q (all, checks, workspace)\n' "$part" >&2
+        exit 2
+        ;;
 esac
 ran=0
 # Keep every failure, while allowing independent suites to finish their evidence.
@@ -20,10 +25,11 @@ failed=0
 suite() {
     local group=$1 limit=$2
     local account=()
-    shift 2
-    if [[ $part == groups && $group == workspace-full ]] || [[ $part == workspace && $group != workspace-full ]]; then
+    if [[ $part == workspace && $group != workspace-full ]] ||
+        [[ $part == checks && $group == workspace-full ]]; then
         return 0
     fi
+    shift 2
     ran=$((ran + 1))
     if [[ ${1:-} == cargo && ${2:-} == test ]]; then
         case "$group" in
@@ -113,6 +119,11 @@ suite issue2044 120 cargo test --locked -p okilum-shell --bin okilum issue2044_ 
 # Census every unit/integration/doc case, run the remaining cases at ordinary
 # concurrency, and require the full selected inventory in all three processes.
 # Assertions, the production pool, internal concurrency and this deadline stay.
+if [[ $part == workspace ]]; then
+    # Alone in a cold job: compile the census selection (same packages and
+    # features as workspace-rust-tests.py COMMAND) before its deadline starts.
+    cargo test --locked -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3 --no-run || failed=1
+fi
 suite workspace-full 1320 python3 scripts/ci/workspace-rust-tests.py
 # #1915: explicit filters make unsupported-flag coverage inspectable in CI.
 suite unix-publish 120 cargo test --locked -p okilum-core --lib unix_publish:: --no-fail-fast

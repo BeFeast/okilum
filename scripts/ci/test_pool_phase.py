@@ -255,19 +255,30 @@ class PoolShardSelection(unittest.TestCase):
             (root / "scripts/ci/linux-rust-tests.sh").write_text(source)
             (root / "scripts/ci/test-nofile.sh").write_text("")
             (root / "scripts/ci/test-group.sh").write_text('shift 2\necho "RAN $*" >> "$LOG_FILE"\n')
-            for part, workspace, others in (("groups", False, True), ("workspace", True, False),
-                                            ("all", True, True)):
-                log = root / f"{part}.log"
-                result = subprocess.run(["bash", "scripts/ci/linux-rust-tests.sh"], cwd=root,
+            # The workspace part precompiles the census selection outside a suite.
+            (root / "bin").mkdir()
+            (root / "bin/cargo").write_text('#!/bin/sh\necho "CARGO $*" >> "$LOG_FILE"\n')
+            (root / "bin/cargo").chmod(0o755)
+            path = f"{root / 'bin'}{os.pathsep}{os.environ['PATH']}"
+            # Pool shards pick the part through the environment, the hosted gate
+            # through the first argument (#3198); the argument wins.
+            for part, args, workspace, others in (
+                    ("checks", [], False, True), ("workspace", [], True, False), ("all", [], True, True),
+                    ("x", ["checks"], False, True), ("all", ["workspace"], True, False)):
+                log = root / f"{part}-{'-'.join(args)}.log"
+                result = subprocess.run(["bash", "scripts/ci/linux-rust-tests.sh", *args], cwd=root,
                                         capture_output=True, text=True, timeout=60,
-                                        env={**os.environ, "OKILUM_LINUX_RUST_PART": part, "LOG_FILE": str(log)})
+                                        env={**os.environ, "PATH": path, "OKILUM_LINUX_RUST_PART": part,
+                                             "LOG_FILE": str(log)})
                 self.assertEqual(result.returncode, 0, result.stderr)
                 ran = log.read_text()
-                self.assertEqual("workspace-rust-tests.py" in ran, workspace, part)
-                self.assertEqual("local-writer-admission.sh" in ran, others, part)
-            bad = subprocess.run(["bash", "scripts/ci/linux-rust-tests.sh"], cwd=root, capture_output=True,
-                                 text=True, timeout=60, env={**os.environ, "OKILUM_LINUX_RUST_PART": "x"})
-            self.assertEqual(bad.returncode, 64)
+                self.assertEqual("workspace-rust-tests.py" in ran, workspace, (part, args))
+                self.assertEqual("local-writer-admission.sh" in ran, others, (part, args))
+            for env_part, args in (("x", []), ("all", ["groups"])):
+                bad = subprocess.run(["bash", "scripts/ci/linux-rust-tests.sh", *args], cwd=root,
+                                     capture_output=True, text=True, timeout=60,
+                                     env={**os.environ, "OKILUM_LINUX_RUST_PART": env_part})
+                self.assertEqual(bad.returncode, 2, (env_part, args))
 
     def test_every_required_linux_phase_runs_on_some_shard(self):
         gate = (ROOT / "scripts/ci/pool-linux-gate.sh").read_text()

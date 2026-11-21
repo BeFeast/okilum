@@ -178,7 +178,7 @@ if has rust-a; then
 fi
 rust_part=
 case $shard in
-    rust-a) rust_part=groups ;;
+    rust-a) rust_part=checks ;;
     # Two ordinary census processes as on hosted: four were OOM-killed at the
     # 8 GiB slot limit (run 44837997588, rust-b on baldr).
     rust-b) rust_part=workspace ;;

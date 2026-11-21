@@ -31,7 +31,8 @@ fn edit2803_saves_and_ui_renders_reuse_the_background_attachment_index(cx: &mut 
     std::fs::write(root.join("assets/diagram.png"), b"png").unwrap();
     std::fs::write(root.join("message.md"), NOTE).unwrap();
     // Unresolved until `assets/new.png` appears: that batch must reparse it.
-    std::fs::write(root.join("refs.md"), "Later: ![](new.png)\n").unwrap();
+    // A file link, not an image embed: only links are graph edges (#2905, #3198).
+    std::fs::write(root.join("refs.md"), "Later: [new](new.png)\n").unwrap();
     let mut entity = None;
     let (_, visual) = cx.add_window_view(|window, cx| {
         let reader = cx.new(|cx| {

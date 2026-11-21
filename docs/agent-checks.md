@@ -35,7 +35,9 @@ OOM kill, incomplete receipt) without a code failure fails the dispatch step,
 which is infrastructure. Managed admission keeps its unchanged 600 s deadline
 per process set: `crash`, `remaining-0` and `remaining-1` each check the full
 compiled inventory and run on their own shard, so no part waits behind
-another (`OKILUM_ADMISSION_PART`; default `all`). `pool-dispatch.sh
+another (`OKILUM_ADMISSION_PART`; default `all`). The two Rust shards use the
+same `linux-rust-tests.sh` parts as the daily hosted matrix (#3198): `rust-a`
+runs `checks`, `rust-b` runs `workspace` (`OKILUM_LINUX_RUST_PART`). `pool-dispatch.sh
 linux-single` runs every phase in one slot. Windows and
 macOS jobs are unchanged. Landing is unchanged: a reviewed PR with a green
 `agent-checks` run is merged as before (`AGENTS.md`).
@@ -124,6 +126,14 @@ also runs complete discovery of `scripts/ci`, `scripts/releases` and
 concurrent fork cannot temporarily retain another fixture's installation lock
 before exec; all lifecycle assertions and test cases remain enabled. Both test shells raise their soft nofile limit via `test-nofile.sh`.
 The Linux Rust suites retain their existing conditional vendor workspace tests.
+
+The daily hosted Linux gate (`forgejo-linux.yml`, job `linux-checks`) runs
+`check-linux.sh` as two parallel matrix jobs (#3198): `checks` runs everything
+except the workspace census, and `workspace` compiles the census selection and
+then runs only `workspace-full`. As a single cold job it took 33–53 min and
+was cancelled by the 53 min bridge budget on 21.11. `needs.linux-checks.result`
+remains the verdict of both halves. Without an argument, both scripts still run
+the full list (agent checks and local runs).
 
 The canonical local Linux and shared gates use the same dev/test debug-info
 setting (`0`) as these required hosted checks. Run `26004` on `67e1d82b`
