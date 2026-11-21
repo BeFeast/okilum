@@ -86,6 +86,69 @@ startup. An unavailable default opens the existing start screen with its unavail
 notice, rather than silently selecting a different vault. No default keeps the
 existing launch behavior.
 
+## Recent vaults on the start screen (#3208)
+
+Design: the «Welcome screen: interaction spec (combined design)» comment on
+#3208 (layout A · Launcher, first launch from B, filter and ⌘1–9 from C, New
+file). Code: `reader_welcome.rs` draws it, `reader_startup.rs` holds the list
+and its actions, `reader_recent_vaults.rs` decides what is listed and why a
+vault is unavailable.
+
+**Layout.** Two panes under a transparent title strip: the actions on the
+left (Open folder… primary, Open file…, New file, New vault…, then Sync),
+each with a one-line description and its shortcut; the recents list on the
+right with a filter field and a footer (key hints, Clear list). Each row has a
+folder icon in the vault colour, the name over the path and a relative time.
+Below 640 px the panes stack and the window scrolls; the start window can be
+400 px wide. With nothing to list, a first-launch page replaces both panes.
+
+**What is listed.** Folders opened as vaults (`known_vault_roots`), newest
+first; unsaved untitled drafts (#1528) above them, at most three. Ten rows,
+then Show all. A folder that only held a file opened on its own, or a folder
+view, is not listed. In the user's own history (not an `OKILUM_STATE_DIR` QA
+instance, not a test's state directory) folders nobody chooses as a vault are
+hidden when recorded and pruned on every startup: the system temp folders, any
+`qa-evidence` path, `~/Library/Application Support`, `~/Library/Caches`,
+`~/Library/Logs`, `AppData`, `.cache`, `.local/state` and the trash. A hidden
+folder keeps its last note but is neither listed nor reopened at startup.
+iCloud Drive (`~/Library/Mobile Documents`) is not excluded. The history keeps
+at most 30 vaults besides the default. `okilum --no-history` or
+`OKILUM_NO_HISTORY=1` records nothing for that process.
+
+**Removing.** Remove from list (row menu, ⌘⌫ on macOS, Delete elsewhere)
+hides the entry, with a 6 s Undo toast. Clear list hides every listed vault
+after a confirmation; drafts stay. Opening a hidden vault again lists it again.
+Locate… forgets the old entry and opens the chosen folder, keeping the colour.
+
+**Keyboard** (context `ReaderEntry`): ↑/↓, Home/End, PageUp/PageDown, Enter or
+⌘↓ to open, ⌘1–9 / Ctrl+1–9 for the nth visible row, ⌘N / Ctrl+N for New
+file, Esc clears the filter, Tab moves between actions, filter and list. A
+printable key typed in a list goes into the filter (name, then path, then the
+letters in order). Holding ⌘ / Ctrl for 500 ms shows the row numbers.
+
+**Unavailable vaults.** Each listed vault is checked off the UI thread, one
+thread per folder, with a 1.5 s deadline in all, when the screen appears and
+when its window comes back to the front. The row stays in place and shows the
+reason and one fix:
+
+| Reason (macOS wording; Linux says «mounted») | Fix |
+|---|---|
+| `Network volume “X” isn’t connected` (the vault was on a network volume when last opened; Linux: `Network share “X” isn’t mounted`), `Volume “X” isn’t connected`, `Drive “Z:” isn’t connected`, `Network location \\server\share isn’t reachable` | Try again |
+| `Network folder isn’t responding` (deadline passed) | Try again |
+| `Folder was moved or deleted`, `This path is now a file, not a folder` | Locate… |
+| `Okilum isn’t allowed to read this folder` | Allow access… (macOS) / Locate… |
+| `Couldn’t open: <system message>` | Details… |
+
+A folder that opens but cannot take edits is available: its row shows a lock
+and `Read-only · <path>`. Paths are shortened by whole folders next to the
+anchor (`~`, `/Volumes/<name>`, `C:\`, `\\server\share`, `smb://server/share`),
+keeping the last folder and, while filtering, the one that matches.
+
+**Visual evidence.** `welcome-native.yml` (push to `welcome-native/**`) builds
+with the non-publishing `welcome-ui-harness` feature and captures every state
+on Linux, macOS and Windows; `OKILUM_WELCOME_HARNESS` sets the filter, held
+numbers, Clear list confirmation or keyboard focus without input automation.
+
 ## Window state integration (#592)
 
 New Window snapshots the initiating Reader before attaching the shared vault.
