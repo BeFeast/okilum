@@ -32,6 +32,7 @@ GROUPS = {
     "heic": ("okilum-shell", None, "heic", [
         "issue2177_non_heif_bytes_never_reach_a_decoder",
         "issue2177_missing_decoder_messages_name_the_component",
+        "issue2177_primary_only_hides_every_other_item",
         "issue2984_oversized_source_is_rejected_before_decoding",
         "issue2984_heic_and_heif_open_the_image_viewer_and_embed_decoder",
     ] + ([
@@ -43,6 +44,7 @@ GROUPS = {
         "issue2984_native_heic_preview_reports_errors_and_refreshes_assets",
     ] + ([
         "issue2984_multi_image_container_uses_first_still",
+        "issue2177_multi_image_container_shows_the_primary",
         "issue2984_bundled_decoder_wins_over_the_host",
     ] if sys.platform.startswith("linux") else []))),
 }

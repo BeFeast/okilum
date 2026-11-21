@@ -8,6 +8,9 @@ import sys
 import tempfile
 import zlib
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import heif_boxes  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / 'crates/okilum-core/tests/fixtures/viewers/images'
 LIMITS = ['--as=1073741824', '--fsize=268435456', '--cpu=20', '--core=0', '--']
@@ -73,8 +76,11 @@ def verify(appdir):
     with tempfile.TemporaryDirectory() as temporary:
         work = Path(temporary)
         outputs = {}
-        for name in ('still.heic', 'rotated.heic', 'mirrored.heic', 'multiple.heic'):
+        for name in ('still.heic', 'rotated.heic', 'mirrored.heic', 'multiple.heic',
+                     'primary-second.heic'):
             source = (FIXTURES / name).read_bytes()
+            # The viewer hides non-primary items before decoding (#2177).
+            source = heif_boxes.primary_only(source)
             path = work / "- café 'photo'.HEIF"
             path.write_bytes(source)
             output = work / 'preview.png'
@@ -87,10 +93,17 @@ def verify(appdir):
                 raise ValueError(f'Packaged HEIC decoder failed: {result.stderr.decode(errors="replace")}')
             if path.read_bytes() != source:
                 raise ValueError('Decoder changed the original HEIC')
-            outputs[name] = png_pixels(output if output.exists() else work / 'preview-1.png')
+            if not output.exists() or list(work.glob('preview-*.png')):
+                raise ValueError(f'{name}: decoder wrote more than the primary image')
+            outputs[name] = png_pixels(output)
         base = outputs['still.heic']
         if outputs['multiple.heic'] != base:
-            raise ValueError('Multi-image HEIC did not select the first still')
+            raise ValueError('Multi-image HEIC did not select the primary (first) still')
+        second = outputs['primary-second.heic']
+        for actual, expected in [(second[40][8][:3], (240, 20, 20)),
+                                 (second[8][56][:3], (20, 240, 20))]:
+            if max(abs(a - b) for a, b in zip(actual, expected)) > 2:
+                raise ValueError(f'Multi-image HEIC did not select the primary (second) still: {actual}')
         if len(base) != 48 or len(base[0]) != 64:
             raise ValueError('Wrong decoded HEVC dimensions')
         for actual, expected in [(base[8][8][:3], (240, 20, 20)),
@@ -109,7 +122,7 @@ def verify(appdir):
                                 cwd=work, env=environment, capture_output=True, timeout=30)
         if not result.returncode or list(work.glob('preview*.png')):
             raise ValueError('Corrupt HEIC must fail without a stale preview')
-    print('HEIC_PACKAGED_PASS real HEVC pixels, irot, imir, source preservation, corrupt input')
+    print('HEIC_PACKAGED_PASS real HEVC pixels, irot, imir, primary selection, source preservation, corrupt input')
 
 
 if __name__ == '__main__':

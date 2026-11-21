@@ -10,6 +10,8 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Instant;
 
+#[cfg(any(target_os = "linux", test))]
+mod primary;
 #[cfg(windows)]
 mod windows;
 
@@ -136,6 +138,10 @@ fn decode(path: &Path) -> anyhow::Result<Vec<u8>> {
         "HEIC image exceeds the 50 MiB preview limit"
     );
     anyhow::ensure!(looks_like_heif(&source), "Not a HEIC/HEIF file");
+    // libheif's converter writes every top-level image; keep only the
+    // primary (#2177). sips and WIC already decode the primary image.
+    #[cfg(target_os = "linux")]
+    primary::primary_only(&mut source);
     let snapshot = directory.path().join("source.heic");
     std::fs::write(&snapshot, source)?;
     let result = run_platform_decoder(directory.path(), &snapshot);
@@ -155,8 +161,9 @@ fn decode(path: &Path) -> anyhow::Result<Vec<u8>> {
     let png = if png.is_file() {
         png
     } else {
-        // libheif numbers output when the container has multiple top-level
-        // images. Show the first still, never a depth/auxiliary image.
+        // libheif numbers output when the container still has several
+        // top-level images: `primary_only` could not read the item list.
+        // Show the first still, never a depth/auxiliary image.
         directory.path().join("preview-1.png")
     };
     let file = std::fs::File::open(png)?;
@@ -427,6 +434,75 @@ mod tests {
             .unwrap()
             .to_rgba8();
         assert_eq!(actual, expected);
+    }
+
+    const MULTIPLE: &[u8] =
+        include_bytes!("../../../okilum-core/tests/fixtures/viewers/images/multiple.heic");
+    const PRIMARY_SECOND: &[u8] =
+        include_bytes!("../../../okilum-core/tests/fixtures/viewers/images/primary-second.heic");
+
+    fn changed_bytes(before: &[u8], after: &[u8]) -> Vec<usize> {
+        assert_eq!(before.len(), after.len());
+        (0..before.len())
+            .filter(|&i| before[i] != after[i])
+            .collect()
+    }
+
+    #[test]
+    fn issue2177_primary_only_hides_every_other_item() {
+        // One flag bit per non-primary item, nothing else.
+        for source in [MULTIPLE, PRIMARY_SECOND] {
+            let mut hidden = source.to_vec();
+            assert!(primary::primary_only(&mut hidden));
+            let changed = changed_bytes(source, &hidden);
+            assert_eq!(changed.len(), 1, "exactly the other item's flags byte");
+            assert_eq!(hidden[changed[0]], source[changed[0]] | 1);
+        }
+        // The two fixtures differ only in `pitm`, so they hide different items.
+        let (mut first, mut second) = (MULTIPLE.to_vec(), PRIMARY_SECOND.to_vec());
+        primary::primary_only(&mut first);
+        primary::primary_only(&mut second);
+        assert_ne!(
+            changed_bytes(MULTIPLE, &first),
+            changed_bytes(PRIMARY_SECOND, &second)
+        );
+        let mut single = FIXTURE.to_vec();
+        assert!(primary::primary_only(&mut single));
+        assert_eq!(single, FIXTURE, "a single image stays byte-identical");
+        // Malformed structure: left for libheif to judge, never rewritten.
+        let mut truncated = MULTIPLE[..MULTIPLE.len() / 2].to_vec();
+        let copy = truncated.clone();
+        assert!(!primary::primary_only(&mut truncated));
+        assert_eq!(truncated, copy);
+        let mut overrun = MULTIPLE.to_vec();
+        overrun[..4].copy_from_slice(&u32::MAX.to_be_bytes());
+        let copy = overrun.clone();
+        assert!(!primary::primary_only(&mut overrun));
+        assert_eq!(overrun, copy);
+    }
+
+    /// `primary-second.heic` is `multiple.heic` with `pitm` naming the second
+    /// still (the top/bottom reversal). Without `primary_only`, libheif's
+    /// first output is the first still and this fails.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn issue2177_multi_image_container_shows_the_primary() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("primary-second.heic");
+        std::fs::write(&path, PRIMARY_SECOND).unwrap();
+        let image =
+            image::load_from_memory_with_format(&decode(&path).unwrap(), image::ImageFormat::Png)
+                .unwrap()
+                .to_rgb8();
+        assert_eq!(image.dimensions(), (64, 48));
+        let red = image.get_pixel(8, 40).0;
+        let green = image.get_pixel(56, 8).0;
+        assert!(red[0] > 180 && red[1] < 80 && red[2] < 80, "{red:?}");
+        assert!(
+            green[1] > 180 && green[0] < 80 && green[2] < 80,
+            "{green:?}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), PRIMARY_SECOND);
     }
 
     #[cfg(unix)]
