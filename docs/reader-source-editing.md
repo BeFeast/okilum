@@ -672,6 +672,13 @@ The note template is applied only when the file is created. The append goes
 through the note's editor: an open editor saves first, and a change on disk at the
 same moment adds nothing. A daily note never goes into the vault root.
 
+Recovery drafts never block Today's note. If today's note was deleted after an
+unsaved edit, its draft is still kept: Today's note asks «Restore draft» (the
+draft becomes today's note again) or «Start fresh from template» (the draft is set
+aside and stays in File → Recover notes…; the new note opens clean). If today's
+note exists and has unsaved edits from before, it opens with the normal «Restore
+unsaved edits» offer and nothing is appended until they are dealt with.
+
 Where the settings come from, in order:
 
 1. The choice made in Okilum, stored with app state per vault, outside the vault.

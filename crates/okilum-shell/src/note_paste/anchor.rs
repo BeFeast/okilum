@@ -43,7 +43,8 @@ impl Anchor {
     /// The position `offset` before a block in `source`, for a drop onto
     /// that block (#1615). The text kept after it is the shortest start of
     /// the rest of the note that occurs only once in it (the whole rest when
-    /// no start is unique), not just [`CONTEXT`] bytes: two sections that
+    /// no start is unique), and at least the block's whole first line, not
+    /// just [`CONTEXT`] bytes: two sections that
     /// share a longer opening (two `## Notes` with the same first lines) are
     /// still told apart by [`Self::locate_block`].
     pub fn at_block(source: &str, offset: usize) -> Self {
@@ -70,6 +71,9 @@ impl Anchor {
             }
             ceil(rest, high.min(rest.len()))
         };
+        // At least the block's whole first line: a short unique start (`#`)
+        // could survive in unrelated text after the block itself is gone.
+        let len = len.max(rest.find('\n').map_or(rest.len(), |at| at + 1));
         anchor.after = rest[..len].to_string();
         anchor.to_end = anchor.offset + len == source.len();
         if repeated {
@@ -156,11 +160,14 @@ impl Anchor {
     /// `## Notes`).
     pub fn locate_block(&self, current: &str) -> Option<usize> {
         // Where the block's own text (and, for a repeated block, the text
-        // before it) still stands. Searched directly, so a short unique
-        // start (`##`) is found even when the text around the old position
-        // was edited.
+        // before it) still stands at the start of a top-level block (never
+        // in the frontmatter, a code block or a paragraph). Searched
+        // directly, so the block is found even when the text around the old
+        // position was edited.
+        let starts = okilum_core::deep_link::block_starts(current);
         let fits = |at: usize| {
-            current.is_char_boundary(at)
+            (at == current.len() || starts.binary_search(&at).is_ok())
+                && current.is_char_boundary(at)
                 && current[at..].starts_with(&self.after)
                 && (!self.to_end || current.len() - at == self.after.len())
                 && (!self.before_required || current[..at].ends_with(&self.before))
@@ -335,18 +342,21 @@ mod tests {
         // A short unique start (`##`): the block is found again after the
         // paragraph before it was edited, where the paste locator's
         // context is gone and the start alone is too short for it.
-        let note = "# Title\n\nFirst paragraph.\n\n## Next\n\nBody.\n";
-        let next = Anchor::at_block(note, note.find("## Next").unwrap());
-        assert_eq!(next.after, "##", "positive control: a two-byte start");
+        let note = "# Title\n\nFirst paragraph.\n\n## N\n\nBody.\n";
+        let next = Anchor::at_block(note, note.find("## N").unwrap());
+        assert_eq!(
+            next.after, "## N\n",
+            "the block's whole first line, though `##` alone is unique"
+        );
         let edited = note.replace("First paragraph.", "First paragraph, edited.");
         assert_eq!(
             next.locate(&edited),
             None,
             "positive control: locate alone fails"
         );
-        assert_eq!(next.locate_block(&edited), edited.find("## Next"));
+        assert_eq!(next.locate_block(&edited), edited.find("## N"));
         // The block's start typed again elsewhere: ambiguous, refused.
-        let doubled = edited.replace("Body.", "## Other\n\nBody.");
+        let doubled = edited.replace("Body.", "## N\n\nBody.");
         assert_eq!(next.locate_block(&doubled), None);
         // The later of two identical blocks: the rest is not unique, the
         // text before it decides.
@@ -388,7 +398,7 @@ mod tests {
             "not before the earlier copy"
         );
         // Unique from the first byte, or not at all.
-        assert_eq!(Anchor::at_block("a\nb\n", 2).after, "b");
+        assert_eq!(Anchor::at_block("a\nb\n", 2).after, "b\n");
         assert_eq!(Anchor::at_block("x\nx\n", 2).after, "x\n");
         assert_eq!(Anchor::at_block("x\n", 2).after, "");
         // Two blocks with the same first line: deleting the target must not
@@ -401,6 +411,25 @@ mod tests {
             "positive control: locate alone"
         );
         assert_eq!(target.locate_block(&deleted), None);
+        // Review of #3074 (83378): the Reader showed a title, the opened
+        // draft has none, and its `#` survives only in a YAML comment. The
+        // drop is refused, never placed inside the frontmatter.
+        let shown = "---\ntags: [a]\n---\n# Title\n\nBody.\n";
+        let opened = "---\ntags: [a] # label\n---\nBody.\n";
+        let title = Anchor::at_block(shown, shown.find("# Title").unwrap());
+        assert_eq!(title.after, "# Title\n");
+        assert_eq!(title.locate_block(opened), None);
+        // The whole first line, but only at the start of a top-level block:
+        // not a comment in the frontmatter, not a line in a code block.
+        let in_yaml = "---\nnote: x\n# Title\n---\nBody.\n";
+        assert_eq!(title.locate_block(in_yaml), None);
+        let in_code = "```\n# Title\n```\n\nBody.\n";
+        assert_eq!(title.locate_block(in_code), None);
+        // Positive controls: an unchanged title is still found after edits
+        // to the frontmatter or the text around it.
+        let retagged = "---\ntags: [b, c]\n---\n# Title\n\nBody, edited.\n";
+        assert_eq!(title.locate_block(retagged), retagged.find("# Title"));
+        assert_eq!(title.locate_block("# Title\n\nBody.\n"), Some(0));
         // The end of the note: no block to keep.
         let end = Anchor::at(source, source.len());
         assert_eq!(

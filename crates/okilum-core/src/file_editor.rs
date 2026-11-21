@@ -437,6 +437,47 @@ impl FileEditor {
         Ok(Some(draft.text.to_string()))
     }
 
+    /// `unsaved_draft_text` for a note that is not there, whose folder may be
+    /// gone too (#3182): the path is resolved through its deepest existing
+    /// folder, as the journal was keyed when the note was there. Read-only,
+    /// and nothing is created.
+    pub fn waiting_draft_text(path: &Path, state: &Path) -> Result<Option<String>> {
+        if path.parent().is_some_and(Path::exists) {
+            return Self::unsaved_draft_text(path, state);
+        }
+        let mut missing = Vec::new();
+        let mut at = path;
+        let resolved = loop {
+            match at.canonicalize() {
+                Ok(mut base) => {
+                    for part in missing.iter().rev() {
+                        base.push(part);
+                    }
+                    break base;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    missing.push(at.file_name().context("Source has no filename")?.to_owned());
+                    at = at.parent().context("Source has no existing folder")?;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        };
+        let key = format!(
+            "{:x}",
+            Sha256::digest(resolved.as_os_str().as_encoded_bytes())
+        );
+        let bytes = match fs::read(state.join(format!("{key}.json"))) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let draft: Draft = serde_json::from_slice(&bytes)?;
+        if draft.path != resolved || (!draft.pending_input && draft.text == draft.base) {
+            return Ok(None);
+        }
+        Ok(Some(draft.text.to_string()))
+    }
+
     /// Whether a live editor (any window, any process) holds `path`'s editor
     /// lock. A probe only: the answer can be stale at once. Callers that act
     /// on "idle" must hold `claim_idle`'s lock instead.
@@ -480,6 +521,33 @@ impl FileEditor {
             "{:x}",
             Sha256::digest(path.as_os_str().as_encoded_bytes())
         ))
+    }
+
+    /// Keep `path`'s unsaved recovery draft in recovery, but free the path
+    /// for a new note (#3182). The journal moves to another name in the same
+    /// folder: Recover notes still lists it under its own note path, clean-
+    /// journal pruning skips it (its name is not the path's key), and a note
+    /// created at `path` opens clean instead of adopting the old draft. Done
+    /// under the path's editor lock, so no editor adopts it meanwhile. Nothing
+    /// is deleted; a path without a journal is left alone.
+    pub fn set_aside_draft(path: &Path, state: &Path) -> Result<()> {
+        let key = Self::journal_key(path)?;
+        let Some(_lock) = Self::claim_idle(path, state)? else {
+            bail!(BEING_EDITED);
+        };
+        let journal = state.join(format!("{key}.json"));
+        let bytes = match fs::read(&journal) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        // Only a readable journal is moved; anything else stays where it is.
+        let _: Draft = serde_json::from_slice(&bytes).context("Unreadable recovery draft; kept")?;
+        let aside = state.join(format!("{key}-set-aside-{}.json", uuid::Uuid::new_v4()));
+        fs::rename(&journal, &aside)?;
+        #[cfg(unix)]
+        File::open(state)?.sync_all()?;
+        Ok(())
     }
 
     /// Reserve a not-yet-existing destination without adopting an old draft.
