@@ -159,7 +159,7 @@ impl Reader {
                     .map(|c| (r, c))
             })
             .unwrap_or((0, 0));
-        let grid = self.editing.as_ref().unwrap().table_grid.clone();
+        let grid = self.pane.editing.as_ref().unwrap().table_grid.clone();
         self.set_live_preview(true, window, cx);
         // Run with App after the Reader action borrow ends. Grid admission
         // reads the current Reader owner and rechecks the captured revision.
@@ -214,7 +214,7 @@ impl Reader {
             let state = input.read(cx);
             let stamp = state.source_stamp();
             let selection = state.selected_range();
-            if let Some(editing) = &self.editing {
+            if let Some(editing) = &self.pane.editing {
                 editing
                     .table_grid
                     .update(cx, |grid, _| grid.mark_source_edit(stamp, selection));
@@ -338,7 +338,7 @@ mod tests {
         });
         visual.run_until_parked();
         let input = reader.read_with(visual, |reader, _| {
-            reader.editing.as_ref().unwrap().input.clone()
+            reader.pane.editing.as_ref().unwrap().input.clone()
         });
         let at = source.find("one").unwrap();
         input.update(visual, |input, cx| input.set_selected_range(at..at, cx));

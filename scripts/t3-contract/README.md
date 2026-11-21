@@ -34,9 +34,20 @@ Current scope:
    proof. Diff and actual schema remain artifacts even on failure.
 
 Both hosted observation and the local updater gate now exercise the same real
-`okilum_t3::stream::NativeClient` path. All five literal boolean proofs are
-required: `pair`, `subscribe_thread`, `resume_thread`, `subscribe_shell`, and
-`dispatch_command`. Thread and shell subscriptions must receive real completion
+`okilum_t3::stream::NativeClient` path. All six literal boolean proofs are
+required: `pair`, `environment_capabilities`, `subscribe_thread`,
+`resume_thread`, `subscribe_shell`, and `dispatch_command`.
+
+`environment_capabilities` reads the paired server's profile through the public
+`NativeClient::environment_profile` (`server.getConfig`) and checks the capability
+flags the client consumes (`questionAttachments`, `attachmentUploads`,
+`fileAttachments.maxUploadBytes`) against the raw `/.well-known/t3/environment`
+descriptor. An undecodable profile, an identity mismatch or a disagreement fails
+the `environment_profile` stage. A consumed flag the server no longer advertises
+is not a decode failure: the client degrades that feature, so the receipt names it
+in `capability_unknown`, the proof stays false and the run reports FAIL with a
+`capability_error` instead of passing silently. The receipt also records the
+decoded flag values. Thread and shell subscriptions must receive real completion
 markers; a shell snapshot alone does not prove completion. Resume uses the
 committed initial cursor, with no replacement snapshot or cursor change.
 

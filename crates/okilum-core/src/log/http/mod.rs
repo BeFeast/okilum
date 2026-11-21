@@ -38,7 +38,7 @@ impl HttpLog {
         Ok(Self {
             client,
             url,
-            cursor: Cursor::default(),
+            cursor: Cursor::from_tail(crate::log::stream::TAIL_START_BYTES),
             retry_at: None,
         })
     }
@@ -47,6 +47,11 @@ impl HttpLog {
     }
     pub fn offset(&self) -> u64 {
         self.cursor.offset
+    }
+    /// File offset where reading began; 0 when the whole file is read. A
+    /// larger file starts at the first full line of its last 1 MiB.
+    pub fn started_at(&self) -> u64 {
+        self.cursor.started_at
     }
 
     /// No sleeping or internal retry loop. During backoff, returns no bytes;
@@ -107,6 +112,16 @@ impl HttpLog {
         }
         self.cursor.commit(bytes.len() as u64);
         self.retry_at = None;
+        if self.cursor.skip_line {
+            // The line cut by the tail start is consumed, never shown.
+            match bytes.iter().position(|b| *b == b'\n') {
+                Some(n) => {
+                    bytes.drain(..=n);
+                    self.cursor.skip_line = false;
+                }
+                None => bytes.clear(),
+            }
+        }
         Ok(bytes)
     }
     fn stop(&mut self, error: Error) -> Result<Vec<u8>, Error> {

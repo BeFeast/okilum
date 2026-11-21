@@ -181,7 +181,7 @@ impl Render for Panel {
                     .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))))
             .child(div().text_sm().text_color(if self.error { brand::palette(cx).danger } else { cx.theme().muted_foreground }).child(self.message.clone()))
             .children(self.displayed_url.as_ref().map(|url| div().text_xs().child(format!("Displayed source: {url}"))))
-            .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Loaded history is session-only, up to 8 MiB / 20,000 lines. Rotation or rewrite stops this session; existing rows remain readable."));
+            .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Loaded history is session-only, up to 8 MiB / 20,000 lines; a larger file starts at a line in its last 1 MiB. A dropped connection reconnects; rotation or rewrite stops this session and existing rows remain readable."));
         let mut body = v_flex()
             .size_full()
             .min_h_0()

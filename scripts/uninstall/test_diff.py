@@ -54,6 +54,31 @@ class DiffTest(unittest.TestCase):
         self.assertIn('export', out)
         self.assertIn('vault', out)
 
+    def test_windows_sync_identity_may_remain(self):
+        local = r'C:\Users\qa\AppData\Local'
+        code, out = self.run_diff(
+            [],
+            [
+                rf'F {local}\okilum',
+                rf'F {local}\okilum\Sync\config\cert.pem',
+                rf'F {local}\okilum\SyncDirect\direct.json',
+            ],
+            '--home', r'C:\Users\qa',
+        )
+        self.assertEqual(code, 0, out)
+        self.assertIn('sync', out)
+
+    def test_state_root_without_sync_identity_still_fails(self):
+        # Positive control: the parent is kept only when it holds Sync's identity.
+        local = r'C:\Users\qa\AppData\Local'
+        code, out = self.run_diff(
+            [],
+            [rf'F {local}\okilum', rf'F {local}\okilum\settings.json'],
+            '--home', r'C:\Users\qa',
+        )
+        self.assertEqual(code, 1, out)
+        self.assertIn('2 left by Okilum', out)
+
     def test_user_assist_names_are_decoded_from_rot13(self):
         count = r'K HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist\{X}\Count'
         # "com.befeast.okilum" in ROT13; another program's entry stays "other".

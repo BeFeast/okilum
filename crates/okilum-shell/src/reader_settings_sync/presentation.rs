@@ -427,6 +427,7 @@ mod tests {
 #[cfg(all(test, windows))]
 mod issue3160_tests {
     use super::*;
+    use ::core::prelude::v1::test;
 
     #[test]
     fn issue3160_received_vault_paths_show_without_verbatim_prefix() {

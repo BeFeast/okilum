@@ -11,8 +11,45 @@
 //! borrows. The second pane's host stores the inactive surface beside it and
 //! swaps on focus, so these call sites do not change again.
 use super::*;
+use reader_panes::PaneId;
+
+/// What background work for a surface captures (#773, stage 2): the pane it
+/// was started for and the generation current then. A completion publishes
+/// only while both still match, so a late result can never land in a pane
+/// that was replaced, closed or reused for another note.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct Ticket {
+    pane: PaneId,
+    generation: u64,
+}
+
+impl Ticket {
+    pub(super) fn pane(&self) -> PaneId {
+        self.pane
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only: panes whose completions arrived after the pane was closed
+    /// and were dropped at the routing boundary, before any ticket check.
+    pub(super) static DROPPED_FOR_CLOSED_PANE: std::cell::RefCell<Vec<PaneId>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A completion kept for a pane that was not active when it finished.
+pub(super) type Deferred = Box<dyn FnOnce(&mut Reader, &mut Window, &mut Context<Reader>)>;
 
 pub(super) struct Surface {
+    /// Stable for this surface's lifetime; a replacement surface gets a new one.
+    id: PaneId,
+
+    // The rendered document and this note's history, positions and pending
+    // landing.
+    pub content: Entity<TextViewState>,
+    pub _content_sub: Subscription,
+    pub navigation: reader_navigation::State,
+
     // Which note this surface shows and its source.
     pub current_rel: String,
     pub current_title: String,
@@ -60,11 +97,51 @@ pub(super) struct Surface {
     pub file_preview: Option<reader_files::FilePreview>,
     pub typed_navigation: reader_typed_view::Navigation,
     pub hover_preview: reader_hover::HoverPreview,
+
+    // Editor and recovery for this document. The handle is pane-owned; which
+    // pane may edit a note is decided window-wide (stage 3, #773).
+    pub editing: Option<reader_editor::Editing>,
+    pub recovery_offer: bool,
+    pub recovery_checked: bool,
+    pub recovery_error: bool,
+    pub recovery_dismissed: bool,
+    pub recovery_startup: bool,
+
+    // Load pipeline: the document being published into this surface and
+    // what it has recorded as usable. The vault's own preparation
+    // (`Reader::loading`) stays window-level.
+    pub pending_open_document: Option<reader_loading::PendingDocument>,
+    pub queued_open_note: Option<String>,
+    /// Where an external link queued with `queued_open_note` lands (#1049).
+    pub queued_landing: Option<okilum_core::deep_link::Position>,
+    pub usable_document: bool,
+    pub last_recorded_document: Option<(PathBuf, String, u64)>,
+    /// Completions that finished while this pane was inactive, in arrival
+    /// order; `resume_active_pane` replays them. Each one rechecks its own
+    /// ticket, so a result that went stale meanwhile still changes nothing.
+    pub deferred: Vec<Deferred>,
+
+    /// Test-only: holds the next document preparation before it publishes.
+    #[cfg(test)]
+    pub preparation_hold: Option<async_channel::Receiver<()>>,
+    /// Test-only: completions this surface observed and refused as stale.
+    #[cfg(test)]
+    pub refused: Vec<Ticket>,
 }
 
 impl Surface {
-    pub(super) fn new(find_input: Entity<InputState>, use_html: bool) -> Self {
+    pub(super) fn new(
+        content: Entity<TextViewState>,
+        content_sub: Subscription,
+        find_input: Entity<InputState>,
+        use_html: bool,
+        recovery_startup: bool,
+    ) -> Self {
         Self {
+            id: PaneId::next(),
+            content,
+            _content_sub: content_sub,
+            navigation: Default::default(),
             current_rel: String::new(),
             current_title: String::new(),
             note_source: String::new(),
@@ -91,6 +168,255 @@ impl Surface {
             file_preview: None,
             typed_navigation: Default::default(),
             hover_preview: Default::default(),
+            editing: None,
+            recovery_offer: false,
+            recovery_checked: false,
+            recovery_error: false,
+            recovery_dismissed: false,
+            recovery_startup,
+            pending_open_document: None,
+            queued_open_note: None,
+            queued_landing: None,
+            usable_document: false,
+            last_recorded_document: None,
+            deferred: Vec::new(),
+            #[cfg(test)]
+            preparation_hold: None,
+            #[cfg(test)]
+            refused: Vec::new(),
         }
     }
+
+    pub(super) fn id(&self) -> PaneId {
+        self.id
+    }
+
+    /// The file this surface's editor owns, while it is editing.
+    pub(super) fn edited_path(&self) -> Option<&Path> {
+        self.editing.as_ref().map(reader_editor::Editing::path)
+    }
+
+    /// For work that must not outlive the document's navigation generation.
+    pub(super) fn navigation_ticket(&self) -> Ticket {
+        Ticket {
+            pane: self.id,
+            generation: self.navigation.generation,
+        }
+    }
+
+    /// For a document preparation request (`open_note` and its variants).
+    pub(super) fn preparation_ticket(&self) -> Ticket {
+        Ticket {
+            pane: self.id,
+            generation: self.navigation.preparation_generation,
+        }
+    }
+
+    /// Whether work stamped with `ticket` was started for this surface. Check
+    /// it before touching any state, so work for another pane changes nothing.
+    pub(super) fn owns(&self, ticket: Ticket) -> bool {
+        ticket.pane == self.id
+    }
+
+    pub(super) fn holds_navigation(&mut self, ticket: Ticket) -> bool {
+        self.holds(ticket, self.navigation.generation)
+    }
+
+    pub(super) fn holds_preparation(&mut self, ticket: Ticket) -> bool {
+        self.holds(ticket, self.navigation.preparation_generation)
+    }
+
+    fn holds(&mut self, ticket: Ticket, generation: u64) -> bool {
+        let current = ticket.pane == self.id && ticket.generation == generation;
+        #[cfg(test)]
+        if !current {
+            self.refused.push(ticket);
+        }
+        current
+    }
+
+    /// Test-only: this surface is closed and a fresh one takes its place with
+    /// the same generations, so only the pane identity tells them apart.
+    #[cfg(test)]
+    pub(super) fn reopen_as_new_pane(&mut self) {
+        self.id = PaneId::next();
+    }
 }
+
+/// Routing of background work to the pane it was started for (#773). One
+/// pane today: the inline `Reader::pane`. The second pane's host extends
+/// these three, and its focus switch calls `resume_active_pane`.
+impl Reader {
+    /// The surface with this id, active or not; `None` once it was closed.
+    pub(super) fn surface_mut(&mut self, pane: PaneId) -> Option<&mut Surface> {
+        (self.pane.id == pane).then_some(&mut self.pane)
+    }
+
+    pub(super) fn is_active_pane(&self, pane: PaneId) -> bool {
+        self.pane.id == pane
+    }
+
+    /// Runs a completion for `pane` now when it is the active pane. A
+    /// completion for an inactive pane is kept with that pane and replayed by
+    /// `resume_active_pane`; one for a closed pane is dropped with it. Either
+    /// way it never touches the pane that happens to be active.
+    pub(super) fn run_for_pane(
+        &mut self,
+        pane: PaneId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        work: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) {
+        #[cfg(test)]
+        if !self.is_active_pane(pane) && self.surface_mut(pane).is_none() {
+            DROPPED_FOR_CLOSED_PANE.with(|dropped| dropped.borrow_mut().push(pane));
+        }
+        if self.is_active_pane(pane) {
+            work(self, window, cx);
+        } else if let Some(surface) = self.surface_mut(pane) {
+            surface.deferred.push(Box::new(work));
+        }
+    }
+
+    /// `run_for_pane` for completions that run without a window.
+    pub(super) fn run_for_pane_without_window(
+        &mut self,
+        pane: PaneId,
+        cx: &mut Context<Self>,
+        work: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
+    ) {
+        #[cfg(test)]
+        if !self.is_active_pane(pane) && self.surface_mut(pane).is_none() {
+            DROPPED_FOR_CLOSED_PANE.with(|dropped| dropped.borrow_mut().push(pane));
+        }
+        if self.is_active_pane(pane) {
+            work(self, cx);
+        } else if let Some(surface) = self.surface_mut(pane) {
+            surface
+                .deferred
+                .push(Box::new(move |this, _, cx| work(this, cx)));
+        }
+    }
+
+    /// Runs `f` for every pane of this window, each as the active surface
+    /// for that call, and returns every result: it never stops early, so Quit
+    /// and window close protect every pane even after one fails. One pane
+    /// today; the second pane's host swaps each inactive surface in for its
+    /// call, the same swap it makes on focus.
+    pub(super) fn for_each_pane<R>(
+        &mut self,
+        cx: &mut Context<Self>,
+        mut f: impl FnMut(&mut Self, &mut Context<Self>) -> R,
+    ) -> Vec<R> {
+        vec![f(self, cx)]
+    }
+
+    /// Replays what the now-active pane finished while it was inactive, then
+    /// publishes its pending first document.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "#773 stage 4 calls this from its pane switch")
+    )]
+    pub(super) fn resume_active_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for work in std::mem::take(&mut self.pane.deferred) {
+            work(self, window, cx);
+        }
+        self.publish_pending_document(window, cx);
+    }
+}
+
+/// Shown when Edit is refused because another pane of this window edits the file.
+pub(super) const EDITED_ELSEWHERE: &str =
+    "This note is being edited in the other pane. Its saved text is shown here.";
+
+/// Why a pane could not be closed, unsplit or have its document replaced.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PaneExit {
+    /// No pane with this id in the window.
+    Missing,
+    /// Closing or unsplitting would leave the window without a document.
+    LastPane,
+    /// The existing save/protect/conflict lifecycle refused; the pane, its
+    /// editor and its draft stay as they were.
+    Refused,
+}
+
+/// Window-level editor ownership (#773, stage 3). The owner registry is
+/// derived from each surface's editor handle, so there is no second map to
+/// keep in step with the many places that open or drop an editor.
+impl Reader {
+    /// Every document surface of this window: one until the second pane exists.
+    pub(super) fn surfaces(&self) -> impl Iterator<Item = &Surface> {
+        std::iter::once(&self.pane)
+    }
+
+    /// The pane whose editor owns `path`, if any.
+    pub(super) fn editor_owner(&self, path: &Path) -> Option<PaneId> {
+        self.surfaces()
+            .find(|surface| surface.edited_path() == Some(path))
+            .map(Surface::id)
+    }
+
+    /// Ok when `pane` may open an editor for `path`; otherwise the owning pane.
+    /// The other pane keeps showing the saved source; nothing is cloned or
+    /// transferred.
+    pub(super) fn claim_editor(&self, pane: PaneId, path: &Path) -> Result<(), PaneId> {
+        match self.editor_owner(path) {
+            Some(owner) if owner != pane => Err(owner),
+            _ => Ok(()),
+        }
+    }
+
+    /// Leaving `pane`'s document (navigation, replace, close, unsplit) runs the
+    /// existing save/protect/conflict lifecycle. On refusal everything stays.
+    pub(super) fn guard_pane_exit(
+        &mut self,
+        pane: PaneId,
+        cx: &mut Context<Self>,
+    ) -> Result<(), PaneExit> {
+        if pane != self.pane.id() {
+            return Err(PaneExit::Missing);
+        }
+        if self.leave_source(cx) {
+            Ok(())
+        } else {
+            Err(PaneExit::Refused)
+        }
+    }
+
+    /// Closes `pane` after its exit guard. The last pane is refused before the
+    /// guard runs, so its editor and draft are never touched.
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "#773 stage 4 adds the second pane")
+    )]
+    pub(super) fn close_pane(
+        &mut self,
+        pane: PaneId,
+        cx: &mut Context<Self>,
+    ) -> Result<(), PaneExit> {
+        if !self.surfaces().any(|surface| surface.id() == pane) {
+            return Err(PaneExit::Missing);
+        }
+        if self.surfaces().count() == 1 {
+            return Err(PaneExit::LastPane);
+        }
+        self.guard_pane_exit(pane, cx)
+    }
+
+    /// Keeps the active pane and closes the other one through `close_pane`.
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "#773 stage 4 adds the second pane")
+    )]
+    pub(super) fn unsplit(&mut self, cx: &mut Context<Self>) -> Result<(), PaneExit> {
+        let active = self.pane.id();
+        let Some(other) = self.surfaces().map(Surface::id).find(|id| *id != active) else {
+            return Err(PaneExit::LastPane);
+        };
+        self.close_pane(other, cx)
+    }
+}
+
+#[cfg(test)]
+mod tests;

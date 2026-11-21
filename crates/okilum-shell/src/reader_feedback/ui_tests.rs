@@ -1312,3 +1312,35 @@ fn feedback2744_empty_report_sends_default_log_and_allows_opt_out(cx: &mut TestA
         assert!(calls[1].log.is_none());
     });
 }
+
+#[gpui::test]
+fn feedback1502_capture_targets_only_the_owner_window(cx: &mut TestAppContext) {
+    with_reader(cx, |reader| {
+        let owner = reader.update(|window, _| window.window_handle());
+        let (view, mut feedback) = open_from_button(reader);
+        view.read_with(&feedback, |view, _| {
+            assert_eq!(view.capture_target, Some(owner), "the Reader, not Feedback");
+        });
+        let button = feedback.debug_bounds("feedback-capture-window");
+        if !cfg!(windows) {
+            assert!(button.is_none(), "macOS and Linux stay attachment-only");
+            return;
+        }
+        let button = button.expect("Windows offers own-window capture");
+        feedback.simulate_click(button.center(), Modifiers::default());
+        feedback.run_until_parked();
+        // A TestPlatform window has no HWND: the click reaches the capture,
+        // which fails visibly, attaches nothing and points to attaching.
+        view.read_with(&feedback, |view, _| {
+            assert!(view.image.is_none() && !view.attaching);
+            assert_eq!(
+                view.image_error.as_deref(),
+                Some(
+                    crate::own_window_capture::Failure::NotOwn
+                        .to_string()
+                        .as_str()
+                )
+            );
+        });
+    });
+}

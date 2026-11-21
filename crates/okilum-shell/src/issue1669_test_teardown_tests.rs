@@ -8,7 +8,8 @@
 //! what is still alive afterwards. The control runs the same probe under
 //! gpui-pre's unchanged macro and must still see the leak, so a probe that
 //! measures nothing cannot pass. GPUI's entity leak detector must keep
-//! failing a test whose app gpui-pre's teardown already dropped.
+//! failing a test whose app gpui-pre's teardown already dropped, and since
+//! #3039 also one whose app had a window.
 use gpui::{
     AnyEntity, AppContext as _, Context, Empty, IntoElement, Render, TestAppContext, Window,
 };
@@ -98,6 +99,17 @@ fn issue1669_probe_windowless_leak(cx: &mut TestAppContext) {
     }
 }
 
+/// An app with a window: gpui-pre's teardown never dropped it, so the
+/// detector never ran for it before #3039.
+#[gpui::test]
+fn issue1669_probe_windowed_leak(cx: &mut TestAppContext) {
+    if PROBE.with(|probe| probe.borrow().is_some()) {
+        open_probe_window(cx);
+        let entity = cx.new(|_| ());
+        HELD_OUTSIDE.with(|held| *held.borrow_mut() = Some(entity.into_any()));
+    }
+}
+
 #[gpui::upstream_test]
 fn issue1669_probe_upstream_macro(cx: &mut TestAppContext) {
     open_probe_window(cx);
@@ -165,10 +177,11 @@ fn issue1669_upstream_gpui_test_macro_still_retains_the_app() {
     assert_eq!(open_descriptors(&probe), 1, "control descriptor closed");
 }
 
-#[test]
-fn issue1669_leak_detector_still_fails_apps_it_already_checked() {
-    let (_probe, _directory) = observe(|| {
-        let outcome = std::panic::catch_unwind(issue1669_probe_windowless_leak);
+/// Runs a probe that keeps an entity handle past its app and requires the
+/// leak detector to fail it.
+fn assert_detector_fails(probe: fn()) -> Probe {
+    let (probe_state, _directory) = observe(|| {
+        let outcome = std::panic::catch_unwind(probe);
         HELD_OUTSIDE.with(|held| held.borrow_mut().take());
         let payload = outcome.expect_err("leaked entity handle passed");
         let message = payload
@@ -178,4 +191,18 @@ fn issue1669_leak_detector_still_fails_apps_it_already_checked() {
             .unwrap_or_default();
         assert!(message.contains("leaked handles"), "{message}");
     });
+    probe_state
+}
+
+#[test]
+fn issue1669_leak_detector_still_fails_apps_it_already_checked() {
+    assert_detector_fails(issue1669_probe_windowless_leak);
+}
+
+#[test]
+fn issue1669_leak_detector_fails_apps_with_windows() {
+    let probe = assert_detector_fails(issue1669_probe_windowed_leak);
+    // The probe must have measured an app that had a window.
+    assert_eq!(probe.apps.len(), 1, "the probe opened its window");
+    assert_eq!(probe.released.get(), 1, "window root not dropped");
 }

@@ -1,0 +1,416 @@
+{
+  "viewer": {
+    "heif_convert": "/tmp/libheif-1.23.7/b/examples/heif-dec",
+    "version": "1.23.7"
+  },
+  "reference": {
+    "decoder": "ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023 the FFmpeg developers",
+    "path": "heif_boxes.py container parse + Annex B per item + FFmpeg hevc decoder"
+  },
+  "thresholds": {
+    "rgb_mean_absolute_delta_max": 1.5,
+    "rgb_within_8_share_min": 0.999,
+    "alpha_max_absolute_delta_max": 1
+  },
+  "fixtures": [
+    {
+      "fixture": "nokia-C002.heic",
+      "sha256": "2b836102e528f7b465b295724b6928c5725a5ac3fe326c6bb54e5e8a18fc180f",
+      "primary_item": 1002,
+      "primary_type": "hvc1",
+      "transforms": [],
+      "width": 1280,
+      "height": 720,
+      "alpha": false,
+      "result": {
+        "rgb_mean_absolute_delta": 0.542,
+        "rgb_max_absolute_delta": 1,
+        "rgb_within_8_share": 1.0,
+        "verdict": "PASS"
+      },
+      "negative_controls": [
+        {
+          "control": "mirrored-viewer",
+          "rgb_mean_absolute_delta": 83.9225,
+          "rgb_max_absolute_delta": 254,
+          "rgb_within_8_share": 0.12772,
+          "verdict": "FAIL"
+        }
+      ]
+    },
+    {
+      "fixture": "nokia-C006.heic",
+      "sha256": "41699c9a89dacb7a9536f43ae98f6554b9f272feb7397174cdc38b25387d7934",
+      "primary_item": 1002,
+      "primary_type": "hvc1",
+      "transforms": [],
+      "alpha_coded_range": "tv",
+      "width": 1280,
+      "height": 720,
+      "alpha": true,
+      "result": {
+        "rgb_mean_absolute_delta": 0.542,
+        "rgb_max_absolute_delta": 1,
+        "rgb_within_8_share": 1.0,
+        "alpha_max_absolute_delta": 20,
+        "verdict": "FAIL"
+      },
+      "negative_controls": [
+        {
+          "control": "mirrored-viewer",
+          "rgb_mean_absolute_delta": 83.9225,
+          "rgb_max_absolute_delta": 254,
+          "rgb_within_8_share": 0.12772,
+          "alpha_max_absolute_delta": 239,
+          "verdict": "FAIL"
+        }
+      ]
+    },
+    {
+      "fixture": "nokia-C007.heic",
+      "sha256": "789ef64b3dfc7d39c38c407da8329642dcccb90473228c04ab6826c390ca4345",
+      "primary_item": 1009,
+      "primary_type": "grid",
+      "transforms": [],
+      "width": 2560,
+      "height": 1440,
+      "alpha": false,
+      "result": {
+        "rgb_mean_absolute_delta": 0.5874,
+        "rgb_max_absolute_delta": 1,
+        "rgb_within_8_share": 1.0,
+        "verdict": "PASS"
+      },
+      "negative_controls": [
+        {
+          "control": "tiles",
+          "rgb_mean_absolute_delta": 6.848,
+          "rgb_max_absolute_delta": 232,
+          "rgb_within_8_share": 0.807204,
+          "verdict": "FAIL"
+        },
+        {
+          "control": "mirrored-viewer",
+          "rgb_mean_absolute_delta": 84.1418,
+          "rgb_max_absolute_delta": 252,
+          "rgb_within_8_share": 0.125116,
+          "verdict": "FAIL"
+        }
+      ]
+    },
+    {
+      "fixture": "nokia-C008.heic",
+      "sha256": "1d4b5cce1192b0961e4d8505a62099d39ee4f6f6ba516892e730b567997e5987",
+      "primary_item": 1006,
+      "primary_type": "iden",
+      "transforms": [
+        "irot"
+      ],
+      "width": 720,
+      "height": 1280,
+      "alpha": false,
+      "result": {
+        "rgb_mean_absolute_delta": 0.5477,
+        "rgb_max_absolute_delta": 1,
+        "rgb_within_8_share": 1.0,
+        "verdict": "PASS"
+      },
+      "negative_controls": [
+        {
+          "control": "irot#0",
+          "rgb_mean_absolute_delta": 101.1033,
+          "rgb_max_absolute_delta": 255,
+          "rgb_within_8_share": 0.053744,
+          "verdict": "FAIL"
+        },
+        {
+          "control": "mirrored-viewer",
+          "rgb_mean_absolute_delta": 54.644,
+          "rgb_max_absolute_delta": 252,
+          "rgb_within_8_share": 0.317941,
+          "verdict": "FAIL"
+        }
+      ]
+    },
+    {
+      "fixture": "nokia-C013.heic",
+      "sha256": "433057d6ee4faf13490fd616921889eabd7194e9e1bea9748be7e941d880255e",
+      "primary_item": 1002,
+      "primary_type": "hvc1",
+      "transforms": [
+        "clap"
+      ],
+      "width": 300,
+      "height": 300,
+      "alpha": false,
+      "result": {
+        "rgb_mean_absolute_delta": 0.5511,
+        "rgb_max_absolute_delta": 1,
+        "rgb_within_8_share": 1.0,
+        "verdict": "PASS"
+      },
+      "negative_controls": [
+        {
+          "control": "clap#0",
+          "rgb_mean_absolute_delta": 30.0641,
+          "rgb_max_absolute_delta": 247,
+          "rgb_within_8_share": 0.518796,
+          "verdict": "FAIL"
+        },
+        {
+          "control": "mirrored-viewer",
+          "rgb_mean_absolute_delta": 65.9108,
+          "rgb_max_absolute_delta": 243,
+          "rgb_within_8_share": 0.312596,
+          "verdict": "FAIL"
+        }
+      ]
+    },
+    {
+      "fixture": "nokia-C014.heic",
+      "sha256": "4acf8abc58bd5a8f9cc4e4f05e01a3712934d2a86824dd2ff65d3c92d8060176",
+      "primary_item": 1007,
+      "primary_type": "iden",
+      "transforms": [
+        "clap",
+        "irot"
+      ],
+      "width": 300,
+      "height": 300,
+      "alpha": false,
+      "result": {
+        "rgb_mean_absolute_delta": 0.5303,
+        "rgb_max_absolute_delta": 1,
+        "rgb_within_8_share": 1.0,
+        "verdict": "PASS"
+      },
+      "negative_controls": [
+        {
+          "control": "clap#0",
+          "rgb_mean_absolute_delta": 31.225,
+          "rgb_max_absolute_delta": 238,
+          "rgb_within_8_share": 0.466252,
+          "verdict": "FAIL"
+        },
+        {
+          "control": "irot#1",
+          "rgb_mean_absolute_delta": 99.9075,
+          "rgb_max_absolute_delta": 255,
+          "rgb_within_8_share": 0.123996,
+          "verdict": "FAIL"
+        },
+        {
+          "control": "mirrored-viewer",
+          "rgb_mean_absolute_delta": 72.1442,
+          "rgb_max_absolute_delta": 248,
+          "rgb_within_8_share": 0.223156,
+          "verdict": "FAIL"
+        }
+      ]
+    },
+    {
+      "fixture": "nokia-C042.heic",
+      "sha256": "ac0c075dfe02520fabc3d1b078d8502eabf950e77011a663dbd9015fbb886aeb",
+      "primary_item": 1002,
+      "primary_type": "hvc1",
+      "transforms": [
+        "imir"
+      ],
+      "width": 1280,
+      "height": 720,
+      "alpha": false,
+      "result": {
+        "rgb_mean_absolute_delta": 0.542,
+        "rgb_max_absolute_delta": 1,
+        "rgb_within_8_share": 1.0,
+        "verdict": "PASS"
+      },
+      "negative_controls": [
+        {
+          "control": "imir#0",
+          "rgb_mean_absolute_delta": 99.8976,
+          "rgb_max_absolute_delta": 255,
+          "rgb_within_8_share": 0.066101,
+          "verdict": "FAIL"
+        },
+        {
+          "control": "mirrored-viewer",
+          "rgb_mean_absolute_delta": 83.9225,
+          "rgb_max_absolute_delta": 254,
+          "rgb_within_8_share": 0.12772,
+          "verdict": "FAIL"
+        }
+      ]
+    },
+    {
+      "fixture": "nokia-MIAF002.heic",
+      "sha256": "006baff837e3a8736154206f901a6595b0951eb62e282463e7dfc4a33c3da775",
+      "primary_item": 1002,
+      "primary_type": "hvc1",
+      "transforms": [],
+      "width": 2048,
+      "height": 2048,
+      "alpha": false,
+      "result": {
+        "rgb_mean_absolute_delta": 0.4863,
+        "rgb_max_absolute_delta": 2,
+        "rgb_within_8_share": 1.0,
+        "verdict": "PASS"
+      },
+      "negative_controls": [
+        {
+          "control": "mirrored-viewer",
+          "rgb_mean_absolute_delta": 43.2453,
+          "rgb_max_absolute_delta": 255,
+          "rgb_within_8_share": 0.677765,
+          "verdict": "FAIL"
+        }
+      ]
+    },
+    {
+      "fixture": "nokia-MIAF007.heic",
+      "sha256": "370489520fd6f97dab4dbf2e81c1d77f9e19b0bfb28996245a2dc313af8ea81c",
+      "primary_item": 1002,
+      "primary_type": "hvc1",
+      "transforms": [
+        "clap",
+        "irot",
+        "imir"
+      ],
+      "width": 360,
+      "height": 640,
+      "alpha": false,
+      "result": {
+        "rgb_mean_absolute_delta": 0.5373,
+        "rgb_max_absolute_delta": 1,
+        "rgb_within_8_share": 1.0,
+        "verdict": "PASS"
+      },
+      "negative_controls": [
+        {
+          "control": "clap#0",
+          "rgb_mean_absolute_delta": 29.1497,
+          "rgb_max_absolute_delta": 247,
+          "rgb_within_8_share": 0.564962,
+          "verdict": "FAIL"
+        },
+        {
+          "control": "irot#1",
+          "rgb_mean_absolute_delta": 101.2525,
+          "rgb_max_absolute_delta": 252,
+          "rgb_within_8_share": 0.1065,
+          "verdict": "FAIL"
+        },
+        {
+          "control": "imir#2",
+          "rgb_mean_absolute_delta": 101.2525,
+          "rgb_max_absolute_delta": 252,
+          "rgb_within_8_share": 0.1065,
+          "verdict": "FAIL"
+        },
+        {
+          "control": "mirrored-viewer",
+          "rgb_mean_absolute_delta": 58.097,
+          "rgb_max_absolute_delta": 254,
+          "rgb_within_8_share": 0.350161,
+          "verdict": "FAIL"
+        }
+      ]
+    },
+    {
+      "fixture": "rainbow-451x461.heic",
+      "sha256": "4b2ce727f093944975f143ba2b39c4c64511b766d94552f8d51a755916e7f983",
+      "primary_item": 1,
+      "primary_type": "hvc1",
+      "transforms": [
+        "clap"
+      ],
+      "width": 451,
+      "height": 461,
+      "alpha": false,
+      "result": {
+        "rgb_mean_absolute_delta": 0.0247,
+        "rgb_max_absolute_delta": 1,
+        "rgb_within_8_share": 1.0,
+        "verdict": "PASS"
+      },
+      "negative_controls": [
+        {
+          "control": "clap#0",
+          "verdict": "FAIL",
+          "reason": "dimensions 451x461 vs reference 0x461"
+        },
+        {
+          "control": "mirrored-viewer",
+          "rgb_mean_absolute_delta": 47.8137,
+          "rgb_max_absolute_delta": 197,
+          "rgb_within_8_share": 0.298615,
+          "verdict": "FAIL"
+        }
+      ]
+    },
+    {
+      "fixture": "with-alpha-512x512.heic",
+      "sha256": "dac399d3bf1019baaf5f88eef8b277087d0643e735db947c42355237bb9d0221",
+      "primary_item": 1,
+      "primary_type": "hvc1",
+      "transforms": [],
+      "alpha_coded_range": "pc",
+      "width": 512,
+      "height": 512,
+      "alpha": true,
+      "result": {
+        "rgb_mean_absolute_delta": 0.0005,
+        "rgb_max_absolute_delta": 1,
+        "rgb_within_8_share": 1.0,
+        "alpha_max_absolute_delta": 0,
+        "verdict": "PASS"
+      },
+      "negative_controls": [
+        {
+          "control": "mirrored-viewer",
+          "rgb_mean_absolute_delta": 72.0757,
+          "rgb_max_absolute_delta": 255,
+          "rgb_within_8_share": 0.618207,
+          "alpha_max_absolute_delta": 255,
+          "verdict": "FAIL"
+        }
+      ]
+    },
+    {
+      "fixture": "clap_cropped.heic",
+      "sha256": "54c62d0cb9e3ee09537788f9af59fff245791a681a80a16b27da1c23488a8e29",
+      "primary_item": 1,
+      "primary_type": "hvc1",
+      "transforms": [
+        "clap"
+      ],
+      "width": 64,
+      "height": 64,
+      "alpha": false,
+      "result": {
+        "rgb_mean_absolute_delta": 0.0269,
+        "rgb_max_absolute_delta": 1,
+        "rgb_within_8_share": 1.0,
+        "verdict": "PASS"
+      },
+      "negative_controls": [
+        {
+          "control": "clap#0",
+          "rgb_mean_absolute_delta": 29.9012,
+          "rgb_max_absolute_delta": 255,
+          "rgb_within_8_share": 0.566976,
+          "verdict": "FAIL"
+        },
+        {
+          "control": "mirrored-viewer",
+          "rgb_mean_absolute_delta": 70.1226,
+          "rgb_max_absolute_delta": 255,
+          "rgb_within_8_share": 0.411214,
+          "verdict": "FAIL"
+        }
+      ]
+    }
+  ],
+  "verdict": "FAIL"
+}

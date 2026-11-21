@@ -94,7 +94,7 @@ pub(crate) fn entry() -> bool {
                         // Markdown restores it. Do not normalize file viewers:
                         // unexpectedly opening one in Edit must fail the gate.
                         if name.ends_with(".md")
-                            && cx.update(|cx| reader.read(cx).editing.is_some())
+                            && cx.update(|cx| reader.read(cx).pane.editing.is_some())
                         {
                             diagnostic_println!(
                                 "READER_NATIVE file={name} mode=read stage=leave-restored-edit"
@@ -165,7 +165,7 @@ pub(crate) fn entry() -> bool {
                             .await;
                         cx.update(|cx| {
                             assert!(
-                                reader.read(cx).editing.is_some(),
+                                reader.read(cx).pane.editing.is_some(),
                                 "Reader did not enter edit mode: {name}"
                             )
                         });

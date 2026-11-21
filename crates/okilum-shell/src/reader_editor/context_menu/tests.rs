@@ -87,11 +87,14 @@ fn format_selection_from_context_menu(cx: &mut TestAppContext, live: bool, quote
     reader.update_in(visual, |reader, window, cx| {
         reader.toggle_source(window, cx);
         reader.set_live_preview(live, window, cx);
-        assert_eq!(reader.editing.as_ref().unwrap().live_preview.enabled, live);
+        assert_eq!(
+            reader.pane.editing.as_ref().unwrap().live_preview.enabled,
+            live
+        );
     });
     visual.run_until_parked();
     let input = reader.read_with(visual, |reader, _| {
-        reader.editing.as_ref().unwrap().input.clone()
+        reader.pane.editing.as_ref().unwrap().input.clone()
     });
     input.update(visual, |input, cx| input.set_selected_range(0..6, cx));
     visual.run_until_parked();

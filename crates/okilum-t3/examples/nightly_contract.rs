@@ -2,8 +2,8 @@
 use anyhow::{ensure, Result};
 use okilum_t3::{
     stream::{
-        shell, CancelSubscription, NativeClient, NativeToken, StreamError, ThreadSubscription,
-        ThreadUpdate,
+        shell, CancelSubscription, NativeClient, NativeEnvironmentProfile, NativeToken,
+        StreamError, ThreadSubscription, ThreadUpdate,
     },
     Environment,
 };
@@ -128,6 +128,61 @@ fn shell_synchronized(subscription: &mut shell::Subscription, id: &str, title: &
     })
 }
 
+/// Capability flags the native client consumes, checked against the raw
+/// descriptor. A decode failure or a disagreement between server.getConfig and
+/// the descriptor fails the stage. A flag the server stops advertising is not a
+/// decode failure (the client degrades the feature), so it is reported in the
+/// receipt by name and leaves the proof false instead of being ignored.
+fn environment_capabilities(
+    profile: &NativeEnvironmentProfile,
+    descriptor: &Value,
+) -> Result<Value> {
+    ensure!(
+        descriptor["environmentId"].as_str() == Some(profile.identity.environment_id.as_str()),
+        "environment identity mismatch"
+    );
+    let advertised = &descriptor["capabilities"];
+    let capabilities = &profile.capabilities;
+    let consumed = [
+        (
+            "questionAttachments",
+            capabilities.question_attachments.map(Value::from),
+            advertised["questionAttachments"].as_bool().map(Value::from),
+        ),
+        (
+            "attachmentUploads",
+            capabilities.attachment_uploads.map(Value::from),
+            advertised["attachmentUploads"].as_bool().map(Value::from),
+        ),
+        (
+            "fileAttachments.maxUploadBytes",
+            capabilities
+                .file_attachment_max_upload_bytes
+                .map(Value::from),
+            advertised["fileAttachments"]["maxUploadBytes"]
+                .as_u64()
+                .filter(|bytes| *bytes > 0)
+                .map(Value::from),
+        ),
+    ];
+    let mut flags = serde_json::Map::new();
+    let mut unknown = Vec::new();
+    for (name, decoded, raw) in consumed {
+        ensure!(decoded == raw, "capability flag disagrees with descriptor");
+        if decoded.is_none() {
+            unknown.push(name);
+        }
+        flags.insert(name.into(), decoded.unwrap_or(Value::Null));
+    }
+    Ok(json!({
+        "environment_capabilities": unknown.is_empty(),
+        "capabilities": flags,
+        "capability_unknown": unknown,
+        "question_attachments_available": capabilities.question_attachments_available(),
+        "effective_file_max_upload_bytes": capabilities.effective_file_max_upload_bytes(),
+    }))
+}
+
 fn contract(stage: &mut &'static str) -> Result<Value> {
     // Secret arrives via stdin, never argv, environment or persisted token file.
     let input: Input = serde_json::from_reader(io::stdin().take(64 * 1024))?;
@@ -155,6 +210,8 @@ fn contract(stage: &mut &'static str) -> Result<Value> {
     *stage = "native_pair";
     let token = NativeToken::pair(&environment, &input.credential, Duration::from_secs(10))?;
     let client = NativeClient::new(environment, token, Duration::from_secs(5))?;
+    *stage = "environment_profile";
+    let capabilities = environment_capabilities(&client.environment_profile()?, &descriptor)?;
     *stage = "scratch_identity";
     if let Some(title) = &input.expected_title {
         let identifier = title
@@ -197,6 +254,9 @@ fn contract(stage: &mut &'static str) -> Result<Value> {
         "subscribe_shell":false,"dispatch_command":false,
         "paired":true,"snapshot":true,"resume":true,"resume_without_snapshot":true,
         "cursor":sequence,"client":"okilum_t3::stream::NativeClient"});
+    if let (Some(receipt), Value::Object(capabilities)) = (receipt.as_object_mut(), capabilities) {
+        receipt.extend(capabilities);
+    }
     if let Some(title) = &input.expected_title {
         *stage = "shell_subscribe_and_completion";
         let mut shell = client.subscribe_shell()?;

@@ -27,7 +27,9 @@ pixel matrix rotated counterclockwise or reversed by row, with zero tolerance.
 The two flat-region pixel references allow at most 2 RGB levels of codec error.
 `multiple.heic` encodes the same RGB source plus its top/bottom reversal as two
 top-level stills, using the same encoder options. It exercises numbered output
-and first-still selection. No old HEIF corpus result or threshold is changed
+and first-still selection. `primary-second.heic` is `multiple.heic` with
+`pitm` changed from item 1 to item 2 (one byte), so the primary is the
+reversed still; the viewer must show it, not the first item (#2177). No old HEIF corpus result or threshold is changed
 by these controls.
 
 ![[still.heic]]

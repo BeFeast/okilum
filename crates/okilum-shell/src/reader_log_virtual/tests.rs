@@ -353,7 +353,7 @@ fn file_open_routes_definitions_inline_without_starting_selection_and_keeps_norm
     reader.update_in(visual, |reader, window, cx| {
         reader.toggle_source(window, cx);
         assert!(
-            reader.editing.is_some(),
+            reader.pane.editing.is_some(),
             "explicit .okilog Source must open"
         );
         let panel = reader
@@ -367,7 +367,7 @@ fn file_open_routes_definitions_inline_without_starting_selection_and_keeps_norm
             .read(cx);
         assert!(panel.session.is_none());
         reader.toggle_source(window, cx);
-        assert!(reader.editing.is_none());
+        assert!(reader.pane.editing.is_none());
     });
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {

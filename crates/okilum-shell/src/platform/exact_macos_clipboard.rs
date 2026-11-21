@@ -149,61 +149,76 @@ impl Pasteboard for MacBoard<'_> {
     }
     /// NSAttributedString's own RTF reader; attachments (U+FFFC) are dropped.
     fn rich_text(&self, data: &[u8], rtfd: bool) -> Option<String> {
-        let data = NSData::with_bytes(data);
-        // SAFETY: no document-attributes dictionary is requested.
-        let text = unsafe {
-            if rtfd {
-                NSAttributedString::initWithRTFD_documentAttributes(
-                    NSAttributedString::alloc(),
-                    &data,
-                    None,
-                )
-            } else {
-                NSAttributedString::initWithRTF_documentAttributes(
-                    NSAttributedString::alloc(),
-                    &data,
-                    None,
-                )
-            }
-        }?;
-        Some(text.string().to_string().replace('\u{fffc}', ""))
+        rich_text_of(data, rtfd)
     }
     /// RTF / RTFD as simple HTML, from NSAttributedString's attribute runs.
     fn rich_html(&self) -> Option<String> {
         let types = self.types();
-        let (kind, rtfd) = offer::RTF
-            .iter()
-            .map(|kind| (*kind, false))
-            .chain(offer::RTFD.iter().map(|kind| (*kind, true)))
-            .find(|(kind, _)| types.iter().any(|t| t == kind))?;
+        let (kind, rtfd) = rich_kind(&types)?;
         let data = self.0.dataForType(&NSString::from_str(kind))?;
-        if data.length() > offer::MAX_TEXT_BYTES * 4 {
-            return None;
-        }
-        // Parsing large RTF and walking its runs costs the UI thread tens to
-        // hundreds of ms (Terminal output, long documents): the plain flavor
-        // pastes instead when there is one.
-        if data.length() > offer::UI_RTF_BYTES && offer::has_plain_text(&types) {
-            return None;
-        }
-        // SAFETY: no document-attributes dictionary is requested.
-        let text = unsafe {
-            if rtfd {
-                NSAttributedString::initWithRTFD_documentAttributes(
-                    NSAttributedString::alloc(),
-                    &data,
-                    None,
-                )
-            } else {
-                NSAttributedString::initWithRTF_documentAttributes(
-                    NSAttributedString::alloc(),
-                    &data,
-                    None,
-                )
-            }
-        }?;
-        Some(rich::runs_to_html(&attributed_runs(&text)))
+        attributed_html(&types, &data, rtfd)
     }
+}
+
+/// RTF or RTFD bytes as plain text, by NSAttributedString's reader;
+/// attachments (U+FFFC) are dropped. Also for dropped rich text (#1615).
+pub(crate) fn rich_text_of(data: &[u8], rtfd: bool) -> Option<String> {
+    let text = attributed(&NSData::with_bytes(data), rtfd)?;
+    Some(text.string().to_string().replace('\u{fffc}', ""))
+}
+
+/// The RTF or RTFD flavor among `types` as simple HTML, its bytes read by
+/// `contents` (dropped rich text, #1615).
+pub(crate) fn rich_html_of<'a>(
+    types: &[String],
+    contents: impl Fn(&str) -> Option<&'a [u8]>,
+) -> Option<String> {
+    let (kind, rtfd) = rich_kind(types)?;
+    attributed_html(types, &NSData::with_bytes(contents(kind)?), rtfd)
+}
+
+/// The board's RTF flavor, else its RTFD flavor, and whether it is RTFD.
+fn rich_kind(types: &[String]) -> Option<(&'static str, bool)> {
+    offer::RTF
+        .iter()
+        .map(|kind| (*kind, false))
+        .chain(offer::RTFD.iter().map(|kind| (*kind, true)))
+        .find(|(kind, _)| types.iter().any(|t| t == kind))
+}
+
+/// NSAttributedString's RTF / RTFD reader.
+fn attributed(data: &NSData, rtfd: bool) -> Option<Retained<NSAttributedString>> {
+    // SAFETY: no document-attributes dictionary is requested.
+    unsafe {
+        if rtfd {
+            NSAttributedString::initWithRTFD_documentAttributes(
+                NSAttributedString::alloc(),
+                data,
+                None,
+            )
+        } else {
+            NSAttributedString::initWithRTF_documentAttributes(
+                NSAttributedString::alloc(),
+                data,
+                None,
+            )
+        }
+    }
+}
+
+/// Rich text as simple HTML (`b`, `i`, `s`, `code`, `a`, `p`, `br`, lists).
+fn attributed_html(types: &[String], data: &NSData, rtfd: bool) -> Option<String> {
+    if data.length() > offer::MAX_TEXT_BYTES * 4 {
+        return None;
+    }
+    // Parsing large RTF and walking its runs costs the UI thread tens to
+    // hundreds of ms (Terminal output, long documents): the plain flavor
+    // pastes instead when there is one.
+    if data.length() > offer::UI_RTF_BYTES && offer::has_plain_text(types) {
+        return None;
+    }
+    let text = attributed(data, rtfd)?;
+    Some(rich::runs_to_html(&attributed_runs(&text)))
 }
 
 /// The attribute runs of an attributed string: font traits (bold, italic,

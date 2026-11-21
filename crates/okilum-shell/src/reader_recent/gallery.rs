@@ -1016,7 +1016,7 @@ mod mounted_tests {
         f.reader.update_in(visual, |r, window, cx| {
             assert_eq!(r.pane.current_rel, "start.md");
             assert!(
-                r.content.read(cx).focus_handle().is_focused(window),
+                r.pane.content.read(cx).focus_handle().is_focused(window),
                 "Escape restores document focus"
             );
         });

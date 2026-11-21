@@ -1,10 +1,28 @@
 //! «Open in ▸» installed code editors (#873). Detection only looks at fixed
 //! install locations and `PATH`; launching passes the file as an argument,
 //! never through a shell. A dirty note is saved first.
+//!
+//! The note toolbar carries a split button (#1400): «Open in <default>» with
+//! that editor's icon opens the note in one click, its chevron lists every
+//! installed editor. The default is the editor last used, remembered across
+//! restarts, and [`OpenInDefaultEditor`] opens the note there from the keyboard.
 use super::*;
-use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use std::ffi::OsString;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
+
+actions!(okilum, [OpenInDefaultEditor]);
+
+/// Open the note in the default editor (#1400). Not ⌘O / Ctrl+O, the one T3
+/// Code uses: Okilum opens a file there. ⌥⌘O on macOS. Linux and Windows
+/// may not get a new Ctrl+Alt+letter (#2813, AltGr), and Ctrl+Shift+O is Open
+/// Folder, so they use Ctrl+Shift+A, free in Okilum, the toolkit and the
+/// common input methods (Ctrl+Shift+U is IBus Unicode entry).
+pub(crate) const OPEN_IN_EDITOR_KEY: &str = if cfg!(target_os = "macos") {
+    "cmd-alt-o"
+} else {
+    "ctrl-shift-a"
+};
 
 mod icons;
 
@@ -158,10 +176,18 @@ impl Editor {
     }
 }
 
-/// The detected editor «Open in» would list first: the last one used this
-/// session, else the first known one installed (Zed before the others).
-pub(crate) fn preferred() -> Option<&'static Editor> {
-    ordered().into_iter().next()
+/// The default editor: the one last used to open a note (remembered across
+/// restarts) while it is still installed, else the first known one installed
+/// (Zed before the others).
+pub(crate) fn preferred(cx: &App) -> Option<&'static Editor> {
+    pick_default(editors(), reader_ui_state::open_in_editor(cx))
+}
+
+fn pick_default<'a>(editors: &'a [Editor], saved: &str) -> Option<&'a Editor> {
+    editors
+        .iter()
+        .find(|e| e.id == saved)
+        .or_else(|| editors.first())
 }
 
 fn with_line(path: &Path, line: usize) -> OsString {
@@ -179,6 +205,7 @@ struct Probe {
 }
 
 impl Probe {
+    #[cfg_attr(test, allow(dead_code))]
     fn current() -> Self {
         let home = std::env::var_os("HOME").map(PathBuf::from);
         let mut probe = Probe::default();
@@ -294,18 +321,57 @@ fn detect_with(probe: &Probe) -> Vec<Editor> {
 }
 
 /// Detected once per run: a newly installed editor appears after a restart.
+#[cfg(not(test))]
 pub(crate) fn editors() -> &'static [Editor] {
     static EDITORS: OnceLock<Vec<Editor>> = OnceLock::new();
     EDITORS.get_or_init(|| detect_with(&Probe::current()))
 }
 
-/// The last editor used this session comes first.
-static LAST_USED: Mutex<Option<&'static str>> = Mutex::new(None);
+/// Tests see only the editors they install, never the host's.
+#[cfg(test)]
+pub(crate) fn editors() -> &'static [Editor] {
+    TEST_EDITORS.with(|editors| editors.get())
+}
 
-fn ordered() -> Vec<&'static Editor> {
-    let last = *LAST_USED.lock().unwrap();
+#[cfg(test)]
+thread_local! {
+    static TEST_EDITORS: std::cell::Cell<&'static [Editor]> = const { std::cell::Cell::new(&[]) };
+    static BUILT_ROWS: std::cell::RefCell<Vec<(&'static str, Option<String>)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The rows the last editor list was built with: editor id and shortcut.
+#[cfg(test)]
+pub(crate) fn built_rows() -> Vec<(&'static str, Option<String>)> {
+    BUILT_ROWS.with(|rows| rows.borrow().clone())
+}
+
+/// Pretend `ids` (known editor ids) are installed on this test thread, each
+/// launched as `program`.
+#[cfg(test)]
+pub(crate) fn install_test_editors(ids: &[&str], program: &Path) {
+    let editors = ids
+        .iter()
+        .map(|id| {
+            let known = KNOWN.iter().find(|k| k.id == *id).expect("known editor");
+            Editor {
+                id: known.id,
+                label: known.label,
+                program: program.to_owned(),
+                icon_path: PathBuf::new(),
+                // Launched like a detected editor: its flags come first.
+                prefix: known.flags.iter().map(OsString::from).collect(),
+                line: known.line,
+            }
+        })
+        .collect::<Vec<_>>();
+    TEST_EDITORS.with(|cell| cell.set(Vec::leak(editors)));
+}
+
+/// The default editor first, then the others in known order.
+fn ordered(cx: &App) -> Vec<&'static Editor> {
+    let default = preferred(cx).map(|e| e.id);
     let mut list: Vec<_> = editors().iter().collect();
-    list.sort_by_key(|e| Some(e.id) != last);
+    list.sort_by_key(|e| Some(e.id) != default);
     list
 }
 
@@ -317,27 +383,123 @@ pub(crate) fn submenu(
     window: &mut Window,
     cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
-    let editors = ordered();
-    if editors.is_empty() {
+    if editors().is_empty() {
         return menu;
     }
-    menu.submenu("Open in", window, cx, move |mut menu, _, _| {
-        for editor in &editors {
-            let (root, rel, editor) = (root.clone(), rel.clone(), *editor);
-            menu = menu.item(
-                PopupMenuItem::element(move |_, cx| {
-                    h_flex()
-                        .debug_selector(move || format!("open-in-{}", editor.id))
-                        .items_center()
-                        .gap_2()
-                        .child(icon_element(icons::get(editor.id), cx))
-                        .child(editor.label)
-                })
-                .on_click(move |_, window, cx| open(editor, &root, &rel, window, cx)),
-            );
-        }
-        menu
+    menu.submenu("Open in", window, cx, move |menu, _, cx| {
+        editor_rows(menu, root.clone(), rel.clone(), cx)
     })
+}
+
+/// One row per installed editor: its icon and name, and on the default
+/// editor's row the [`OpenInDefaultEditor`] shortcut, right-aligned.
+fn editor_rows(mut menu: PopupMenu, root: PathBuf, rel: String, cx: &App) -> PopupMenu {
+    let editors = ordered(cx);
+    let default = editors.first().map(|e| e.id);
+    let key = reader_shortcuts::shortcut(&OpenInDefaultEditor, cx);
+    #[cfg(test)]
+    BUILT_ROWS.with(|rows| rows.borrow_mut().clear());
+    for editor in editors {
+        let (root, rel) = (root.clone(), rel.clone());
+        let key = if Some(editor.id) == default {
+            key.clone()
+        } else {
+            None
+        };
+        #[cfg(test)]
+        BUILT_ROWS.with(|rows| rows.borrow_mut().push((editor.id, key.clone())));
+        menu = menu.item(
+            PopupMenuItem::element(move |_, cx| {
+                h_flex()
+                    .debug_selector(move || format!("open-in-{}", editor.id))
+                    .w_full()
+                    .items_center()
+                    .gap_2()
+                    .child(icon_element(icons::get(editor.id), cx))
+                    .child(div().flex_1().child(editor.label))
+                    .children(key.clone().map(|key| {
+                        div()
+                            .debug_selector(move || format!("open-in-{}-key", editor.id))
+                            .ml_4()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(key)
+                    }))
+            })
+            .on_click(move |_, window, cx| open(editor, &root, &rel, window, cx)),
+        );
+    }
+    menu
+}
+
+/// The toolbar split button's two widths, labelled and collapsed (#1400);
+/// `None` when no editor is installed.
+pub(crate) fn toolbar_widths(cx: &App, window: &Window) -> Option<(f32, f32)> {
+    let editor = preferred(cx)?;
+    // A small toolkit button: 8px padding each side, a 16px icon, a 4px gap;
+    // the chevron part is 18px wide.
+    let text = toolbar_text_width(
+        &format!("Open in {}", editor.label),
+        FontWeight::MEDIUM,
+        window,
+    ) * window.rem_size().as_f32()
+        / brand::READER_CHROME_FONT_SIZE;
+    Some((text + 36. + TOOLBAR_CHEVRON, 28. + TOOLBAR_CHEVRON))
+}
+
+const TOOLBAR_CHEVRON: f32 = 18.;
+
+/// «Open in <Editor>» split button for the note toolbar (#1400): the main
+/// part opens the note in the default editor, the chevron lists them all.
+pub(crate) fn toolbar_button(
+    root: PathBuf,
+    rel: String,
+    labelled: bool,
+    cx: &App,
+) -> Option<AnyElement> {
+    let editor = preferred(cx)?;
+    let label: SharedString = format!("Open in {}", editor.label).into();
+    let tooltip = reader_shortcuts::hint(&label, &OpenInDefaultEditor, cx);
+    let (open_root, open_rel) = (root.clone(), rel.clone());
+    let main = Button::new("viewer-open-in")
+        .ghost()
+        .small()
+        .h(px(28.))
+        .rounded(px(6.))
+        .px_2()
+        .when(!labelled, |b| b.w(px(28.)).px_0())
+        .child(icon_element(icons::get(editor.id), cx))
+        .when(labelled, |b| b.child(label.clone()))
+        .accessibility_label(label)
+        .tooltip(tooltip)
+        .debug_selector(|| "viewer-open-in".into())
+        .on_click(move |_, window, cx| {
+            if let Some(editor) = preferred(cx) {
+                open(editor, &open_root, &open_rel, window, cx);
+            }
+        });
+    let chevron = Button::new("viewer-open-in-list")
+        .ghost()
+        .small()
+        .h(px(28.))
+        .w(px(TOOLBAR_CHEVRON))
+        .px_0()
+        .rounded(px(6.))
+        .dropdown_caret(true)
+        .accessibility_label("Choose the editor")
+        .tooltip("Open in…")
+        .debug_selector(|| "viewer-open-in-list".into())
+        .dropdown_menu_with_anchor(Anchor::TopRight, move |m, _, cx| {
+            editor_rows(m, root.clone(), rel.clone(), cx)
+        });
+    Some(
+        h_flex()
+            .flex_none()
+            .items_center()
+            .child(main)
+            .child(chevron)
+            .into_any_element(),
+    )
 }
 
 /// The editor's application icon, or a neutral file glyph while icons are
@@ -377,7 +539,7 @@ fn open(editor: &'static Editor, root: &Path, rel: &str, window: &mut Window, cx
             .spawn(move || {
                 let _ = child.wait();
             })?;
-        *LAST_USED.lock().unwrap() = Some(editor.id);
+        reader_ui_state::set_open_in_editor(editor.id, cx);
         Ok(())
     })();
     if let Err(error) = result {
@@ -401,6 +563,21 @@ fn prepare_open_note(root: &Path, rel: &str, cx: &mut App) -> anyhow::Result<Opt
 }
 
 impl Reader {
+    /// [`OpenInDefaultEditor`]: the open file in the default editor. Deferred,
+    /// because saving the draft first updates this Reader.
+    pub(crate) fn open_in_default_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rel = self.selected_file().to_owned();
+        if rel.is_empty() {
+            return;
+        }
+        let Some(editor) = preferred(cx) else {
+            reader_toast::error("No code editor is installed", window, cx);
+            return;
+        };
+        let root = self.vault_root.clone();
+        window.defer(cx, move |window, cx| open(editor, &root, &rel, window, cx));
+    }
+
     /// Save a dirty draft of `rel` and report its caret line; `Ok(None)` when
     /// this Reader is not editing that note.
     pub(super) fn prepare_open_in(
@@ -425,8 +602,40 @@ impl Reader {
 
 #[cfg(test)]
 mod tests {
-    use super::{detect_with, Editor, LineArg, Probe};
+    use super::{detect_with, pick_default, Editor, LineArg, Probe, OPEN_IN_EDITOR_KEY};
     use std::path::{Path, PathBuf};
+
+    /// #1400: the default is the remembered editor while it is installed,
+    /// else the first installed one; nothing when none is installed.
+    #[test]
+    fn default_editor_is_the_remembered_one_while_installed() {
+        let editor = |id| Editor {
+            id,
+            label: id,
+            program: "/bin/x".into(),
+            icon_path: "/bin/x".into(),
+            prefix: vec![],
+            line: LineArg::None,
+        };
+        let installed = [editor("zed"), editor("cursor"), editor("vscode")];
+        let pick = |saved| pick_default(&installed, saved).map(|e| e.id);
+        assert_eq!(pick("cursor"), Some("cursor"), "remembered and installed");
+        assert_eq!(pick("vscode"), Some("vscode"));
+        assert_eq!(pick(""), Some("zed"), "nothing remembered: first installed");
+        assert_eq!(pick("sublime"), Some("zed"), "remembered one uninstalled");
+        assert_eq!(pick_default(&[], "cursor").map(|e| e.id), None);
+    }
+
+    /// #1400: ⌘O / Ctrl+O stays Open File; the default-editor key differs.
+    #[test]
+    fn default_editor_key_is_not_open_file() {
+        let key = gpui::Keystroke::parse(OPEN_IN_EDITOR_KEY).unwrap();
+        assert_eq!(key.key, if cfg!(target_os = "macos") { "o" } else { "a" });
+        assert!(
+            key.modifiers.shift || key.modifiers.alt,
+            "{OPEN_IN_EDITOR_KEY}"
+        );
+    }
 
     fn touch(path: &Path, exec: bool) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

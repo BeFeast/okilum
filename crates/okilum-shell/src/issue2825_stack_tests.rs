@@ -25,7 +25,7 @@ fn read_then_edit(cx: &mut TestAppContext, name: &str) {
         reader.read_with(visual, |r, _| r.selected_file().to_owned()),
         name
     );
-    assert!(reader.read_with(visual, |r, _| r.editing.is_none()));
+    assert!(reader.read_with(visual, |r, _| r.pane.editing.is_none()));
     diagnostic_println!("STACK2825_CHILD file={name} mode=read");
     reader.update_in(visual, |r, window, cx| {
         window.activate_window();
@@ -35,7 +35,7 @@ fn read_then_edit(cx: &mut TestAppContext, name: &str) {
     visual.executor().advance_clock(Duration::from_millis(130));
     draw(visual);
     assert!(
-        reader.read_with(visual, |r, _| r.editing.is_some()),
+        reader.read_with(visual, |r, _| r.pane.editing.is_some()),
         "{name} entered Edit"
     );
     draw(visual);
