@@ -72,8 +72,9 @@ fn blocking_defaults(version: &str, timeout: Duration) -> ClientBuilder {
 /// For a client whose hosts are not known when it is built: pasted links and
 /// images, project logos, delivery feeds. It may follow redirects to another
 /// host, so on Windows the proxy is decided for each request's own origin
-/// (WinHTTP static/per-protocol/PAC/WPAD, cached per origin for five minutes)
-/// instead of once per client. Loopback stays direct.
+/// instead of once per client: the environment proxy for that scheme with
+/// `NO_PROXY`, else WinHTTP static/per-protocol/PAC/WPAD (cached per origin
+/// for five minutes). Loopback stays direct.
 ///
 /// A discovery failure sends that request direct, as browsers do when a PAC
 /// script cannot be fetched: these clients are best-effort previews, and a
@@ -92,16 +93,13 @@ pub fn local_network_per_request_builder(version: &str, timeout: Duration) -> Cl
 fn per_request(version: &str, timeout: Duration, direct: fn(&url::Url) -> bool) -> ClientBuilder {
     let builder = blocking_defaults(version, timeout);
     #[cfg(windows)]
-    let builder = {
-        let builder = builder.use_native_tls();
-        // An environment proxy keeps reqwest's own precedence and NO_PROXY.
-        if windows_proxy::env_proxy("http").is_some() || windows_proxy::env_proxy("https").is_some()
-        {
-            builder
-        } else {
-            builder.proxy(route::PerRequest::new(direct, windows_proxy::lookup).into_proxy())
-        }
-    };
+    // Always the hook, even with an environment proxy: reqwest would apply
+    // `HTTP_PROXY` to http only and never read PAC for https. The hook takes
+    // the request scheme's environment proxy (with `NO_PROXY`) and asks
+    // WinHTTP for a scheme without one.
+    let builder = builder
+        .use_native_tls()
+        .proxy(route::PerRequest::new(direct, windows_proxy::lookup).into_proxy());
     #[cfg(not(windows))]
     let _ = direct;
     builder

@@ -47,6 +47,12 @@ pub(super) fn lookup(url: &url::Url) -> anyhow::Result<Lookup> {
 /// The environment proxy for `scheme` (`http`/`https`), as reqwest reads it.
 #[cfg(any(windows, test))]
 pub(super) fn env_proxy(scheme: &str) -> Option<String> {
+    env_proxy_in(scheme, &process_var)
+}
+
+/// [`env_proxy`] over an injected variable source (tests).
+#[cfg(any(windows, test))]
+pub(super) fn env_proxy_in(scheme: &str, var: &dyn Fn(&str) -> Option<String>) -> Option<String> {
     [
         format!("{scheme}_proxy"),
         format!("{}_PROXY", scheme.to_ascii_uppercase()),
@@ -54,14 +60,19 @@ pub(super) fn env_proxy(scheme: &str) -> Option<String> {
         "ALL_PROXY".into(),
     ]
     .iter()
-    .find_map(|name| std::env::var(name).ok().filter(|v| !v.is_empty()))
+    .find_map(|name| var(name).filter(|v| !v.is_empty()))
 }
 
 #[cfg(any(windows, test))]
-pub(super) fn env_no_proxy() -> String {
-    std::env::var("NO_PROXY")
-        .or_else(|_| std::env::var("no_proxy"))
+pub(super) fn env_no_proxy_in(var: &dyn Fn(&str) -> Option<String>) -> String {
+    var("NO_PROXY")
+        .or_else(|| var("no_proxy"))
         .unwrap_or_default()
+}
+
+#[cfg(any(windows, test))]
+pub(super) fn process_var(name: &str) -> Option<String> {
+    std::env::var(name).ok()
 }
 
 /// The exclusions a proxy answer carries: `NO_PROXY` plus the system bypass
@@ -69,52 +80,75 @@ pub(super) fn env_no_proxy() -> String {
 /// all use this one string, so a ticket and its socket agree.
 #[cfg(any(windows, test))]
 pub(super) fn exclusions(bypass: &str) -> String {
-    [env_no_proxy(), bypass.replace(';', ",")].join(",")
+    exclusions_in(bypass, &process_var)
 }
 
-/// reqwest's `NoProxy` rules: comma separated; `*` matches every host; an IP
-/// host matches only an IP entry or a CIDR range (`192.168.1.0/24`); any
-/// other entry is a domain (leading dot optional) matching that name and its
-/// subdomains, never an IP host and never a mere string suffix.
+#[cfg(any(windows, test))]
+pub(super) fn exclusions_in(bypass: &str, var: &dyn Fn(&str) -> Option<String>) -> String {
+    [env_no_proxy_in(var), bypass.replace(';', ",")].join(",")
+}
+
+/// reqwest 0.12's `NoProxy`, i.e. hyper-util 0.1.20 `NoProxy::from_string`
+/// plus `contains`, so the hook and the socket decide as the ticket client
+/// does. Comma separated. An entry that parses as an address or a CIDR range
+/// goes to the IP list; every other entry, `*` and `[::1]` included, is a
+/// domain. An IP host (brackets stripped) is checked against the IP list
+/// only, so `*` never matches an IP and a bracketed entry matches nothing. A
+/// domain entry (leading dot optional) matches that name and its subdomains;
+/// `*` matches every domain host.
 #[cfg(any(windows, test))]
 pub(super) fn no_proxy_matches(host: &str, list: &str) -> bool {
     use std::net::IpAddr;
-    let host = host
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .to_ascii_lowercase();
-    let ip = host.parse::<IpAddr>().ok();
-    list.split(',').any(|entry| {
-        let entry = entry.trim().to_ascii_lowercase();
-        if entry == "*" {
-            return true;
-        }
-        if let Some((network, prefix)) = entry.split_once('/') {
-            return match (ip, cidr(network, prefix)) {
-                (Some(ip), Some((network, prefix))) => in_network(ip, network, prefix),
-                _ => false,
-            };
-        }
-        let bare = entry.trim_start_matches('[').trim_end_matches(']');
-        if let Ok(entry) = bare.parse::<IpAddr>() {
-            return ip == Some(entry);
-        }
-        let domain = entry.trim_start_matches('.');
-        ip.is_none()
-            && !domain.is_empty()
-            && (host == domain || host.ends_with(&format!(".{domain}")))
-    })
+    let host = if host.starts_with('[') {
+        host.trim_matches(&['[', ']'][..])
+    } else {
+        host
+    };
+    let mut entries = list.split(',').map(str::trim).filter(|e| !e.is_empty());
+    match host.parse::<IpAddr>() {
+        Ok(ip) => entries.any(|entry| match cidr(entry) {
+            Some((network, prefix)) => in_network(ip, network, prefix),
+            None => entry.parse::<IpAddr>().ok() == Some(ip),
+        }),
+        Err(_) => entries
+            .filter(|entry| cidr(entry).is_none() && entry.parse::<IpAddr>().is_err())
+            .any(|entry| domain_matches(host, entry)),
+    }
 }
 
+/// hyper-util's `DomainMatcher::contains` for one entry.
 #[cfg(any(windows, test))]
-fn cidr(network: &str, prefix: &str) -> Option<(std::net::IpAddr, u8)> {
-    let network: std::net::IpAddr = network
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .parse()
-        .ok()?;
+fn domain_matches(domain: &str, entry: &str) -> bool {
+    if entry.eq_ignore_ascii_case(domain)
+        || entry
+            .strip_prefix('.')
+            .is_some_and(|bare| bare.eq_ignore_ascii_case(domain))
+    {
+        return true;
+    }
+    let len = domain.len();
+    if domain
+        .get(len.saturating_sub(entry.len())..)
+        .is_some_and(|tail| tail.eq_ignore_ascii_case(entry))
+    {
+        // `len > entry.len()` here: equal lengths matched above.
+        return entry.starts_with('.')
+            || domain.as_bytes().get(len - entry.len() - 1) == Some(&b'.');
+    }
+    entry == "*"
+}
+
+/// An entry `ipnet::IpNet` parses: a bare address, `/`, then a decimal prefix
+/// length of at most 2 (IPv4) or 3 (IPv6) digits within the address size.
+#[cfg(any(windows, test))]
+fn cidr(entry: &str) -> Option<(std::net::IpAddr, u8)> {
+    let (network, prefix) = entry.split_once('/')?;
+    let network: std::net::IpAddr = network.parse().ok()?;
+    let (digits, max) = if network.is_ipv4() { (2, 32) } else { (3, 128) };
+    if prefix.is_empty() || prefix.len() > digits || !prefix.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
     let prefix: u8 = prefix.parse().ok()?;
-    let max = if network.is_ipv4() { 32 } else { 128 };
     (prefix <= max).then_some((network, prefix))
 }
 
@@ -312,10 +346,11 @@ mod tests {
     }
     #[test]
     fn no_proxy_follows_reqwest_rules() {
-        let list = "intranet.test, .corp.test,10.1.2.3,[::1],192.168.1.0/24,fd00::/8,2.3";
+        let list = "intranet.test, .corp.test,10.1.2.3,::1,192.168.1.0/24,fd00::/8,2.3";
         assert!(no_proxy_matches("intranet.test", list));
         assert!(no_proxy_matches("a.corp.test", list));
         assert!(no_proxy_matches("corp.test", list));
+        assert!(no_proxy_matches("Intranet.TEST", list));
         assert!(no_proxy_matches("10.1.2.3", list));
         assert!(no_proxy_matches("[::1]", list));
         assert!(no_proxy_matches("192.168.1.42", list));
@@ -327,7 +362,18 @@ mod tests {
         assert!(!no_proxy_matches("evilcorp.test", list));
         assert!(!no_proxy_matches("intranet.test.attacker.test", list));
         assert!(!no_proxy_matches("example.test", ""));
+        // hyper-util 0.1.20 stores `*` as a domain: every name, never an IP.
         assert!(no_proxy_matches("example.test", "*"));
-        assert!(no_proxy_matches("10.0.0.1", "*"));
+        assert!(!no_proxy_matches("10.0.0.1", "*"));
+        assert!(!no_proxy_matches("[fd00::1]", "*"));
+        // A bracketed entry is a domain too, so it matches no IPv6 host.
+        assert!(!no_proxy_matches("[::1]", "[::1]"));
+        assert!(!no_proxy_matches("::1", "[::1]"));
+        assert!(!no_proxy_matches("[fd12::1]", "[fd00::]/8"));
+        // Only a plain decimal prefix makes a range.
+        assert!(!no_proxy_matches("192.168.1.42", "192.168.1.0/+24"));
+        assert!(!no_proxy_matches("192.168.1.42", "192.168.1.0/33"));
+        assert!(!no_proxy_matches("192.168.1.42", "192.168.1.0/024"));
+        assert!(no_proxy_matches("10.200.0.1", "10.0.0.0/8"));
     }
 }

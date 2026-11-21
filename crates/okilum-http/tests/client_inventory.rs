@@ -334,6 +334,21 @@ fn t3_and_board_use_the_local_network_policy() {
     assert!(lib.contains("blocking_builder(endpoint, version, timeout, is_private_literal)"));
 }
 
+/// #1944 review: the Windows per-request hook is installed on every build. An
+/// environment proxy no longer skips it, because reqwest's own matcher would
+/// then apply `HTTP_PROXY` to http only and never read PAC for https.
+#[test]
+fn per_request_hook_is_installed_whatever_the_environment() {
+    let lib = fs::read_to_string(workspace().join("crates/okilum-http/src/lib.rs")).unwrap();
+    let body = &lib[lib.find("fn per_request(").expect("per_request")..];
+    let body = &body[..body.find("\n}\n").expect("end of per_request")];
+    assert!(
+        body.contains(".proxy(route::PerRequest::new(direct, windows_proxy::lookup).into_proxy())"),
+        "{body}"
+    );
+    assert!(!body.contains("env_proxy"), "{body}");
+}
+
 /// Crate-only Windows test builds must link the same backend as okilum.exe:
 /// each crate that owns a migrated client depends on okilum-http directly.
 #[test]

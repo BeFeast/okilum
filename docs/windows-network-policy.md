@@ -129,8 +129,19 @@ single-origin builder (static, per-protocol, PAC, WPAD; system bypass list;
 `NO_PROXY`) for that request's own origin and caches the answer per
 `scheme://host:port` for five minutes. That is also how a network change
 (VPN on/off) reaches the long-lived paste client. A failed lookup is cached for
-30 seconds. An environment proxy (`HTTP(S)_PROXY`, `ALL_PROXY`) keeps reqwest's
-own precedence, as before. TLS is SChannel, selected explicitly.
+30 seconds. The hook is installed whatever the environment holds. An
+environment proxy for the request's own scheme (`HTTP_PROXY` for http,
+`HTTPS_PROXY` for https, else `ALL_PROXY`) is used as is, minus `NO_PROXY`,
+and WinHTTP is not asked. A scheme without one keeps the WinHTTP answer, so
+`HTTP_PROXY` alone still leaves https on PAC (reqwest's own matcher would send
+it direct on a PAC-only network). TLS is SChannel, selected explicitly.
+
+`NO_PROXY` and the system bypass list are matched by reqwest 0.12's rules
+(hyper-util 0.1.20 `NoProxy`) in the hook and the socket route alike, so they
+agree with the ticket client. An entry that parses as an address or CIDR
+range (`10.1.2.3`, `192.168.1.0/24`, `fd00::/8`) matches IP hosts only. Every
+other entry is a domain matching that name and its subdomains; `*` matches
+every name but no IP host, and a bracketed `[::1]` matches nothing.
 
 A discovery failure sends that one request direct and logs the cause without
 the URL. That is fail-open, unlike the single-origin clients: these are

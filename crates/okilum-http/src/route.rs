@@ -7,7 +7,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::windows_proxy::{exclusions, no_proxy_matches, Lookup};
+use crate::windows_proxy::{
+    env_no_proxy_in, env_proxy_in, exclusions_in, no_proxy_matches, process_var, Lookup,
+};
 
 /// A PAC answer stays valid this long for one origin; a network change is
 /// therefore seen within five minutes without re-running PAC per image.
@@ -17,10 +19,13 @@ const FAILURE_TTL: Duration = Duration::from_secs(30);
 const MAX_ORIGINS: usize = 256;
 
 type LookupFn = dyn Fn(&url::Url) -> anyhow::Result<Lookup> + Send + Sync;
+type VarFn = dyn Fn(&str) -> Option<String> + Send + Sync;
 
 pub(crate) struct PerRequest {
     direct: fn(&url::Url) -> bool,
     lookup: Box<LookupFn>,
+    /// Environment variable source; the process environment outside tests.
+    var: Box<VarFn>,
     answers: Mutex<HashMap<String, (Instant, Option<url::Url>)>>,
 }
 
@@ -32,8 +37,18 @@ impl PerRequest {
         Self {
             direct,
             lookup: Box::new(lookup),
+            var: Box::new(process_var),
             answers: Mutex::new(HashMap::new()),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_env(
+        mut self,
+        var: impl Fn(&str) -> Option<String> + Send + Sync + 'static,
+    ) -> Self {
+        self.var = Box::new(var);
+        self
     }
 
     pub(crate) fn into_proxy(self) -> reqwest::Proxy {
@@ -47,6 +62,21 @@ impl PerRequest {
             return None;
         }
         let host = url.host_str().unwrap_or_default();
+        // An environment proxy for this request's scheme (or `ALL_PROXY`)
+        // wins, minus `NO_PROXY`, as reqwest applies it. Only a scheme without
+        // one asks WinHTTP, so `HTTP_PROXY` alone still leaves https on PAC.
+        if let Some(proxy) = env_proxy_in(url.scheme(), &*self.var) {
+            if no_proxy_matches(host, &env_no_proxy_in(&*self.var)) {
+                return None;
+            }
+            let proxy = if proxy.contains("://") {
+                proxy
+            } else {
+                format!("http://{proxy}")
+            };
+            // Unparseable: direct, and the value (it may hold a password) is not logged.
+            return url::Url::parse(&proxy).ok();
+        }
         let key = format!(
             "{}://{host}:{}",
             url.scheme(),
@@ -61,7 +91,7 @@ impl PerRequest {
         }
         let (ttl, answer) = match (self.lookup)(url) {
             Ok(Lookup::Proxy { proxy, bypass })
-                if !no_proxy_matches(host, &exclusions(&bypass)) =>
+                if !no_proxy_matches(host, &exclusions_in(&bypass, &*self.var)) =>
             {
                 (ANSWER_TTL, url::Url::parse(&proxy).ok())
             }
