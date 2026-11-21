@@ -53,7 +53,10 @@ the mount root, and both folders below one physical mount root, so each
 ancestor chain shows any enclosure. Anything else is refused: another export
 (it may be nested, as `nas:/share/Vault/Sub` inside `nas:/share`), another
 filesystem type, or a folder that cannot be reached now. Several vaults on one
-export, through one mount or its aliases, get separate scopes. Each UUID-less
+export, through one mount or its aliases, get separate scopes. Vaults on two
+different exports cannot be open at the same time for now: the second is
+refused until an export witness or an explicit attach flow can prove the
+exports disjoint (#3211). Each UUID-less
 scope also keeps a record of its same-mount ancestors (`ancestry.json` in its
 private directory), used only to route admission and never as proof of
 disjointness.

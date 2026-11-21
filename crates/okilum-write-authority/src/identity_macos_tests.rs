@@ -381,7 +381,8 @@ fn identity_3204_several_uuid_less_vaults_have_separate_scopes() {
         .unwrap();
     release(hold);
     a.operation().unwrap();
-    // Another export cannot be proved disjoint (it may be nested): refused.
+    // Another export cannot be proved disjoint (it may be nested): refused
+    // for now (#3211).
     let other = e.base.join("other-server");
     fs::create_dir_all(other.join("D")).unwrap();
     let (third, _third) = mount(&e.base, &other, "other", "nas.example:/srv/nfs/Other");
