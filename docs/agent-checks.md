@@ -85,6 +85,14 @@ concurrent fork cannot temporarily retain another fixture's installation lock
 before exec; all lifecycle assertions and test cases remain enabled. Both test shells raise their soft nofile limit via `test-nofile.sh`.
 The Linux Rust suites retain their existing conditional vendor workspace tests.
 
+The daily hosted Linux gate (`forgejo-linux.yml`, job `linux-checks`) runs
+`check-linux.sh` as two parallel matrix jobs (#3198): `checks` runs everything
+except the workspace census, and `workspace` compiles the census selection and
+then runs only `workspace-full`. As a single cold job it took 33–53 min and
+was cancelled by the 53 min bridge budget on 21.11. `needs.linux-checks.result`
+remains the verdict of both halves. Without an argument, both scripts still run
+the full list (agent checks and local runs).
+
 The canonical local Linux and shared gates use the same dev/test debug-info
 setting (`0`) as these required hosted checks. Run `26004` on `67e1d82b`
 exhausted the local-writer group's 900 s budget after roughly 880 s of cold
