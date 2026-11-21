@@ -108,8 +108,9 @@ def main():
          "match (Some(true).or(walk_avoids(folder, &other)), Some(true).or(walk_avoids(root, &own))) {",
          sibling_test, "no-walk-parent-negative"),
         # #3211: SMB inode numbers are not server-stable; an unreadable folder proves nothing.
-        (alias, original_alias, "if !nfs(&chain[0]) || !nfs(&root_chain[0]) {",
-         "if !nfs(&chain[0]) && !nfs(&root_chain[0]) {", unproved_test, "no-nfs-gate-negative"),
+        # Both the gate and the walk require NFS: any UUID-less filesystem counts here.
+        (alias, original_alias, 'identity.is_filesystem(b"nfs")',
+         "identity.is_mount_source()", unproved_test, "no-nfs-gate-negative"),
         (alias, original_alias, "let current = identity(&directory).ok()?;",
          "let Ok(current) = identity(&directory) else { continue };",
          unproved_test, "unreadable-skipped-negative"),
