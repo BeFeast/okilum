@@ -40,7 +40,10 @@ pub fn local_network_socket_route(endpoint: &url::Url) -> anyhow::Result<SocketR
     }
 }
 
-/// PAC scripts and proxy settings know only `http`/`https`.
+/// The URL PAC and the proxy settings see for a socket: its `http`/`https`
+/// origin, built exactly as the ticket client's endpoint (T3 `origin()`, then
+/// parsed), so a PAC rule on the path cannot route the ticket and its socket
+/// apart. Path, query (the ticket) and fragment never reach discovery.
 fn http_equivalent(endpoint: &url::Url) -> anyhow::Result<url::Url> {
     let scheme = match endpoint.scheme() {
         "ws" | "http" => "http",
@@ -50,9 +53,7 @@ fn http_equivalent(endpoint: &url::Url) -> anyhow::Result<url::Url> {
     let mut http = endpoint.clone();
     http.set_scheme(scheme)
         .map_err(|()| anyhow::anyhow!("Unsupported socket scheme"))?;
-    http.set_query(None);
-    http.set_fragment(None);
-    Ok(http)
+    crate::parse_endpoint(&http.origin().ascii_serialization())
 }
 
 #[cfg(any(windows, test))]

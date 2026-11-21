@@ -157,8 +157,9 @@ always had.
 On Windows that is the same decision as the ticket request's
 `local_network_builder`: loopback and private IP literals direct; otherwise
 the environment proxy, then the WinHTTP static/per-protocol/PAC/WPAD answer.
-PAC sees `https://host/ws` only; the ticket query is stripped before
-discovery. Discovery errors fail closed, as for the ticket request. For a
+PAC sees the origin only (`https://host[:port]/`), the same URL the ticket
+client resolves, so a PAC rule on the path cannot split the ticket from its
+socket; the path and the ticket query never reach discovery. Discovery errors fail closed, as for the ticket request. For a
 proxy route the client connects TCP to the proxy, sends `CONNECT host:port`
 (no credentials), requires a 2xx reply and reads it byte by byte, so no byte
 of the TLS handshake is consumed. TLS then runs end to end with T3 through the

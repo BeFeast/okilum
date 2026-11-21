@@ -186,9 +186,15 @@ fn socket_route_uses_the_ticket_clients_exclusions() {
 
 #[test]
 fn socket_schemes_map_to_http_for_pac() {
-    let ws = url::Url::parse("wss://t3.example.test/ws?wsTicket=secret").unwrap();
+    let ws = url::Url::parse("wss://user:pw@t3.example.test:443/ws?wsTicket=secret#f").unwrap();
     let http = http_equivalent(&ws).unwrap();
-    assert_eq!(http.as_str(), "https://t3.example.test/ws");
+    assert_eq!(http.as_str(), "https://t3.example.test/");
+    assert_eq!(
+        http_equivalent(&url::Url::parse("wss://t3.example.test:3773/ws").unwrap())
+            .unwrap()
+            .as_str(),
+        "https://t3.example.test:3773/"
+    );
     assert_eq!(
         http_equivalent(&url::Url::parse("ws://10.0.0.5:3773/ws").unwrap())
             .unwrap()
@@ -196,6 +202,39 @@ fn socket_schemes_map_to_http_for_pac() {
         "http"
     );
     assert!(http_equivalent(&url::Url::parse("ftp://t3.example.test/").unwrap()).is_err());
+}
+
+/// Review on 127abc002: PAC is asked with the same URL for the ticket and the
+/// socket. Under a PAC rule «`/ws` → DIRECT, else PROXY» both must take the
+/// proxy; with the socket path still in the URL the socket went direct.
+#[test]
+fn ticket_and_socket_ask_pac_with_the_same_origin() {
+    fn pac(url: &url::Url) -> Lookup {
+        if url.path() == "/ws" {
+            Lookup::Direct
+        } else {
+            Lookup::Proxy {
+                proxy: "http://proxy.corp.test:8080".into(),
+                bypass: String::new(),
+            }
+        }
+    }
+    let proxied = SocketRoute::Proxy {
+        host: "proxy.corp.test".into(),
+        port: 8080,
+    };
+    // The rule is live: the socket path itself would go direct.
+    let raw = url::Url::parse("https://t3.corp.test:3773/ws").unwrap();
+    assert_eq!(route_from(&raw, pac(&raw)).unwrap(), SocketRoute::Direct);
+    // The ticket client resolves `local_network_builder(environment.origin())`.
+    let ticket = crate::parse_endpoint("https://t3.corp.test:3773").unwrap();
+    let socket = http_equivalent(
+        &url::Url::parse("wss://t3.corp.test:3773/ws?orchestrationProtocol=2&wsTicket=s").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(socket, ticket);
+    assert_eq!(route_from(&ticket, pac(&ticket)).unwrap(), proxied);
+    assert_eq!(route_from(&socket, pac(&socket)).unwrap(), proxied);
 }
 
 #[cfg(not(windows))]
