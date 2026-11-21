@@ -38,6 +38,13 @@ impl Identity {
     pub(super) fn same_mount(&self, other: &Self) -> bool {
         self.is_mount_source() && self.3 == other.3
     }
+    /// A mount-source identity of filesystem type `filesystem` (`nfs`, #3211).
+    pub(super) fn is_filesystem(&self, filesystem: &[u8]) -> bool {
+        match (self.3, mount_source_digest(filesystem, b"-")) {
+            (Some(volume), Ok(expected)) => self.is_mount_source() && volume[..8] == expected[..8],
+            _ => false,
+        }
+    }
     /// The alias-invariant witness for UUID-less volumes (#3204). One export
     /// mounted as `10.10.0.14:/srv` and as `nas:/srv` gives two digests for one
     /// server object, but the server assigns inode (NFS fileid) and birth time,
@@ -68,7 +75,7 @@ pub fn read(path: &Path) -> Result<Identity> {
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(path)?;
     #[cfg(test)]
-    if let Some((backing, source)) = simulated_mount(path) {
+    if let Some((backing, filesystem, source)) = simulated_mount(path) {
         // NFS answers ATTR_VOL_UUID with EINVAL (#3202, macOS 27 on NFSv3).
         let handle = OpenOptions::new()
             .read(true)
@@ -77,19 +84,21 @@ pub fn read(path: &Path) -> Result<Identity> {
         return from_file_with(
             &handle,
             |_| Err(std::io::Error::from_raw_os_error(libc::EINVAL)),
-            |_| mount_source_digest(b"nfs", source.as_bytes()),
+            |_| mount_source_digest(filesystem.as_bytes(), source.as_bytes()),
         );
     }
     from_file(&handle)
 }
 
-/// Test-only NFS mounts on this thread: identities of paths under `prefix`
-/// carry no volume UUID and the mount source `source`. With `backing`, the
-/// prefix is another spelling of that directory, as a second mount of the
-/// same export would be; identities then read the backing object.
+/// Test-only UUID-less mounts on this thread: identities of paths under
+/// `prefix` carry no volume UUID, the filesystem type `filesystem` (`nfs`,
+/// `smbfs`) and the mount source `source`. With `backing`, the prefix is
+/// another spelling of that directory, as a second mount of the same export
+/// would be; identities then read the backing object.
 #[cfg(test)]
 pub(super) struct SimulatedMount {
     pub prefix: PathBuf,
+    pub filesystem: &'static str,
     pub source: &'static str,
     pub backing: Option<PathBuf>,
 }
@@ -99,7 +108,7 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 #[cfg(test)]
-fn simulated_mount(path: &Path) -> Option<(PathBuf, &'static str)> {
+fn simulated_mount(path: &Path) -> Option<(PathBuf, &'static str, &'static str)> {
     SIMULATED_MOUNTS.with(|mounts| {
         let mounts = mounts.borrow();
         let mount = mounts
@@ -110,7 +119,7 @@ fn simulated_mount(path: &Path) -> Option<(PathBuf, &'static str)> {
             Some(backing) => backing.join(path.strip_prefix(&mount.prefix).ok()?),
             None => path.to_path_buf(),
         };
-        Some((backing, mount.source))
+        Some((backing, mount.filesystem, mount.source))
     })
 }
 

@@ -50,13 +50,23 @@ A new UUID-less root gets its own scope only when it is proved disjoint from
 every existing UUID-less scope. Proof needs that scope's folder reached now,
 through its own path or through the new root's mount at the same path below
 the mount root, and both folders below one physical mount root, so each
-ancestor chain shows any enclosure. Anything else is refused: another export
-(it may be nested, as `nas:/share/Vault/Sub` inside `nas:/share`), another
-filesystem type, or a folder that cannot be reached now. Several vaults on one
-export, through one mount or its aliases, get separate scopes. Vaults on two
-different exports cannot be open at the same time for now: the second is
-refused until an export witness or an explicit attach flow can prove the
-exports disjoint (#3211). Each UUID-less
+ancestor chain shows any enclosure. Several vaults on one export, through one
+mount or its aliases, get separate scopes.
+
+Mounts of two different exports share no mount root, so their chains cannot
+show that one export is nested in the other (`nas:/share/Vault/Sub` mounted
+apart from `nas:/share`, or a server-side bind mount). For them an export
+witness decides, read live at registration (#3211). Both folders must be on
+NFS, where the server assigns fileid and birth time under every mount;
+neither root may lie on the other's chain up to its mount root; and a walk of
+each folder (directories only, symbolic links not followed, at most 100 000
+directories) must find no directory of the other's chain. A nested export
+shows up in that walk as its root (or an ancestor of it) below the wider
+folder, so it is refused, and so is a parent of both. Two independent exports
+then get separate scopes with independent holds. Anything else stays refused:
+SMB, macFUSE or mixed filesystem types (their inode numbers are not
+server-stable), a folder the walk cannot read completely or that is too
+large, or a folder that cannot be reached now. Each UUID-less
 scope also keeps a record of its same-mount ancestors (`ancestry.json` in its
 private directory), used only to route admission and never as proof of
 disjointness.

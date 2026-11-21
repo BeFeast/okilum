@@ -470,7 +470,7 @@ impl Authority {
                         Overlap::Disjoint => None,
                         Overlap::Encloses(ancestry) => Some(ancestry),
                         Overlap::Unknown => anyhow::bail!(
-                            "{} is on a network or FUSE volume, and Okilum cannot prove that it does not overlap the writer scope {}: they are on different mounts or exports, or that folder cannot be checked now. Open both through the same mount, or mount it again (#3204)",
+                            "{} is on a network or FUSE volume, and Okilum cannot prove that it does not overlap the writer scope {}: one export may lie inside the other, they are not both on NFS, or a folder cannot be read completely now. Open both through the same mount, or mount it again (#3204, #3211)",
                             root.display(),
                             child.binding.root.display()
                         ),

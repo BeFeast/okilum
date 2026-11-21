@@ -13,7 +13,8 @@
 //!   its own path, or through the new root's mount at the same path below the
 //!   mount root) and both lie below one physical mount root, so each one's
 //!   ancestor chain shows any enclosure. Otherwise (nested or other exports, a
-//!   folder that cannot be reached) the new root is refused. A scope inside the
+//!   folder that cannot be reached) the new root is refused, except for two
+//!   NFS exports that the export witness proves disjoint (#3211). A scope inside the
 //!   new root is promoted; its record of ancestors (`ancestry.json`) is then
 //!   rewritten from the chain read now, and its handles use it to resolve the
 //!   enclosing scope at admission. The record never proves disjointness.
@@ -21,6 +22,13 @@
 //!   (the mount is gone, or holds another folder) is retired, when it is idle,
 //!   once its folder is opened through another path. A hold or a live writer
 //!   keeps it and refuses the new path.
+//!
+//! - Two exports (#3211): mounts of different exports share no mount root, so
+//!   their chains cannot show enclosure. On NFS the server assigns fileid and
+//!   birth time, so the export witness reads them live: neither root lies on
+//!   the other's chain, and a bounded walk of each folder finds no directory
+//!   of the other's chain. Anything the walk cannot read, another filesystem
+//!   type, or a folder too large to walk stays refused.
 //!
 //! Other platforms and native volumes keep no record and are unaffected.
 use super::*;
@@ -31,6 +39,9 @@ const ANCESTRY: &str = "ancestry.json";
 const RETIRED: &str = "retired-binding.json";
 /// Scopes may enclose scopes; a chain longer than this is a corrupt registry.
 pub(super) const MAX_SCOPE_HOPS: usize = 64;
+/// The export witness walks at most this many directories per folder; a
+/// larger folder cannot be proved disjoint and stays refused (#3211).
+pub(super) const MAX_WITNESS_DIRECTORIES: usize = 100_000;
 
 /// The identity names its volume by mount source (macOS volume without UUID).
 pub(super) fn mount_source(identity: &Identity) -> bool {
@@ -58,6 +69,81 @@ pub(super) fn mount_ancestry(chain: &[Identity]) -> Vec<Identity> {
     }
     let _ = chain;
     Vec::new()
+}
+
+/// The folder and its same-mount ancestors, innermost first.
+fn mount_chain(chain: &[Identity]) -> Vec<Identity> {
+    let mut own = chain[..1].to_vec();
+    own.extend(mount_ancestry(chain));
+    own
+}
+
+/// Export witness (#3211): no directory in or below `folder` is one of
+/// `chain`. `None`: the walk could not read everything or met its bound, so
+/// nothing is proved. Symbolic links are not followed.
+fn walk_avoids(folder: &Path, chain: &[Identity]) -> Option<bool> {
+    let mut pending = vec![folder.to_path_buf()];
+    let mut seen = 0;
+    while let Some(directory) = pending.pop() {
+        seen += 1;
+        if seen > MAX_WITNESS_DIRECTORIES {
+            return None;
+        }
+        let current = identity(&directory).ok()?;
+        let current = std::slice::from_ref(&current);
+        if chain
+            .iter()
+            .any(|stored| physical_candidate(current, stored))
+        {
+            return Some(false);
+        }
+        for entry in fs::read_dir(&directory).ok()? {
+            let entry = entry.ok()?;
+            if entry.file_type().ok()?.is_dir() {
+                pending.push(entry.path());
+            }
+        }
+    }
+    Some(true)
+}
+
+/// Two folders on mounts with different mount roots (two exports, #3211).
+/// Their chains end at their mount roots, so an export nested in the other is
+/// invisible to them; it shows up only below the wider folder. Both folders
+/// are on NFS, whose fileid and birth time the server assigns under every
+/// mount, and they are disjoint only when neither root is on the other's
+/// chain and neither folder contains a directory of the other's chain.
+/// Everything else is `Unknown`.
+fn export_witness(
+    folder: &Path,
+    chain: &[Identity],
+    root: &Path,
+    root_chain: &[Identity],
+) -> Overlap {
+    if !nfs(&chain[0]) || !nfs(&root_chain[0]) {
+        return Overlap::Unknown;
+    }
+    let (own, other) = (mount_chain(chain), mount_chain(root_chain));
+    if physical_candidate(&own, &root_chain[0]) || physical_candidate(&other, &chain[0]) {
+        return Overlap::Unknown;
+    }
+    match (walk_avoids(folder, &other), walk_avoids(root, &own)) {
+        (Some(true), Some(true)) => Overlap::Disjoint,
+        _ => Overlap::Unknown,
+    }
+}
+
+/// The identity is on an NFS mount (#3211).
+fn nfs(identity: &Identity) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        identity.is_filesystem(b"nfs")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = identity;
+        false
+    }
 }
 
 /// How an existing UUID-less scope relates to a folder being registered.
@@ -97,16 +183,17 @@ impl Authority {
     /// The current identities of this UUID-less scope's folder and all its
     /// ancestors, read through its own path or, when that no longer reaches
     /// the folder, through `mount` (the mount root of the folder being opened)
-    /// at the same path below the mount root. `None`: neither reaches it.
-    fn current_chain(&self, mount: &Path) -> Result<Option<Vec<Identity>>> {
-        let reach = |path: &Path| -> Option<Vec<Identity>> {
+    /// at the same path below the mount root, with the path that reached it.
+    /// `None`: neither reaches it.
+    fn current_chain(&self, mount: &Path) -> Result<Option<(PathBuf, Vec<Identity>)>> {
+        let reach = |path: &Path| -> Option<(PathBuf, Vec<Identity>)> {
             let chain = path
                 .ancestors()
                 .map(identity)
                 .collect::<Result<Vec<_>>>()
                 .ok()?;
             physical_candidate(std::slice::from_ref(&chain[0]), &self.binding.root_identity)
-                .then_some(chain)
+                .then(|| (path.to_path_buf(), chain))
         };
         if let Some(chain) = reach(&self.binding.root) {
             return Ok(Some(chain));
@@ -128,9 +215,10 @@ impl Authority {
     /// How this scope relates to a new UUID-less `root`, given the identities
     /// of `root` and all its ancestors (`root_chain`). Disjointness needs proof
     /// (#3204): this folder's ancestry is read now, and both folders lie below
-    /// one physical mount root, so each chain shows any enclosure. Different
-    /// mounts of nested or other exports, or a folder that cannot be reached
-    /// now, are `Unknown`. The stored record never proves disjointness.
+    /// one physical mount root, so each chain shows any enclosure. Mounts of
+    /// two exports are disjoint only by the export witness (#3211); a nested
+    /// export, or a folder that cannot be reached now, is `Unknown`. The
+    /// stored record never proves disjointness.
     pub(super) fn overlap(&self, root: &Path, root_chain: &[Identity]) -> Result<Overlap> {
         if !mount_source(&self.binding.root_identity) || !mount_source(&root_chain[0]) {
             return Ok(Overlap::Disjoint);
@@ -141,13 +229,13 @@ impl Authority {
             .ancestors()
             .nth(root_ancestry.len())
             .context("Writer root has no mount root")?;
-        let Some(chain) = self.current_chain(mount)? else {
+        let Some((folder, chain)) = self.current_chain(mount)? else {
             return Ok(Overlap::Unknown);
         };
         let ancestry = mount_ancestry(&chain);
         let top = ancestry.last().unwrap_or(&chain[0]);
         if !physical_candidate(std::slice::from_ref(top), root_top) {
-            return Ok(Overlap::Unknown);
+            return Ok(export_witness(&folder, &chain, root, root_chain));
         }
         if physical_candidate(&ancestry, &root_chain[0]) {
             return Ok(Overlap::Encloses(ancestry));

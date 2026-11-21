@@ -1,4 +1,5 @@
 use super::*;
+use std::os::unix::fs::PermissionsExt;
 
 fn fixture() -> (tempfile::TempDir, Authority) {
     let temporary = tempfile::tempdir().unwrap();
@@ -182,12 +183,18 @@ const EXPORT: &str = "10.10.0.14:/srv/nfs/Maestro";
 struct Nfs;
 impl Nfs {
     fn everywhere() -> Self {
-        Self::mount("/".into(), EXPORT, None)
+        Self::mount("/".into(), "nfs", EXPORT, None)
     }
-    fn mount(prefix: PathBuf, source: &'static str, backing: Option<PathBuf>) -> Self {
+    fn mount(
+        prefix: PathBuf,
+        filesystem: &'static str,
+        source: &'static str,
+        backing: Option<PathBuf>,
+    ) -> Self {
         identity_macos::SIMULATED_MOUNTS.with(|mounts| {
             mounts.borrow_mut().push(identity_macos::SimulatedMount {
                 prefix,
+                filesystem,
                 source,
                 backing,
             })
@@ -328,9 +335,23 @@ fn exports(folders: &[&str]) -> Exports {
 /// Mount `server` at `base/name` with mount source `source`. Removing the
 /// mount point unmounts it; `mirror` mounts it again.
 fn mount(base: &Path, server: &Path, name: &str, source: &'static str) -> (PathBuf, Nfs) {
+    mount_as(base, server, name, "nfs", source)
+}
+fn mount_as(
+    base: &Path,
+    server: &Path,
+    name: &str,
+    filesystem: &'static str,
+    source: &'static str,
+) -> (PathBuf, Nfs) {
     let prefix = base.join(name);
     mirror(server, &prefix);
-    let nfs = Nfs::mount(prefix.clone(), source, Some(server.to_path_buf()));
+    let nfs = Nfs::mount(
+        prefix.clone(),
+        filesystem,
+        source,
+        Some(server.to_path_buf()),
+    );
     (prefix, nfs)
 }
 fn mirror(from: &Path, to: &Path) {
@@ -381,12 +402,105 @@ fn identity_3204_several_uuid_less_vaults_have_separate_scopes() {
         .unwrap();
     release(hold);
     a.operation().unwrap();
-    // Another export cannot be proved disjoint (it may be nested): refused
-    // for now (#3211).
+}
+
+/// #3211: two independent NFS exports, each with its own scope and holds.
+/// The export witness walks both folders live and finds neither inside the
+/// other.
+#[test]
+fn identity_3211_two_nfs_exports_have_independent_scopes() {
+    let e = exports(&["A/Notes"]);
+    let other = e.base.join("other-server");
+    fs::create_dir_all(other.join("D").join("Folder")).unwrap();
+    let (first, _first) = mount(&e.base, &e.server, "first", EXPORT);
+    let (second, _second) = mount(&e.base, &other, "other", "nas.example:/srv/nfs/Other");
+    let a = Authority::open_in(&e.account, &first.join("A")).unwrap();
+    let d = Authority::open_in(&e.account, &second.join("D")).unwrap();
+    assert_ne!(a.binding_path, d.binding_path);
+    // Holds are independent in both directions.
+    let hold = a.begin_drain("exclusive-operation").unwrap();
+    assert!(a.admit().is_err());
+    d.operation().unwrap();
+    release(hold);
+    let hold = d.begin_drain("exclusive-operation").unwrap();
+    assert!(d.admit().is_err());
+    a.operation().unwrap();
+    release(hold);
+    // Reopening resolves to the scopes; a folder inside stays in its scope.
+    assert_eq!(
+        Authority::open_in(&e.account, &second.join("D").join("Folder"))
+            .unwrap()
+            .binding_path,
+        d.binding_path
+    );
+    // The whole other export, opened through its own mount root, is also
+    // disjoint from A; the order of registration does not matter.
+    let e = exports(&["A"]);
     let other = e.base.join("other-server");
     fs::create_dir_all(other.join("D")).unwrap();
-    let (third, _third) = mount(&e.base, &other, "other", "nas.example:/srv/nfs/Other");
-    refused(&e.account, &third.join("D"), "cannot prove");
+    let (first, _first) = mount(&e.base, &e.server, "first", EXPORT);
+    let (second, _second) = mount(&e.base, &other, "other", "nas.example:/srv/nfs/Other");
+    let whole = Authority::open_in(&e.account, &second).unwrap();
+    let a = Authority::open_in(&e.account, &first.join("A")).unwrap();
+    assert_ne!(whole.binding_path, a.binding_path);
+    let _hold = whole.begin_drain("exclusive-operation").unwrap();
+    a.operation().unwrap();
+}
+
+/// #3211: sibling exports of one server tree (`…/Maestro/Left` and
+/// `…/Maestro/Right` mounted apart) are disjoint; the witness tells them from
+/// a nested export, which `identity_3204_nested_export_cannot_bypass_a_hold`
+/// keeps refused.
+#[test]
+fn identity_3211_sibling_exports_of_one_server_are_disjoint() {
+    let e = exports(&["Left/Vault", "Right/Vault"]);
+    let (left, _left) = mount(
+        &e.base,
+        &e.server.join("Left"),
+        "left",
+        "nas.example:/srv/nfs/Maestro/Left",
+    );
+    let (right, _right) = mount(
+        &e.base,
+        &e.server.join("Right"),
+        "right",
+        "nas.example:/srv/nfs/Maestro/Right",
+    );
+    let l = Authority::open_in(&e.account, &left.join("Vault")).unwrap();
+    let r = Authority::open_in(&e.account, &right.join("Vault")).unwrap();
+    assert_ne!(l.binding_path, r.binding_path);
+    let _hold = l.begin_drain("exclusive-operation").unwrap();
+    r.operation().unwrap();
+    // The wider export contains both: refused while their scopes exist.
+    let (all, _all) = mount(&e.base, &e.server, "all", EXPORT);
+    refused(&e.account, &all, "cannot prove");
+    refused(&e.account, &all.join("Left"), "cannot prove");
+}
+
+/// #3211: only NFS fileids are assigned by the server under every mount. A
+/// second export on SMB (or any other filesystem type) stays refused, and so
+/// does a folder the witness cannot read completely.
+#[test]
+fn identity_3211_unproved_exports_stay_refused() {
+    let e = exports(&["A"]);
+    let other = e.base.join("other-server");
+    fs::create_dir_all(other.join("D")).unwrap();
+    let (first, _first) = mount(&e.base, &e.server, "first", EXPORT);
+    let (smb, _smb) = mount_as(&e.base, &other, "smb", "smbfs", "//user@nas.example/Other");
+    Authority::open_in(&e.account, &first.join("A")).unwrap();
+    refused(&e.account, &smb.join("D"), "cannot prove");
+
+    let e = exports(&["A"]);
+    let other = e.base.join("other-server");
+    fs::create_dir_all(other.join("D").join("Private")).unwrap();
+    let (first, _first) = mount(&e.base, &e.server, "first", EXPORT);
+    let (second, _second) = mount(&e.base, &other, "other", "nas.example:/srv/nfs/Other");
+    Authority::open_in(&e.account, &first.join("A")).unwrap();
+    let private = second.join("D").join("Private");
+    fs::set_permissions(&private, fs::Permissions::from_mode(0o000)).unwrap();
+    refused(&e.account, &second.join("D"), "cannot prove");
+    fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();
+    Authority::open_in(&e.account, &second.join("D")).unwrap();
 }
 
 /// #3209 review: `nas:/share/Vault/Sub` and `nas:/share` mounted separately.

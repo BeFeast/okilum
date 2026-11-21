@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compiled native controls: volatile-device, migration, UUID-less (#3202) and mount-alias (#3204) regressions."""
+"""Compiled native controls: volatile-device, migration, UUID-less (#3202), mount-alias (#3204) and export-witness (#3211) regressions."""
 import pathlib
 import subprocess
 
@@ -63,9 +63,13 @@ def main():
     stale_test = "identity_macos_tests::identity_3204_stale_binding_is_retired_through_another_mount"
     nested_test = "identity_macos_tests::identity_3204_nested_export_cannot_bypass_a_hold"
     replaced_test = "identity_macos_tests::identity_3204_replaced_ancestor_never_proves_disjointness"
+    exports_test = "identity_macos_tests::identity_3211_two_nfs_exports_have_independent_scopes"
+    sibling_test = "identity_macos_tests::identity_3211_sibling_exports_of_one_server_are_disjoint"
+    unproved_test = "identity_macos_tests::identity_3211_unproved_exports_stay_refused"
     tests = [(alias_test, "alias"), (child_test, "child-first"), (gone_test, "mount-gone"),
              (stale_test, "stale"), (nested_test, "nested-export"),
-             (replaced_test, "replaced-ancestor")]
+             (replaced_test, "replaced-ancestor"), (exports_test, "two-exports"),
+             (sibling_test, "sibling-exports"), (unproved_test, "unproved-exports")]
     for test, label in tests:
         run(test, f"{label}-positive")
     # #3204: each control removes one rule; its regression must then fail.
@@ -89,6 +93,24 @@ def main():
         (alias, original_alias, "let ancestry = mount_ancestry(&chain);",
          "let ancestry = self.recorded_ancestry()?.unwrap_or_default();",
          replaced_test, "stale-record-negative"),
+        # #3211: without the export witness two independent exports are refused.
+        (alias, original_alias, "return Ok(export_witness(&folder, &chain, root, root_chain));",
+         "return Ok(Overlap::Unknown);", exports_test, "no-export-witness-negative"),
+        # #3211: without the walk a nested export or a parent of both passes.
+        (alias, original_alias,
+         "match (walk_avoids(folder, &other), walk_avoids(root, &own)) {",
+         "match (Some(true).or(walk_avoids(folder, &other)), Some(true).or(walk_avoids(root, &own))) {",
+         nested_test, "no-walk-nested-negative"),
+        (alias, original_alias,
+         "match (walk_avoids(folder, &other), walk_avoids(root, &own)) {",
+         "match (Some(true).or(walk_avoids(folder, &other)), Some(true).or(walk_avoids(root, &own))) {",
+         sibling_test, "no-walk-parent-negative"),
+        # #3211: SMB inode numbers are not server-stable; an unreadable folder proves nothing.
+        (alias, original_alias, "if !nfs(&chain[0]) || !nfs(&root_chain[0]) {",
+         "if !nfs(&chain[0]) && !nfs(&root_chain[0]) {", unproved_test, "no-nfs-gate-negative"),
+        (alias, original_alias, "let current = identity(&directory).ok()?;",
+         "let Ok(current) = identity(&directory) else { continue };",
+         unproved_test, "unreadable-skipped-negative"),
     ]
     for path, original, old, replacement, test, label in controls:
         try:
