@@ -45,8 +45,31 @@ def main():
         run(legacy_test, "no-migration-negative", negative=True)
     finally:
         entry.write_text(original_entry)
+    no_uuid_test = "identity_macos_tests::identity_3202_volume_without_uuid_admits_writers_across_remounts"
+    run(no_uuid_test, "no-uuid-positive")
+    try:
+        # #3202: before the fix, a volume without ATTR_VOL_UUID (NFS) refused every edit.
+        missing = "Some(libc::EINVAL | libc::ENOTSUP | libc::ENOATTR)"
+        assert original_native.count(missing) == 1
+        native.write_text(original_native.replace(missing, "Some(i32::MIN)"))
+        run(no_uuid_test, "no-uuid-refused-negative", negative=True)
+    finally:
+        native.write_text(original_native)
+    second_test = "identity_macos_tests::identity_3202_second_uuid_less_root_is_refused_while_one_is_registered"
+    run(second_test, "second-uuid-less-positive")
+    try:
+        # #3202: a second UUID-less root may be another spelling, child or parent
+        # of the registered one; without the rule it minted a second authority.
+        rule = "!ancestor_identities[0].is_mount_source()"
+        assert original_entry.count(rule) == 1
+        entry.write_text(original_entry.replace(rule, "true"))
+        run(second_test, "second-uuid-less-negative", negative=True)
+    finally:
+        entry.write_text(original_entry)
     run(device_test, "native-restored")
     run(legacy_test, "migration-restored")
+    run(no_uuid_test, "no-uuid-restored")
+    run(second_test, "second-uuid-less-restored")
     assert native.read_text() == original_native and entry.read_text() == original_entry
 
 
