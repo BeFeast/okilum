@@ -300,53 +300,242 @@ fn identity_3202_native_roots_are_not_limited() {
     authority.operation().unwrap();
 }
 
-/// A UUID-less identity names its export by the mount source spelling, so a
-/// different UUID-less root may be the same physical folder. While one
-/// UUID-less binding exists, every other UUID-less root is refused.
-#[test]
-fn identity_3202_second_uuid_less_root_is_refused_while_one_is_registered() {
-    let _nfs = Nfs::everywhere();
+/// Second spelling of `EXPORT`'s server for the same export.
+const ALIAS: &str = "nas.example:/srv/nfs/Maestro";
+
+/// Server storage for UUID-less exports; each mount mirrors its directories.
+struct Exports {
+    _temporary: tempfile::TempDir,
+    base: PathBuf,
+    server: PathBuf,
+    account: PathBuf,
+}
+fn exports(folders: &[&str]) -> Exports {
     let temporary = tempfile::tempdir().unwrap();
     let base = temporary.path().canonicalize().unwrap();
-    let export = base.join("by-ip");
-    let vault = export.join("Vault");
-    fs::create_dir_all(vault.join("Sub")).unwrap();
-    fs::create_dir_all(export.join("Other")).unwrap();
-    fs::write(vault.join("note.md"), b"Canonical bytes\r\n").unwrap();
+    let server = base.join("server");
+    for folder in folders {
+        fs::create_dir_all(server.join(folder)).unwrap();
+    }
     let account = base.join("account");
-    let first = Authority::open_in(&account, &vault).unwrap();
-    // The same export mounted again by hostname.
-    let alias = base.join("by-hostname");
-    fs::create_dir_all(alias.join("Vault").join("Sub")).unwrap();
-    let _second_mount = Nfs::mount(
-        alias.clone(),
-        "maestro.oklabs.uk:/srv/nfs/Maestro",
-        Some(export.clone()),
+    Exports {
+        _temporary: temporary,
+        base,
+        server,
+        account,
+    }
+}
+/// Mount `server` at `base/name` with mount source `source`. Removing the
+/// mount point unmounts it; `mirror` mounts it again.
+fn mount(base: &Path, server: &Path, name: &str, source: &'static str) -> (PathBuf, Nfs) {
+    let prefix = base.join(name);
+    mirror(server, &prefix);
+    let nfs = Nfs::mount(prefix.clone(), source, Some(server.to_path_buf()));
+    (prefix, nfs)
+}
+fn mirror(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for entry in fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_type().unwrap().is_dir() {
+            mirror(&entry.path(), &to.join(entry.file_name()));
+        }
+    }
+}
+fn bound(account: &Path, root: &Path) -> bool {
+    account.join(format!("{}.json", key(root))).exists()
+}
+fn release(hold: Hold) {
+    let token = hold.token().clone();
+    hold.release(&token).unwrap();
+}
+fn refused(account: &Path, root: &Path, reason: &str) {
+    let error = Authority::open_in(account, root).unwrap_err();
+    assert!(
+        format!("{error:#}").contains(reason),
+        "{}: {error:#}",
+        root.display()
     );
-    let refused = |root: &Path| {
-        let error = Authority::open_in(&account, root).unwrap_err();
-        assert!(
-            format!("{error:#}").contains("without a volume UUID"),
-            "{}: {error:#}",
-            root.display()
-        );
-        assert!(
-            !account.join(format!("{}.json", key(root))).exists(),
-            "{}: no second authority",
-            root.display()
-        );
-    };
-    refused(&alias.join("Vault")); // alias spelling of the same root
-    refused(&alias.join("Vault").join("Sub")); // child through the alias
-    refused(&export); // parent through the first mount
-    refused(&export.join("Other")); // unrelated folder on the export
-                                    // Same-path reopen still works.
-    Authority::open_in(&account, &vault)
+    assert!(!bound(account, root), "{}: no new scope", root.display());
+}
+
+#[test]
+fn identity_3204_several_uuid_less_vaults_have_separate_scopes() {
+    let e = exports(&["A", "B"]);
+    let other = e.base.join("other-server");
+    fs::create_dir_all(other.join("C")).unwrap();
+    let (first, _first) = mount(&e.base, &e.server, "by-ip", EXPORT);
+    let (second, _second) = mount(&e.base, &other, "other", "nas.example:/srv/nfs/Other");
+    // Two folders on one export and one on another export.
+    let a = Authority::open_in(&e.account, &first.join("A")).unwrap();
+    let b = Authority::open_in(&e.account, &first.join("B")).unwrap();
+    let c = Authority::open_in(&e.account, &second.join("C")).unwrap();
+    assert_ne!(a.binding_path, b.binding_path);
+    assert_ne!(a.binding_path, c.binding_path);
+    assert_ne!(b.binding_path, c.binding_path);
+    let hold = a.begin_drain("exclusive-operation").unwrap();
+    assert!(a.admit().is_err());
+    b.operation().unwrap();
+    c.operation().unwrap();
+    Authority::open_in(&e.account, &first.join("B"))
         .unwrap()
         .operation()
         .unwrap();
-    // The first mount is gone: its binding still stands.
-    fs::rename(&vault, base.join("unmounted")).unwrap();
-    refused(&export.join("Other"));
-    drop(first);
+    release(hold);
+    a.operation().unwrap();
+}
+
+#[test]
+fn identity_3204_mount_alias_resolves_to_the_held_scope() {
+    let e = exports(&["Vault/Sub"]);
+    let (first, _first) = mount(&e.base, &e.server, "by-ip", EXPORT);
+    let (second, _second) = mount(&e.base, &e.server, "by-hostname", ALIAS);
+    let through_alias = identity(&second.join("Vault")).unwrap();
+    let original = identity(&first.join("Vault")).unwrap();
+    assert_ne!(through_alias, original, "spellings give distinct digests");
+    assert_eq!((through_alias.1, through_alias.2), (original.1, original.2));
+
+    let vault = Authority::open_in(&e.account, &first.join("Vault")).unwrap();
+    let hold = vault.begin_drain("exclusive-operation").unwrap();
+    for path in [second.join("Vault"), second.join("Vault").join("Sub")] {
+        let resolved = Authority::open_in(&e.account, &path).unwrap();
+        assert_eq!(resolved.binding_path, vault.binding_path);
+        assert!(
+            resolved.admit().is_err(),
+            "the hold fences {}",
+            path.display()
+        );
+        assert!(!bound(&e.account, &path), "no second scope");
+    }
+    release(hold);
+    Authority::open_in(&e.account, &second.join("Vault"))
+        .unwrap()
+        .operation()
+        .unwrap();
+}
+
+#[test]
+fn identity_3204_child_first_then_parent_through_alias_keeps_one_scope() {
+    let e = exports(&["Vault/Sub"]);
+    let (first, _first) = mount(&e.base, &e.server, "by-ip", EXPORT);
+    let (second, _second) = mount(&e.base, &e.server, "by-hostname", ALIAS);
+    let child = Authority::open_in(&e.account, &first.join("Vault").join("Sub")).unwrap();
+    let parent = second.join("Vault");
+
+    let hold = child.begin_drain("exclusive-operation").unwrap();
+    refused(&e.account, &parent, "unfinished writer hold");
+    release(hold);
+    let lease = child.admit().unwrap();
+    refused(&e.account, &parent, "publishing");
+    drop(lease);
+
+    // Promoted: the child's handles now resolve the parent scope.
+    let parent = Authority::open_in(&e.account, &parent).unwrap();
+    assert_ne!(parent.binding_path, child.binding_path);
+    let hold = parent.begin_drain("exclusive-operation").unwrap();
+    assert!(
+        child.admit().is_err(),
+        "parent hold fences the child handle"
+    );
+    let reopened = Authority::open_in(&e.account, &first.join("Vault").join("Sub")).unwrap();
+    assert!(reopened.admit().is_err(), "and a reopened child");
+    release(hold);
+    child.operation().unwrap();
+    reopened.operation().unwrap();
+}
+
+#[test]
+fn identity_3204_held_child_fences_parent_after_its_mount_is_gone() {
+    let e = exports(&["Vault/Sub"]);
+    let (first, _first) = mount(&e.base, &e.server, "by-ip", EXPORT);
+    let (second, _second) = mount(&e.base, &e.server, "by-hostname", ALIAS);
+    let child = Authority::open_in(&e.account, &first.join("Vault").join("Sub")).unwrap();
+    drop(child.begin_drain("exclusive-operation").unwrap()); // the holder exits
+    fs::remove_dir_all(&first).unwrap(); // the first mount is gone
+    refused(&e.account, &second.join("Vault"), "unfinished writer hold");
+    refused(
+        &e.account,
+        &second.join("Vault").join("Sub"),
+        "unfinished writer hold",
+    );
+    assert!(child.binding_path.exists(), "the held scope is kept");
+}
+
+#[test]
+fn identity_3204_stale_binding_is_retired_through_another_mount() {
+    let e = exports(&["Vault"]);
+    let (first, _first) = mount(&e.base, &e.server, "by-ip", EXPORT);
+    let (second, _second) = mount(&e.base, &e.server, "by-hostname", ALIAS);
+    let old = Authority::open_in(&e.account, &first.join("Vault")).unwrap();
+    old.operation().unwrap();
+    fs::remove_dir_all(&first).unwrap();
+    let new = Authority::open_in(&e.account, &second.join("Vault")).unwrap();
+    assert_ne!(new.binding_path, old.binding_path);
+    assert!(!old.binding_path.exists(), "the stale binding is retired");
+    new.operation().unwrap();
+    assert!(old.admit().is_err(), "old handles fail closed");
+    // The first mount comes back: the same folder keeps one scope.
+    mirror(&e.server, &first);
+    let again = Authority::open_in(&e.account, &first.join("Vault")).unwrap();
+    assert_eq!(again.binding_path, new.binding_path);
+    assert!(!bound(&e.account, &first.join("Vault")));
+    let hold = again.begin_drain("exclusive-operation").unwrap();
+    assert!(new.admit().is_err());
+    release(hold);
+
+    // A stale binding with an unfinished hold is kept and refuses the new path.
+    let e = exports(&["Vault"]);
+    let (first, _first) = mount(&e.base, &e.server, "by-ip", EXPORT);
+    let (second, _second) = mount(&e.base, &e.server, "by-hostname", ALIAS);
+    let old = Authority::open_in(&e.account, &first.join("Vault")).unwrap();
+    drop(old.begin_drain("exclusive-operation").unwrap());
+    fs::remove_dir_all(&first).unwrap();
+    refused(&e.account, &second.join("Vault"), "unfinished writer hold");
+    assert!(old.binding_path.exists());
+}
+
+#[test]
+fn identity_3204_child_admits_again_when_its_alias_parent_mount_is_gone() {
+    let e = exports(&["Vault/Sub"]);
+    let (first, _first) = mount(&e.base, &e.server, "by-ip", EXPORT);
+    let (second, _second) = mount(&e.base, &e.server, "by-hostname", ALIAS);
+    let child_path = second.join("Vault").join("Sub");
+    Authority::open_in(&e.account, &child_path).unwrap();
+    let parent = Authority::open_in(&e.account, &first.join("Vault")).unwrap();
+    fs::remove_dir_all(&first).unwrap();
+    let reopened = Authority::open_in(&e.account, &child_path).unwrap();
+    reopened.operation().unwrap();
+    assert!(!parent.binding_path.exists(), "idle stale parent retired");
+
+    // A held parent keeps fencing the child.
+    let e = exports(&["Vault/Sub"]);
+    let (first, _first) = mount(&e.base, &e.server, "by-ip", EXPORT);
+    let (second, _second) = mount(&e.base, &e.server, "by-hostname", ALIAS);
+    let child_path = second.join("Vault").join("Sub");
+    let child = Authority::open_in(&e.account, &child_path).unwrap();
+    let parent = Authority::open_in(&e.account, &first.join("Vault")).unwrap();
+    drop(parent.begin_drain("exclusive-operation").unwrap());
+    fs::remove_dir_all(&first).unwrap();
+    assert!(Authority::open_in(&e.account, &child_path).is_err());
+    assert!(child.admit().is_err());
+    assert!(parent.binding_path.exists());
+}
+
+#[test]
+fn identity_3204_scope_without_ancestry_record_is_conservative() {
+    let e = exports(&["Vault/Sub"]);
+    let (first, _first) = mount(&e.base, &e.server, "by-ip", EXPORT);
+    let (second, _second) = mount(&e.base, &e.server, "by-hostname", ALIAS);
+    // A #3202 binding has no record; it is written while the root is readable.
+    let child = Authority::open_in(&e.account, &first.join("Vault").join("Sub")).unwrap();
+    let record = child.directory.join("ancestry.json");
+    fs::remove_file(&record).unwrap();
+    let hold = child.begin_drain("exclusive-operation").unwrap();
+    refused(&e.account, &second.join("Vault"), "unfinished writer hold");
+    assert!(record.exists());
+    release(hold);
+    // Unreadable and without a record: enclosure is unknown, so refused.
+    fs::remove_file(&record).unwrap();
+    fs::remove_dir_all(&first).unwrap();
+    refused(&e.account, &second.join("Vault"), "cannot be read now");
 }

@@ -43,6 +43,8 @@ mod identity_macos_tests;
 mod identity_windows_tests;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 mod migration;
+mod mount_alias;
+use mount_alias::{mount_source, MAX_SCOPE_HOPS};
 
 const BINDING_SCHEMA: u32 = if cfg!(any(target_os = "macos", target_os = "linux", windows)) {
     2
@@ -233,6 +235,11 @@ fn physical_candidate(current: &[Identity], stored: &Identity) -> bool {
         if stored.3.is_none() && stored.legacy_matches(identity) {
             return true;
         }
+        // One UUID-less folder under several mount spellings (#3204).
+        #[cfg(target_os = "macos")]
+        if stored.mount_alias_candidate(identity) {
+            return true;
+        }
         false
     })
 }
@@ -302,7 +309,7 @@ impl DurableBinding {
             binding: self.binding.clone(),
         };
         let mut authority = start.enclosing()?.unwrap_or(start);
-        loop {
+        for _ in 0..MAX_SCOPE_HOPS {
             let admission = file(&authority.directory.join("admission.lock"), false)?;
             admission
                 .lock()
@@ -330,6 +337,7 @@ impl DurableBinding {
                 revision: s.revision,
             })));
         }
+        anyhow::bail!("Writer scopes enclose each other; recovery required")
     }
     pub fn open(&self) -> Result<Authority> {
         let authority = Authority {
@@ -395,6 +403,10 @@ impl Authority {
         #[cfg(any(target_os = "macos", target_os = "linux", windows))]
         Self::migrate_legacy_bindings(&account, &root)?;
         if let Some(a) = Self::existing(&account, &root)? {
+            // UUID-less scopes from before #3204: record the mount ancestry now
+            // that the root is readable. Missing records are handled conservatively.
+            let _ = a.ancestry();
+            a.retire_unmounted_enclosure()?;
             return Ok(a);
         }
         let registry = file(&account.join("registry.lock"), true)?;
@@ -412,21 +424,6 @@ impl Authority {
             let p = entry?.path();
             if p.extension().is_some_and(|e| e == "json") {
                 let b: Binding = read(&p)?;
-                // A UUID-less identity (NFS, SMB, macFUSE; #3202) names its
-                // export by the mount source spelling, so it cannot prove two
-                // roots disjoint: another mount spelling, a child or a parent of
-                // a registered root may be the same physical folder. Allow one
-                // UUID-less scope; a different one is refused while any other
-                // UUID-less binding is registered, whether or not it is readable.
-                #[cfg(target_os = "macos")]
-                ensure!(
-                    !ancestor_identities[0].is_mount_source()
-                        || !b.root_identity.is_mount_source()
-                        || b.root_identity == ancestor_identities[0],
-                    "{} is on a network or FUSE volume without a volume UUID, and another such folder ({}) already has a writer scope; only one is supported for now (#3204)",
-                    root.display(),
-                    b.root.display()
-                );
                 // Canonical path aliases such as bind mounts can still name
                 // the same physical root. Never mint a second authority for it.
                 if physical_candidate(&ancestor_identities, &b.root_identity) {
@@ -436,6 +433,17 @@ impl Authority {
                         directory: account.join(key(&b.root)),
                         binding: b.clone(),
                     };
+                    // The same UUID-less folder (or one enclosing it) through
+                    // another mount (#3204): resolve to that scope while its path
+                    // reaches the folder; otherwise retire the idle binding.
+                    if mount_source(&b.root_identity) {
+                        if a.unmounted()? {
+                            a.retire_unmounted()?;
+                            continue;
+                        }
+                        a.validate()?;
+                        return Ok(a);
+                    }
                     if identity(&b.root)
                         .is_ok_and(|current| physical_candidate(&[current], &b.root_identity))
                     {
@@ -448,13 +456,28 @@ impl Authority {
                     ensure!(a.state()?.phase == Phase::Open,
                         "Physical vault identity has an unfinished hold at another root; explicit recovery required");
                 }
-                if b.root.starts_with(&root) && b.root != root {
-                    let child = Self {
-                        account: account.clone(),
-                        binding_path: p.clone(),
-                        directory: account.join(key(&b.root)),
-                        binding: b,
+                let child = Self {
+                    account: account.clone(),
+                    binding_path: p.clone(),
+                    directory: account.join(key(&b.root)),
+                    binding: b,
+                };
+                // A UUID-less scope inside this root through another mount
+                // (#3204), found by its durable ancestry even when its mount is
+                // gone. Unknown ancestry never proves that it lies outside.
+                let path_child =
+                    child.binding.root.starts_with(&root) && child.binding.root != root;
+                let alias_child = !path_child
+                    && child.binding.root != root
+                    && match child.encloses_by_alias(&ancestor_identities[0])? {
+                        Some(encloses) => encloses,
+                        None => anyhow::bail!(
+                            "{} may contain the writer scope {}, which is on a network volume that cannot be read now; mount it again and retry",
+                            root.display(),
+                            child.binding.root.display()
+                        ),
                     };
+                if path_child || alias_child {
                     let admission = file(&child.directory.join("admission.lock"), false)?;
                     admission.lock()?;
                     // A temporarily moved/deleted child root still owns its
@@ -492,6 +515,7 @@ impl Authority {
         for name in ["admission.lock", "writers.lock", "owner.lock"] {
             file(&directory.join(name), true)?.sync_all()?;
         }
+        Self::record_ancestry(&directory, &ancestor_identities)?;
         let binding = Binding {
             schema: BINDING_SCHEMA,
             root: root.clone(),
@@ -647,6 +671,7 @@ impl Authority {
             owner: identity(&old.directory.join("owner.lock"))?,
             ..old.binding.clone()
         };
+        Self::record_ancestry(&old.directory, &ancestors)?;
         persist(&old.binding_path, &binding, false)?;
         let rebound = Self { binding, ..old };
         rebound.validate()?;
@@ -724,11 +749,12 @@ impl Authority {
                 }));
             }
         }
-        Ok(None)
+        // A UUID-less scope enclosed through another mount path (#3204).
+        self.alias_enclosing()
     }
     fn locked(&self) -> Result<(Self, File)> {
         let mut authority = self.enclosing()?.unwrap_or_else(|| self.clone());
-        loop {
+        for _ in 0..MAX_SCOPE_HOPS {
             let f = file(&authority.directory.join("admission.lock"), false)?;
             // This protects only bounded metadata work, never a writer's whole
             // lifetime. Contention is normal and must not become a failed save.
@@ -742,6 +768,7 @@ impl Authority {
             authority.validate()?;
             return Ok((authority, f));
         }
+        anyhow::bail!("Writer scopes enclose each other; recovery required")
     }
     fn state(&self) -> Result<Snapshot> {
         let s: Snapshot = read(&self.directory.join("state.json"))?;
