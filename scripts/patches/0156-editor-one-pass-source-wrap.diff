@@ -1,17 +1,40 @@
 diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
-index d3957cd8..2cc0d2a5 100644
+index d3957cd8..1b87a484 100644
 --- a/crates/base/src/input/base/element.rs
 +++ b/crates/base/src/input/base/element.rs
-@@ -2262,8 +2262,16 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2207,9 +2207,12 @@ impl<M: InputModeKind> Element for TextElement<M> {
+         let font = style.font();
+         let text_size = style.font_size.to_pixels(window.rem_size());
  
-         if wrap_width_changed || wrapping_indent_changed {
+-        self.state.update(cx, |state, cx| {
+-            state.display_map.set_font(font.clone(), text_size, cx);
++        // A new font is applied below with the wrap width and indent: one
++        // re-wrap of the document for all three (#3073). Nothing reads the
++        // display map before that.
++        let font_changed = self.state.update(cx, |state, cx| {
+             state.display_map.ensure_text_prepared(&state.text, cx);
++            !state.display_map.font_is(&font, text_size)
+         });
+ 
+         let state = self.state.read(cx);
+@@ -2260,10 +2263,23 @@ impl<M: InputModeKind> Element for TextElement<M> {
+             .map(|l| l.wrapping_indent != wrapping_indent)
+             .unwrap_or(true);
+ 
+-        if wrap_width_changed || wrapping_indent_changed {
++        if font_changed || wrap_width_changed || wrapping_indent_changed {
              self.state.update(cx, |state, cx| {
 -                state.display_map.on_layout_changed(wrap_width, cx);
 -                state.display_map.set_wrapping_indent(wrapping_indent, cx);
-+                // One re-wrap for both (#3073): each setter alone re-wraps
++                // One re-wrap for all (#3073): each setter alone re-wraps
 +                // the whole document.
 +                let started = std::time::Instant::now();
-+                if state.display_map.set_layout(wrap_width, wrapping_indent, cx) {
++                if state.display_map.set_font_and_layout(
++                    font_changed.then(|| (font.clone(), text_size)),
++                    wrap_width,
++                    wrapping_indent,
++                    cx,
++                ) {
 +                    state.last_relayout = Some(super::Relayout {
 +                        duration: started.elapsed(),
 +                        rows: state.text.lines_len(),
@@ -75,10 +98,10 @@ index 536c2f2e..caebd2dd 100644
      /// unless layout diagnostics are enabled.
      pub fn take_layout_frames(&self) -> Vec<LayoutFrame> {
 diff --git a/crates/base/src/input/editor/display_map/display_map.rs b/crates/base/src/input/editor/display_map/display_map.rs
-index cf52b063..928214af 100644
+index cf52b063..f7231f10 100644
 --- a/crates/base/src/input/editor/display_map/display_map.rs
 +++ b/crates/base/src/input/editor/display_map/display_map.rs
-@@ -368,6 +368,23 @@ impl DisplayMap {
+@@ -368,6 +368,44 @@ impl DisplayMap {
          self.rebuild_fold_projection();
      }
  
@@ -91,12 +114,33 @@ index cf52b063..928214af 100644
 +        wrapping_indent: WrappingIndent,
 +        cx: &mut App,
 +    ) -> bool {
++        self.set_font_and_layout(None, wrap_width, wrapping_indent, cx)
++    }
++
++    /// [`Self::set_layout`] that also applies a font and size, still with one
++    /// re-wrap: the first frame of an editor changes all three (#3073).
++    pub fn set_font_and_layout(
++        &mut self,
++        font: Option<(Font, Pixels)>,
++        wrap_width: Option<Pixels>,
++        wrapping_indent: WrappingIndent,
++        cx: &mut App,
++    ) -> bool {
 +        if let Some(source) = &mut self.source_wrap_map {
-+            source.set_layout(wrap_width, wrapping_indent, cx);
++            source.set_layout(font.clone(), wrap_width, wrapping_indent, cx);
 +        }
-+        let rewrapped = self.wrap_map.set_layout(wrap_width, wrapping_indent, cx);
++        let rewrapped = self.wrap_map.set_layout(font, wrap_width, wrapping_indent, cx);
 +        self.rebuild_fold_projection();
 +        rewrapped
++    }
++
++    /// Whether the document is wrapped with this font and size.
++    pub fn font_is(&self, font: &Font, font_size: Pixels) -> bool {
++        self.wrap_map.font_is(font, font_size)
++            && self
++                .source_wrap_map
++                .as_ref()
++                .is_none_or(|source| source.font_is(font, font_size))
 +    }
 +
      /// Set font parameters
@@ -115,7 +159,7 @@ index 5e1cf12f..234da728 100644
  // Re-export FoldRange and extract_fold_ranges
  pub use folding::FoldRange;
 diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/base/src/input/editor/display_map/text_wrapper.rs
-index 56902ed1..ba54fb7b 100644
+index 56902ed1..9057e146 100644
 --- a/crates/base/src/input/editor/display_map/text_wrapper.rs
 +++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
 @@ -169,6 +169,192 @@ impl<'a> sum_tree::Dimension<'a, LineSummary> for WrapRows {
@@ -311,7 +355,7 @@ index 56902ed1..ba54fb7b 100644
  /// Used to prepare the text with soft wrap to be get lines to displayed in the Editor.
  ///
  /// After use lines to calculate the scroll size of the Editor.
-@@ -295,6 +481,26 @@ impl TextWrapper {
+@@ -295,8 +481,41 @@ impl TextWrapper {
          self.update_all(&self.text.clone(), cx);
      }
  
@@ -321,24 +365,40 @@ index 56902ed1..ba54fb7b 100644
 +    /// whether the document was re-wrapped.
 +    pub(crate) fn set_layout(
 +        &mut self,
++        font: Option<(Font, Pixels)>,
 +        wrap_width: Option<Pixels>,
 +        wrapping_indent: WrappingIndent,
 +        cx: &mut App,
 +    ) -> bool {
-+        if wrap_width == self.wrap_width && wrapping_indent == self.wrapping_indent {
++        let font_changed = font
++            .as_ref()
++            .is_some_and(|(font, size)| !self.font_is(font, *size));
++        if !font_changed && wrap_width == self.wrap_width && wrapping_indent == self.wrapping_indent {
 +            return false;
 +        }
 +
++        if let Some((font, font_size)) = font {
++            self.font = font;
++            self.font_size = font_size;
++        }
 +        self.wrap_width = wrap_width;
 +        self.wrapping_indent = wrapping_indent;
 +        self.update_all(&self.text.clone(), cx);
 +        true
 +    }
 +
++    /// Whether rows are wrapped with this font and size.
++    pub(crate) fn font_is(&self, font: &Font, font_size: Pixels) -> bool {
++        self.font.eq(font) && self.font_size == font_size
++    }
++
      pub(crate) fn set_font(&mut self, font: Font, font_size: Pixels, cx: &mut App) {
-         if self.font.eq(&font) && self.font_size == font_size {
+-        if self.font.eq(&font) && self.font_size == font_size {
++        if self.font_is(&font, font_size) {
              return;
-@@ -336,19 +542,32 @@ impl TextWrapper {
+         }
+ 
+@@ -336,19 +555,32 @@ impl TextWrapper {
          let font = self.font.clone();
          let font_size = self.font_size;
          let text_system = cx.text_system().clone();
@@ -373,7 +433,7 @@ index 56902ed1..ba54fb7b 100644
              },
          );
      }
-@@ -360,7 +579,9 @@ impl TextWrapper {
+@@ -360,7 +592,9 @@ impl TextWrapper {
          new_text: &Rope,
          wrap_line: &mut F,
      ) where
@@ -384,7 +444,7 @@ index 56902ed1..ba54fb7b 100644
      {
          // Remove the old changed lines.
          let buffer_line_count = self.lines_count();
-@@ -427,24 +648,30 @@ impl TextWrapper {
+@@ -427,24 +661,30 @@ impl TextWrapper {
              tree
          } else {
              let mut new_lines = Vec::with_capacity(new_end_row.saturating_sub(new_start_row) + 1);
@@ -420,7 +480,7 @@ index 56902ed1..ba54fb7b 100644
                                  wrapped_lines.push(prev_boundary_ix..boundary.ix);
                                  prev_boundary_ix = boundary.ix;
                                  indent_chars = boundary.next_indent;
-@@ -453,12 +680,12 @@ impl TextWrapper {
+@@ -453,12 +693,12 @@ impl TextWrapper {
                          WrappingIndent::None => {
                              // The first visual line keeps the line's leading indentation, so it is
                              // wrapped as is.
@@ -435,7 +495,7 @@ index 56902ed1..ba54fb7b 100644
                                      let ix = first_ix + boundary.ix;
                                      wrapped_lines.push(prev_boundary_ix..ix);
                                      prev_boundary_ix = ix;
-@@ -469,18 +696,19 @@ impl TextWrapper {
+@@ -469,18 +709,19 @@ impl TextWrapper {
                  }
  
                  // Reset of the line
@@ -458,7 +518,7 @@ index 56902ed1..ba54fb7b 100644
              SumTree::from_iter(new_lines, &())
          };
  
-@@ -1480,7 +1708,7 @@ mod tests {
+@@ -1480,7 +1721,7 @@ mod tests {
              "שלום🙂\r\n\nrow\u{85}value\u{2028}\n".repeat(4096)
          ));
          let lookups = || SOURCE_ROW_LOOKUPS.with(|count| count.get());
@@ -467,7 +527,7 @@ index 56902ed1..ba54fb7b 100644
          let before = lookups();
          wrapper._update(&original, &(0..0), &original, &mut no_wrap);
          assert_eq!(
-@@ -1566,7 +1794,7 @@ mod tests {
+@@ -1566,7 +1807,7 @@ mod tests {
          let mut wrapped = TextWrapper::new(font, px(14.), Some(px(400.)));
          let before = lookups();
          let mut wrapped_rows = 0;
@@ -476,7 +536,7 @@ index 56902ed1..ba54fb7b 100644
              wrapped_rows += 1;
              vec![]
          });
-@@ -1590,7 +1818,7 @@ mod tests {
+@@ -1590,7 +1831,7 @@ mod tests {
              "Hello, 世界!\r\nThis is second line.\nThis is third line.\n这里是第 4 行。",
          );
  
@@ -485,7 +545,7 @@ index 56902ed1..ba54fb7b 100644
              vec![]
          }
  
-@@ -1787,7 +2015,7 @@ mod tests {
+@@ -1787,7 +2028,7 @@ mod tests {
      fn test_longest_row_after_shrink() {
          let mut wrapper = TextWrapper::new(test_font(), px(14.), None);
          let mut text = Rope::from("aa\nthis is the longest line\nbb");
@@ -494,7 +554,7 @@ index 56902ed1..ba54fb7b 100644
          assert_eq!(wrapper.longest_row(), 1);
  
          // Shrink line 1 so line 2-equivalent isn't longest.
-@@ -1797,7 +2025,7 @@ mod tests {
+@@ -1797,7 +2038,7 @@ mod tests {
          let range = start..end;
          let new_text = "a very very long first line now";
          text.replace(range.clone(), new_text);
@@ -503,7 +563,7 @@ index 56902ed1..ba54fb7b 100644
          assert_eq!(wrapper.longest_row(), 0);
      }
  
-@@ -1806,7 +2034,7 @@ mod tests {
+@@ -1806,7 +2047,7 @@ mod tests {
      fn test_edit_last_line_and_full_delete() {
          let mut wrapper = TextWrapper::new(test_font(), px(14.), None);
          let mut text = Rope::from("one\ntwo\nthree");
@@ -512,7 +572,7 @@ index 56902ed1..ba54fb7b 100644
          assert_eq!(wrapper.lines_count(), 3);
  
          // Replace the last line only.
-@@ -1814,14 +2042,14 @@ mod tests {
+@@ -1814,14 +2055,14 @@ mod tests {
          let range = start..text.len();
          let new_text = "THREE EDITED";
          text.replace(range.clone(), new_text);
@@ -529,7 +589,7 @@ index 56902ed1..ba54fb7b 100644
          assert_eq!(wrapper.lines_count(), 1);
          assert_eq!(wrapper.len(), 1);
          assert_eq!(wrapper.line(0).unwrap().wrapped_lines.as_slice(), [0..0]);
-@@ -1879,7 +2107,7 @@ mod tests {
+@@ -1879,7 +2120,7 @@ mod tests {
      fn test_wrap_row_queries_after_incremental_splice() {
          let mut wrapper = TextWrapper::new(test_font(), px(14.), Some(px(10.)));
          let mut text = Rope::from("aa\nbbbb\nc");
@@ -538,7 +598,7 @@ index 56902ed1..ba54fb7b 100644
              if line.len() > 2 {
                  vec![Boundary {
                      ix: 2,
-@@ -2192,7 +2420,7 @@ mod tests {
+@@ -2192,7 +2433,7 @@ mod tests {
          let mut wrapper = TextWrapper::new(test_font(), px(14.0), Some(px(10.)));
          wrapper.wrapping_indent = WrappingIndent::Same;
          let text = Rope::from("  abcdefghijklmnopqrstuv");
@@ -547,7 +607,7 @@ index 56902ed1..ba54fb7b 100644
              if line.starts_with(' ') {
                  vec![Boundary {
                      ix: 5,
-@@ -2224,7 +2452,7 @@ mod tests {
+@@ -2224,7 +2465,7 @@ mod tests {
          let mut wrapper = TextWrapper::new(test_font(), px(14.0), Some(px(10.)));
          wrapper.wrapping_indent = WrappingIndent::None;
          let text = Rope::from("  abcdefghijklmnopqrstuv");
@@ -557,21 +617,26 @@ index 56902ed1..ba54fb7b 100644
                  vec![Boundary {
                      ix: 5,
 diff --git a/crates/base/src/input/editor/display_map/wrap_map.rs b/crates/base/src/input/editor/display_map/wrap_map.rs
-index f93a7f3d..45ff2c2a 100644
+index f93a7f3d..4e1e1ae3 100644
 --- a/crates/base/src/input/editor/display_map/wrap_map.rs
 +++ b/crates/base/src/input/editor/display_map/wrap_map.rs
-@@ -121,6 +121,16 @@ impl WrapMap {
+@@ -121,6 +121,21 @@ impl WrapMap {
          self.wrapper.set_wrapping_indent(wrapping_indent, cx);
      }
  
 +    /// Apply a wrap width and a wrapping indent with one re-wrap (#3073).
 +    pub(super) fn set_layout(
 +        &mut self,
++        font: Option<(Font, Pixels)>,
 +        wrap_width: Option<Pixels>,
 +        wrapping_indent: WrappingIndent,
 +        cx: &mut App,
 +    ) -> bool {
-+        self.wrapper.set_layout(wrap_width, wrapping_indent, cx)
++        self.wrapper.set_layout(font, wrap_width, wrapping_indent, cx)
++    }
++
++    pub(super) fn font_is(&self, font: &Font, font_size: Pixels) -> bool {
++        self.wrapper.font_is(font, font_size)
 +    }
 +
      /// Set font parameters

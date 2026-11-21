@@ -280,7 +280,8 @@ fn issue3073_first_source_frame_wraps_the_note_once(cx: &mut TestAppContext) {
             diagnostics.layout_calls > 0,
             "positive control: the editor was laid out"
         );
-        // The first layout sets the wrap width and the wrapping indent.
+        // The first layout sets the font size, the wrap width and the
+        // wrapping indent.
         assert_eq!(
             diagnostics.relayouts, 1,
             "the first frame wraps the note once"
