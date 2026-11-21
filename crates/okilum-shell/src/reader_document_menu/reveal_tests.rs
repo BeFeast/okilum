@@ -168,7 +168,12 @@ fn shared_reveal_action_rejects_missing_and_out_of_scope_documents(cx: &mut Test
     });
     let dispatch = |visual: &mut VisualTestContext| {
         reader.update_in(visual, |v, window, cx| {
-            v.content.read(cx).focus_handle().clone().focus(window, cx);
+            v.pane
+                .content
+                .read(cx)
+                .focus_handle()
+                .clone()
+                .focus(window, cx);
         });
         visual.run_until_parked();
         visual.update(|window, cx| window.dispatch_action(Box::new(FocusCurrentFolder), cx));

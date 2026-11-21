@@ -32,6 +32,20 @@ come from the same no-follow file handle. Raw `st_dev` is a diagnostic hint:
 APFS can renumber the Data volume after a reboot or OS update. Windows retains
 schema 1 and its existing identity rules.
 
+Network and FUSE volumes (NFS, SMB, macFUSE) answer `ATTR_VOL_UUID` with
+`EINVAL`/`ENOTSUP`/`ENOATTR` or a zero UUID (#3202). Their `st_dev` and `f_fsid`
+are assigned per mount, so the UUID slot holds a domain-separated SHA-256 prefix
+of the filesystem type and mount source (`host:/export`, `//user@host/share`)
+from `fstatfs` on the same handle. A remount of the same source keeps the
+binding; the same folder seen first through a native UUID is a different
+volume and fails closed. Other attribute errors stay errors. One export can be
+mounted under two source spellings (an IP address and a hostname), so a
+mount-source identity cannot prove two roots disjoint. While any UUID-less
+binding is registered, readable or not, a different UUID-less root (another
+spelling, a child or parent outside its path, another folder on the export) is
+refused; same-path reopen and folders inside the vault resolve to that scope.
+Several UUID-less roots are tracked separately (#3204).
+
 On Linux (#2710), schema 2 likewise treats `st_dev` as diagnostic only. One
 no-follow descriptor supplies inode, birthtime and `fstatfs` filesystem ID. On
 btrfs, unprivileged `BTRFS_IOC_FS_INFO` supplies the full filesystem UUID and

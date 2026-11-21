@@ -175,3 +175,178 @@ fn identity_2692_concurrent_migration_publishes_one_preserved_binding() {
         state_before
     );
 }
+
+const EXPORT: &str = "10.10.0.14:/srv/nfs/Maestro";
+
+/// Every identity on this thread comes from a UUID-less NFS mount until dropped.
+struct Nfs;
+impl Nfs {
+    fn everywhere() -> Self {
+        Self::mount("/".into(), EXPORT, None)
+    }
+    fn mount(prefix: PathBuf, source: &'static str, backing: Option<PathBuf>) -> Self {
+        identity_macos::SIMULATED_MOUNTS.with(|mounts| {
+            mounts.borrow_mut().push(identity_macos::SimulatedMount {
+                prefix,
+                source,
+                backing,
+            })
+        });
+        Self
+    }
+}
+impl Drop for Nfs {
+    fn drop(&mut self) {
+        identity_macos::SIMULATED_MOUNTS.with(|mounts| mounts.borrow_mut().pop());
+    }
+}
+
+#[test]
+fn identity_3202_volume_without_uuid_admits_writers_across_remounts() {
+    let _nfs = Nfs::everywhere();
+    let (_temporary, authority) = fixture();
+    let current = identity(authority.root()).unwrap();
+    let uuid = current.3.expect("mount-source identity");
+    assert_ne!(uuid, [0; 16]);
+    assert_eq!(current, identity(authority.root()).unwrap());
+    authority.admit().unwrap();
+    // NFS assigns a new st_dev on every remount; the mount source does not change.
+    let mut remounted = authority.binding.clone();
+    for identity in identities(&mut remounted) {
+        identity.0 += 1024;
+    }
+    persist(&authority.binding_path, &remounted, false).unwrap();
+    let reopened = Authority::open_in(&authority.account, authority.root()).unwrap();
+    {
+        let _operation = reopened.operation().unwrap();
+        fs::write(authority.root().join("note.md"), b"Edited on NFS\r\n").unwrap();
+    }
+    reopened.admit().unwrap();
+    // Notes inside the vault resolve to the same scope.
+    let nested = authority.root().join("folder");
+    fs::create_dir(&nested).unwrap();
+    let inside = Authority::open_in(&authority.account, &nested).unwrap();
+    assert_eq!(inside.binding_path, authority.binding_path);
+    assert_eq!(
+        fs::read(authority.root().join("note.md")).unwrap(),
+        b"Edited on NFS\r\n"
+    );
+}
+
+#[test]
+fn identity_3202_mount_source_is_scoped_and_errors_stay_errors() {
+    let nfs = identity_macos::mount_source_digest(b"nfs", b"10.10.0.14:/srv/nfs/Maestro").unwrap();
+    assert_eq!(
+        nfs,
+        identity_macos::mount_source_digest(b"nfs", b"10.10.0.14:/srv/nfs/Maestro").unwrap()
+    );
+    assert_ne!(
+        nfs,
+        identity_macos::mount_source_digest(b"nfs", b"10.10.0.14:/srv/nfs/Other").unwrap()
+    );
+    assert_ne!(
+        nfs,
+        identity_macos::mount_source_digest(b"smbfs", b"10.10.0.14:/srv/nfs/Maestro").unwrap()
+    );
+    assert!(identity_macos::mount_source_digest(b"nfs", b"").is_err());
+
+    let (_temporary, authority) = fixture();
+    let handle = File::open(authority.root()).unwrap();
+    let native = identity_macos::from_file(&handle).unwrap();
+    for missing in [libc::EINVAL, libc::ENOTSUP, libc::ENOATTR] {
+        let fallback = identity_macos::from_file_with(
+            &handle,
+            |_| Err(std::io::Error::from_raw_os_error(missing)),
+            |_| identity_macos::mount_source_digest(b"nfs", EXPORT.as_bytes()),
+        )
+        .unwrap();
+        assert_eq!((fallback.1, fallback.2), (native.1, native.2));
+        assert_ne!(
+            fallback, native,
+            "no-UUID identity cannot alias a native UUID"
+        );
+    }
+    let zero = identity_macos::from_file_with(
+        &handle,
+        |_| Ok(None),
+        |_| identity_macos::mount_source_digest(b"nfs", EXPORT.as_bytes()),
+    )
+    .unwrap();
+    assert!(zero.3.is_some_and(|uuid| uuid != [0; 16]));
+    let error = identity_macos::from_file_with(
+        &handle,
+        |_| Err(std::io::Error::from_raw_os_error(libc::EIO)),
+        |_| identity_macos::mount_source_digest(b"nfs", EXPORT.as_bytes()),
+    )
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("Cannot read stable writer volume identity"));
+}
+
+#[test]
+fn identity_3202_native_binding_does_not_accept_a_volume_without_uuid() {
+    let (_temporary, authority) = fixture();
+    let _nfs = Nfs::everywhere();
+    assert!(Authority::open_in(&authority.account, authority.root()).is_err());
+}
+
+#[test]
+fn identity_3202_native_roots_are_not_limited() {
+    let (temporary, authority) = fixture();
+    let other = temporary.path().join("other");
+    fs::create_dir(&other).unwrap();
+    let second = Authority::open_in(&authority.account, &other).unwrap();
+    assert_ne!(second.binding_path, authority.binding_path);
+    second.operation().unwrap();
+    authority.operation().unwrap();
+}
+
+/// A UUID-less identity names its export by the mount source spelling, so a
+/// different UUID-less root may be the same physical folder. While one
+/// UUID-less binding exists, every other UUID-less root is refused.
+#[test]
+fn identity_3202_second_uuid_less_root_is_refused_while_one_is_registered() {
+    let _nfs = Nfs::everywhere();
+    let temporary = tempfile::tempdir().unwrap();
+    let base = temporary.path().canonicalize().unwrap();
+    let export = base.join("by-ip");
+    let vault = export.join("Vault");
+    fs::create_dir_all(vault.join("Sub")).unwrap();
+    fs::create_dir_all(export.join("Other")).unwrap();
+    fs::write(vault.join("note.md"), b"Canonical bytes\r\n").unwrap();
+    let account = base.join("account");
+    let first = Authority::open_in(&account, &vault).unwrap();
+    // The same export mounted again by hostname.
+    let alias = base.join("by-hostname");
+    fs::create_dir_all(alias.join("Vault").join("Sub")).unwrap();
+    let _second_mount = Nfs::mount(
+        alias.clone(),
+        "maestro.oklabs.uk:/srv/nfs/Maestro",
+        Some(export.clone()),
+    );
+    let refused = |root: &Path| {
+        let error = Authority::open_in(&account, root).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("without a volume UUID"),
+            "{}: {error:#}",
+            root.display()
+        );
+        assert!(
+            !account.join(format!("{}.json", key(root))).exists(),
+            "{}: no second authority",
+            root.display()
+        );
+    };
+    refused(&alias.join("Vault")); // alias spelling of the same root
+    refused(&alias.join("Vault").join("Sub")); // child through the alias
+    refused(&export); // parent through the first mount
+    refused(&export.join("Other")); // unrelated folder on the export
+                                    // Same-path reopen still works.
+    Authority::open_in(&account, &vault)
+        .unwrap()
+        .operation()
+        .unwrap();
+    // The first mount is gone: its binding still stands.
+    fs::rename(&vault, base.join("unmounted")).unwrap();
+    refused(&export.join("Other"));
+    drop(first);
+}

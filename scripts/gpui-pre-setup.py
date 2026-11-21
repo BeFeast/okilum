@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the pinned GPUI core with value-copyable shaped glyphs (#2803)."""
+"""Verify the pinned GPUI core: value-copyable shaped glyphs (#2803) and external data drops (#1615)."""
 import argparse
 import importlib.util
 from pathlib import Path
@@ -18,7 +18,7 @@ def main():
     setup = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(setup)
     manifest = setup.prepare(repo, "gpui-pre", args.archive, args.verify)
-    print(f"gpui-pre ready: {manifest['version']} checksum-pinned source + Copy shaped glyphs verified")
+    print(f"gpui-pre ready: {manifest['version']} checksum-pinned source + {len(manifest['patches'])} approved patch(es) verified")
 
 
 if __name__ == "__main__":

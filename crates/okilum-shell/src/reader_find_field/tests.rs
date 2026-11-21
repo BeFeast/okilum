@@ -132,7 +132,7 @@ fn external_editor_target_counts_steps_unfolds_and_clears_without_source_edits(
     visual.executor().advance_clock(Duration::from_millis(70));
     visual.run_until_parked();
     let input = reader.read_with(visual, |reader, _| {
-        reader.editing.as_ref().unwrap().input().clone()
+        reader.pane.editing.as_ref().unwrap().input().clone()
     });
     input.update_in(visual, |input, window, cx| {
         input.set_value(
@@ -474,7 +474,7 @@ fn file_drawing_actions_use_the_loaded_drawing_without_an_inline_toolbar(cx: &mu
     }
     // These two commands live only in menus for a file; inline note drawings
     // keep their existing command row.
-    assert!(measured_bounds(visual, "drawing-open").is_none());
+    assert!(measured_bounds(visual, "drawing-edit").is_none());
     assert!(measured_bounds(visual, "drawing-copy-details").is_none());
     visual.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into())));
     let copy = measured_bounds(visual, "viewer-copy").unwrap();
@@ -488,28 +488,66 @@ fn file_drawing_actions_use_the_loaded_drawing_without_an_inline_toolbar(cx: &mu
             Some("Drawing loaded successfully")
         )
     });
-    let open = reader.read_with(visual, |reader, cx| {
-        reader
-            .viewer_chrome(cx)
-            .open_actions
-            .into_iter()
-            .find(|action| action.id == "drawing-open")
-            .expect("the file offers Open in Excalidraw")
-    });
-    assert_eq!(open.label.to_string(), "Open in Excalidraw");
-    visual.update(|window, cx| (open.invoke)(window, cx));
-    assert_eq!(
-        visual.opened_url().as_deref(),
-        Some("https://draw.oklabs.uk")
-    );
+    let chrome = reader.read_with(visual, |reader, cx| reader.viewer_chrome(cx));
+    let scene = chrome
+        .copy_actions
+        .iter()
+        .find(|action| action.id == "drawing-copy-scene")
+        .expect("the file offers Copy scene")
+        .clone();
+    visual.update(|window, cx| (scene.invoke)(window, cx));
     visual.update(|_, cx| {
         let copied = cx.read_from_clipboard().unwrap().text().unwrap();
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&copied).unwrap(),
             serde_json::from_slice::<serde_json::Value>(&before).unwrap(),
-            "Open in Excalidraw copies the loaded scene"
+            "Copy scene copies the loaded scene"
         );
     });
+    // Edit drawing (#478) opens Okilum's own loopback editor page for this
+    // file, never a remote editor, and the page gets this drawing's scene.
+    let edit = chrome
+        .open_actions
+        .into_iter()
+        .find(|action| action.id == "drawing-edit")
+        .expect("the file offers Edit drawing");
+    assert_eq!(edit.label.to_string(), "Edit drawing");
+    visual.update(|window, cx| (edit.invoke)(window, cx));
+    let started = std::time::Instant::now();
+    let url = loop {
+        visual.run_until_parked();
+        if let Some(url) = visual.opened_url() {
+            break url;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "Edit drawing never opened the editor"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let url = url::Url::parse(&url).unwrap();
+    assert_eq!((url.scheme(), url.host_str()), ("http", Some("127.0.0.1")));
+    let authority = format!("127.0.0.1:{}", url.port().unwrap());
+    let mut stream = std::net::TcpStream::connect(&authority).unwrap();
+    std::io::Write::write_all(
+        &mut stream,
+        format!(
+            "GET {}api/session HTTP/1.1\r\nHost: {authority}\r\n\r\n",
+            url.path()
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    let mut reply = String::new();
+    std::io::Read::read_to_string(&mut stream, &mut reply).unwrap();
+    let (head, body) = reply.split_once("\r\n\r\n").unwrap();
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    let session: serde_json::Value = serde_json::from_str(body).unwrap();
+    assert_eq!(session["name"], "drawing");
+    assert_eq!(
+        session["scene"]["elements"][0]["id"], "tall",
+        "the editor gets this drawing"
+    );
     let expand = measured_bounds(visual, "drawing-expand").unwrap();
     visual.simulate_click(expand.center(), Modifiers::default());
     visual.run_until_parked();

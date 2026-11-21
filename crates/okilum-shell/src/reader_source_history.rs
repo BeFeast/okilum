@@ -259,7 +259,7 @@ impl Reader {
                 "Save or discard unsaved edits before restoring"
             );
             self.check_move_editors(std::slice::from_ref(&rel), cx)?;
-            if self.editing.is_some() {
+            if self.pane.editing.is_some() {
                 anyhow::ensure!(
                     self.leave_source(cx),
                     "The editor is still saving; open history again"

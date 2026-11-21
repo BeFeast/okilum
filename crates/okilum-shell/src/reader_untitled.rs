@@ -1161,7 +1161,7 @@ impl Reader {
                 // can prove nothing in the draft is newer.
                 this.source_saved_elsewhere(cx);
                 this.remember_source_mode();
-                this.editing = None;
+                this.pane.editing = None;
                 let retirable = match sync_draft_file(&folder, &draft_text, &expected) {
                     Ok(DraftFile::Same | DraftFile::Written) => true,
                     Ok(DraftFile::ChangedElsewhere) => {
@@ -1669,7 +1669,7 @@ I named it a.png yesterday, see `![[a.png]]`.\n\
                 r.vault_root,
                 r.pane.current_rel,
                 r.single_file,
-                r.editing.is_some(),
+                r.pane.editing.is_some(),
                 r.loading.as_ref().map(|l| l.active),
                 r.link_notice
             )
@@ -1703,6 +1703,61 @@ I named it a.png yesterday, see `![[a.png]]`.\n\
         (entity.unwrap(), visual)
     }
 
+    /// #3182 review: an untitled draft's folder is app state, not a vault.
+    /// Today's note there is refused: nothing is published into the draft
+    /// folder and the draft keeps its text and its Save As.
+    #[gpui::test]
+    fn todays_note_is_refused_in_an_untitled_draft(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            crate::test_init(cx);
+            bind_keys(cx);
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let docs = temp.path().join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        let docs = docs.canonicalize().unwrap();
+        std::fs::write(docs.join("Start.md"), "# Start\n").unwrap();
+        let session = temp.path().join("state");
+        let (reader, visual) = open_single(cx, &docs.join("Start.md"), &session);
+        reader.update_in(visual, |r, window, cx| r.new_untitled(window, cx));
+        settle(visual, &reader, "the draft is open for typing", |r, _| {
+            r.current_draft().is_some() && r.pane.editing.is_some()
+        });
+        visual.simulate_input("Keep me");
+        visual.run_until_parked();
+        let folder = reader.read_with(visual, |r, cx| {
+            assert_eq!(r.source_text(cx).as_deref(), Some("Keep me"));
+            r.current_draft().unwrap()
+        });
+        let today = okilum_core::daily_notes::Settings::default()
+            .relative_path(crate::reader_daily_notes::now())
+            .unwrap();
+        reader.update_in(visual, |r, window, cx| r.open_daily_note(window, cx));
+        visual.run_until_parked();
+        assert!(!folder.join(&today).exists(), "no daily note in app state");
+        assert!(!docs.join(&today).exists());
+        let notes: Vec<_> = std::fs::read_dir(&folder)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.to_lowercase().ends_with(".md"))
+            .collect();
+        assert_eq!(notes, [FILE], "only the draft itself");
+        reader.read_with(visual, |r, cx| {
+            assert_eq!(r.current_draft().as_deref(), Some(folder.as_path()));
+            assert_eq!(r.pane.current_rel, FILE);
+            assert_eq!(r.source_text(cx).as_deref(), Some("Keep me"));
+            assert!(
+                r.link_notice
+                    .as_ref()
+                    .is_some_and(|notice| notice.contains("needs a vault")),
+                "the refusal says why: {:?}",
+                r.link_notice.as_deref()
+            );
+        });
+    }
+
     /// #1528 end to end: New untitled file needs no name; its text reaches
     /// Okilum's own storage while typing, so a kill loses nothing; after a
     /// restart Recent lists it with an «Unsaved» badge; Save proposes the
@@ -1729,7 +1784,7 @@ I named it a.png yesterday, see `![[a.png]]`.\n\
             r.new_untitled(window, cx);
         });
         settle(visual, &reader, "the draft is open for typing", |r, _| {
-            r.current_draft().is_some() && r.editing.is_some()
+            r.current_draft().is_some() && r.pane.editing.is_some()
         });
         let draft = reader.read_with(visual, |r, _| r.vault_root.join(FILE));
         assert!(draft.starts_with(session.canonicalize().unwrap()));

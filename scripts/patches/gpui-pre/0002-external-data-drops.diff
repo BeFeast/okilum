@@ -1,0 +1,269 @@
+gpui: deliver external drags of data other than files (text, HTML, RTF, URLs, images)
+
+Adds `ExternalData` (a platform's typed representations of a drag: type
+identifiers while dragging, contents at the drop) and two `FileDropEvent`
+variants, `DataEntered` and `DataSubmit`. The window turns them into the same
+internal drag a file drop becomes, so `on_drop::<ExternalData>` and
+`drag_over::<ExternalData>` work like their `ExternalPaths` counterparts.
+`DataSubmit` replaces the drag's value with the dropped contents. Backends
+that never emit the new variants behave as before.
+
+--- a/src/interactive.rs
++++ b/src/interactive.rs
+@@ -1,9 +1,9 @@
+ use crate::{
+     Bounds, Capslock, Context, Empty, IntoElement, Keystroke, LongPressEvent, Modifiers, Pixels,
+-    Point, Render, TouchDragEvent, Window, point, seal::Sealed,
++    Point, Render, SharedString, TouchDragEvent, Window, point, seal::Sealed,
+ };
+ use smallvec::SmallVec;
+-use std::{any::Any, fmt::Debug, ops::Deref, path::PathBuf};
++use std::{any::Any, fmt::Debug, ops::Deref, path::PathBuf, sync::Arc};
+ 
+ /// An event from a platform input source.
+ pub trait InputEvent: Sealed + 'static {
+@@ -700,6 +700,60 @@
+     }
+ }
+ 
++/// Data other than file paths dragged into a window from another application:
++/// text, rich text, a URL or image data. Each representation is named by the
++/// platform's own type identifier (a uniform type identifier on macOS), in
++/// the order the drag source offered them.
++///
++/// While the drag is over the window only the types are known; the contents
++/// are read when the data is dropped ([`FileDropEvent::DataSubmit`]).
++#[derive(Debug, Clone, Default, Eq, PartialEq)]
++pub struct ExternalData {
++    types: Vec<SharedString>,
++    contents: Vec<(SharedString, Arc<[u8]>)>,
++}
++
++impl ExternalData {
++    /// The offered types of a drag still in progress, without contents.
++    pub fn new(types: impl IntoIterator<Item = SharedString>) -> Self {
++        Self {
++            types: types.into_iter().collect(),
++            contents: Vec::new(),
++        }
++    }
++
++    /// Dropped data: its types and the contents that could be read.
++    pub fn with_contents(
++        types: impl IntoIterator<Item = SharedString>,
++        contents: impl IntoIterator<Item = (SharedString, Arc<[u8]>)>,
++    ) -> Self {
++        Self {
++            types: types.into_iter().collect(),
++            contents: contents.into_iter().collect(),
++        }
++    }
++
++    /// The offered type identifiers, in the drag source's order.
++    pub fn types(&self) -> &[SharedString] {
++        &self.types
++    }
++
++    /// The contents of one type, once the data was dropped.
++    pub fn contents(&self, kind: &str) -> Option<&[u8]> {
++        self.contents
++            .iter()
++            .find(|(name, _)| name.as_ref() == kind)
++            .map(|(_, bytes)| bytes.as_ref())
++    }
++}
++
++impl Render for ExternalData {
++    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
++        // The platform renders the drag image.
++        Empty
++    }
++}
++
+ /// Data offered to the platform when an internal drag leaves the window and is
+ /// promoted to a native drag session.
+ #[derive(Debug, Clone, Eq, PartialEq)]
+@@ -752,6 +806,22 @@
+         /// The position of the mouse relative to the window.
+         position: Point<Pixels>,
+     },
++    /// Data other than files (text, rich text, a URL, image data) has entered
++    /// the window. Only its types are known until it is dropped.
++    DataEntered {
++        /// The position of the mouse relative to the window.
++        position: Point<Pixels>,
++        /// The offered types, without contents.
++        data: ExternalData,
++    },
++    /// Data other than files has been dropped onto the window, with its
++    /// contents. It replaces the [`ExternalData`] drag of `DataEntered`.
++    DataSubmit {
++        /// The position of the mouse relative to the window.
++        position: Point<Pixels>,
++        /// The dropped data, with the contents that could be read.
++        data: ExternalData,
++    },
+     /// The user has stopped dragging the files over the window.
+     Exited,
+     /// The platform-owned drag session has ended.
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -9,13 +9,13 @@
+     AsyncWindowContext, AtlasTile, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow,
+     Capslock, Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
+     DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity,
+-    EntityId, EventEmitter, FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs,
+-    Hsla, InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke,
+-    KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite,
+-    MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas,
+-    PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PolychromeSprite,
+-    Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams, RenderImage,
+-    RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
++    EntityId, EventEmitter, ExternalData, FileDropEvent, FontId, Global, GlobalElementId, GlyphId,
++    GpuSpecs, Hsla, InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent,
++    Keystroke, KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers, ModifiersChangedEvent,
++    MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels,
++    PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
++    PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams,
++    RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
+     SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow, SharedString, Size,
+     StrikethroughStyle, Style, SubpixelSprite, SubscriberSet, Subscription, SystemWindowTab,
+     SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task, TextInputConfiguration,
+@@ -5292,6 +5292,49 @@
+                         modifiers: Modifiers::default(),
+                     })
+                 }
++                FileDropEvent::DataEntered { position, data } => {
++                    self.mouse_position = position;
++                    if cx.active_drag.is_none() {
++                        cx.active_drag = Some(AnyDrag {
++                            value: Arc::new(data.clone()),
++                            view: cx.new(|_| data).into(),
++                            cursor_offset: position,
++                            cursor_style: None,
++                            external_payload_source: None,
++                        });
++                    }
++                    PlatformInput::MouseMove(MouseMoveEvent {
++                        position,
++                        pressed_button: Some(MouseButton::Left),
++                        modifiers: Modifiers::default(),
++                    })
++                }
++                FileDropEvent::DataSubmit { position, data } => {
++                    cx.activate(true);
++                    self.mouse_position = position;
++                    // The drop carries the contents the drag lacked.
++                    match cx.active_drag.as_mut() {
++                        Some(drag) if drag.value.is::<ExternalData>() => {
++                            drag.value = Arc::new(data);
++                        }
++                        Some(_) => {}
++                        None => {
++                            cx.active_drag = Some(AnyDrag {
++                                value: Arc::new(data.clone()),
++                                view: cx.new(|_| data).into(),
++                                cursor_offset: position,
++                                cursor_style: None,
++                                external_payload_source: None,
++                            });
++                        }
++                    }
++                    PlatformInput::MouseUp(MouseUpEvent {
++                        button: MouseButton::Left,
++                        position,
++                        modifiers: Modifiers::default(),
++                        click_count: 1,
++                    })
++                }
+                 FileDropEvent::Pending { position } => {
+                     self.mouse_position = position;
+                     PlatformInput::MouseMove(MouseMoveEvent {
+@@ -7382,16 +7425,18 @@
+         cell::{Cell, RefCell},
+         path::PathBuf,
+         rc::Rc,
++        sync::Arc,
+         time::Duration,
+     };
+ 
+     use crate::{
+         AnyWindowHandle, AppContext as _, Bounds, Context, DispatchPhase, DragMoveEvent, Empty,
+-        ExternalDragPayload, ExternalPaths, FileDragPaths, FileDropEvent, FocusHandle,
+-        InputEvent as _, InteractiveElement as _, IntoElement, LongPressEvent, MouseButton,
+-        MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Render, RequestFrameOptions,
+-        StatefulInteractiveElement as _, Styled, TestAppContext, TouchDragEvent, TouchEvent,
+-        TouchId, TouchPhase, Window, WindowAppearance, WindowOptions, canvas, div, point, px, size,
++        ExternalData, ExternalDragPayload, ExternalPaths, FileDragPaths, FileDropEvent,
++        FocusHandle, InputEvent as _, InteractiveElement as _, IntoElement, LongPressEvent,
++        MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Render,
++        RequestFrameOptions, SharedString, StatefulInteractiveElement as _, Styled, TestAppContext,
++        TouchDragEvent, TouchEvent, TouchId, TouchPhase, Window, WindowAppearance, WindowOptions,
++        canvas, div, point, px, size,
+     };
+ 
+     struct EmptyView;
+@@ -8319,4 +8364,63 @@
+             })
+             .unwrap();
+     }
++
++    struct DataDropView {
++        dropped: Rc<RefCell<Vec<ExternalData>>>,
++    }
++
++    impl Render for DataDropView {
++        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
++            let dropped = self.dropped.clone();
++            div()
++                .size_full()
++                .on_drop(move |data: &ExternalData, _, _| dropped.borrow_mut().push(data.clone()))
++        }
++    }
++
++    #[gpui::test]
++    fn dropped_external_data_reaches_the_drop_target_with_its_contents(cx: &mut TestAppContext) {
++        let dropped = Rc::new(RefCell::new(Vec::new()));
++        let window: AnyWindowHandle = cx
++            .add_window({
++                let dropped = dropped.clone();
++                move |_, _| DataDropView { dropped }
++            })
++            .into();
++        let position = point(px(10.), px(10.));
++        let text: SharedString = "public.utf8-plain-text".into();
++        let html: SharedString = "public.html".into();
++        cx.update_window(window, |_, window, cx| {
++            window.draw(cx).clear(cx);
++            window.dispatch_event(
++                FileDropEvent::DataEntered {
++                    position,
++                    data: ExternalData::new([text.clone(), html.clone()]),
++                }
++                .to_platform_input(),
++                cx,
++            );
++            let drag = cx.active_drag.as_ref().expect("a data drag is active");
++            let data = drag.value.downcast_ref::<ExternalData>().unwrap();
++            assert_eq!(data.types(), [text.clone(), html.clone()]);
++            assert_eq!(data.contents(&text), None, "no contents before the drop");
++            window.dispatch_event(
++                FileDropEvent::DataSubmit {
++                    position,
++                    data: ExternalData::with_contents(
++                        [text.clone(), html.clone()],
++                        [(text.clone(), Arc::from(&b"dropped"[..]))],
++                    ),
++                }
++                .to_platform_input(),
++                cx,
++            );
++            assert!(cx.active_drag.is_none(), "the drop consumed the drag");
++        })
++        .unwrap();
++        let dropped = dropped.borrow();
++        assert_eq!(dropped.len(), 1);
++        assert_eq!(dropped[0].contents(&text), Some(&b"dropped"[..]));
++        assert_eq!(dropped[0].contents(&html), None);
++    }
+ }

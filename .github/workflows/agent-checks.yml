@@ -17,6 +17,11 @@ on:
         required: false
         type: boolean
         default: false
+      pool_linux:
+        description: 'Also run the non-gating sharded Linux gate on the build-slot pool'
+        required: false
+        type: boolean
+        default: false
       publication_baseline:
         description: 'Optional public main SHA for same-host editor publication controls'
         required: false
@@ -132,20 +137,20 @@ jobs:
         run: |
           python scripts/ci/windows-cored-suites.py
           exit $LASTEXITCODE
-  # Pre-merge gate (Oleg 13.11 ~14:20, ~15:10): formatting, Python and script
-  # checks plus workspace clippy, which compiles the Linux workspace. No Rust
-  # test suites and no Windows/macOS job; the full set runs daily before Stable.
+  # The pre-merge gate runs on the build-slot pool (Oleg 20.11); the full
+  # Linux verdict stays on hosted Ubuntu (`linux` below) and the sharded pool
+  # gate runs beside it as the non-gating `linux-pool` (Oleg 21.11).
+  # The job names and the step names the merge rule reads are unchanged.
+  # `runs-on: okilum-pool` is the self-hosted label on the pool coordinator;
+  # the heavy commands execute in a build-slot, not on the GitHub runner.
   pre-merge:
     if: ${{ startsWith(github.ref, 'refs/heads/agent-checks-fast/') || github.event_name == 'schedule' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    runs-on: okilum-pool
+    # 15 min queue wait + 30 min pre-merge run. Hosted pre-merge was ~10–15 min.
+    timeout-minutes: 50
     env:
-      CARGO_INCREMENTAL: '0'
-      CARGO_BUILD_JOBS: '4'
-      CARGO_PROFILE_DEV_DEBUG: '0'
-      CARGO_PROFILE_TEST_DEBUG: '0'
-      RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
       OKILUM_SOURCE_COMMIT: ${{ github.sha }}
+      PUBLICATION_BASELINE: ${{ inputs.publication_baseline }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -153,94 +158,38 @@ jobs:
       - name: Record exact source and runner
         run: |
           test "$(git rev-parse HEAD)" = "$OKILUM_SOURCE_COMMIT"
-          printf 'source=%s\ncpus=%s\n' "$OKILUM_SOURCE_COMMIT" "$(nproc)"
-          printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
-          # Clippy's check artifacts fit the stock image (86G free measured);
-          # the SDK reclaim the full build needs took up to 279 s here.
-          df -h /
-      - name: Install system libraries
-        timeout-minutes: 10
-        run: |
-          sudo bash scripts/ci/hosted-ubuntu-apt.sh \
-            build-essential cmake pkg-config curl git mold zstd python3-venv gnupg gpgv tini ffmpeg libheif-examples libheif-plugin-libde265 \
-            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev squashfs-tools
-      - name: Verify pinned Rust toolchain
-        run: |
-          rustc -Vv
-          cargo clippy --version
-          cargo fmt --version
-      # Its own namespace keyed without the workflow file, so gate edits keep
-      # the warm cache. Generated vendor trees are cached for their mtimes and
-      # always verified after restore.
-      - name: Restore Rust downloads and target cache
-        id: cache
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-            target/
-            vendor/gpui-component/
-            vendor/comrak-0.47.0/
-          key: agent-premerge-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', 'scripts/comrak/**') }}-${{ github.sha }}
-          restore-keys: |
-            agent-premerge-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', 'scripts/comrak/**') }}-
-            agent-premerge-v1-${{ runner.os }}-
-      - name: Prepare and verify pinned vendor and comrak
-        run: |
-          bash scripts/vendor-setup.sh
-          bash scripts/vendor-setup.sh --verify
-          python3 scripts/ci/check-vendor-generation.py
-      - name: Fetch locked public dependencies
-        run: cargo fetch --locked
-      - name: Check formatting
-        run: cargo fmt --check
+          printf 'source=%s\nhost=%s\n' "$OKILUM_SOURCE_COMMIT" "$(hostname)"
       - name: Prepare isolated Python test dependencies
         run: bash scripts/ci/setup-python-tests.sh
+      - name: Dispatch pre-merge gate to the build-slot pool
+        id: pool
+        run: bash scripts/ci/pool-dispatch.sh pre-merge
+      - name: Prepare and verify pinned vendor and comrak
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Prepare and verify pinned vendor and comrak"
+      - name: Check formatting
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Check formatting"
       - name: Verify agent helper controls
-        run: |
-          python3 -m unittest discover -s scripts/ci -p test_agent_checks.py
-          python3 -m unittest discover -s scripts/ci -p test_test_group.py
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Verify agent helper controls"
       - name: Run CI, releases and updater Python suites
-        run: |
-          python3 scripts/appimage/heic-control.py /
-          bash scripts/ci/test-group.sh agent-ci-python 300 python3 -I -m unittest discover -s scripts/ci -p 'test_*.py' -v
-          bash scripts/ci/test-group.sh agent-releases-python 90 python3 -I -m unittest discover -s scripts/releases -p 'test_*.py' -v
-          bash scripts/ci/test-group.sh agent-updater-python 90 python3 -I -m unittest discover -s scripts/updater -p 'test_*.py' -v
-          bash scripts/ci/test-group.sh agent-syncthing-python 90 python3 -I -m unittest discover -s scripts/syncthing -p 'test_*.py' -v
-          bash scripts/ci/test-group.sh agent-sprint-python 90 python3 scripts/dev/test-sprint-report.py
-          bash scripts/ci/test-group.sh agent-qa-python 60 python3 -I -m unittest discover -s scripts/qa -p 'test_*.py' -v
-          bash scripts/ci/test-group.sh agent-inbox-restart-python 60 python3 -I -m unittest discover -s inbox/deploy -p 'test_restart.py' -v
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Run CI, releases and updater Python suites"
       - name: Verify bundled Sync Help and brand
-        run: |
-          python3 docs/help/sync/check.py
-          python3 docs/help/board/check.py
-          python3 docs/help/projects/check.py
-          python3 scripts/rebrand/check_brand.py
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Verify bundled Sync Help and brand"
       - name: Lint every workspace target offline
-        env:
-          CARGO_NET_OFFLINE: 'true'
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      # Clippy over all targets pulls dev-dependency features (gpui
-      # test-support) into every crate, so a test-only API compiles there and
-      # still breaks the beta (#2916). Same packages, binaries and profile as
-      # scripts/appimage/build.sh, without dev-dependencies.
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Lint every workspace target offline"
       - name: Check release binaries without test features
-        env:
-          CARGO_NET_OFFLINE: 'true'
-        run: cargo check --release --locked -p okilum-shell -p okilum-sync-controller --bin okilum --bin okilum-sync-launch
-      - name: Save Rust downloads and target cache
-        if: ${{ (!cancelled() && steps.cache.outputs.cache-hit != 'true') && github.ref == 'refs/heads/main' }}
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-            target/
-            vendor/gpui-component/
-            vendor/comrak-0.47.0/
-          key: ${{ steps.cache.outputs.cache-primary-key }}
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Check release binaries without test features"
+      # Every shard and every recorded phase, including phases without their own
+      # step above and a phase one shard skipped after an earlier failure.
+      - name: Verify every pool shard and phase passed
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh --overall
   linux:
     if: ${{ !startsWith(github.ref, 'refs/heads/agent-checks-fast/') }}
     # Public repositories receive the standard 4-vCPU hosted Linux runner.
@@ -451,3 +400,106 @@ jobs:
             vendor/gpui-component/
             vendor/comrak-0.47.0/
           key: ${{ steps.cache.outputs.cache-primary-key }}
+  # Hosted Ubuntu `linux` above decides the full verdict until a pool run is
+  # green in <= 20 min (Oleg 21.11). The sharded pool gate keeps running here
+  # for that work, only on request (`gh-check.sh --dispatch --pool-linux`),
+  # and never fails the run: gh-check.sh ignores this job.
+  linux-pool:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.pool_linux }}
+    continue-on-error: true
+    runs-on: okilum-pool
+    # Six shards in parallel on different pool slots (Oleg 21.11, target
+    # <= 20 min): 15 min queue wait + 25 min per shard + aggregation.
+    # Hosted linux was 56-58 min (20.11); one unsharded pool slot ran 26 min
+    # into managed admission (run 44829689116).
+    timeout-minutes: 45
+    env:
+      OKILUM_SOURCE_COMMIT: ${{ github.sha }}
+      PUBLICATION_BASELINE: ${{ inputs.publication_baseline }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Record exact source and runner
+        run: |
+          test "$(git rev-parse HEAD)" = "$OKILUM_SOURCE_COMMIT"
+          printf 'source=%s\nhost=%s\n' "$OKILUM_SOURCE_COMMIT" "$(hostname)"
+      - name: Prepare isolated Python test dependencies
+        run: bash scripts/ci/setup-python-tests.sh
+      - name: Dispatch Linux full gate to the build-slot pool
+        id: pool
+        run: bash scripts/ci/pool-dispatch.sh linux-full
+      - name: Prepare and verify pinned vendor and comrak
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Prepare and verify pinned vendor and comrak"
+      - name: Verify per-user AppImage runtime
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Verify per-user AppImage runtime"
+      - name: Verify agent helper controls
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Verify agent helper controls"
+      - name: Run CI, releases and updater Python suites
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Run CI, releases and updater Python suites"
+      - name: Verify bundled Sync Help and brand
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Verify bundled Sync Help and brand"
+      - name: Lint every workspace target offline
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Lint every workspace target offline"
+      - name: Verify pinned Sync fixture lifecycle, source sharing and remote inspection
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Verify pinned Sync fixture lifecycle, source sharing and remote inspection"
+      - name: Verify PID-namespace isolation controls
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Verify PID-namespace isolation controls"
+      - name: Verify managed launch and configuration admission
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Verify managed launch and configuration admission"
+      - name: Verify real disk-full Sync transfer and first merge
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Verify real disk-full Sync transfer and first merge"
+      - name: Reject and reap surviving agent fixture daemons
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Reject and reap surviving agent fixture daemons"
+      - name: Verify local writer authority and fencing
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Verify local writer authority and fencing"
+      - name: Build Linux desktop offline
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Build Linux desktop offline"
+      - name: Pair through a running okilum sync serve
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Pair through a running okilum sync serve"
+      - name: Stress private reveal bus (20 runs)
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Stress private reveal bus (20 runs)"
+      - name: Run complete okilum-core suite offline
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Run complete okilum-core suite offline"
+      - name: Start a systemd user manager for updater unit controls
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Start a systemd user manager for updater unit controls"
+      - name: Run Linux Rust suites offline
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Run Linux Rust suites offline"
+      - name: Verify additive vault regression controls
+        if: ${{ steps.pool.outputs.kind == 'verdict' && !startsWith(github.ref, 'refs/heads/agent-checks-benchmark/') }}
+        run: bash scripts/ci/pool-phase.sh "Verify additive vault regression controls"
+      - name: Warm build Linux desktop offline
+        if: ${{ steps.pool.outputs.kind == 'verdict' && startsWith(github.ref, 'refs/heads/agent-checks-benchmark/') }}
+        run: bash scripts/ci/pool-phase.sh "Warm build Linux desktop offline"
+      - name: Warm complete okilum-core suite offline
+        if: ${{ steps.pool.outputs.kind == 'verdict' && startsWith(github.ref, 'refs/heads/agent-checks-benchmark/') }}
+        run: bash scripts/ci/pool-phase.sh "Warm complete okilum-core suite offline"
+      - name: Warm Linux Rust suites offline
+        if: ${{ steps.pool.outputs.kind == 'verdict' && startsWith(github.ref, 'refs/heads/agent-checks-benchmark/') }}
+        run: bash scripts/ci/pool-phase.sh "Warm Linux Rust suites offline"
+      - name: Compare editor publication with pinned main on this host
+        if: ${{ steps.pool.outputs.kind == 'verdict' && inputs.publication_baseline != '' }}
+        run: bash scripts/ci/pool-phase.sh "Compare editor publication with pinned main on this host"
+      # Every shard and every recorded phase, including phases without their own
+      # step above and a phase one shard skipped after an earlier failure.
+      - name: Verify every pool shard and phase passed
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh --overall

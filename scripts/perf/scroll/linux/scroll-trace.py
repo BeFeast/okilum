@@ -11,6 +11,8 @@ xdotool. OUTDIR/<scenario>/rep<N>/ gets the slice of the trace of that stream an
 wheel-start.txt / wheel-end.txt (Unix ms) for scroll/analyze.py, as the Mac and Windows probes
 write them, and summary.txt says whether the rep is valid.
 
+THEME (a theme key) and APPEARANCE (light or dark) start every scenario in that theme and mode.
+
 Positive controls: the window's pixels before and after a rep must differ (the note really
 scrolled), and the trace must hold redrawn frames in the burst. Negative control: frames in 3 s
 without input (0 in Reader, the caret's in the editor modes).
@@ -78,6 +80,11 @@ for scenario in scenarios:
     base = out / label
     home = base / "home"
     home.mkdir(parents=True)
+    # THEME / APPEARANCE start the app in that theme and mode (#3156 theme A/B).
+    look = {k: os.environ[e] for k, e in (("theme", "THEME"), ("appearance", "APPEARANCE")) if os.environ.get(e)}
+    if look:
+        (home / "okilum").mkdir()
+        (home / "okilum" / "reader-ui.json").write_text(json.dumps({"version": 1, **look}))
     log = base / "trace.log"
     env = dict(os.environ, WAYLAND_DISPLAY="", HOME=str(home), XDG_CONFIG_HOME=str(home / "config"),
                XDG_CACHE_HOME=str(home / "cache"), XDG_DATA_HOME=str(home / "data"),

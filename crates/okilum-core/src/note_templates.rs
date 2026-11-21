@@ -54,7 +54,7 @@ fn default_time() -> String {
     "HH:mm".into()
 }
 
-fn open_folder(root: &Path, relative: &Path) -> Result<Option<OwnedFd>> {
+pub(crate) fn open_folder(root: &Path, relative: &Path) -> Result<Option<OwnedFd>> {
     ensure!(
         relative
             .components()
@@ -107,7 +107,7 @@ fn open_folder(root: &Path, relative: &Path) -> Result<Option<OwnedFd>> {
     }
 }
 
-fn read_file(folder: &OwnedFd, name: &str) -> Result<Option<String>> {
+pub(crate) fn read_file(folder: &OwnedFd, name: &str) -> Result<Option<String>> {
     #[cfg(windows)]
     let file = match folder.open_file(std::ffi::OsStr::new(name)) {
         Ok(file) => file,
@@ -305,7 +305,13 @@ impl Catalog {
 }
 
 /// Replace only recognized variables. Never rescan the inserted title.
-fn expand(source: &str, title: &str, now: OffsetDateTime, date: &str, time: &str) -> String {
+pub(crate) fn expand(
+    source: &str,
+    title: &str,
+    now: OffsetDateTime,
+    date: &str,
+    time: &str,
+) -> String {
     let mut out = String::new();
     let mut rest = source;
     while let Some(start) = rest.find("{{") {
@@ -331,8 +337,32 @@ fn expand(source: &str, title: &str, now: OffsetDateTime, date: &str, time: &str
     out
 }
 
+const MONTHS: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+const WEEKDAYS: [&str; 7] = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+];
+
 /// Supported Moment tokens are explicit, so unsupported formats remain literal.
-fn moment(mut format: &str, now: OffsetDateTime) -> Option<String> {
+pub(crate) fn moment(mut format: &str, now: OffsetDateTime) -> Option<String> {
     let mut out = String::new();
     while !format.is_empty() {
         if let Some(literal) = format.strip_prefix('[') {
@@ -341,11 +371,27 @@ fn moment(mut format: &str, now: OffsetDateTime) -> Option<String> {
             format = &literal[end + 1..];
             continue;
         }
+        // Longest first, so `MMMM` is never read as `MM` twice (#3182).
+        let month = u8::from(now.month());
         let tokens = [
             ("YYYY", format!("{:04}", now.year())),
-            ("MM", format!("{:02}", u8::from(now.month()))),
+            ("YY", format!("{:02}", now.year().rem_euclid(100))),
+            ("MMMM", MONTHS[usize::from(month - 1)].to_owned()),
+            ("MMM", MONTHS[usize::from(month - 1)][..3].to_owned()),
+            ("MM", format!("{month:02}")),
+            ("M", month.to_string()),
+            (
+                "dddd",
+                WEEKDAYS[usize::from(now.weekday().number_days_from_monday())].to_owned(),
+            ),
+            (
+                "ddd",
+                WEEKDAYS[usize::from(now.weekday().number_days_from_monday())][..3].to_owned(),
+            ),
             ("DD", format!("{:02}", now.day())),
+            ("D", now.day().to_string()),
             ("HH", format!("{:02}", now.hour())),
+            ("H", now.hour().to_string()),
             ("mm", format!("{:02}", now.minute())),
             ("ss", format!("{:02}", now.second())),
         ];
@@ -370,8 +416,26 @@ mod tests {
     #[test]
     fn obsidian_variables_are_one_pass_and_unknowns_lossless() {
         let now = time::macros::datetime!(2026-10-05 09:07:03 +02:00);
-        assert_eq!(expand("\u{feff}# {{title}}\r\n{{date}} {{time}} {{date:DD/MM/YYYY}} {{time:HH-mm-ss}} {{date:[on] YYYY}} {{unknown}} {{date:dddd}}", "{{date}} 🧠", now, "YYYY-MM-DD", "HH:mm"),
-            "\u{feff}# {{date}} 🧠\r\n2026-10-05 09:07 05/10/2026 09-07-03 on 2026 {{unknown}} {{date:dddd}}");
+        assert_eq!(expand("\u{feff}# {{title}}\r\n{{date}} {{time}} {{date:DD/MM/YYYY}} {{time:HH-mm-ss}} {{date:[on] YYYY}} {{unknown}} {{date:Do}}", "{{date}} 🧠", now, "YYYY-MM-DD", "HH:mm"),
+            "\u{feff}# {{date}} 🧠\r\n2026-10-05 09:07 05/10/2026 09-07-03 on 2026 {{unknown}} {{date:Do}}");
+    }
+    /// #3182: daily templates use Obsidian's usual Moment tokens.
+    #[test]
+    fn moment_names_short_forms_and_weekdays() {
+        let now = time::macros::datetime!(2026-11-05 07:04:09 +02:00);
+        let date = |format: &str| moment(format, now);
+        assert_eq!(
+            date("dddd, D MMMM YYYY").as_deref(),
+            Some("Thursday, 5 November 2026")
+        );
+        assert_eq!(date("ddd D MMM YY").as_deref(), Some("Thu 5 Nov 26"));
+        assert_eq!(date("M/D H:mm").as_deref(), Some("11/5 7:04"));
+        assert_eq!(date("YYYY-MM-DD").as_deref(), Some("2026-11-05"));
+        assert_eq!(
+            date("Do"),
+            None,
+            "an unsupported token leaves the variable as written"
+        );
     }
     #[test]
     fn config_folder_defaults_and_safety() {
