@@ -52,7 +52,40 @@ the same paths-only event.
   its limit falls back to the offered JPEG.
   `scripts/ci/gpui-macos-vendor-tests.sh` requires both to run.
 
-Backends that never emit the new variants (Linux, Windows) behave as before.
+`scripts/patches/gpui-pre-linux/0001-external-data-drops.diff` (Linux):
+
+- Pinned `gpui-pre-linux` 0.3.3 supports both X11 XDND and Wayland
+  `wl_data_device`; neither requires a core event change. On enter, only
+  public MIME names are selected and `DataEntered` is emitted. Contents are
+  requested only on drop, on the background executor.
+- UTF-8 (`text/plain`, `text/plain;charset=utf-8`, `UTF8_STRING`), UTF-16
+  (`text/plain;charset=utf-16`, `utf-16le`, `utf-16be`), HTML, URI lists and
+  PNG/JPEG/GIF/WebP/TIFF are accepted. Unknown/private types are never read.
+  Limits match the macOS transport: 32 MiB per text representation, 64 MiB
+  per image, 128 MiB per drop. Failed transfers conservatively consume their
+  allowance; the first successfully read image prevents reading other images.
+  No metadata/private clipboard extensions are requested.
+- X11 uses a separate background connection and requestor window for
+  `XdndSelection`, including INCR transfers. Property chunks and announced
+  lengths are checked against the remaining budget. A four-second deadline
+  bounds each representation; `XdndFinished` follows reading, not precedes it.
+- Wayland accepts an offered public MIME and negotiates Copy. At drop the
+  offer is read through nonblocking pipes with byte limits and a four-second
+  wall-clock deadline per representation. `finish`/`destroy` follow reading.
+  It uses the ordinary data-device protocol, not privileged data-control.
+- URI-list comments are ignored. Local file URLs still produce
+  `ExternalPaths` + `Entered`/`Submit`; non-file lists produce `ExternalData`.
+  The temporary data drag is cleared before entering the file drag.
+- `scripts/ci/gpui-linux-vendor-tests.sh` runs the vendor's own selection,
+  aggregate-budget, pipe oversize/timeout, URI classification and real X11
+  selection/INCR controls under Xvfb, plus the Okilum MIME routing test.
+  `.github/workflows/linux-external-drops.yml` runs these independently of
+  the fast gate. X11 INCR covers ordinary, incremental and oversized offers.
+  Native interaction with third-party applications on a real Wayland
+  compositor remains a manual integration check; the pinned crate has no
+  display-server API limitation preventing this implementation.
+
+The Windows backend remains paths-only.
 
 ## Okilum side
 
@@ -65,15 +98,16 @@ at the pointer; on the rendered note it switches to Edit and goes in before the
 block under the pointer.
 
 Not covered yet: file promises without image data or HTML (some apps offer an
-image only as a promised file), and the Linux and Windows backends. Both are
-follow-ups; the Linux one can reuse the #1618 MIME reader once GPUI hands over
-the XDND / `wl_data_offer` contents.
+image only as a promised file), and the Windows backend. Linux data drops use native MIME identifiers mapped
+by `DroppedData` to the router's existing flavor names; UTF-16 byte order and
+URI-list comments are decoded at that boundary.
 
 ## Upkeep
 
 The archives, patches and resulting trees are checksum-pinned in
-`scripts/gpui-pre/manifest.json` and `scripts/gpui-pre-macos/manifest.json`.
-On a `gpui-pre*` bump both diffs must be rebased and the three digests of each
+`scripts/gpui-pre/manifest.json`, `scripts/gpui-pre-macos/manifest.json` and
+`scripts/gpui-pre-linux/manifest.json`.
+On a `gpui-pre*` bump both diffs must be rebased and the digests of each
 manifest refreshed; a changed context fails patch application instead of
 silently changing behaviour.
 
@@ -81,7 +115,14 @@ silently changing behaviour.
 
 The source owner is [zed-industries/zed](https://github.com/zed-industries/zed):
 `crates/gpui/src/interactive.rs` and `crates/gpui/src/window.rs` for the event,
-`crates/gpui_macos/src/window.rs` for the macOS backend. The pinned snapshot's
+`crates/gpui_macos/src/window.rs` for the macOS backend, and
+`crates/gpui_linux/src/linux/{x11,wayland}/client.rs` for Linux. The Linux
+[package metadata](https://docs.rs/crate/gpui-pre-linux/0.3.3/source/Cargo.toml.orig)
+also names Zed and snapshot revision `5b055fa`. The Linux patch is general:
+public MIME selection, bounded asynchronous transport and existing GPUI events,
+with no Okilum hooks. Rebase it on each Linux snapshot bump and submit it as a
+separate Linux follow-up after the core events; no upstream submission is
+authorized by this downstream work. The pinned snapshot's
 [package metadata](https://docs.rs/crate/gpui-pre/0.3.3/source/Cargo.toml.orig)
 names that repository; [crates.io owners](https://crates.io/api/v1/crates/gpui-pre/owners)
 lists Jason Lee (`huacnlee`) as the snapshot publisher, who does not own the

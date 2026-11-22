@@ -219,6 +219,8 @@ exec cat
                 'from pathlib import Path\nimport json, sys\n'
                 'with Path(__file__).with_name("atlas-calls.jsonl").open("a") as log:\n'
                 '    log.write(json.dumps(sys.argv[1:]) + "\\n")\n')
+            # Linux data drops have independent checksum-pinned extraction too.
+            (scripts / 'gpui-pre-linux-setup.py').write_text('pass\n')
             # The pinned macOS first-window crates (#2825) are likewise independent.
             (scripts / 'gpui-pre-apple-setup.py').write_text('pass\n')
             # Core glyph-value copying has its own pinned extraction too. This

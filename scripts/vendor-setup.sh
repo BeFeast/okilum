@@ -33,8 +33,9 @@ python3 "$ROOT/scripts/gpui-pre-windows-setup.py" "$@"
 # Oleg 2026-11-13 (#2825): cold first-window macOS patches, checksum-pinned.
 python3 "$ROOT/scripts/gpui-pre-apple-setup.py" "$@"
 python3 "$ROOT/scripts/gpui-pre-setup.py" "$@"
+python3 "$ROOT/scripts/gpui-pre-linux-setup.py" "$@"
 
-if [ ! -d "$VENDOR/.git" ]; then
+if [ ! -e "$VENDOR/.git" ]; then
     if [ "$verify_only" = 1 ]; then
         echo "vendor-setup --verify: $VENDOR is missing; run scripts/vendor-setup.sh" >&2
         exit 1

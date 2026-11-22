@@ -1,0 +1,38 @@
+name: Linux external drops
+on:
+  push:
+    branches: ['main', 't3/linux-external-data-drops']
+    paths:
+      - 'scripts/patches/gpui-pre*/**'
+      - 'scripts/gpui-pre*/**'
+      - 'scripts/*setup*'
+      - 'crates/okilum-shell/src/note_paste*'
+      - 'crates/okilum-shell/src/note_paste/**'
+      - 'scripts/ci/gpui-linux-vendor-tests.sh'
+      - '.github/workflows/linux-external-drops.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: linux-external-drops-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_BUILD_JOBS: '4'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native dependencies
+        run: |
+          sudo bash scripts/ci/hosted-ubuntu-apt.sh build-essential cmake pkg-config mold libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev xvfb
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: agent-linux-external-drops-v1
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: bash scripts/vendor-setup.sh
+      - run: bash scripts/vendor-setup.sh --verify
+      - run: xvfb-run -a bash scripts/ci/gpui-linux-vendor-tests.sh

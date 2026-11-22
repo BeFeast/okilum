@@ -1,0 +1,24 @@
+{
+  "package": "gpui-pre-linux",
+  "version": "0.3.3",
+  "archive_url": "https://static.crates.io/crates/gpui-pre-linux/gpui-pre-linux-0.3.3.crate",
+  "archive_sha256": "f9025a2a9f7e9241651bb5f9df6b69233ca4111b233e1fb3a4544d69ecc52bc3",
+  "patches": [
+    {
+      "path": "../patches/gpui-pre-linux/0001-external-data-drops.diff",
+      "sha256": "8287416e47bedbbf739a2e1165cf50d92b74e3da14965e01c9ecf017ed23aa74"
+    }
+  ],
+  "tree_sha256": "586b2346bd1980578feee7d5a537c03c21d6055c312f84f4218fd096b013fcf0",
+  "generated_path": "vendor/gpui-pre-linux-0.3.3",
+  "changed_files": [
+    "src/linux.rs",
+    "src/linux/external_drop.rs",
+    "src/linux/wayland/client.rs",
+    "src/linux/wayland/clipboard.rs",
+    "src/linux/x11.rs",
+    "src/linux/x11/client.rs",
+    "src/linux/x11/external_drop.rs",
+    "src/linux/x11/window.rs"
+  ]
+}

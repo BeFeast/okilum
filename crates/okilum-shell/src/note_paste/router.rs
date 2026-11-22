@@ -2105,6 +2105,59 @@ mod tests {
         ))
     }
 
+    #[test]
+    fn linux_dropped_mime_data_routes_through_the_paste_router() {
+        let note = Note::new();
+        let cx = note.cx(Mode::Smart, "", 0..0);
+        for mime in ["text/plain", "text/plain;charset=utf-8", "UTF8_STRING"] {
+            let board = dropped(&[(mime, "Привет".as_bytes())]);
+            assert_eq!(
+                route(&board, &cx).unwrap().insert.as_deref(),
+                Some("Привет")
+            );
+        }
+        for (mime, bytes) in [
+            (
+                "text/plain;charset=utf-16le",
+                "Привет"
+                    .encode_utf16()
+                    .flat_map(u16::to_le_bytes)
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                "text/plain;charset=utf-16be",
+                "Привет".encode_utf16().flat_map(u16::to_be_bytes).collect(),
+            ),
+        ] {
+            assert_eq!(
+                route(&dropped(&[(mime, &bytes)]), &cx)
+                    .unwrap()
+                    .insert
+                    .as_deref(),
+                Some("Привет")
+            );
+        }
+        let html = route(&dropped(&[("text/html", b"<b>Bold</b>")]), &cx).unwrap();
+        assert_eq!(html.route, Route::RichText);
+        assert!(html.insert.unwrap().contains("**Bold**"));
+        assert_eq!(
+            route(&dropped(&[("image/png", PNG)]), &cx).unwrap().route,
+            Route::Image
+        );
+        let url = route(
+            &dropped(&[("text/uri-list", b"# source\r\nhttps://example.org/page\r\n")]),
+            &cx,
+        )
+        .unwrap();
+        assert!(url.insert.unwrap().contains("https://example.org/page"));
+        assert_eq!(
+            route(&dropped(&[("application/private", b"secret")]), &cx)
+                .unwrap()
+                .route,
+            Route::Nothing
+        );
+    }
+
     /// #1615: dropped text goes in as a paste of it would: plain text as it
     /// is, HTML as Markdown with its remote images downloaded afterwards,
     /// image data as a saved image.

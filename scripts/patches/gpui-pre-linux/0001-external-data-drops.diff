@@ -1,0 +1,1106 @@
+--- a/src/linux.rs
++++ b/src/linux.rs
+@@ -1,3 +1,5 @@
++#[cfg(any(feature = "wayland", feature = "x11"))]
++mod external_drop;
+ mod dispatcher;
+ mod headless;
+ mod keyboard;
+--- /dev/null
++++ b/src/linux/external_drop.rs
+@@ -0,0 +1,253 @@
++//! Public drag representations only. Payload I/O runs on the background executor.
++use gpui::{ExternalData, ExternalPaths, FileDropEvent, Pixels, Point, SharedString};
++use std::{
++    io::Read,
++    os::fd::AsRawFd,
++    time::{Duration, Instant},
++};
++
++pub(super) const MAX_TOTAL: usize = 128 * 1024 * 1024;
++pub(super) const TIMEOUT: Duration = Duration::from_secs(4);
++const TEXT: usize = 32 * 1024 * 1024;
++const IMAGE: usize = 64 * 1024 * 1024;
++
++pub(super) fn limit(mime: &str) -> Option<usize> {
++    Some(match mime {
++        "text/plain"
++        | "text/plain;charset=utf-8"
++        | "UTF8_STRING"
++        | "text/plain;charset=utf-16"
++        | "text/plain;charset=utf-16le"
++        | "text/plain;charset=utf-16be"
++        | "text/html"
++        | "text/uri-list" => TEXT,
++        "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/tiff" => IMAGE,
++        _ => return None,
++    })
++}
++
++pub(super) fn selected(types: &[String]) -> Vec<String> {
++    // Stable preference, not source order; one successful image is enough.
++    let order = [
++        "text/uri-list",
++        "text/html",
++        "text/plain;charset=utf-8",
++        "UTF8_STRING",
++        "text/plain",
++        "text/plain;charset=utf-16",
++        "text/plain;charset=utf-16le",
++        "text/plain;charset=utf-16be",
++        "image/png",
++        "image/jpeg",
++        "image/gif",
++        "image/webp",
++        "image/tiff",
++    ];
++    order
++        .into_iter()
++        .filter(|m| types.iter().any(|t| t == m))
++        .map(str::to_owned)
++        .collect()
++}
++
++pub(super) fn read_all(
++    types: &[String],
++    read: impl FnMut(&str, usize) -> Option<Vec<u8>>,
++) -> Vec<(SharedString, Vec<u8>)> {
++    read_with_budget(types, MAX_TOTAL, read)
++}
++
++fn read_with_budget(
++    types: &[String],
++    budget: usize,
++    mut read: impl FnMut(&str, usize) -> Option<Vec<u8>>,
++) -> Vec<(SharedString, Vec<u8>)> {
++    let mut used = 0;
++    let mut image = false;
++    let mut contents = Vec::new();
++    for mime in selected(types) {
++        if image && mime.starts_with("image/") {
++            continue;
++        }
++        let cap = limit(&mime).unwrap().min(budget - used);
++        if cap == 0 {
++            break;
++        }
++        match read(&mime, cap).filter(|b| b.len() <= cap) {
++            Some(bytes) => {
++                used += bytes.len();
++                image |= mime.starts_with("image/");
++                contents.push((mime.into(), bytes));
++            }
++            // A failed transfer may have consumed its entire allowance.
++            None => used += cap,
++        }
++    }
++    contents
++}
++
++pub(super) fn entered(position: Point<Pixels>, types: &[String]) -> FileDropEvent {
++    FileDropEvent::DataEntered {
++        position,
++        data: ExternalData::new(types.iter().cloned().map(SharedString::from)),
++    }
++}
++
++pub(super) fn submitted(
++    position: Point<Pixels>,
++    contents: Vec<(SharedString, Vec<u8>)>,
++) -> (Option<ExternalPaths>, FileDropEvent) {
++    // URI lists can represent files or web links. Preserve file drops; comments
++    // and remote URLs never become local paths.
++    let paths = contents
++        .iter()
++        .find(|(m, _)| m.as_ref() == "text/uri-list")
++        .and_then(|(_, b)| std::str::from_utf8(b).ok())
++        .into_iter()
++        .flat_map(str::lines)
++        .filter(|s| !s.starts_with('#'))
++        .filter_map(|s| http_client::Url::parse(s.trim()).ok())
++        .filter_map(|u| u.to_file_path().ok())
++        .collect();
++    let paths = ExternalPaths(paths);
++    if !paths.0.is_empty() {
++        (Some(paths), FileDropEvent::Submit { position })
++    } else {
++        (
++            None,
++            FileDropEvent::DataSubmit {
++                position,
++                data: ExternalData::with_contents(
++                    contents.iter().map(|(m, _)| m.clone()),
++                    contents
++                        .iter()
++                        .map(|(m, b)| (m.clone(), std::sync::Arc::from(b.as_slice()))),
++                ),
++            },
++        )
++    }
++}
++
++pub(super) fn read_pipe(mut fd: filedescriptor::FileDescriptor, cap: usize) -> Option<Vec<u8>> {
++    fd.set_non_blocking(true).ok()?;
++    let deadline = Instant::now() + TIMEOUT;
++    let mut bytes = Vec::new();
++    let mut chunk = [0; 8192];
++    loop {
++        let remaining = deadline.checked_duration_since(Instant::now())?;
++        let mut poll = [filedescriptor::pollfd {
++            fd: fd.as_raw_fd(),
++            events: filedescriptor::POLLIN,
++            revents: 0,
++        }];
++        if filedescriptor::poll(&mut poll, Some(remaining)).ok()? == 0 {
++            return None;
++        }
++        match fd.read(&mut chunk) {
++            Ok(0) => return Some(bytes),
++            Ok(n) => {
++                if n > cap.saturating_sub(bytes.len()) {
++                    return None;
++                }
++                bytes.extend_from_slice(&chunk[..n]);
++            }
++            Err(e)
++                if matches!(
++                    e.kind(),
++                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
++                ) => {}
++            Err(_) => return None,
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn external_drop_selection_and_bounds() {
++        let types = [
++            "application/private",
++            "image/tiff",
++            "image/png",
++            "image/jpeg",
++            "text/html",
++        ]
++        .map(str::to_owned);
++        let mut reads = Vec::new();
++        let got = read_all(&types, |m, cap| {
++            reads.push((m.to_owned(), cap));
++            if m == "image/png" {
++                None
++            } else {
++                Some(vec![1])
++            }
++        });
++        assert_eq!(
++            reads,
++            [
++                ("text/html".into(), TEXT),
++                ("image/png".into(), IMAGE),
++                ("image/jpeg".into(), IMAGE - 1)
++            ]
++        );
++        assert_eq!(got.len(), 2);
++        assert_eq!(limit("text/plain;charset=utf-16be"), Some(TEXT));
++        assert_eq!(limit("x-special/gnome-copied-files"), None);
++        assert!(read_all(&["text/plain".into()], |_, cap| Some(vec![0; cap + 1])).is_empty());
++    }
++    #[test]
++    fn external_drop_aggregate_budget_counts_failed_reads() {
++        let types = ["text/html", "text/plain", "image/png"].map(str::to_owned);
++        let mut caps = Vec::new();
++        let got = read_with_budget(&types, 8, |mime, cap| {
++            caps.push(cap);
++            if mime == "text/html" {
++                Some(vec![1; 3])
++            } else {
++                None
++            }
++        });
++        assert_eq!(caps, [8, 5]);
++        assert_eq!(got.len(), 1);
++    }
++    #[test]
++    fn external_drop_pipe_rejects_oversize_and_timeout() {
++        use std::io::Write;
++        let mut pipe = filedescriptor::Pipe::new().unwrap();
++        pipe.write.write_all(b"12345").unwrap();
++        drop(pipe.write);
++        assert_eq!(read_pipe(pipe.read, 4), None);
++        let mut pipe = filedescriptor::Pipe::new().unwrap();
++        pipe.write.write_all(b"1234").unwrap();
++        drop(pipe.write);
++        assert_eq!(read_pipe(pipe.read, 4), Some(b"1234".to_vec()));
++        let pipe = filedescriptor::Pipe::new().unwrap();
++        let started = Instant::now();
++        assert!(read_pipe(pipe.read, 4).is_none());
++        assert!(started.elapsed() >= TIMEOUT);
++        drop(pipe.write);
++    }
++    #[test]
++    fn external_drop_uri_lists_keep_file_and_web_routes() {
++        let pos = Point::default();
++        let (paths, event) = submitted(
++            pos,
++            vec![(
++                "text/uri-list".into(),
++                b"#comment\r\nhttps://example.org/\r\n".to_vec(),
++            )],
++        );
++        assert!(paths.is_none());
++        assert!(matches!(event, FileDropEvent::DataSubmit { .. }));
++        let (paths, event) = submitted(
++            pos,
++            vec![("text/uri-list".into(), b"file:///example.txt\r\n".to_vec())],
++        );
++        assert_eq!(
++            paths.unwrap().0[0],
++            std::path::PathBuf::from("/example.txt")
++        );
++        assert!(matches!(event, FileDropEvent::Submit { .. }));
++    }
++}
+--- a/src/linux/wayland/client.rs
++++ b/src/linux/wayland/client.rs
+@@ -1,3 +1,4 @@
++use crate::linux::external_drop;
+ use std::{
+     cell::{RefCell, RefMut},
+     hash::Hash,
+@@ -18,7 +19,6 @@
+ use filedescriptor::Pipe;
+ use gpui_util::ResultExt as _;
+ use http_client::Url;
+-use smallvec::SmallVec;
+ use wayland_backend::client::ObjectId;
+ use wayland_backend::protocol::WEnum;
+ use wayland_client::event_created_child;
+@@ -81,11 +81,10 @@
+ };
+ 
+ use crate::linux::{
+-    DOUBLE_CLICK_INTERVAL, LinuxClient, LinuxCommon, LinuxKeyboardLayout, PIPE_READ_TIMEOUT,
+-    SCROLL_LINES, capslock_from_xkb, cursor_style_to_icon_names, get_xkb_compose_state,
+-    is_within_click_distance, keystroke_from_xkb, keystroke_underlying_dead_key,
+-    modifiers_from_xkb, new_xkb_context, open_uri_internal, read_fd_with_timeout,
+-    reveal_path_internal,
++    DOUBLE_CLICK_INTERVAL, LinuxClient, LinuxCommon, LinuxKeyboardLayout, SCROLL_LINES,
++    capslock_from_xkb, cursor_style_to_icon_names, get_xkb_compose_state, is_within_click_distance,
++    keystroke_from_xkb, keystroke_underlying_dead_key, modifiers_from_xkb, new_xkb_context,
++    open_uri_internal, reveal_path_internal,
+     wayland::{
+         clipboard::{Clipboard, DataOffer, FILE_LIST_MIME_TYPE, TEXT_MIME_TYPES},
+         cursor::Cursor,
+@@ -370,6 +369,7 @@
+ 
+ pub struct DragState {
+     data_offer: Option<wl_data_offer::WlDataOffer>,
++    types: Vec<String>,
+     window: Option<WaylandWindowStatePtr>,
+     position: Point<Pixels>,
+ }
+@@ -921,6 +921,7 @@
+             compose_state: None,
+             drag: DragState {
+                 data_offer: None,
++                types: Vec::new(),
+                 window: None,
+                 position: Point::default(),
+             },
+@@ -2554,7 +2555,7 @@
+         _: &wl_data_device::WlDataDevice,
+         event: wl_data_device::Event,
+         _: &(),
+-        _: &Connection,
++        connection: &Connection,
+         _: &QueueHandle<Self>,
+     ) {
+         let client = this.get_client();
+@@ -2599,66 +2600,26 @@
+                     const ACTIONS: DndAction = DndAction::Copy;
+                     data_offer.set_actions(ACTIONS, ACTIONS);
+ 
+-                    let pipe = Pipe::new().unwrap();
+-                    data_offer.receive(FILE_LIST_MIME_TYPE.to_string(), unsafe {
+-                        BorrowedFd::borrow_raw(pipe.write.as_raw_fd())
+-                    });
+-                    let fd = pipe.read;
+-                    drop(pipe.write);
+-
+-                    let read_task = state.common.background_executor.spawn(async {
+-                        let buffer = read_fd_with_timeout(fd, PIPE_READ_TIMEOUT)?;
+-                        let text = String::from_utf8(buffer)?;
+-                        anyhow::Ok(text)
+-                    });
+-
+-                    let this = this.clone();
+-                    state
+-                        .common
+-                        .foreground_executor
+-                        .spawn(async move {
+-                            let file_list = match read_task.await {
+-                                Ok(list) => list,
+-                                Err(err) => {
+-                                    log::error!("error reading drag and drop pipe: {err:?}");
+-                                    return;
+-                                }
+-                            };
+-
+-                            let paths: SmallVec<[_; 2]> = file_list
+-                                .lines()
+-                                .filter_map(|path| Url::parse(path).log_err())
+-                                .filter_map(|url| match url.to_file_path() {
+-                                    Ok(url) => Some(url),
+-                                    Err(()) => {
+-                                        log::error!("Failed turn {url:?} into a file path");
+-                                        None
+-                                    }
+-                                })
+-                                .collect();
+-                            let position = Point::new(x.into(), y.into());
+-
+-                            // Prevent dropping text from other programs.
+-                            if paths.is_empty() {
+-                                data_offer.destroy();
+-                                return;
+-                            }
+-
+-                            let input = PlatformInput::FileDrop(FileDropEvent::Entered {
+-                                position,
+-                                paths: gpui::ExternalPaths(paths),
+-                            });
+-
+-                            let client = this.get_client();
+-                            let mut state = client.borrow_mut();
+-                            state.drag.data_offer = Some(data_offer);
+-                            state.drag.window = Some(drag_window.clone());
+-                            state.drag.position = position;
+-
+-                            drop(state);
+-                            drag_window.handle_input(input);
+-                        })
+-                        .detach();
++                    let types = state
++                        .data_offers
++                        .iter()
++                        .find(|o| o.inner.id() == data_offer.id())
++                        .map(|o| o.mime_types.clone())
++                        .unwrap_or_default();
++                    let selected = external_drop::selected(&types);
++                    data_offer.accept(serial, selected.first().cloned());
++                    if selected.is_empty() {
++                        return;
++                    }
++                    let position = Point::new(x.into(), y.into());
++                    state.drag.data_offer = Some(data_offer);
++                    state.drag.types = types.clone();
++                    state.drag.window = Some(drag_window.clone());
++                    state.drag.position = position;
++                    drop(state);
++                    drag_window.handle_input(PlatformInput::FileDrop(external_drop::entered(
++                        position, &types,
++                    )));
+                 }
+             }
+             wl_data_device::Event::Motion { x, y, .. } => {
+@@ -2691,17 +2652,41 @@
+                     return;
+                 };
+                 let data_offer = state.drag.data_offer.clone().unwrap();
+-                data_offer.finish();
+-                data_offer.destroy();
+-
++                let types = std::mem::take(&mut state.drag.types);
++                let position = state.drag.position;
+                 state.drag.data_offer = None;
+                 state.drag.window = None;
+-
+-                let input = PlatformInput::FileDrop(FileDropEvent::Submit {
+-                    position: state.drag.position,
++                let offer = data_offer.clone();
++                let connection = connection.clone();
++                let read_task = state.common.background_executor.spawn(async move {
++                    let contents = external_drop::read_all(&types, |mime, cap| {
++                        let pipe = Pipe::new().ok()?;
++                        offer.receive(mime.to_owned(), unsafe {
++                            BorrowedFd::borrow_raw(pipe.write.as_raw_fd())
++                        });
++                        drop(pipe.write);
++                        connection.flush().ok()?;
++                        external_drop::read_pipe(pipe.read, cap)
++                    });
++                    external_drop::submitted(position, contents)
+                 });
+-                drop(state);
+-                drag_window.handle_input(input);
++                state
++                    .common
++                    .foreground_executor
++                    .spawn(async move {
++                        let (paths, event) = read_task.await;
++                        data_offer.finish();
++                        data_offer.destroy();
++                        if let Some(paths) = paths {
++                            drag_window
++                                .handle_input(PlatformInput::FileDrop(FileDropEvent::Exited {}));
++                            drag_window.handle_input(PlatformInput::FileDrop(
++                                FileDropEvent::Entered { position, paths },
++                            ));
++                        }
++                        drag_window.handle_input(PlatformInput::FileDrop(event));
++                    })
++                    .detach();
+             }
+             _ => {}
+         }
+--- a/src/linux/wayland/clipboard.rs
++++ b/src/linux/wayland/clipboard.rs
+@@ -60,7 +60,7 @@
+ /// Wrapper for `WlDataOffer` and `ZwpPrimarySelectionOfferV1`, used to help track mime types.
+ pub(crate) struct DataOffer<T: ReceiveData> {
+     pub inner: T,
+-    mime_types: Vec<String>,
++    pub(super) mime_types: Vec<String>,
+ }
+ 
+ impl<T: ReceiveData> DataOffer<T> {
+--- a/src/linux/x11.rs
++++ b/src/linux/x11.rs
+@@ -1,3 +1,4 @@
++mod external_drop;
+ mod client;
+ mod clipboard;
+ mod display;
+--- a/src/linux/x11/client.rs
++++ b/src/linux/x11/client.rs
+@@ -1,3 +1,4 @@
++use crate::linux::external_drop;
+ use anyhow::{Context as _, anyhow};
+ use ashpd::WindowIdentifier;
+ use calloop::{
+@@ -5,12 +6,9 @@
+     generic::{FdWrapper, Generic},
+ };
+ use collections::HashMap;
+-use core::str;
+ use gpui::{Capslock, profiler};
+ use gpui_util::ResultExt as _;
+-use http_client::Url;
+ use log::Level;
+-use smallvec::SmallVec;
+ use std::{
+     cell::RefCell,
+     collections::{BTreeMap, HashSet},
+@@ -143,8 +141,7 @@
+ #[derive(Debug, Default)]
+ pub struct Xdnd {
+     other_window: xproto::Window,
+-    drag_type: u32,
+-    retrieved: bool,
++    types: Vec<String>,
+     position: Point<Pixels>,
+ }
+ 
+@@ -841,20 +838,37 @@
+                 }
+ 
+                 if event.type_ == state.atoms.XdndEnter {
++                    state.xdnd_state = Xdnd::default();
+                     state.xdnd_state.other_window = atom;
+-                    if (arg1 & 0x1) == 0x1 {
+-                        state.xdnd_state.drag_type = xdnd_get_supported_atom(
+-                            &state.xcb_connection,
+-                            &state.atoms,
+-                            state.xdnd_state.other_window,
+-                        );
++                    let offered: Vec<u32> = if (arg1 & 1) != 0 {
++                        state
++                            .xcb_connection
++                            .get_property(
++                                false,
++                                atom,
++                                state.atoms.XdndTypeList,
++                                AtomEnum::ATOM,
++                                0,
++                                256,
++                            )
++                            .ok()
++                            .and_then(|c| c.reply().ok())
++                            .and_then(|r| r.value32().map(|v| v.collect()))
++                            .unwrap_or_default()
+                     } else {
+-                        if let Some(atom) = [arg2, arg3, arg4]
+-                            .into_iter()
+-                            .find(|atom| xdnd_is_atom_supported(*atom, &state.atoms))
+-                        {
+-                            state.xdnd_state.drag_type = atom;
+-                        }
++                        vec![arg2, arg3, arg4]
++                    };
++                    state.xdnd_state.types = offered
++                        .into_iter()
++                        .filter_map(|atom| xdnd_mime(atom, &state.atoms).map(str::to_owned))
++                        .collect();
++                    let position = state.xdnd_state.position;
++                    let types = state.xdnd_state.types.clone();
++                    drop(state);
++                    if !types.is_empty() {
++                        window.handle_input(PlatformInput::FileDrop(external_drop::entered(
++                            position, &types,
++                        )));
+                     }
+                 } else if event.type_ == state.atoms.XdndLeave {
+                     let position = state.xdnd_state.position;
+@@ -871,81 +885,53 @@
+                         state.xdnd_state.position =
+                             Point::new(px(pos.win_x as f32), px(pos.win_y as f32));
+                     }
+-                    if !state.xdnd_state.retrieved {
+-                        check_reply(
+-                            || "Failed to convert selection for drag and drop",
+-                            state.xcb_connection.convert_selection(
+-                                event.window,
+-                                state.atoms.XdndSelection,
+-                                state.xdnd_state.drag_type,
+-                                state.atoms.XDND_DATA,
+-                                arg3,
+-                            ),
+-                        )
+-                        .log_err();
+-                    }
+                     xdnd_send_status(
+                         &state.xcb_connection,
+                         &state.atoms,
+                         event.window,
+                         state.xdnd_state.other_window,
+-                        arg4,
++                        !state.xdnd_state.types.is_empty(),
+                     );
+                     let position = state.xdnd_state.position;
+                     drop(state);
+                     window
+                         .handle_input(PlatformInput::FileDrop(FileDropEvent::Pending { position }));
+                 } else if event.type_ == state.atoms.XdndDrop {
+-                    xdnd_send_finished(
+-                        &state.xcb_connection,
+-                        &state.atoms,
+-                        event.window,
+-                        state.xdnd_state.other_window,
+-                    );
+-                    let position = state.xdnd_state.position;
+-                    drop(state);
+-                    window
+-                        .handle_input(PlatformInput::FileDrop(FileDropEvent::Submit { position }));
+-                    self.0.borrow_mut().xdnd_state = Xdnd::default();
+-                }
+-            }
+-            Event::SelectionNotify(event) => {
+-                let window = self.get_window(event.requestor)?;
+-                let state = self.0.borrow_mut();
+-                let reply = get_reply(
+-                    || "Failed to get XDND_DATA",
+-                    state.xcb_connection.get_property(
+-                        false,
+-                        event.requestor,
+-                        state.atoms.XDND_DATA,
+-                        AtomEnum::ANY,
+-                        0,
+-                        1024,
+-                    ),
+-                )
+-                .log_err();
+-                let Some(reply) = reply else {
+-                    return Some(());
+-                };
+-                if let Ok(file_list) = str::from_utf8(&reply.value) {
+-                    let paths: SmallVec<[_; 2]> = file_list
+-                        .lines()
+-                        .filter_map(|path| Url::parse(path).log_err())
+-                        .filter_map(|url| match url.to_file_path() {
+-                            Ok(url) => Some(url),
+-                            Err(()) => {
+-                                log::error!("Failed turn {url:?} into a file path");
+-                                None
++                    let drag = std::mem::take(&mut state.xdnd_state);
++                    let read_task = state.common.background_executor.spawn(async move {
++                        let contents =
++                            super::external_drop::receive(drag.other_window, &drag.types, arg2);
++                        external_drop::submitted(drag.position, contents)
++                    });
++                    let client = self.clone();
++                    state
++                        .common
++                        .foreground_executor
++                        .spawn(async move {
++                            let (paths, drop_event) = read_task.await;
++                            let state = client.0.borrow();
++                            xdnd_send_finished(
++                                &state.xcb_connection,
++                                &state.atoms,
++                                event.window,
++                                atom,
++                                paths.is_some() || matches!(&drop_event, FileDropEvent::DataSubmit { data, .. } if !data.types().is_empty()),
++                            );
++                            drop(state);
++                            if let Some(paths) = paths {
++                                window.handle_input(PlatformInput::FileDrop(
++                                    FileDropEvent::Exited {},
++                                ));
++                                window.handle_input(PlatformInput::FileDrop(
++                                    FileDropEvent::Entered {
++                                        position: drag.position,
++                                        paths,
++                                    },
++                                ));
+                             }
++                            window.handle_input(PlatformInput::FileDrop(drop_event));
+                         })
+-                        .collect();
+-                    let input = PlatformInput::FileDrop(FileDropEvent::Entered {
+-                        position: state.xdnd_state.position,
+-                        paths: gpui::ExternalPaths(paths),
+-                    });
+-                    drop(state);
+-                    window.handle_input(input);
+-                    self.0.borrow_mut().xdnd_state.retrieved = true;
++                        .detach();
+                 }
+             }
+             Event::ConfigureNotify(event) => {
+@@ -2288,41 +2274,27 @@
+     supported_atom_ids.contains(&atoms._GTK_FRAME_EXTENTS)
+ }
+ 
+-fn xdnd_is_atom_supported(atom: u32, atoms: &XcbAtoms) -> bool {
+-    atom == atoms.TEXT
+-        || atom == atoms.STRING
+-        || atom == atoms.UTF8_STRING
+-        || atom == atoms.TEXT_PLAIN
+-        || atom == atoms.TEXT_PLAIN_UTF8
+-        || atom == atoms.TextUriList
+-}
+-
+-fn xdnd_get_supported_atom(
+-    xcb_connection: &XCBConnection,
+-    supported_atoms: &XcbAtoms,
+-    target: xproto::Window,
+-) -> u32 {
+-    if let Some(reply) = get_reply(
+-        || "Failed to get XDnD supported atoms",
+-        xcb_connection.get_property(
+-            false,
+-            target,
+-            supported_atoms.XdndTypeList,
+-            AtomEnum::ANY,
+-            0,
+-            1024,
+-        ),
+-    )
+-    .log_with_level(Level::Warn)
+-        && let Some(atoms) = reply.value32()
+-    {
+-        for atom in atoms {
+-            if xdnd_is_atom_supported(atom, supported_atoms) {
+-                return atom;
+-            }
+-        }
+-    }
+-    0
++fn xdnd_mime(atom: u32, atoms: &XcbAtoms) -> Option<&'static str> {
++    // Atom names are interned at startup, never queried synchronously during
++    // a drag. Unknown/private atoms do not cause any selection request.
++    [
++        (atoms.TextUriList, "text/uri-list"),
++        (atoms.TEXT_PLAIN_UTF8, "text/plain;charset=utf-8"),
++        (atoms.UTF8_STRING, "UTF8_STRING"),
++        (atoms.TEXT_PLAIN, "text/plain"),
++        (atoms.DropUtf16, "text/plain;charset=utf-16"),
++        (atoms.DropUtf16Le, "text/plain;charset=utf-16le"),
++        (atoms.DropUtf16Be, "text/plain;charset=utf-16be"),
++        (atoms.DropHtml, "text/html"),
++        (atoms.DropPng, "image/png"),
++        (atoms.DropJpeg, "image/jpeg"),
++        (atoms.DropGif, "image/gif"),
++        (atoms.DropWebp, "image/webp"),
++        (atoms.DropTiff, "image/tiff"),
++    ]
++    .into_iter()
++    .find(|(id, _)| *id == atom)
++    .map(|(_, mime)| mime)
+ }
+ 
+ fn xdnd_send_finished(
+@@ -2330,12 +2302,19 @@
+     atoms: &XcbAtoms,
+     source: xproto::Window,
+     target: xproto::Window,
++    success: bool,
+ ) {
+     let message = ClientMessageEvent {
+         format: 32,
+         window: target,
+         type_: atoms.XdndFinished,
+-        data: ClientMessageData::from([source, 1, atoms.XdndActionCopy, 0, 0]),
++        data: ClientMessageData::from([
++            source,
++            u32::from(success),
++            if success { atoms.XdndActionCopy } else { 0 },
++            0,
++            0,
++        ]),
+         sequence: 0,
+         response_type: xproto::CLIENT_MESSAGE_EVENT,
+     };
+@@ -2352,13 +2331,19 @@
+     atoms: &XcbAtoms,
+     source: xproto::Window,
+     target: xproto::Window,
+-    action: u32,
++    accepted: bool,
+ ) {
+     let message = ClientMessageEvent {
+         format: 32,
+         window: target,
+         type_: atoms.XdndStatus,
+-        data: ClientMessageData::from([source, 1, 0, 0, action]),
++        data: ClientMessageData::from([
++            source,
++            u32::from(accepted),
++            0,
++            0,
++            if accepted { atoms.XdndActionCopy } else { 0 },
++        ]),
+         sequence: 0,
+         response_type: xproto::CLIENT_MESSAGE_EVENT,
+     };
+--- /dev/null
++++ b/src/linux/x11/external_drop.rs
+@@ -0,0 +1,308 @@
++//! XDND selection transfers on a dedicated connection, including INCR.
++use crate::linux::external_drop::{self, TIMEOUT};
++use std::time::Instant;
++use x11rb::{
++    COPY_FROM_PARENT, CURRENT_TIME,
++    connection::Connection,
++    protocol::{
++        Event,
++        xproto::{AtomEnum, ConnectionExt, CreateWindowAux, EventMask, Property, WindowClass},
++    },
++};
++
++pub(super) fn receive(
++    source: u32,
++    types: &[String],
++    timestamp: u32,
++) -> Vec<(gpui::SharedString, Vec<u8>)> {
++    let Ok((conn, screen)) = x11rb::connect(None) else {
++        return Vec::new();
++    };
++    let Ok(window) = conn.generate_id() else {
++        return Vec::new();
++    };
++    let root = conn.setup().roots[screen].root;
++    let result = (|| -> anyhow::Result<_> {
++        conn.create_window(
++            COPY_FROM_PARENT as u8,
++            window,
++            root,
++            0,
++            0,
++            1,
++            1,
++            0,
++            WindowClass::INPUT_ONLY,
++            0,
++            &CreateWindowAux::new().event_mask(EventMask::PROPERTY_CHANGE),
++        )?
++        .check()?;
++        let selection = conn.intern_atom(false, b"XdndSelection")?.reply()?.atom;
++        let property = conn.intern_atom(false, b"GPUI_DROP")?.reply()?.atom;
++        let incr = conn.intern_atom(false, b"INCR")?.reply()?.atom;
++        Ok(external_drop::read_all(types, |mime, cap| {
++            (|| -> anyhow::Result<Vec<u8>> {
++                anyhow::ensure!(
++                    conn.get_selection_owner(selection)?.reply()?.owner == source,
++                    "drag source changed"
++                );
++                let target = conn.intern_atom(false, mime.as_bytes())?.reply()?.atom;
++                conn.convert_selection(
++                    window,
++                    selection,
++                    target,
++                    property,
++                    if timestamp == 0 {
++                        CURRENT_TIME
++                    } else {
++                        timestamp
++                    },
++                )?
++                .check()?;
++                conn.flush()?;
++                let deadline = Instant::now() + TIMEOUT;
++                loop {
++                    if let Event::SelectionNotify(event) = next_event(&conn, deadline)? {
++                        anyhow::ensure!(
++                            event.property == property && event.target == target,
++                            "selection refused"
++                        );
++                        break;
++                    }
++                }
++                let reply = conn
++                    .get_property(
++                        false,
++                        window,
++                        property,
++                        AtomEnum::ANY,
++                        0,
++                        (cap / 4 + 1) as u32,
++                    )?
++                    .reply()?;
++                if reply.type_ != incr {
++                    anyhow::ensure!(
++                        reply.bytes_after == 0 && reply.value.len() <= cap && reply.format == 8,
++                        "oversize or invalid selection"
++                    );
++                    conn.delete_property(window, property)?.check()?;
++                    return Ok(reply.value);
++                }
++                anyhow::ensure!(
++                    reply
++                        .value32()
++                        .and_then(|mut n| n.next())
++                        .is_some_and(|n| n as usize <= cap),
++                    "oversize INCR"
++                );
++                conn.delete_property(window, property)?.check()?;
++                conn.flush()?;
++                let mut bytes = Vec::new();
++                loop {
++                    match next_event(&conn, deadline)? {
++                        Event::PropertyNotify(event)
++                            if event.atom == property && event.state == Property::NEW_VALUE =>
++                        {
++                            let remaining = cap - bytes.len();
++                            let chunk = conn
++                                .get_property(
++                                    true,
++                                    window,
++                                    property,
++                                    AtomEnum::ANY,
++                                    0,
++                                    (remaining / 4 + 1) as u32,
++                                )?
++                                .reply()?;
++                            anyhow::ensure!(
++                                chunk.bytes_after == 0
++                                    && chunk.value.len() <= remaining
++                                    && chunk.format == 8,
++                                "oversize INCR chunk"
++                            );
++                            if chunk.value.is_empty() {
++                                return Ok(bytes);
++                            }
++                            bytes.extend_from_slice(&chunk.value);
++                            conn.flush()?;
++                        }
++                        _ => {}
++                    }
++                }
++            })()
++            .ok()
++        }))
++    })();
++    // Closing this connection also cancels unfinished INCR transfers and frees
++    // the requestor window. Never acknowledge a transfer before its final read.
++    result.unwrap_or_default()
++}
++
++fn next_event(conn: &impl Connection, deadline: Instant) -> anyhow::Result<Event> {
++    loop {
++        anyhow::ensure!(Instant::now() < deadline, "XDND transfer timed out");
++        if let Some(event) = conn.poll_for_event()? {
++            return Ok(event);
++        }
++        std::thread::sleep(std::time::Duration::from_millis(2));
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use x11rb::protocol::xproto::{
++        ChangeWindowAttributesAux, PropMode, SELECTION_NOTIFY_EVENT, SelectionNotifyEvent,
++    };
++    use x11rb::wrapper::ConnectionExt as _;
++
++    #[test]
++    fn external_drop_x11_real_selection_and_incr() {
++        // This is a real selection owner, not an unfired event probe. CI runs
++        // it under Xvfb; missing DISPLAY must fail instead of passing silently.
++        let (_display_guard, _) = x11rb::connect(None).unwrap();
++        for (incremental, oversized) in [(false, false), (true, false), (true, true)] {
++            let (send, recv) = std::sync::mpsc::channel();
++            let (done, wait_done) = std::sync::mpsc::channel();
++            let owner = std::thread::spawn(move || {
++                let (conn, screen) = x11rb::connect(None).unwrap();
++                let window = conn.generate_id().unwrap();
++                conn.create_window(
++                    COPY_FROM_PARENT as u8,
++                    window,
++                    conn.setup().roots[screen].root,
++                    0,
++                    0,
++                    1,
++                    1,
++                    0,
++                    WindowClass::INPUT_ONLY,
++                    0,
++                    &CreateWindowAux::new(),
++                )
++                .unwrap()
++                .check()
++                .unwrap();
++                let selection = conn
++                    .intern_atom(false, b"XdndSelection")
++                    .unwrap()
++                    .reply()
++                    .unwrap()
++                    .atom;
++                let incr = conn
++                    .intern_atom(false, b"INCR")
++                    .unwrap()
++                    .reply()
++                    .unwrap()
++                    .atom;
++                conn.set_selection_owner(window, selection, CURRENT_TIME)
++                    .unwrap()
++                    .check()
++                    .unwrap();
++                conn.flush().unwrap();
++                send.send(window).unwrap();
++                let deadline = Instant::now() + std::time::Duration::from_secs(10);
++                let request = loop {
++                    if let Event::SelectionRequest(r) = next_event(&conn, deadline).unwrap() {
++                        break r;
++                    }
++                };
++                let payload = "one\r\nПривет".as_bytes();
++                if incremental {
++                    conn.change_window_attributes(
++                        request.requestor,
++                        &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE),
++                    )
++                    .unwrap()
++                    .check()
++                    .unwrap();
++                    conn.change_property32(
++                        PropMode::REPLACE,
++                        request.requestor,
++                        request.property,
++                        incr,
++                        &[if oversized {
++                            external_drop::limit("text/plain").unwrap() as u32 + 1
++                        } else {
++                            payload.len() as u32
++                        }],
++                    )
++                    .unwrap()
++                    .check()
++                    .unwrap();
++                } else {
++                    conn.change_property8(
++                        PropMode::REPLACE,
++                        request.requestor,
++                        request.property,
++                        request.target,
++                        payload,
++                    )
++                    .unwrap()
++                    .check()
++                    .unwrap();
++                }
++                conn.send_event(
++                    false,
++                    request.requestor,
++                    EventMask::NO_EVENT,
++                    SelectionNotifyEvent {
++                        response_type: SELECTION_NOTIFY_EVENT,
++                        sequence: 0,
++                        time: request.time,
++                        requestor: request.requestor,
++                        selection: request.selection,
++                        target: request.target,
++                        property: request.property,
++                    },
++                )
++                .unwrap()
++                .check()
++                .unwrap();
++                conn.flush().unwrap();
++                if incremental && !oversized {
++                    for chunk in [payload, &[]] {
++                        loop {
++                            if let Event::PropertyNotify(e) = next_event(&conn, deadline).unwrap()
++                                && e.atom == request.property
++                                && e.state == Property::DELETE
++                            {
++                                break;
++                            }
++                        }
++                        conn.change_property8(
++                            PropMode::REPLACE,
++                            request.requestor,
++                            request.property,
++                            request.target,
++                            chunk,
++                        )
++                        .unwrap()
++                        .check()
++                        .unwrap();
++                        conn.flush().unwrap();
++                    }
++                }
++                wait_done
++                    .recv_timeout(std::time::Duration::from_secs(10))
++                    .unwrap();
++            });
++            let source = recv.recv().unwrap();
++            let got = receive(
++                source,
++                &["text/plain".into(), "application/private".into()],
++                CURRENT_TIME,
++            );
++            if oversized {
++                assert!(got.is_empty());
++            } else {
++                assert_eq!(
++                    got,
++                    vec![("text/plain".into(), "one\r\nПривет".as_bytes().to_vec())]
++                );
++            }
++            done.send(()).unwrap();
++            owner.join().unwrap();
++        }
++    }
++}
+--- a/src/linux/x11/window.rs
++++ b/src/linux/x11/window.rs
+@@ -48,6 +48,15 @@
+         XdndTypeList,
+         XdndActionCopy,
+         TextUriList: b"text/uri-list",
++        DropHtml: b"text/html",
++        DropUtf16: b"text/plain;charset=utf-16",
++        DropUtf16Le: b"text/plain;charset=utf-16le",
++        DropUtf16Be: b"text/plain;charset=utf-16be",
++        DropPng: b"image/png",
++        DropJpeg: b"image/jpeg",
++        DropGif: b"image/gif",
++        DropWebp: b"image/webp",
++        DropTiff: b"image/tiff",
+         UTF8_STRING,
+         TEXT,
+         STRING,
