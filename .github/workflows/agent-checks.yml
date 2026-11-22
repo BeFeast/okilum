@@ -137,16 +137,13 @@ jobs:
         run: |
           python scripts/ci/windows-cored-suites.py
           exit $LASTEXITCODE
-  # The pre-merge gate runs on the build-slot pool (Oleg 20.11); the full
-  # Linux verdict stays on hosted Ubuntu (`linux` below) and the sharded pool
-  # gate runs beside it as the non-gating `linux-pool` (Oleg 21.11).
-  # The job names and the step names the merge rule reads are unchanged.
-  # `runs-on: okilum-pool` is the self-hosted label on the pool coordinator;
-  # the heavy commands execute in a build-slot, not on the GitHub runner.
+  # The exact-head fast gate uses hosted Linux (#3218). The shared phase
+  # script retains every check and deadline, with strict hosted receipts.
+  # Optional full-pool measurements remain independent in linux-pool.
   pre-merge:
     if: ${{ startsWith(github.ref, 'refs/heads/agent-checks-fast/') || github.event_name == 'schedule' }}
-    runs-on: okilum-pool
-    # 15 min queue wait + 30 min pre-merge run. Hosted pre-merge was ~10–15 min.
+    runs-on: ubuntu-24.04
+    # Keep the prior 30 min execution bound inside the unchanged job ceiling.
     timeout-minutes: 50
     env:
       OKILUM_SOURCE_COMMIT: ${{ github.sha }}
@@ -159,11 +156,33 @@ jobs:
         run: |
           test "$(git rev-parse HEAD)" = "$OKILUM_SOURCE_COMMIT"
           printf 'source=%s\nhost=%s\n' "$OKILUM_SOURCE_COMMIT" "$(hostname)"
+          printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Reclaim unused hosted SDKs for Rust artifacts
+        run: sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet /opt/hostedtoolcache/CodeQL
+      - name: Install system libraries
+        timeout-minutes: 10
+        run: |
+          sudo bash scripts/ci/hosted-ubuntu-apt.sh \
+            build-essential cmake pkg-config curl git mold zstd python3-venv gnupg gpgv tini ffmpeg libheif-examples libheif-plugin-libde265 \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev squashfs-tools
+      - name: Restore Rust downloads and target cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+            vendor/gpui-component/
+            vendor/comrak-0.47.0/
+          key: agent-fast-hosted-v1-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            agent-v1-${{ runner.os }}-
       - name: Prepare isolated Python test dependencies
         run: bash scripts/ci/setup-python-tests.sh
-      - name: Dispatch pre-merge gate to the build-slot pool
+      - name: Run pre-merge gate on hosted Linux
         id: pool
-        run: bash scripts/ci/pool-dispatch.sh pre-merge
+        run: python3 scripts/ci/hosted-pre-merge.py
       - name: Prepare and verify pinned vendor and comrak
         if: steps.pool.outputs.kind == 'verdict'
         run: bash scripts/ci/pool-phase.sh "Prepare and verify pinned vendor and comrak"
@@ -185,9 +204,9 @@ jobs:
       - name: Check release binaries without test features
         if: steps.pool.outputs.kind == 'verdict'
         run: bash scripts/ci/pool-phase.sh "Check release binaries without test features"
-      # Every shard and every recorded phase, including phases without their own
-      # step above and a phase one shard skipped after an earlier failure.
-      - name: Verify every pool shard and phase passed
+      # Every recorded phase, including phases without their own step above
+      # and phases skipped after an earlier failure.
+      - name: Verify every pre-merge phase passed
         if: steps.pool.outputs.kind == 'verdict'
         run: bash scripts/ci/pool-phase.sh --overall
   linux:

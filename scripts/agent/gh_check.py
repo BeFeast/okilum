@@ -19,6 +19,7 @@ INFRA_STEPS = {
     "Fetch locked public dependencies", "Save Rust downloads and target cache",
     "Prepare isolated Python test dependencies",
     "Dispatch pre-merge gate to the build-slot pool",
+    "Run pre-merge gate on hosted Linux",
     "Dispatch Linux full gate to the build-slot pool",
     "Restore Windows core cache", "Preserve vendor patch line endings",
 }
@@ -45,7 +46,7 @@ FAST_REQUIRED = {"Prepare and verify pinned vendor and comrak", "Check formattin
                  "Verify agent helper controls", "Run CI, releases and updater Python suites",
                  "Verify bundled Sync Help and brand", "Lint every workspace target offline",
                  "Check release binaries without test features",
-                 "Verify every pool shard and phase passed"}
+                 "Verify every pre-merge phase passed"}
 
 
 def fast_verdict(info):

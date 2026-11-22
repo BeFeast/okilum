@@ -306,9 +306,9 @@ class VerdictTests(unittest.TestCase):
 
     def test_positive_control_all_required_checks_pass(self):
         self.assertEqual(helper.verdict(receipt(), SHA), 0)
-        # The pool's overall shard check gates pre-merge only; hosted `linux`
-        # decides the full verdict and has no pool steps (Oleg 21.11).
-        self.assertIn('Verify every pool shard and phase passed', helper.FAST_REQUIRED)
+        # Every fast phase needs a successful receipt; hosted `linux` decides
+        # the full verdict and does not use fast phase reporters.
+        self.assertIn('Verify every pre-merge phase passed', helper.FAST_REQUIRED)
         self.assertEqual(helper.verdict(receipt(), SHA, benchmark=True), 75)
         info = receipt()
         info['jobs'][0]['steps'] += [dict(name=n, conclusion='success') for n in (
@@ -427,14 +427,16 @@ class VerdictTests(unittest.TestCase):
         self.assertIs(jobs["linux-pool"]["continue-on-error"], True)
         steps = jobs["pre-merge"]["steps"]
         self.assertTrue(helper.FAST_REQUIRED <= {s.get("name") for s in steps})
-        self.assertEqual(jobs["pre-merge"]["runs-on"], "okilum-pool")
+        self.assertEqual(jobs["pre-merge"]["runs-on"], "ubuntu-24.04")
         # Hosted Ubuntu decides the full verdict until a pool run is green in
         # <= 20 min (Oleg 21.11); the sharded pool gate runs as `linux-pool`.
         self.assertEqual(jobs["linux"]["runs-on"], "ubuntu-24.04")
         self.assertEqual(jobs["linux-pool"]["runs-on"], "okilum-pool")
         self.assertNotIn("pool-dispatch.sh", yaml.dump(jobs["linux"]))
-        # The commands run in the pool scripts. GitHub steps only report phases,
-        # so a hosted Actions cache is neither saved nor required here.
+        # The SAME commands run directly on the hosted runner through the
+        # shared phase script. No build-slot dispatch is reachable here.
+        self.assertNotIn("pool-dispatch.sh", yaml.dump(jobs["pre-merge"]))
+        self.assertIn("hosted-pre-merge.py", yaml.dump(jobs["pre-merge"]))
         script = (ROOT / "scripts/ci/pool-pre-merge.sh").read_text()
         self.assertIn("cargo clippy --workspace --all-targets --locked -- -D warnings", script)
         check = next(line.strip() for line in script.splitlines()
@@ -444,7 +446,7 @@ class VerdictTests(unittest.TestCase):
             for heavy in ("cargo build", "cargo test", "cargo run", "nextest",
                           "at-vault-regression-control", "linux-rust-tests"):
                 self.assertNotIn(heavy, blob)
-        for job_name in ("pre-merge", "linux-pool"):
+        for job_name in ("linux-pool",):
             dumped = yaml.dump(jobs[job_name])
             self.assertNotIn("actions/cache", dumped)
             self.assertNotIn("hosted-ubuntu-apt", dumped)
