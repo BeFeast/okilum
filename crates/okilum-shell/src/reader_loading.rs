@@ -1500,6 +1500,55 @@ pub(crate) struct PendingDocument {
     staged_at: std::time::Instant,
 }
 
+/// Saved Source, or Settings → Editor → Open notes in → Edit (#2817).
+fn note_opens_in_source(root: &Path, rel: &str, cx: &App) -> bool {
+    if !rel.to_ascii_lowercase().ends_with(".md") {
+        return false;
+    }
+    if reader_ui_state::layout(root, cx).is_some_and(|(saved, _)| saved.source) {
+        return true;
+    }
+    reader_ui_state::note_open_mode(cx) == reader_ui_state::NoteOpenMode::Edit
+}
+
+#[cfg(test)]
+mod source_open_probe {
+    use std::cell::Cell;
+
+    thread_local! {
+        static HELD: Cell<u32> = const { Cell::new(0) };
+        static SHOWN_BEFORE_PREVIEW: Cell<bool> = const { Cell::new(false) };
+        static UI_MS: Cell<f64> = const { Cell::new(f64::NAN) };
+    }
+
+    pub(super) fn reset() {
+        HELD.with(|held| held.set(0));
+        SHOWN_BEFORE_PREVIEW.with(|shown| shown.set(false));
+        UI_MS.with(|ui_ms| ui_ms.set(f64::NAN));
+    }
+
+    pub(super) fn hold() {
+        HELD.with(|held| held.set(held.get() + 1));
+    }
+
+    pub(super) fn shown(before_preview: bool, ui_ms: f64) {
+        SHOWN_BEFORE_PREVIEW.with(|shown| shown.set(before_preview));
+        UI_MS.with(|slot| slot.set(ui_ms));
+    }
+
+    pub(super) fn held() -> u32 {
+        HELD.with(|held| held.get())
+    }
+
+    pub(super) fn shown_before_preview() -> bool {
+        SHOWN_BEFORE_PREVIEW.with(|shown| shown.get())
+    }
+
+    pub(super) fn ui_ms() -> f64 {
+        UI_MS.with(|ui_ms| ui_ms.get())
+    }
+}
+
 impl Reader {
     #[allow(clippy::too_many_arguments)] // One atomic document/inventory publication.
     fn stage_first_document(
@@ -1598,16 +1647,62 @@ impl Reader {
         self.publish_pending_document(window, cx);
     }
 
-    pub(super) fn publish_pending_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(status) = self
-            .pane
-            .pending_open_document
-            .as_ref()
-            .and_then(|pending| pending.content.read(cx).preparation_status())
-        else {
+    /// The heading scan stays on the worker. An empty outline stands in until
+    /// it finishes, so publication does not scan a long note on the UI thread.
+    fn defer_preview_outline(&mut self, cx: &mut Context<Self>) {
+        let Some(pending) = self.pane.pending_open_document.as_mut() else {
             return;
         };
-        if status.is_ok() {
+        if pending.document.outline.is_some() {
+            return;
+        }
+        pending.document.outline = Some(Vec::new());
+        let Some(task) = pending.outline_task.take() else {
+            return;
+        };
+        let rel = pending.rel.clone();
+        cx.spawn(async move |this, cx| {
+            let outline = task.await;
+            let _ = this.update(cx, |this, cx| {
+                let Some((outline, _)) = outline else {
+                    return;
+                };
+                if this.pane.current_rel != rel {
+                    return;
+                }
+                this.pane.outline = outline;
+                if this.pane.editing.is_none() {
+                    this.outline_list.reset_with_uniform_height(
+                        this.pane.outline.len(),
+                        px(super::OUTLINE_ROW_HEIGHT),
+                    );
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn publish_pending_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pending) = self.pane.pending_open_document.as_ref() else {
+            return;
+        };
+        let status = pending.content.read(cx).preparation_status();
+        // Source does not need the hidden Reader preview. A 10 MiB note's
+        // parse is about a second and was the rest of the open after the UI
+        // freeze was fixed (#3073). Publish the editor while that parse runs.
+        let source_first = status.is_none()
+            && !self.pane.use_html
+            && note_opens_in_source(&pending.intent.root, &pending.rel, cx);
+        if status.is_none() && !source_first {
+            #[cfg(test)]
+            source_open_probe::hold();
+            return;
+        }
+        if source_first {
+            self.defer_preview_outline(cx);
+        }
+        if status.as_ref().is_some_and(|status| status.is_ok()) {
             let pane = self.pane.id();
             let trace = self
                 .loading
@@ -1688,7 +1783,7 @@ impl Reader {
         let Some(pending) = self.pane.pending_open_document.take() else {
             return;
         };
-        if let Err(error) = status {
+        if let Some(Err(error)) = status {
             if let Some(load) = &mut self.loading {
                 load.phase = error;
                 load.active = false;
@@ -1809,6 +1904,31 @@ impl Reader {
         }
         if !preserve_document {
             self.restore_ui_state(window, cx);
+        }
+        if source_first && !preserve_document {
+            let started = std::time::Instant::now();
+            self.restore_ui_source(window, cx);
+            let ui_ms = started.elapsed().as_secs_f64() * 1000.;
+            #[cfg(test)]
+            source_open_probe::shown(
+                self.pane.editing.is_some()
+                    && self.pane.content.read(cx).preparation_status().is_none(),
+                ui_ms,
+            );
+            if let Some(trace) = self
+                .loading
+                .as_ref()
+                .and_then(|load| load.opts.diagnostics.clone())
+            {
+                trace.event(
+                    "source_before_preview",
+                    serde_json::json!({
+                        "ui_ms": ui_ms,
+                        "bytes": self.pane.note_source.len(),
+                        "editing": self.pane.editing.is_some(),
+                    }),
+                );
+            }
         }
         reader_open_windows::record_soon(cx);
         let first_link = self
@@ -9288,5 +9408,138 @@ mod quick_view_tests {
             None
         );
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// #3073: Source is usable before the hidden Reader preview finishes, and
+    /// showing it stays inside the 100 ms frame and 1 s open budgets. Read
+    /// still waits for that parse. The note is past the synchronous parse
+    /// threshold, so a wait would show up as `held`.
+    #[gpui::test]
+    fn issue3073_saved_source_opens_before_the_hidden_preview_parse(cx: &mut TestAppContext) {
+        issue3073_open_surface(cx, Issue3073Surface::SavedSource);
+    }
+
+    #[gpui::test]
+    fn issue3073_default_edit_opens_before_the_hidden_preview_parse(cx: &mut TestAppContext) {
+        issue3073_open_surface(cx, Issue3073Surface::DefaultEdit);
+    }
+
+    #[gpui::test]
+    fn issue3073_read_mode_still_waits_for_the_hidden_preview_parse(cx: &mut TestAppContext) {
+        issue3073_open_surface(cx, Issue3073Surface::Read);
+    }
+
+    #[derive(Clone, Copy)]
+    enum Issue3073Surface {
+        Read,
+        SavedSource,
+        DefaultEdit,
+    }
+
+    fn issue3073_open_surface(cx: &mut TestAppContext, surface: Issue3073Surface) {
+        const UI_FRAME_MS: f64 = 100.;
+        const USABLE_OPEN_MS: f64 = 1_000.;
+        super::source_open_probe::reset();
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        std::fs::create_dir_all(&root).unwrap();
+        let body = format!(
+            "# Note\n\nSOURCE3073 sentinel\n\n{}",
+            "A paragraph long enough that the hidden preview parses off the UI thread.\n"
+                .repeat(80)
+        );
+        assert!(
+            body.len() > 4 * 1024,
+            "positive control: this note's preview parse is asynchronous"
+        );
+        std::fs::write(root.join("note.md"), &body).unwrap();
+        let root = root.canonicalize().unwrap();
+        let directory = fixture.path().join("state");
+        cx.update(|cx| {
+            crate::test_init(cx);
+            bind_keys(cx);
+            crate::reader_ui_state::install(&directory, cx);
+            let saved = crate::reader_ui_state::Layout {
+                note: "note.md".into(),
+                source: matches!(surface, Issue3073Surface::SavedSource),
+                ..crate::reader_ui_state::Layout::default()
+            };
+            crate::reader_ui_state::record(&root, saved, true, cx);
+            if matches!(surface, Issue3073Surface::DefaultEdit) {
+                crate::reader_ui_state::set_note_open_mode(
+                    crate::reader_ui_state::NoteOpenMode::Edit,
+                    cx,
+                );
+            }
+            crate::reader_ui_state::flush(cx);
+            crate::reader_ui_state::install(&directory, cx);
+        });
+        let (_release, hold) = async_channel::bounded(1);
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("note.md".into()),
+                        preparation_hold: Some(hold),
+                        session_directory: Some(directory.clone()),
+                        index_dir: Some(fixture.path().join("index")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, cx| match surface {
+            Issue3073Surface::Read => {
+                assert!(
+                    super::source_open_probe::held() > 0,
+                    "positive control: Read publication waited for the preview"
+                );
+                assert!(!super::source_open_probe::shown_before_preview());
+                assert!(reader.pane.editing.is_none());
+                assert!(reader.document_ready());
+                assert_eq!(
+                    reader.pane.content.read(cx).preparation_status(),
+                    Some(Ok(()))
+                );
+                assert!(reader.pane.note_source.contains("SOURCE3073 sentinel"));
+            }
+            Issue3073Surface::SavedSource | Issue3073Surface::DefaultEdit => {
+                assert_eq!(
+                    super::source_open_probe::held(),
+                    0,
+                    "Source must not wait out the hidden preview parse"
+                );
+                assert!(
+                    super::source_open_probe::shown_before_preview(),
+                    "Source is showing while the preview is still parsing"
+                );
+                let editing = reader.pane.editing.as_ref().expect("Source is usable");
+                assert!(
+                    editing
+                        .input()
+                        .read(cx)
+                        .value()
+                        .contains("SOURCE3073 sentinel"),
+                    "the opened note is the one on screen"
+                );
+                let ui_ms = super::source_open_probe::ui_ms();
+                assert!(
+                    ui_ms < UI_FRAME_MS,
+                    "showing Source took {ui_ms} ms; the UI frame budget is {UI_FRAME_MS} ms"
+                );
+                assert!(
+                    ui_ms < USABLE_OPEN_MS,
+                    "showing Source took {ui_ms} ms; the usable-open budget is {USABLE_OPEN_MS} ms"
+                );
+            }
+        });
     }
 }

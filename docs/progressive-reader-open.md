@@ -6,9 +6,12 @@ Folder discovery follows the shared Vault inclusion rules and stops at the first
 readable Markdown file without completing or sorting the inventory.
 
 The first document is prepared separately. Its TextView parses as a candidate while
-the previous root, content, history and focus remain active. The candidate is
-published only after TextView reports successful preparation of both source and
-Reader parser configuration. Preparation readiness follows the accepted parse
+the previous root, content, history and focus remain active. Read publishes the
+candidate only after TextView reports successful preparation of both source and
+Reader parser configuration. Source (a saved Source session, or Settings → Editor
+→ Open notes in → Edit) publishes the editor before that hidden preview parse
+finishes; the parse continues, and Read uses it when it is ready. The heading
+scan stays off the UI thread either way. Preparation readiness follows the accepted parse
 revision, so equal text cannot acknowledge a pending configuration parse. Acknowledging that
 publication releases the remaining inventory/backlinks/search worker. Empty roots
 are terminal prepublication outcomes: they retain the old Reader and do not
