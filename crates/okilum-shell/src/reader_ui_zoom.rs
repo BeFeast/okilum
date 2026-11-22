@@ -32,18 +32,26 @@ pub(crate) fn install(cx: &mut App) {
     ]);
 }
 
-/// Capture Cmd/Ctrl+Shift+wheel for the whole window, including chrome.
-pub(crate) fn watch(window: &mut Window) {
-    window.on_mouse_event(|event: &ScrollWheelEvent, phase, _, cx| {
-        if phase != DispatchPhase::Capture || !chord(event.modifiers) {
-            return;
-        }
-        let steps = wheel_steps(event.delta);
-        if steps != 0. {
-            change(steps, cx);
-        }
-        cx.stop_propagation();
-    });
+/// A paint-only layer. `Window::on_mouse_event` is legal only during paint,
+/// so the listener is registered from a canvas instead of from `render`.
+pub(crate) fn layer() -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        |_, _, window, _| {
+            window.on_mouse_event(|event: &ScrollWheelEvent, phase, _, cx| {
+                if phase != DispatchPhase::Capture || !chord(event.modifiers) {
+                    return;
+                }
+                let steps = wheel_steps(event.delta);
+                if steps != 0. {
+                    change(steps, cx);
+                }
+                cx.stop_propagation();
+            });
+        },
+    )
+    .absolute()
+    .size(px(0.))
 }
 
 /// Keep a popup inside the zoomed window. A menu taller than the viewport

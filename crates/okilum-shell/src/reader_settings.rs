@@ -2147,7 +2147,6 @@ impl Settings {
 }
 impl Render for Settings {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        reader_ui_zoom::watch(window);
         if !self.section.available(cx) {
             self.section = Section::Features;
         }
@@ -2314,6 +2313,7 @@ impl Render for Settings {
         let p = brand::palette(cx);
         let body = self.body(window, cx);
         let content = h_flex()
+            .child(reader_ui_zoom::layer())
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if reader_keymap::is_recording(window, cx) {
                     return;

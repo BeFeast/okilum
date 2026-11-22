@@ -8282,7 +8282,6 @@ impl Render for Reader {
         let _render_timing =
             platform::text_diagnostics::time(platform::text_diagnostics::Work::UiRender);
         platform::shaped_line_cache::ShapedLineCache::note_scale_factor(window, cx);
-        reader_ui_zoom::watch(window);
         if self.toast_subscription.is_none() {
             let notifications = Root::read(window, cx).notification.clone();
             self.toast_subscription = Some(cx.observe(&notifications, |_, _, cx| cx.notify()));
@@ -8614,6 +8613,7 @@ impl Reader {
             .min_w_0()
             .min_h_0()
             .relative()
+            .child(reader_ui_zoom::layer())
             .key_context(
                 if self.file_editor_active() && !self.quick_open.open && !self.shortcut_sheet.open {
                     "Reader ReaderCode ReaderFileEdit"
