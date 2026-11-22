@@ -78,7 +78,10 @@ fn metadata(window: &Window) -> Metadata {
             .then(|| std::env::var("XDG_CURRENT_DESKTOP").ok())
             .flatten(),
         arch: std::env::consts::ARCH.into(),
-        scale: backing_scale(native_backing_scale(window), window.display_scale()),
+        scale: backing_scale(
+            native_backing_scale(window),
+            window.scale_factor() / window.ui_scale(),
+        ),
         window_width: window.bounds().size.width.into(),
         window_height: window.bounds().size.height.into(),
         decorations: match window.window_decorations() {

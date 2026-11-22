@@ -107,6 +107,7 @@ fn change_to(scale: f32, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::prelude::v1::test;
 
     struct RestoreScale;
     impl Drop for RestoreScale {
