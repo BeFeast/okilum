@@ -253,6 +253,7 @@ mod reader_tree_preview;
 mod reader_tree_rules;
 mod reader_typed_view;
 mod reader_ui_state;
+mod reader_ui_zoom;
 mod reader_untitled;
 mod reader_update_restart;
 mod reader_welcome;
@@ -576,6 +577,11 @@ pub(crate) fn view_menu(cx: &App) -> Menu {
             MenuItem::action("Zoom Out", reader_text_zoom::ZoomOut),
             MenuItem::action("Actual Size", reader_text_zoom::Reset),
             MenuItem::separator(),
+            MenuItem::action("Zoom Interface In", reader_ui_zoom::ZoomIn),
+            MenuItem::action("Zoom Interface Out", reader_ui_zoom::ZoomOut),
+            MenuItem::action("Actual Interface Size", reader_ui_zoom::Reset)
+                .checked(reader_ui_state::ui_scale(cx) == 1.),
+            MenuItem::separator(),
             MenuItem::action("Now / Tree", ToggleLeftMode),
             MenuItem::action("Split View", ToggleSplit),
             MenuItem::action("Focus Other Pane", FocusOtherPane),
@@ -636,6 +642,7 @@ fn bind_keys(cx: &mut App) {
     ]);
     project_terminal::bind_keys(cx);
     reader_text_zoom::bind_keys(cx);
+    reader_ui_zoom::install(cx);
     reader_editor::format::bind_keys(cx);
     reader_title_nav::bind_menu_keys(cx);
     quick_open::bind_palette_keys(cx);
@@ -7612,7 +7619,10 @@ fn reader_more_menu(
     let current = cx.try_global::<AppearancePreference>().and_then(|p| p.0);
     reader_icon_button("reader-more", IconName::Ellipsis, "More", cx)
         .debug_selector(|| "reader-more".into())
-        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
+        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, window, cx| {
+            let menu = menu
+                .scrollable(true)
+                .max_h(reader_ui_zoom::menu_limit(window));
             let appearance = |label: &'static str, mode: Option<ThemeMode>| {
                 let vault = vault.clone();
                 PopupMenuItem::new(label)
@@ -8272,6 +8282,7 @@ impl Render for Reader {
         let _render_timing =
             platform::text_diagnostics::time(platform::text_diagnostics::Work::UiRender);
         platform::shaped_line_cache::ShapedLineCache::note_scale_factor(window, cx);
+        reader_ui_zoom::watch(window);
         if self.toast_subscription.is_none() {
             let notifications = Root::read(window, cx).notification.clone();
             self.toast_subscription = Some(cx.observe(&notifications, |_, _, cx| cx.notify()));

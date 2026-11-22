@@ -98,9 +98,12 @@ Items are enabled only while a note editor has focus.
 
 | Label | Action | Mac | Win / Linux | Condition | Source |
 |---|---|---|---|---|---|
-| Zoom In | `reader_text_zoom::ZoomIn` | ⌘+ shown (⌘= and ⇧⌘= also bound) | Ctrl++ / Ctrl+Shift+= / Ctrl+= | | `:556` (`reader_text_zoom.rs:45-47`) |
-| Zoom Out | `ZoomOut` | ⌘- | Ctrl+- | | `:557` |
-| Actual Size | `reader_text_zoom::Reset` | ⌘0 | Ctrl+0 | | `:558` |
+| Zoom In | `reader_text_zoom::ZoomIn` | ⌘+ shown (⌘= also bound) | Ctrl++ / Ctrl+= | | note text only; Shift+= is interface zoom |
+| Zoom Out | `ZoomOut` | ⌘- | Ctrl+- | | |
+| Actual Size | `reader_text_zoom::Reset` | ⌘0 | Ctrl+0 | | |
+| Zoom Interface In | `reader_ui_zoom::ZoomIn` | ⇧⌘= | Ctrl+Shift+= | | whole UI, 10% steps, 50–200% (#2848) |
+| Zoom Interface Out | `reader_ui_zoom::ZoomOut` | ⇧⌘- | Ctrl+Shift+- | | |
+| Actual Interface Size | `reader_ui_zoom::Reset` | ⇧⌘0 | Ctrl+Shift+0 | checked at 100% | |
 | — | | | | | `:559` |
 | Now / Tree | `ToggleLeftMode` | ⌘\| (⇧⌘\\) | Ctrl+Shift+\\ (also Ctrl+\|) | | `:560` (`main.rs:860-872`) |
 | Reveal in Tree | `FocusCurrentFolder` | ⇧⌘L | Ctrl+Shift+L | | `:561` |

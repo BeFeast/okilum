@@ -41,9 +41,9 @@ thread_local! {
 pub(crate) fn bind_keys(cx: &mut App) {
     let context = Some("Reader");
     // GPUI menus show the last binding of an action: ⌘= / Ctrl+= stays last.
+    // Shift+= is the interface zoom (#2848), not note text.
     cx.bind_keys([
         KeyBinding::new("secondary-+", ZoomIn, context),
-        KeyBinding::new("secondary-shift-=", ZoomIn, context),
         KeyBinding::new("secondary-=", ZoomIn, context),
         KeyBinding::new("secondary--", ZoomOut, context),
         KeyBinding::new("secondary-0", Reset, context),
@@ -1457,6 +1457,9 @@ mod tests {
             ("Zoom In", ZoomIn.name()),
             ("Zoom Out", ZoomOut.name()),
             ("Actual Size", Reset.name()),
+            ("Zoom Interface In", reader_ui_zoom::ZoomIn.name()),
+            ("Zoom Interface Out", reader_ui_zoom::ZoomOut.name()),
+            ("Actual Interface Size", reader_ui_zoom::Reset.name()),
         ] {
             assert!(
                 actions.contains(&(label.to_string(), action.to_string())),
@@ -1481,6 +1484,18 @@ mod tests {
             assert_eq!(shown(&ZoomIn), Some(format!("{secondary}-=")));
             assert_eq!(shown(&ZoomOut), Some(format!("{secondary}--")));
             assert_eq!(shown(&Reset), Some(format!("{secondary}-0")));
+            assert_eq!(
+                shown(&reader_ui_zoom::ZoomIn),
+                Some(format!("{secondary}-shift-="))
+            );
+            assert_eq!(
+                shown(&reader_ui_zoom::ZoomOut),
+                Some(format!("{secondary}-shift--"))
+            );
+            assert_eq!(
+                shown(&reader_ui_zoom::Reset),
+                Some(format!("{secondary}-shift-0"))
+            );
         });
         // A menu item dispatches its action to the focused Reader.
         reader.update_in(visual, |reader, window, cx| {

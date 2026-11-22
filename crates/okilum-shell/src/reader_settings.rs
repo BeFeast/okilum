@@ -2147,6 +2147,7 @@ impl Settings {
 }
 impl Render for Settings {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        reader_ui_zoom::watch(window);
         if !self.section.available(cx) {
             self.section = Section::Features;
         }

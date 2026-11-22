@@ -183,8 +183,25 @@ pub const PANEL_MIN_WIDTH: f32 = 200.;
 pub const DOCUMENT_MIN_WIDTH: f32 = 480.;
 pub const DOCK_MIN_WIDTH: f32 = 1000.;
 
+std::thread_local! {
+    /// One application UI zoom. Layout compares the GPUI viewport against the
+    /// dock minimum in OS logical pixels, so zooming the interface does not
+    /// turn a wide window into the compact overlay (#2848).
+    static UI_SCALE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.) };
+}
+
+pub(crate) fn note_ui_scale(scale: f32) {
+    let scale = if scale.is_finite() && scale > 0. {
+        scale
+    } else {
+        1.
+    };
+    UI_SCALE.set(scale);
+}
+
 pub fn overlay(width: f32) -> bool {
-    width < DOCK_MIN_WIDTH
+    let scale = UI_SCALE.get();
+    width * scale < DOCK_MIN_WIDTH
 }
 
 /// Preferred sizes are independent of transient viewport clamps.

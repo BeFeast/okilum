@@ -72,6 +72,7 @@ Merging (manager, 13.11):
 - Exception (Oleg, 2026-11-12 09:05 Israel): the separately reviewed `gpui-pre-windows` DirectX atlas-upload vendor patch is allowed; core, editor, shaping, thresholds and stack reserve stay unchanged.
 - Approved (Oleg, 2026-11-13, #2825): the two cold first-window macOS patches, `gpui-pre-macos` (no `tabGroup` query without tabbing) and `gpui-pre-apple` (Metal library/pipelines built once off the main thread), pinned by `scripts/gpui-pre-apple-setup.py`; see `docs/upstream/gpui-pre-macos-first-window.md`.
 - Approved (Oleg, 2026-11-17, #1615): external drops of text, HTML, RTF, URLs and image data, `gpui-pre` (`ExternalData`, `FileDropEvent::DataEntered`/`DataSubmit`) and `gpui-pre-macos` (data drag types, contents read at the drop), macOS first; see `docs/upstream/gpui-external-data-drops.md`.
+- Approved (Oleg, 2026-11-12 approach, implementation started 2026-11-22, #2848): application UI scale on `gpui-pre` (`App::set_ui_scale`, logical viewport and pointer coordinates divided by the zoom, outgoing native rectangles multiplied back); see `docs/upstream/gpui-ui-scale.md`.
 - Keep the patch set small and upstream it to `longbridge/gpui-kit`.
 
 ### Tests and measurements

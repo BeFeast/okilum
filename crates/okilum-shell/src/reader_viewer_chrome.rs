@@ -1574,7 +1574,11 @@ fn window_slot(
                         )
                         .menu("Zoom in", Box::new(reader_text_zoom::ZoomIn))
                         .menu("Zoom out", Box::new(reader_text_zoom::ZoomOut))
-                        .menu("Actual size", Box::new(reader_text_zoom::Reset));
+                        .menu("Actual size", Box::new(reader_text_zoom::Reset))
+                        .separator()
+                        .menu("Zoom Interface In", Box::new(reader_ui_zoom::ZoomIn))
+                        .menu("Zoom Interface Out", Box::new(reader_ui_zoom::ZoomOut))
+                        .menu("Actual Interface Size", Box::new(reader_ui_zoom::Reset));
                 }
                 // Keeps this file in the pinned row; last before Trash, as in
                 // the note menu (#2789).

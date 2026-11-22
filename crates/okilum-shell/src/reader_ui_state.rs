@@ -137,6 +137,10 @@ struct Saved {
     note_font: String,
     code_font: String,
     text_zoom: f32,
+    /// Whole-interface zoom, independent of note text zoom and of the display
+    /// scale (#2848). Missing in older state, which stays at 100%.
+    #[serde(default = "default_ui_scale")]
+    ui_scale: f32,
     reading_width: f32,
     /// The note column spans the whole note pane instead of the reading
     /// width; one app-wide toggle, kept with the reading width.
@@ -238,6 +242,7 @@ impl Default for Saved {
             note_font: brand::SANS_FONT.into(),
             code_font: brand::MONO_FONT.into(),
             text_zoom: 1.,
+            ui_scale: 1.,
             reading_width: READER_MAX_WIDTH,
             full_note_width: false,
             find_case_sensitive: false,
@@ -447,6 +452,9 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         serial: Arc::default(),
         pending: None,
     });
+    let scale = ui_scale(cx);
+    super::reader_layout::note_ui_scale(scale);
+    cx.set_ui_scale(scale);
     cx.on_app_quit(|cx| {
         let readers = cx.global::<Store>().readers.clone();
         for reader in readers {
@@ -725,6 +733,7 @@ impl WriteJob {
         }
         if self.zoom_changed {
             latest.text_zoom = self.saved.text_zoom;
+            latest.ui_scale = self.saved.ui_scale;
         }
         if self.font_changed {
             latest.font_size = self.saved.font_size;
@@ -2304,6 +2313,43 @@ pub(crate) fn text_zoom(cx: &App) -> f32 {
         }
     })
 }
+fn default_ui_scale() -> f32 {
+    1.
+}
+
+fn ui_scale_value(scale: f32) -> f32 {
+    if scale.is_finite() {
+        ((scale * 10.).round() / 10.).clamp(0.5, 2.)
+    } else {
+        1.
+    }
+}
+
+/// Whole-interface zoom, 50–200% in 10% steps. Independent of note text zoom.
+pub(crate) fn ui_scale(cx: &App) -> f32 {
+    cx.try_global::<Store>()
+        .map_or(1., |state| ui_scale_value(state.saved.ui_scale))
+}
+
+/// Returns whether the stored zoom changed. Also tells GPUI and the layout
+/// breakpoint, so every window and the dock decision follow.
+pub(crate) fn set_ui_scale(scale: f32, cx: &mut App) -> bool {
+    if !scale.is_finite() || !installed(cx) {
+        return false;
+    }
+    let scale = ui_scale_value(scale);
+    let state = cx.global_mut::<Store>();
+    if state.saved.ui_scale == scale {
+        return false;
+    }
+    state.saved.ui_scale = scale;
+    state.zoom_changed = true;
+    schedule(cx);
+    super::reader_layout::note_ui_scale(scale);
+    cx.set_ui_scale(scale);
+    true
+}
+
 pub(crate) fn set_text_zoom(zoom: f32, cx: &mut App) {
     if !zoom.is_finite() || !installed(cx) {
         return;
@@ -2632,6 +2678,7 @@ mod tests {
         assert_eq!(upgraded.appearance, "dark");
         assert_eq!(upgraded.font_size, 19.);
         assert_eq!(upgraded.text_zoom, 1.25);
+        assert_eq!(upgraded.ui_scale, 1.);
         assert_eq!(upgraded.reading_width, 960.);
         assert!(upgraded.toolbar_labels);
     }
