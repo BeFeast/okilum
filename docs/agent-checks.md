@@ -24,16 +24,22 @@ slots (Oleg 21.11: 4–6 shards, PR gate tickets first in build-slot, target
 ≤ 20 minutes for the verdict). `pool-dispatch.sh linux-full` starts one
 `build-slot run --priority critical` per shard; the nightly scheduled run on
 `main` uses normal priority. Host capabilities come from the build-slot
-coordinator (`--needs`):
+coordinator (`--needs`). A critical ticket skips the `--host` preference
+delay, so every shard is pinned with `--require-host` within each host's
+memory budget. Managed admission and Sync source sharing stay off ZFS
+okilum-build-nas, where managed admission overran its 600 s deadline; the
+desktop shard there still pairs through a real Syncthing. Each shard runs with umask 022 and its own `XDG_STATE_HOME` and
+`XDG_DATA_HOME`, as on a fresh hosted runner (`pool_hosted_env`): a pool host
+keeps one account across runs.
 
-| Shard | Needs | Phases |
-|---|---|---|
-| `base` | `docker` | AppImage runtime image, helper controls, CI/releases/updater Python suites, Sync Help and brand, managed admission crash checkpoints |
-| `admission` | `tmpfs` | managed admission `remaining-0` and the negative controls, real disk-full transfer (private tmpfs) |
-| `sync` | — | Sync source sharing, managed admission `remaining-1`, local writer authority |
-| `desktop` | `dbus` | workspace clippy, `cargo fmt --check` and desktop build, pairing through `okilum sync serve`, reveal stress, vault regression controls |
-| `rust-a` | `userbus`, `dbus` | `okilum-core` suite, Linux Rust groups outside the workspace census |
-| `rust-b` | `userbus`, `dbus` | Linux Rust workspace census |
+| Shard | Host | Needs | Phases |
+|---|---|---|---|
+| `base` | baldr | `docker` | AppImage runtime image, helper controls, CI/releases/updater Python suites, Sync Help and brand, managed admission crash checkpoints |
+| `admission` | baldr | `tmpfs`, `pidns` | managed admission `remaining-0` and the negative controls, real disk-full transfer (private tmpfs) |
+| `sync` | okilum-dev | — | Sync source sharing, managed admission `remaining-1`, local writer authority |
+| `desktop` | okilum-build-nas | `dbus` | workspace clippy, `cargo fmt --check` and desktop build, pairing through `okilum sync serve`, reveal stress, vault regression controls |
+| `rust-a` | slava | `userbus`, `dbus` | `okilum-core` suite, Linux Rust groups outside the workspace census |
+| `rust-b` | okilum-dev | `userbus`, `dbus` | Linux Rust workspace census |
 
 Every shard also verifies the toolchain, vendor, locked dependencies and the
 Python environment, and reaps fixture daemons. `pool-aggregate.py` merges the

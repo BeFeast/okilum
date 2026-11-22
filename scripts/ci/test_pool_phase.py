@@ -136,6 +136,36 @@ class PoolVendor(unittest.TestCase):
             self.assertTrue((work / "vendor/a-1").exists())
 
 
+class PoolHostedEnv(unittest.TestCase):
+    def test_each_run_gets_private_state_umask_022_and_no_group_writable_binary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "target" / "debug"
+            target.mkdir(parents=True)
+            helper = target / "okilum-sync-launch"
+            helper.write_text("")
+            helper.chmod(0o775)
+            receipt = root / "r" / "phases.json"
+            # Start from the pool host default, so the test fails without the reset.
+            script = (f'umask 002; source "{ROOT}/scripts/ci/pool-phase-lib.sh"; pool_receipt_init; '
+                      'umask; printf "%s\\n%s\\n" "$XDG_STATE_HOME" "$XDG_DATA_HOME"; '
+                      ': > "$XDG_STATE_HOME/x"; fresh=$(mktemp -u "$PWD/fresh.XXXXXX"); touch "$fresh"; '
+                      'stat -c %a "$fresh"')
+            env = {**os.environ, "TMPDIR": str(root), "CARGO_TARGET_DIR": str(root / "target"),
+                   "OKILUM_POOL_RECEIPT": str(receipt), "XDG_STATE_HOME": str(root / "ambient")}
+            runs = [subprocess.run(["bash", "-c", script], cwd=root, env=env, capture_output=True,
+                                   text=True, check=True).stdout.split() for _ in range(2)]
+            for umask, state, data, fresh in runs:
+                self.assertEqual(umask, "0022")
+                self.assertEqual(fresh, "644")
+                self.assertTrue(state.startswith(str(root / "okilum-pool-home.")), state)
+                self.assertTrue(Path(state).is_dir() and Path(data).is_dir())
+            self.assertNotEqual(runs[0][1], runs[1][1])
+            self.assertNotEqual(runs[0][2], runs[1][2])
+            self.assertFalse((root / "ambient").exists())
+            self.assertEqual(helper.stat().st_mode & 0o777, 0o755)
+
+
 class PoolPhase(unittest.TestCase):
     def test_only_a_recorded_success_passes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -499,7 +529,7 @@ class PoolGateEndToEnd(unittest.TestCase):
             return kind, results
 
     def test_all_shards_green_passes_every_reporter(self):
-        self.assertEqual(self.shards(), ["base", "rust-b", "admission", "rust-a", "sync", "desktop"])
+        self.assertEqual(self.shards(), ["base", "admission", "rust-a", "rust-b", "sync", "desktop"])
         kind, results = self.gate()
         self.assertEqual(kind, "verdict")
         self.assertIn("Verify every pool shard and phase passed", results)

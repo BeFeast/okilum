@@ -142,7 +142,15 @@ def main():
         root.mkdir(mode=0o700)
         (root / 'state').mkdir(mode=0o700)
         (root / 'tmp').mkdir()
-        env = dict(os.environ, TMPDIR=str(root / 'tmp'), XDG_STATE_HOME=str(root / 'state'), RUST_BACKTRACE='1')
+        (root / 'home').mkdir(mode=0o700)
+        # Host discovery (direct::existing::configuration_paths) also reads
+        # $HOME/.local/state/syncthing and $HOME/.config/syncthing. A hosted
+        # runner's HOME has neither; a pool host's account can hold a real
+        # Syncthing identity (baldr, run 44904442649), which the product path
+        # correctly refuses. Each process gets a HOME as empty as hosted's.
+        env = dict(os.environ, TMPDIR=str(root / 'tmp'), XDG_STATE_HOME=str(root / 'state'),
+                   HOME=str(root / 'home'), RUST_BACKTRACE='1')
+        env.pop('XDG_CONFIG_HOME', None)
         # Never inherit a caller's narrowed selection into the complete gate.
         env.pop('OKILUM_FIRST_SYNC_CRASH_CASE', None)
         command = [executable, '--include-ignored', '--nocapture', '--test-threads=1']

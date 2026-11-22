@@ -78,6 +78,29 @@ pool_receipt_init() {
     [[ -n ${OKILUM_POOL_RECEIPT:-} ]] || { echo "OKILUM_POOL_RECEIPT is unset" >&2; exit 75; }
     mkdir -p "$(dirname "$OKILUM_POOL_RECEIPT")"
     printf '[]\n' > "$OKILUM_POOL_RECEIPT"
+    pool_hosted_env
+}
+
+# A hosted runner starts with an empty HOME and umask 022; a pool host keeps
+# one account across runs and defaults to umask 002.
+# - Local writer authority records each vault root's identity under
+#   $XDG_STATE_HOME/okilum. The slot re-extracts the source every run, so a
+#   record left by an earlier run reads as "Vault root replaced". Each run
+#   gets its own state and data directories; the cache (pinned fixture
+#   downloads) stays shared.
+# - Managed launch refuses a group- or other-writable helper
+#   (managed_launch::digest), so the cargo-built okilum-sync-launch must not
+#   be 0775. A binary the reused slot target already holds keeps its old mode
+#   unless relinked: clear the write bits there too.
+pool_hosted_env() {
+    local home
+    home=$(mktemp -d "${TMPDIR:-/tmp}/okilum-pool-home.XXXXXX")
+    mkdir -p "$home/state" "$home/data"
+    export XDG_STATE_HOME=$home/state XDG_DATA_HOME=$home/data
+    umask 022
+    local target=${CARGO_TARGET_DIR:-target}
+    [[ -d $target ]] || return 0
+    find "$target" -maxdepth 3 -type f -perm /022 -exec chmod go-w {} + 2>/dev/null || true
 }
 
 # pool_record NAME CODE, or pool_record NAME skipped: a phase that an earlier

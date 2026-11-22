@@ -21,29 +21,40 @@ ship=$(pool_receipt_dir)
 receipt="$ship/phases.json"
 short=$(printf '%s' "$sha" | cut -c1-12)
 
-# shard  mem(GiB)  needs(comma)  preferred host  run minutes
+# shard  mem(GiB)  needs(comma)  host  run minutes  cargo jobs
 # Memory: the unsharded full run peaked at 6.1 GiB (anon 4.0) on baldr, 20.11.
-# The preferred hosts pair the shards two per heavy host within its memory
-# budget (baldr 13, okilum-dev 12, okilum-build-nas 14 GiB); build-slot falls
-# back to any capable free host after 30 s, so a busy host costs no wait.
+# host `-` takes any capable host; a name is a hard pin (--require-host). A
+# critical ticket (every PR run) skips the --host preference delay, so a
+# preference placed shards by capability alone: base reached slava, which
+# lists docker but cannot open the socket, and both Rust shards met on
+# okilum-dev. The pins keep each host within its memory budget (baldr 4+3 of
+# 13, okilum-dev 7+4 of 12, slava 7 of 8, okilum-build-nas 7 of 14).
+# Managed admission's Syncthing fixtures are fsync- and timing-bound under an
+# unchanged 600 s deadline: on okilum-build-nas (ZFS) next to the desktop
+# compile, remaining-1 overran it (run 44902434687), so sync runs on ext4
+# okilum-dev and admission on baldr.
+# cargo jobs `-` keeps the slot default. The okilum-shell test binary alone
+# peaks at the 8 GiB slot limit in one rustc (anon 8.09 GB at --jobs 1 on
+# okilum-dev, 21.11); with any concurrent compile it was OOM-killed in every
+# sharded run, so the two Rust shards compile one crate at a time.
 case $mode in
-    pre-merge) shards=("pre-merge 7 - - 30") ;;
-    linux-single) shards=("all 7 docker,sudo,userbus,dbus,pidns - 70") ;;
+    pre-merge) shards=("pre-merge 7 - - 30 -") ;;
+    linux-single) shards=("all 7 docker,sudo,userbus,dbus,pidns - 70 -") ;;
     linux-full)
         shards=(
-            "base 4 docker baldr 25"
-            "rust-b 7 userbus,dbus baldr 25"
-            "admission 3 tmpfs,pidns slava 25"
-            "rust-a 7 userbus,dbus okilum-dev 25"
-            "sync 4 - okilum-build-nas 25"
-            "desktop 7 dbus okilum-build-nas 25"
+            "base 4 docker baldr 25 -"
+            "admission 3 tmpfs,pidns baldr 25 -"
+            "rust-a 7 userbus,dbus slava 30 1"
+            "rust-b 7 userbus,dbus okilum-dev 25 1"
+            "sync 4 - okilum-dev 25 -"
+            "desktop 7 dbus okilum-build-nas 25 -"
         )
         ;;
     *) echo "unknown pool mode: $mode" >&2; exit 64 ;;
 esac
 # The benchmark branch measures warm rebuilds in one slot.
 if [[ $mode == linux-full && ${GITHUB_REF:-} == refs/heads/agent-checks-benchmark/* ]]; then
-    shards=("all 7 docker,sudo,userbus,dbus,pidns - 70")
+    shards=("all 7 docker,sudo,userbus,dbus,pidns - 70 -")
 fi
 
 archive=
@@ -57,7 +68,7 @@ else
 fi
 
 dispatch() {
-    local name=$1 mem=$2 needs=$3 prefer=$4 minutes=$5
+    local name=$1 mem=$2 needs=$3 host=$4 minutes=$5 jobs=$6
     local dir="$ship/$name" script label
     mkdir -p "$dir"
     if [[ $name == pre-merge ]]; then
@@ -75,8 +86,11 @@ dispatch() {
         --env "OKILUM_POOL_RECEIPT=$dir/phases.json"
         --env "OKILUM_SOURCE_COMMIT=$sha"
     )
-    if [[ $prefer != - ]]; then
-        args+=(--host "$prefer")
+    if [[ $host != - ]]; then
+        args+=(--require-host "$host")
+    fi
+    if [[ $jobs != - ]]; then
+        args+=(--jobs "$jobs")
     fi
     local need
     if [[ $needs != - ]]; then
@@ -105,8 +119,8 @@ started=$(date +%s)
 pids=()
 dirs=()
 for row in "${shards[@]}"; do
-    read -r name mem needs prefer minutes <<< "$row"
-    dispatch "$name" "$mem" "$needs" "$prefer" "$minutes" &
+    read -r name mem needs host minutes jobs <<< "$row"
+    dispatch "$name" "$mem" "$needs" "$host" "$minutes" "$jobs" &
     pids+=($!)
     dirs+=("$ship/$name")
 done
