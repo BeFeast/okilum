@@ -107,6 +107,9 @@ fn change_to(scale: f32, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `use super::*` pulls in GPUI's `test` attribute, which expands back to
+    // `#[test]`. Name the standard attribute so this module can compile.
+    use ::core::prelude::v1::test;
 
     struct RestoreScale;
     impl Drop for RestoreScale {
