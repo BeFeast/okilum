@@ -40,10 +40,9 @@ thread_local! {
 
 pub(crate) fn bind_keys(cx: &mut App) {
     let context = Some("Reader");
-    // GPUI menus show the last binding of an action: ⌘= / Ctrl+= stays last.
+    // Shift-plus belongs to whole-UI zoom. GPUI key_char matching can strip
+    // Shift from "+", so do not retain a secondary-+ alias for note zoom.
     cx.bind_keys([
-        KeyBinding::new("secondary-+", ZoomIn, context),
-        KeyBinding::new("secondary-shift-=", ZoomIn, context),
         KeyBinding::new("secondary-=", ZoomIn, context),
         KeyBinding::new("secondary--", ZoomOut, context),
         KeyBinding::new("secondary-0", Reset, context),
@@ -570,6 +569,14 @@ mod tests {
             );
             assert_eq!(reader_ui_state::base_font_size(cx), base);
         });
+        visual.simulate_keystrokes("secondary-shift-=->+");
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            assert_eq!(reader_ui_state::ui_zoom(cx), 1.1);
+            assert_eq!(window.ui_scale(), 1.1);
+            assert!((reader_ui_state::text_zoom(cx) - 1.1).abs() < 0.001);
+        });
+        visual.simulate_keystrokes("secondary-shift-0");
         visual.simulate_keystrokes("secondary-0");
         visual.run_until_parked();
         reader.update(visual, |reader, cx| {
@@ -1457,6 +1464,9 @@ mod tests {
             ("Zoom In", ZoomIn.name()),
             ("Zoom Out", ZoomOut.name()),
             ("Actual Size", Reset.name()),
+            ("Zoom In UI", ui_zoom::ZoomIn.name()),
+            ("Zoom Out UI", ui_zoom::ZoomOut.name()),
+            ("Actual UI Size", ui_zoom::Reset.name()),
         ] {
             assert!(
                 actions.contains(&(label.to_string(), action.to_string())),

@@ -137,6 +137,7 @@ struct Saved {
     note_font: String,
     code_font: String,
     text_zoom: f32,
+    ui_zoom: f32,
     reading_width: f32,
     /// The note column spans the whole note pane instead of the reading
     /// width; one app-wide toggle, kept with the reading width.
@@ -238,6 +239,7 @@ impl Default for Saved {
             note_font: brand::SANS_FONT.into(),
             code_font: brand::MONO_FONT.into(),
             text_zoom: 1.,
+            ui_zoom: 1.,
             reading_width: READER_MAX_WIDTH,
             full_note_width: false,
             find_case_sensitive: false,
@@ -291,6 +293,7 @@ struct Store {
     font_changed: bool,
     font_families_changed: [bool; 2],
     zoom_changed: bool,
+    ui_zoom_changed: bool,
     width_changed: bool,
     find_changed: bool,
     typed_views_changed: bool,
@@ -407,6 +410,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         font_changed: !path.exists(),
         font_families_changed: [false; 2],
         zoom_changed: !path.exists(),
+        ui_zoom_changed: !path.exists(),
         width_changed: !path.exists(),
         find_changed: false,
         // No migration input: opening a new window must not overwrite a
@@ -649,6 +653,7 @@ struct WriteJob {
     font_changed: bool,
     font_families_changed: [bool; 2],
     zoom_changed: bool,
+    ui_zoom_changed: bool,
     width_changed: bool,
     find_changed: bool,
     typed_views_changed: bool,
@@ -722,6 +727,9 @@ impl WriteJob {
         }
         if self.theme_changed {
             latest.theme = self.saved.theme.clone();
+        }
+        if self.ui_zoom_changed {
+            latest.ui_zoom = self.saved.ui_zoom;
         }
         if self.zoom_changed {
             latest.text_zoom = self.saved.text_zoom;
@@ -920,6 +928,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && state.frames_changed.is_empty()
             && !state.appearance_changed
             && !state.theme_changed
+            && !state.ui_zoom_changed
             && !state.zoom_changed
             && !state.font_changed
             && !state.font_families_changed.iter().any(|changed| *changed)
@@ -969,6 +978,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         font_changed: state.font_changed,
         font_families_changed: state.font_families_changed,
         zoom_changed: state.zoom_changed,
+        ui_zoom_changed: state.ui_zoom_changed,
         width_changed: state.width_changed,
         find_changed: state.find_changed,
         typed_views_changed: state.typed_views_changed,
@@ -2294,6 +2304,32 @@ pub(crate) fn base_font_size(cx: &App) -> f32 {
         state.saved.font_size.clamp(12., 24.)
     })
 }
+pub(crate) fn ui_zoom(cx: &App) -> f32 {
+    crate::ui_zoom::normalize(cx.try_global::<Store>().map_or(1., |s| s.saved.ui_zoom))
+}
+
+pub(crate) fn set_ui_zoom(zoom: f32, cx: &mut App) {
+    if !zoom.is_finite() || !installed(cx) {
+        return;
+    }
+    let zoom = crate::ui_zoom::normalize(zoom);
+    let state = cx.global_mut::<Store>();
+    if state.saved.ui_zoom == zoom {
+        return;
+    }
+    state.saved.ui_zoom = zoom;
+    state.ui_zoom_changed = true;
+    schedule(cx);
+    // The dispatching window is borrowed during an action. Update all windows
+    // after dispatch, before their next frame, including auxiliary windows.
+    cx.defer(move |cx| {
+        for handle in cx.windows() {
+            let _ = handle.update(cx, |_, window, _| window.set_ui_scale(zoom));
+        }
+    });
+    cx.refresh_windows();
+}
+
 pub(crate) fn text_zoom(cx: &App) -> f32 {
     cx.try_global::<Store>().map_or(1., |state| {
         let zoom = state.saved.text_zoom;
@@ -2388,6 +2424,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.font_changed = false;
         state.font_families_changed = [false; 2];
         state.zoom_changed = false;
+        state.ui_zoom_changed = false;
         state.width_changed = false;
         state.find_changed = false;
         state.typed_views_changed = false;
@@ -3392,6 +3429,7 @@ mod tests {
                 font_changed: true,
                 font_families_changed: [false; 2],
                 zoom_changed: false,
+                ui_zoom_changed: false,
                 width_changed: false,
                 find_changed: false,
                 typed_views_changed: true,

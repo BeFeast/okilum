@@ -261,6 +261,7 @@ mod search_label;
 mod source_presentation;
 mod text_ranges;
 mod theme_picker;
+mod ui_zoom;
 mod updater;
 // Search labels reuse the editor's glyph-cluster selection geometry. Keep this
 // adapter unchanged here; #780 owns editor layout and geometry refinements.
@@ -572,6 +573,10 @@ pub(crate) fn view_menu(cx: &App) -> Menu {
         name: "View".into(),
         disabled: false,
         items: vec![
+            MenuItem::action("Zoom In UI", ui_zoom::ZoomIn),
+            MenuItem::action("Zoom Out UI", ui_zoom::ZoomOut),
+            MenuItem::action("Actual UI Size", ui_zoom::Reset),
+            MenuItem::separator(),
             MenuItem::action("Zoom In", reader_text_zoom::ZoomIn),
             MenuItem::action("Zoom Out", reader_text_zoom::ZoomOut),
             MenuItem::action("Actual Size", reader_text_zoom::Reset),
@@ -636,6 +641,7 @@ fn bind_keys(cx: &mut App) {
     ]);
     project_terminal::bind_keys(cx);
     reader_text_zoom::bind_keys(cx);
+    ui_zoom::init(cx);
     reader_editor::format::bind_keys(cx);
     reader_title_nav::bind_menu_keys(cx);
     quick_open::bind_palette_keys(cx);
@@ -7612,7 +7618,10 @@ fn reader_more_menu(
     let current = cx.try_global::<AppearancePreference>().and_then(|p| p.0);
     reader_icon_button("reader-more", IconName::Ellipsis, "More", cx)
         .debug_selector(|| "reader-more".into())
-        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
+        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, window, cx| {
+            let menu = menu
+                .scrollable(true)
+                .max_h((window.viewport_size().height - px(80.)).max(px(40.)));
             let appearance = |label: &'static str, mode: Option<ThemeMode>| {
                 let vault = vault.clone();
                 PopupMenuItem::new(label)
