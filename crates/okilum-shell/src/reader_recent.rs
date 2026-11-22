@@ -1351,7 +1351,7 @@ mod tests {
         visual.simulate_keystrokes("ctrl-tab");
         visual.run_until_parked();
         reader.update(visual, |r, cx| {
-            let other = r.split.as_ref().unwrap().other.id;
+            let other = r.split.as_ref().unwrap().other.id();
             assert_eq!(r.recent_switcher.paths[r.recent_switcher.selected], "C.md");
             assert_eq!(r.guard_pane_exit(other, cx), Ok(()));
             assert!(
