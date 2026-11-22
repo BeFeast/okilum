@@ -205,6 +205,35 @@ impl offer::Pasteboard for DroppedFiles {
 /// rich-text reader is asked for more.
 pub struct DroppedData(pub gpui::ExternalData);
 
+// Keep GPUI's native MIME identifiers at the boundary; the router shares its
+// established flavor names with the clipboard on every platform.
+fn drop_flavor(kind: &str) -> &str {
+    match kind {
+        "text/plain" | "text/plain;charset=utf-8" | "UTF8_STRING" => offer::UTF8_TEXT,
+        "text/plain;charset=utf-16"
+        | "text/plain;charset=utf-16le"
+        | "text/plain;charset=utf-16be" => "public.utf16-plain-text",
+        "text/html" => "public.html",
+        "text/uri-list" => offer::URL,
+        "image/png" => "public.png",
+        "image/jpeg" => "public.jpeg",
+        "image/gif" => "com.compuserve.gif",
+        "image/webp" => "org.webmproject.webp",
+        "image/tiff" => "public.tiff",
+        _ => kind,
+    }
+}
+
+impl DroppedData {
+    fn native_flavor(&self, kind: &str) -> Option<&str> {
+        self.0
+            .types()
+            .iter()
+            .find(|native| drop_flavor(native) == kind && self.0.contents(native).is_some())
+            .map(|native| native.as_ref())
+    }
+}
+
 impl offer::Pasteboard for DroppedData {
     fn change_count(&self) -> i64 {
         0
@@ -216,14 +245,27 @@ impl offer::Pasteboard for DroppedData {
             .types()
             .iter()
             .filter(|kind| self.0.contents(kind).is_some())
-            .map(ToString::to_string)
+            .map(|native| drop_flavor(native).to_owned())
             .collect()
     }
     fn data(&self, kind: &str) -> Option<Vec<u8>> {
-        self.0.contents(kind).map(<[u8]>::to_vec)
+        let native = self.native_flavor(kind)?;
+        self.0.contents(native).map(<[u8]>::to_vec)
     }
     fn string(&self, kind: &str) -> Option<String> {
-        dropped_text(kind, self.0.contents(kind)?)
+        let native = self.native_flavor(kind)?;
+        let text = dropped_text(native, self.0.contents(native)?)?;
+        if native == "text/uri-list" {
+            Some(
+                text.lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+        } else {
+            Some(text)
+        }
     }
     fn rich_text(&self, data: &[u8], rtfd: bool) -> Option<String> {
         #[cfg(target_os = "macos")]
@@ -254,14 +296,18 @@ impl offer::Pasteboard for DroppedData {
 /// mark wins, little-endian without one), every other type as UTF-8. A
 /// trailing NUL some writers add is not text.
 fn dropped_text(kind: &str, bytes: &[u8]) -> Option<String> {
-    let text = if kind.contains("utf16") {
+    let text = if kind.contains("utf16")
+        || kind.contains("utf-16")
+        || bytes.starts_with(&[0xFE, 0xFF])
+        || bytes.starts_with(&[0xFF, 0xFE])
+    {
         if !bytes.len().is_multiple_of(2) {
             return None;
         }
         let (big_endian, bytes) = match bytes {
             [0xFE, 0xFF, rest @ ..] => (true, rest),
             [0xFF, 0xFE, rest @ ..] => (false, rest),
-            _ => (false, bytes),
+            _ => (kind.ends_with("utf-16be"), bytes),
         };
         let units: Vec<u16> = bytes
             .as_chunks::<2>()
