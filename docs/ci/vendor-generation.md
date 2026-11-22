@@ -24,3 +24,8 @@ verification, ordinary and recursive formatting, repeated setup/verification,
 and a deliberate source-tamper rejection. It neither compiles nor touches the
 caller's generated tree or Cargo target. The regular checksum-pinned comrak
 bootstrap remains part of fresh setup.
+
+Shards on one machine take `~/.cache/okilum-vendor-fmt.lock` before the two
+`cargo fmt` commands. Each command still has 180s after the lock is held.
+Run 45007121115 lost baldr shards `base` and `admission` to that timeout while
+they formatted together, and neither reached managed admission.
