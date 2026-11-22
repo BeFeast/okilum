@@ -2,14 +2,17 @@
 
 ## Where the Linux jobs run (Oleg 20.11, 21.11)
 
-`pre-merge` runs on the self-hosted label `okilum-pool`. The runner only
-checks out the commit and calls `build-slot`; the suites run on the shared
-build-slot pool (`scripts/ci/pool-dispatch.sh`, `pool-pre-merge.sh`). The
-workflow name stays `agent-checks`, the job name stays `pre-merge`, and the
-step names `gh-check.sh` requires are unchanged. A pool failure (queue,
-timeout, missing receipt) fails the dispatch step, which the helper counts as
-infrastructure (exit 75). A failing phase fails the step of that name, which
-is a code verdict (exit 1).
+`pre-merge` runs on GitHub-hosted `ubuntu-24.04` (#3218). `hosted-pre-merge.py`
+executes the existing `pool-pre-merge.sh` phase script directly on that runner;
+it never dispatches a build-slot job. The workflow/job names, exact SHA binding,
+every phase command and the 1800-second execution ceiling are retained. The
+wrapper refuses execution outside a GitHub-hosted runner. Only a complete
+phase receipt and matching final exit produce a verdict; missing/truncated
+receipts, timeout or cancellation are infrastructure (helper exit 75). The
+unchanged per-phase reporters and `Verify every pre-merge phase passed` reject
+failed/skipped phases; no skipped Rust/Python check can be hidden by a completed
+wrapper. The execution receipt names `github-hosted` and the exact SHA; it is
+not a build-slot/OOM receipt. Branch runs restore main's cache and save none.
 
 The full verdict stays on the hosted Ubuntu `linux` job (`ubuntu-24.04`, the
 job as it was before #3186) until a pool run is green in ≤ 20 minutes
