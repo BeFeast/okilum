@@ -1,0 +1,92 @@
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -9,6 +9,9 @@
+     pub source_shape_cache_hits: u64,
+     pub source_row_cache_hits: u64,
+     pub source_row_materialized_bytes: u64,
++    pub paragraph_direction_queries: u64,
++    /// Source bytes read to prepare paragraph direction, including any copy.
++    pub paragraph_direction_source_bytes: u64,
+     pub metric_changes: u64,
+     pub provider_applies: u64,
+     pub projection_composes: u64,
+@@ -1177,7 +1180,15 @@
+         if self.direction_exempt.get(exempt).is_some_and(|r| r.start <= line) {
+             return false;
+         }
+-        crate::input::bidi_geometry::paragraph_is_rtl(&self.text.slice_line(line).to_string())
++        let mut source_bytes = 0;
++        let rtl = crate::input::bidi_geometry::paragraph_is_rtl_chars(
++            self.text.slice_line(line).chars().inspect(|ch| source_bytes += ch.len_utf8()),
++        );
++        self.record_layout_diagnostic(|d| {
++            d.paragraph_direction_queries += 1;
++            d.paragraph_direction_source_bytes += source_bytes as u64;
++        });
++        rtl
+     }
+ 
+     /// Room left of the text for a hanging prefix: the empty space from the
+--- a/crates/base/src/input/bidi_geometry.rs
++++ b/crates/base/src/input/bidi_geometry.rs
+@@ -11,8 +11,13 @@
+ // Okilum's bidi examples compile this file by `#[path]` without the editor.
+ #[allow(dead_code)]
+ pub(crate) fn paragraph_is_rtl(text: &str) -> bool {
++    paragraph_is_rtl_chars(text.chars())
++}
++
++/// Read only through the first strong character, including on chunked source.
++pub(crate) fn paragraph_is_rtl_chars(chars: impl Iterator<Item = char>) -> bool {
+     use unicode_bidi::BidiClass::{AL, L, R};
+-    text.chars()
++    chars
+         .map(unicode_bidi::bidi_class)
+         .find(|class| matches!(class, L | R | AL))
+         .is_some_and(|class| matches!(class, R | AL))
+@@ -288,6 +293,45 @@
+ 
+ #[cfg(test)]
+ mod tests {
++    #[test]
++    fn paragraph_direction_iterator_preserves_first_strong_semantics() {
++        use unicode_bidi::BidiClass::{AL, L, R};
++        let cases = [
++            "",
++            "123 - !\r\n",
++            "שלום world",
++            "مرحبا hello",
++            "hello שלום",
++            "\u{301}🙂 123 «שלום»",
++            "\u{202b}abc",
++            "\u{2067}a\u{2069}א",
++            "\u{200f}abc",
++            "\u{200e}א",
++            "\t\u{2028}א",
++            "\u{feff}ع",
++        ];
++        for text in cases {
++            // Frozen rule from before the borrowed-iterator path.
++            let expected = text
++                .chars()
++                .map(unicode_bidi::bidi_class)
++                .find(|class| matches!(class, L | R | AL))
++                .is_some_and(|class| matches!(class, R | AL));
++            for split in text.char_indices().map(|(at, _)| at).chain([text.len()]) {
++                let chars = text[..split].chars().chain(text[split..].chars());
++                assert_eq!(
++                    super::paragraph_is_rtl_chars(chars),
++                    expected,
++                    "{text:?} at {split}"
++                );
++            }
++        }
++        let unread = std::iter::from_fn(|| panic!("read past first strong character"));
++        assert!(super::paragraph_is_rtl_chars(
++            std::iter::once('א').chain(unread)
++        ));
++    }
++
+     #[test]
+     fn paragraph_direction_follows_the_first_strong_character() {
+         use super::paragraph_is_rtl;

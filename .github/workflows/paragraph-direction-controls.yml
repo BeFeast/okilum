@@ -1,0 +1,55 @@
+name: paragraph-direction-controls
+on:
+  push:
+    branches: ['paragraph-direction-controls/**']
+permissions:
+  contents: read
+concurrency:
+  group: paragraph-direction-controls-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  controls:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Record exact source and runner
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'source=%s\ncpus=%s\n' "$GITHUB_SHA" "$(nproc)"
+          printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Reclaim unused hosted SDKs for Rust artifacts
+        run: sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet /opt/hostedtoolcache/CodeQL
+      - name: Install system libraries
+        timeout-minutes: 10
+        run: |
+          sudo bash scripts/ci/hosted-ubuntu-apt.sh \
+            build-essential cmake pkg-config curl git mold zstd python3-venv \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+          key: paragraph-direction-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            agent-v1-${{ runner.os }}-
+      - name: Prepare and verify pinned vendor
+        run: |
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+      - name: Run compiled old-copy and candidate controls
+        run: bash scripts/ci/test-group.sh paragraph-direction 3600 python3 scripts/ci/paragraph-direction-controls.py
+      - name: Verify restored vendor source
+        if: always()
+        run: bash scripts/vendor-setup.sh --verify

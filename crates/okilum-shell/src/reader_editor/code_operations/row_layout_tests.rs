@@ -37,6 +37,59 @@ fn prepare(f: &tests::Fixture, v: &mut VisualTestContext) {
 }
 
 #[gpui::test]
+fn edit2803_paragraph_direction_does_not_copy_reused_long_note_rows(cx: &mut TestAppContext) {
+    // Markdown enables per-paragraph direction; plain-code fixtures do not.
+    let original = format!(
+        "a{}\r\nא{}\r\nshort\r\n",
+        "x".repeat(300 * 1024),
+        "y".repeat(300 * 1024)
+    );
+    let (f, v) = tests::open_file(cx, &original, "directions.md");
+    prepare(&f, v);
+    let at = original.rfind("short").unwrap();
+    f.input.update(v, |i, cx| i.set_selected_range(at..at, cx));
+    draw(v);
+    let before = f.input.read_with(v, |i, _| i.layout_diagnostics().unwrap());
+    f.input
+        .update_in(v, |i, w, cx| i.replace_source_range(at..at, "!", w, cx));
+    draw(v);
+    let after = f.input.read_with(v, |i, _| i.layout_diagnostics().unwrap());
+    let queries = after.paragraph_direction_queries - before.paragraph_direction_queries;
+    let source_bytes =
+        after.paragraph_direction_source_bytes - before.paragraph_direction_source_bytes;
+    assert!(
+        after.source_row_cache_hits >= before.source_row_cache_hits + 2,
+        "both long rows must actually reuse layouts"
+    );
+    assert!(queries >= 2, "actual paragraph-direction path must fire");
+    assert!(
+        source_bytes <= queries * 8,
+        "paragraph direction copied long rows: {source_bytes} source bytes for {queries} queries"
+    );
+
+    // Direction classification must keep exact caret/hit geometry, including
+    // the right-aligned Hebrew paragraph, across a cold effective-style pass.
+    let hebrew = original.find('א').unwrap() + 'א'.len_utf8();
+    let warm = geometry(&f, v, hebrew);
+    tint(&f, v, gpui::rgb(0x2233aa).into());
+    assert_eq!(geometry(&f, v, hebrew), warm);
+    let expected = format!("{}!{}", &original[..at], &original[at..]);
+    assert_eq!(f.input.read_with(v, |i, _| i.value().to_string()), expected);
+    v.dispatch_action(Undo);
+    v.run_until_parked();
+    assert_eq!(f.input.read_with(v, |i, _| i.value().to_string()), original);
+    v.dispatch_action(Redo);
+    v.run_until_parked();
+    assert_eq!(f.input.read_with(v, |i, _| i.value().to_string()), expected);
+    f.reader.update_in(v, |r, w, cx| r.toggle_source(w, cx));
+    tests::settle(v);
+    assert_eq!(
+        std::fs::read_to_string(f.directory.path().join("vault/directions.md")).unwrap(),
+        expected
+    );
+}
+
+#[gpui::test]
 fn edit2803_short_edit_reuses_unchanged_unicode_and_tab_rows(cx: &mut TestAppContext) {
     let original = source();
     let (f, v) = tests::open_file(cx, &original, "rows.rs");
