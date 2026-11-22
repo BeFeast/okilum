@@ -15,6 +15,6 @@ cargo test --manifest-path "$work/crate/Cargo.toml" \
 for test in external_drop_aggregate_budget_counts_failed_reads external_drop_selection_and_bounds external_drop_pipe_rejects_oversize_and_timeout external_drop_uri_lists_keep_file_and_web_routes external_drop_x11_real_selection_and_incr; do
   grep -q "$test ... ok" "$work/tests.log"
 done
-cargo test --locked -p okilum-shell --lib linux_dropped_mime_data_routes_through_the_paste_router 2>&1 | tee "$work/router.log"
+cargo test --locked -p okilum-shell --bin okilum linux_dropped_mime_data_routes_through_the_paste_router 2>&1 | tee "$work/router.log"
 grep -q 'linux_dropped_mime_data_routes_through_the_paste_router ... ok' "$work/router.log"
 python3 scripts/gpui-pre-linux-setup.py --verify
