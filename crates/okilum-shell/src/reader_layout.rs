@@ -698,3 +698,28 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[cfg(test)]
+mod ui_zoom_layout_tests {
+    use super::*;
+
+    #[test]
+    fn zoom_to_150_percent_uses_exclusive_overlays_and_preserves_dock_choices() {
+        let mut panels = Panels::default();
+        panels.open(Panel::Notes);
+        panels.open(Panel::Backlinks);
+        let compact = 1440. / 1.5;
+        panels.viewport_changed(1440., compact);
+        assert!(overlay(compact));
+        assert!(!panels.visible(Panel::Notes, compact));
+        assert!(!panels.visible(Panel::Backlinks, compact));
+        panels.open(Panel::Notes);
+        assert!(panels.visible(Panel::Notes, compact));
+        assert!(!panels.visible(Panel::Backlinks, compact));
+        panels.open(Panel::Backlinks);
+        assert!(!panels.visible(Panel::Notes, compact));
+        assert!(panels.visible(Panel::Backlinks, compact));
+        assert!(panels.visible(Panel::Notes, 1440.));
+        assert!(panels.visible(Panel::Backlinks, 1440.));
+    }
+}

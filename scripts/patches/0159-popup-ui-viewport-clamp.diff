@@ -1,0 +1,90 @@
+--- a/crates/component/src/menu/popup_menu.rs
++++ b/crates/component/src/menu/popup_menu.rs
+@@ -335,7 +335,7 @@
+             max_height: None,
+             check_side: Side::Left,
+             bounds: Bounds::default(),
+-            scrollable: false,
++            scrollable: true,
+             scroll_handle: ScrollHandle::default(),
+             external_link_icon: true,
+             size: Size::default(),
+@@ -1408,10 +1408,9 @@
+         let view = cx.entity().clone();
+         let items_count = self.menu_items.len();
+ 
+-        let max_height = self.max_height.unwrap_or_else(|| {
+-            let window_half_height = window.window_bounds().get_bounds().size.height * 0.5;
+-            window_half_height.min(px(450.))
+-        });
++        // Window bounds are native OS units; menus fit the zoomed UI viewport.
++        let available_height = (window.viewport_size().height - px(16.)).max(px(0.));
++        let max_height = self.max_height.unwrap_or(px(450.)).min(available_height);
+ 
+         let has_left_icon = self
+             .menu_items
+@@ -1496,4 +1495,24 @@
+         assert_eq!(PopupMenuItem::separator().a11y_label(), None);
+         assert_eq!(PopupMenuItem::element(|_, _| div()).a11y_label(), None);
+     }
++    #[gpui::test]
++    fn oversized_menu_scrolls_inside_zoomed_viewport(cx: &mut gpui::TestAppContext) {
++        cx.update(crate::init);
++        let (menu, cx) = cx.add_window_view(|window, cx| {
++            window.set_ui_scale(1.5);
++            let mut menu = PopupMenu::new(cx);
++            for index in 0..60 {
++                menu = menu.item(PopupMenuItem::new(format!("Action {index}")));
++            }
++            menu
++        });
++        cx.update(|window, cx| window.draw(cx).clear(cx));
++        let height = cx.update(|window, _| window.viewport_size().height);
++        menu.read_with(cx, |menu, _| {
++            assert!(menu.scrollable);
++            assert!(menu.scroll_handle.max_offset().y > px(0.));
++            assert!(menu.bounds.size.height <= height);
++        });
++    }
++
+ }
+--- a/crates/component/src/root.rs
++++ b/crates/component/src/root.rs
+@@ -36,6 +36,7 @@
+ pub struct Root {
+     style: StyleRefinement,
+     view: AnyView,
++    overlays: Vec<AnyView>,
+     pub(crate) active_sheet: Option<ActiveSheet>,
+     pub(crate) active_dialogs: Vec<ActiveDialog>,
+     pub(super) focused_input: Option<WeakInputState>,
+@@ -94,6 +95,11 @@
+         gpui_base::TextSelection::clear_for_window(self.window_id, cx);
+     }
+ 
++    /// Add a window-wide presentation layer above the application content.
++    pub fn add_overlay(&mut self, overlay: impl Into<AnyView>) {
++        self.overlays.push(overlay.into());
++    }
++
+     /// Create a new Root view.
+     pub fn new(view: impl Into<AnyView>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+         #[cfg(all(target_os = "macos", not(test)))]
+@@ -102,6 +108,7 @@
+         Self {
+             style: StyleRefinement::default(),
+             view: view.into(),
++            overlays: Vec::new(),
+             active_sheet: None,
+             active_dialogs: Vec::new(),
+             focused_input: None,
+@@ -603,7 +610,8 @@
+             .child(TextSelectionLayer)
+             .child(self.view.clone())
+             .child(self.tooltip_overlay.clone())
+-            .child(self.native_menu_overlay.clone());
++            .child(self.native_menu_overlay.clone())
++            .child(div().absolute().inset_0().children(self.overlays.iter().cloned()));
+ 
+         if self.bordered {
+             window_border()

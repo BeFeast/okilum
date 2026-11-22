@@ -43,7 +43,6 @@ pub(crate) fn bind_keys(cx: &mut App) {
     // GPUI menus show the last binding of an action: ⌘= / Ctrl+= stays last.
     cx.bind_keys([
         KeyBinding::new("secondary-+", ZoomIn, context),
-        KeyBinding::new("secondary-shift-=", ZoomIn, context),
         KeyBinding::new("secondary-=", ZoomIn, context),
         KeyBinding::new("secondary--", ZoomOut, context),
         KeyBinding::new("secondary-0", Reset, context),
