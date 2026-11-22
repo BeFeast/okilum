@@ -1217,4 +1217,129 @@ mod tests {
             "external"
         );
     }
+
+    fn split_recent_fixture(
+        cx: &mut gpui::TestAppContext,
+    ) -> (Entity<Reader>, &mut VisualTestContext, tempfile::TempDir) {
+        cx.update(|cx| {
+            crate::test_init(cx);
+            bind_keys(cx);
+        });
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        for name in ["A", "B", "C"] {
+            std::fs::write(root.join(format!("{name}.md")), format!("# {name}\n")).unwrap();
+        }
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("A.md".into()),
+                        index_dir: Some(fixture.path().join("index")),
+                        session_directory: Some(fixture.path().join("state")),
+                        panel_settings_override: Some(fixture.path().join("panels.json")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |reader, window, cx| {
+            reader.open_beside("B.md", None, window, cx);
+            window.activate_window();
+        });
+        visual.run_until_parked();
+        reader.update(visual, |reader, _| {
+            assert_eq!(reader.pane.current_rel, "B.md");
+            assert_eq!(reader.split.as_ref().unwrap().other.current_rel, "A.md");
+            reader.quick_open.inventory = Some(Arc::new(notes(&["A.md", "B.md", "C.md"])));
+            // The frozen gesture starts at B and selects C, which is in neither pane.
+            reader.quick_open.recent = vec!["A.md".into(), "C.md".into(), "B.md".into()];
+        });
+        (reader, visual, fixture)
+    }
+
+    #[gpui::test]
+    fn pane773_recent_release_after_focus_change_does_not_navigate_the_other_pane(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (reader, visual, fixture) = split_recent_fixture(cx);
+        visual.simulate_keystrokes("ctrl-tab");
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.recent_switcher.paths[r.recent_switcher.selected], "C.md");
+            assert_eq!(r.pane.current_rel, "B.md", "highlight is not navigation");
+        });
+        // The same production path as clicking the inactive pane while Control is held.
+        reader.update_in(visual, |r, window, cx| r.focus_other_pane(window, cx));
+        visual.simulate_event(gpui::ModifiersChangedEvent::default());
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_millis(100));
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert_eq!(
+                r.pane.current_rel, "A.md",
+                "MRU release must not navigate a different pane"
+            );
+            assert_eq!(r.split.as_ref().unwrap().other.current_rel, "B.md");
+            assert!(!r.recent_switcher.open());
+        });
+        // Positive control: a fresh gesture in the new active pane still commits.
+        reader.update(visual, |r, _| {
+            r.quick_open.recent = vec!["B.md".into(), "C.md".into(), "A.md".into()];
+        });
+        visual.simulate_keystrokes("ctrl-tab");
+        visual.simulate_event(gpui::ModifiersChangedEvent::default());
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_millis(100));
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert_eq!(
+                r.pane.current_rel, "C.md",
+                "a current-pane gesture must still navigate"
+            );
+            assert_eq!(r.split.as_ref().unwrap().other.current_rel, "B.md");
+        });
+        for name in ["A", "B", "C"] {
+            assert_eq!(
+                std::fs::read_to_string(fixture.path().join(format!("vault/{name}.md"))).unwrap(),
+                format!("# {name}\n")
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn pane773_focus_change_cancels_an_already_queued_recent_release(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (reader, visual, _fixture) = split_recent_fixture(cx);
+        visual.simulate_keystrokes("ctrl-tab");
+        visual.simulate_event(gpui::ModifiersChangedEvent::default());
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert!(
+                r.recent_switcher.open(),
+                "positive control: release is still deferred"
+            );
+            r.focus_other_pane(window, cx);
+            assert!(
+                !r.recent_switcher.open(),
+                "pane focus must cancel the old MRU gesture"
+            );
+        });
+        visual.executor().advance_clock(Duration::from_millis(100));
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.pane.current_rel, "A.md");
+            assert_eq!(r.split.as_ref().unwrap().other.current_rel, "B.md");
+        });
+    }
 }
