@@ -33,6 +33,25 @@ requires the Reader and iterator controls to pass. The focused GitHub-hosted
 workflow performs no installation or publication. A run result must be recorded
 in the issue before claiming these controls passed.
 
+The first hosted attempt (`45007812970`, head `90336039e`) exhausted the
+3600-second control bound. Captured output had not been streamed, so its
+compile/runtime stage cannot be determined from that log. Python termination
+also bypassed its `finally`, leaving the old-copy source in the disposable
+runner and causing the subsequent vendor verification to fail. That run is
+neither negative-control nor candidate evidence.
+
+Compilation now has the existing `shell-full` 840-second ceiling and reports
+its exact test executable before a separate 120-second focused runtime phase.
+The outer 3600-second bound is unchanged. Progress streams to the Actions log
+and per-phase log artifacts. A byte-exact candidate backup and SHA-256 journal
+are saved before the old-path mutation. An independent `always()` workflow
+step restores and verifies them even if the control process was killed; this
+does not turn the failed control step into success. Python orchestration tests
+exercise the real supervisor against a TERM-resistant fake compiler, require
+124 plus already-streamed progress, and verify independent restoration. They
+also reject corrupt backups, zero tests and unrelated runtime failures. These
+harness tests do not compile Rust or certify the product regression.
+
 This is a source-work correction, not acceptance of the reporter issue or a
 native latency, frame-budget or leak claim. Changed-row shaping, glyph copying,
 Tree/Parser/Rope ownership and the other large-editor residuals remain open.
