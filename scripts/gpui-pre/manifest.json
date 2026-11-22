@@ -14,10 +14,10 @@
     },
     {
       "path": "../patches/gpui-pre/0003-window-ui-scale.diff",
-      "sha256": "c10f915aff854989b14439d97844c1e69954edf8834a343795d21efde5b28074"
+      "sha256": "2c1c96f3f08bfa1f76cbc28f8aaf1fcb71f622759b5b62b4a098f1aa7de9dc95"
     }
   ],
-  "tree_sha256": "c71e3a985dcbf69a73f8217104c312eb9f8d40a24a49fb5a179a07ba4f7be6a7",
+  "tree_sha256": "d57a9e419565dcbd31c7ace8df8a28329a4d84e13a7a5e64f86df13df5bfb7f3",
   "generated_path": "vendor/gpui-pre-0.3.3",
   "changed_files": [
     "src/interactive.rs",

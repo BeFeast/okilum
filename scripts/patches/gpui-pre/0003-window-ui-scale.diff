@@ -10,7 +10,7 @@
 +                    .bounds_for_range(range_utf16, window, cx)
 +                    .map(|b| Bounds {
 +                        origin: b.origin * window.ui_scale(),
-+                        size: b.size * window.ui_scale(),
++                        size: b.size.map(|v| v * window.ui_scale()),
 +                    })
 +            })
              .ok()
@@ -22,7 +22,7 @@
          })
 +        .map(|b| Bounds {
 +            origin: b.origin * window.ui_scale(),
-+            size: b.size * window.ui_scale(),
++            size: b.size.map(|v| v * window.ui_scale()),
 +        })
      }
  
@@ -47,7 +47,7 @@
 +            .update(|window, cx| {
 +                self.handler.element_bounds(window, cx).map(|b| Bounds {
 +                    origin: b.origin * window.ui_scale(),
-+                    size: b.size * window.ui_scale(),
++                    size: b.size.map(|v| v * window.ui_scale()),
 +                })
 +            })
              .ok()
@@ -92,7 +92,7 @@
 +                .iter()
 +                .map(|b| Bounds {
 +                    origin: b.origin * self.ui_scale,
-+                    size: b.size * self.ui_scale,
++                    size: b.size.map(|v| v * self.ui_scale),
 +                })
 +                .collect::<Vec<_>>()
 +        });
@@ -162,7 +162,7 @@
 +            return;
 +        }
 +        let ratio = self.ui_scale / scale;
-+        self.viewport_size = self.viewport_size * ratio;
++        self.viewport_size = self.platform_window.content_size() / scale;
 +        self.mouse_position = self.mouse_position * ratio;
 +        self.scale_factor = self.platform_window.scale_factor() * scale;
 +        self.ui_scale = scale;
