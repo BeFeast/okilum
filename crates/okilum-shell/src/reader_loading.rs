@@ -9459,9 +9459,11 @@ mod quick_view_tests {
             crate::test_init(cx);
             bind_keys(cx);
             crate::reader_ui_state::install(&directory, cx);
-            let mut saved = crate::reader_ui_state::Layout::default();
-            saved.note = "note.md".into();
-            saved.source = matches!(surface, Issue3073Surface::SavedSource);
+            let saved = crate::reader_ui_state::Layout {
+                note: "note.md".into(),
+                source: matches!(surface, Issue3073Surface::SavedSource),
+                ..crate::reader_ui_state::Layout::default()
+            };
             crate::reader_ui_state::record(&root, saved, true, cx);
             if matches!(surface, Issue3073Surface::DefaultEdit) {
                 crate::reader_ui_state::set_note_open_mode(
