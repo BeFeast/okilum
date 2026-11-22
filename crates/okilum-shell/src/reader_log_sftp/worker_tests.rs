@@ -106,7 +106,8 @@ fn large_file_starts_at_a_line_in_its_last_mebibyte_and_says_so() {
     let mut fake = fixture(&bytes);
     fake.report_size = true;
     let reads = fake.reads.clone();
-    let mut frames = Vec::new();
+    let mut last = None;
+    let mut publications = 0;
     run(
         Target::parse("sftp://fixture/var/big.log").unwrap(),
         fake,
@@ -114,11 +115,18 @@ fn large_file_starts_at_a_line_in_its_last_mebibyte_and_says_so() {
         "tail".into(),
         Arc::new(AtomicBool::new(false)),
         |frame| {
-            frames.push(frame);
+            if frame.active && frame.data.is_some() {
+                publications += 1;
+            }
+            // Consume frames like the view: retaining every immutable history
+            // snapshot exhausts the pool even in an otherwise empty process.
+            last = Some(frame);
             true
         },
     );
-    let last = frames.last().unwrap();
+    let last = last.unwrap();
+    assert!(publications > 1, "exercise replacement of leased snapshots");
+    assert!(!last.active, "snapshot read must reach its terminal frame");
     assert!(!last.error, "{}", last.message);
     let shown = last.data.as_ref().unwrap().bytes();
     let start = bytes.len() as u64 - TAIL_START_BYTES;
