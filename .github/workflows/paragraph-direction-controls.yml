@@ -1,0 +1,81 @@
+name: paragraph-direction-controls
+on:
+  push:
+    branches: ['paragraph-direction-controls/**']
+permissions:
+  contents: read
+concurrency:
+  group: paragraph-direction-controls-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  controls:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
+      OKILUM_SOURCE_COMMIT: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Record exact source and runner
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'source=%s\ncpus=%s\n' "$GITHUB_SHA" "$(nproc)"
+          printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Reclaim unused hosted SDKs for Rust artifacts
+        run: sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet /opt/hostedtoolcache/CodeQL
+      - name: Install system libraries
+        timeout-minutes: 10
+        run: |
+          sudo bash scripts/ci/hosted-ubuntu-apt.sh \
+            build-essential cmake pkg-config curl git mold zstd python3-venv \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+            vendor/gpui-component/
+            vendor/comrak-0.47.0/
+          key: paragraph-direction-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            agent-v1-${{ runner.os }}-
+      - name: Prepare and verify pinned vendor
+        run: |
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+      - name: Prepare isolated Python test dependencies
+        run: bash scripts/ci/setup-python-tests.sh
+      - name: Verify harness timeout and restoration controls
+        run: python3 -m unittest discover -s scripts/ci -p test_paragraph_direction_controls.py -v
+      - name: Run compiled old-copy and candidate controls
+        run: |
+          evidence=$(mktemp -d)
+          printf 'PARAGRAPH_DIRECTION_EVIDENCE=%s\n' "$evidence" >> "$GITHUB_ENV"
+          source scripts/ci/test-nofile.sh
+          bash scripts/ci/test-group.sh paragraph-direction 3600 \
+            python3 -u scripts/ci/paragraph-direction-controls.py --evidence "$evidence"
+      - name: Restore and verify vendor source after controls
+        if: always()
+        run: |
+          if [[ -n "${PARAGRAPH_DIRECTION_EVIDENCE:-}" ]]; then
+            python3 scripts/ci/paragraph-direction-controls.py \
+              --evidence "$PARAGRAPH_DIRECTION_EVIDENCE" --restore-only
+          fi
+          bash scripts/vendor-setup.sh --verify
+      - uses: actions/upload-artifact@v4
+        if: always() && env.PARAGRAPH_DIRECTION_EVIDENCE != ''
+        with:
+          name: paragraph-direction-logs
+          path: |
+            ${{ env.PARAGRAPH_DIRECTION_EVIDENCE }}/*.log
+            ${{ env.PARAGRAPH_DIRECTION_EVIDENCE }}/source.json
+          if-no-files-found: error
+          retention-days: 7
