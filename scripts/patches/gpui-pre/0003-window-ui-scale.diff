@@ -1,0 +1,277 @@
+--- a/src/platform.rs
++++ b/src/platform.rs
+@@ -1534,7 +1534,14 @@
+ 
+     pub fn bounds_for_range(&mut self, range_utf16: Range<usize>) -> Option<Bounds<Pixels>> {
+         self.cx
+-            .update(|window, cx| self.handler.bounds_for_range(range_utf16, window, cx))
++            .update(|window, cx| {
++                self.handler
++                    .bounds_for_range(range_utf16, window, cx)
++                    .map(|b| Bounds {
++                        origin: b.origin * window.ui_scale(),
++                        size: b.size * window.ui_scale(),
++                    })
++            })
+             .ok()
+             .flatten()
+     }
+@@ -1589,6 +1596,10 @@
+         Self::compute_ime_candidate_bounds(marked_range, &selection, |range| {
+             self.handler.bounds_for_range(range, window, cx)
+         })
++        .map(|b| Bounds {
++            origin: b.origin * window.ui_scale(),
++            size: b.size * window.ui_scale(),
++        })
+     }
+ 
+     pub fn ime_candidate_bounds(&mut self) -> Option<Bounds<Pixels>> {
+@@ -1602,7 +1613,10 @@
+     #[allow(unused)]
+     pub fn character_index_for_point(&mut self, point: Point<Pixels>) -> Option<usize> {
+         self.cx
+-            .update(|window, cx| self.handler.character_index_for_point(point, window, cx))
++            .update(|window, cx| {
++                self.handler
++                    .character_index_for_point(point / window.ui_scale(), window, cx)
++            })
+             .ok()
+             .flatten()
+     }
+@@ -1620,7 +1634,12 @@
+     /// See [`InputHandler::element_bounds`].
+     pub fn element_bounds(&mut self) -> Option<Bounds<Pixels>> {
+         self.cx
+-            .update(|window, cx| self.handler.element_bounds(window, cx))
++            .update(|window, cx| {
++                self.handler.element_bounds(window, cx).map(|b| Bounds {
++                    origin: b.origin * window.ui_scale(),
++                    size: b.size * window.ui_scale(),
++                })
++            })
+             .ok()
+             .flatten()
+     }
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -1191,6 +1191,7 @@
+     modifiers: Modifiers,
+     capslock: Capslock,
+     scale_factor: f32,
++    ui_scale: f32,
+     pub(crate) bounds_observers: SubscriberSet<(), AnyObserver>,
+     appearance: WindowAppearance,
+     pub(crate) appearance_observers: SubscriberSet<(), AnyObserver>,
+@@ -1895,7 +1896,9 @@
+             let mut cx = cx.to_async();
+             Box::new(move |event| {
+                 handle
+-                    .update(&mut cx, |_, window, cx| window.dispatch_event(event, cx))
++                    .update(&mut cx, |_, window, cx| {
++                        window.dispatch_event(window.input_from_native(event), cx)
++                    })
+                     .log_err()
+                     .unwrap_or(DispatchEventResult::default())
+             })
+@@ -2015,6 +2018,7 @@
+             modifiers,
+             capslock,
+             scale_factor,
++            ui_scale: 1.,
+             bounds_observers: SubscriberSet::new(),
+             appearance,
+             appearance_observers: SubscriberSet::new(),
+@@ -2319,7 +2323,16 @@
+     /// - `Some(&[])` is an empty region, so the window receives no pointer or touch input.
+     /// - `None` resets the region to the default, so the whole window receives input again.
+     pub fn set_input_region(&self, region: Option<&[Bounds<Pixels>]>) {
+-        self.platform_window.set_input_region(region);
++        let region = region.map(|rects| {
++            rects
++                .iter()
++                .map(|b| Bounds {
++                    origin: b.origin * self.ui_scale,
++                    size: b.size * self.ui_scale,
++                })
++                .collect::<Vec<_>>()
++        });
++        self.platform_window.set_input_region(region.as_deref());
+     }
+ 
+     /// Return the `WindowBounds` to indicate that how a window should be opened
+@@ -2584,10 +2597,10 @@
+     /// the platform window, then notifies observers. Normally called automatically
+     /// by the platform's resize callback, but exposed publicly for test infrastructure.
+     pub fn bounds_changed(&mut self, cx: &mut App) {
+-        self.scale_factor = self.platform_window.scale_factor();
+-        self.viewport_size = self.platform_window.content_size();
++        self.scale_factor = self.platform_window.scale_factor() * self.ui_scale;
++        self.viewport_size = self.platform_window.content_size() / self.ui_scale;
+         self.display_id = self.platform_window.display().map(|display| display.id());
+-        self.mouse_position = self.platform_window.mouse_position();
++        self.mouse_position = self.platform_window.mouse_position() / self.ui_scale;
+ 
+         self.refresh();
+ 
+@@ -2687,7 +2700,8 @@
+ 
+     /// Opens the native title bar context menu, useful when implementing client side decorations (Wayland and X11)
+     pub fn show_window_menu(&self, position: Point<Pixels>) {
+-        self.platform_window.show_window_menu(position)
++        self.platform_window
++            .show_window_menu(position * self.ui_scale)
+     }
+ 
+     /// Handle window movement for Linux and macOS.
+@@ -2701,7 +2715,7 @@
+     /// When using client side decorations, set this to the width of the invisible decorations (Wayland and X11)
+     pub fn set_client_inset(&mut self, inset: Pixels) {
+         self.client_inset = Some(inset);
+-        self.platform_window.set_client_inset(inset);
++        self.platform_window.set_client_inset(inset * self.ui_scale);
+     }
+ 
+     /// Returns the client_inset value by [`Self::set_client_inset`].
+@@ -2738,7 +2752,8 @@
+     /// Sets the position of the macOS traffic light buttons.
+     #[cfg(target_os = "macos")]
+     pub fn set_traffic_light_position(&self, position: Point<Pixels>) {
+-        self.platform_window.set_traffic_light_position(position);
++        self.platform_window
++            .set_traffic_light_position(position * self.ui_scale);
+     }
+ 
+     /// Sets the application identifier.
+@@ -2781,6 +2796,72 @@
+     /// be rendered as two pixels on screen.
+     pub fn scale_factor(&self) -> f32 {
+         self.scale_factor
++    }
++
++    /// Application UI scale, independent of the operating system display scale.
++    pub fn ui_scale(&self) -> f32 {
++        self.ui_scale
++    }
++
++    /// Scale the logical viewport and vector rendering without resizing the native
++    /// window. Screen-space window bounds and synthetic dispatch_event inputs
++    /// retain their original coordinate contract.
++    pub fn set_ui_scale(&mut self, scale: f32) {
++        if !scale.is_finite() || scale <= 0. || scale == self.ui_scale {
++            return;
++        }
++        let ratio = self.ui_scale / scale;
++        self.viewport_size = self.viewport_size * ratio;
++        self.mouse_position = self.mouse_position * ratio;
++        self.scale_factor = self.platform_window.scale_factor() * scale;
++        self.ui_scale = scale;
++        if let Some(inset) = self.client_inset {
++            self.platform_window.set_client_inset(inset * scale);
++        }
++        self.refresh();
++    }
++
++    /// Convert native local input once; synthesized gestures already use UI units.
++    fn input_from_native(&self, mut event: PlatformInput) -> PlatformInput {
++        let scale = self.ui_scale;
++        match &mut event {
++            PlatformInput::MouseDown(e) => e.position = e.position / scale,
++            PlatformInput::MouseUp(e) => e.position = e.position / scale,
++            PlatformInput::MouseMove(e) => e.position = e.position / scale,
++            PlatformInput::MouseExited(e) => e.position = e.position / scale,
++            PlatformInput::MousePressure(e) => e.position = e.position / scale,
++            PlatformInput::Pinch(e) => e.position = e.position / scale,
++            PlatformInput::ScrollWheel(e) => {
++                e.position = e.position / scale;
++                if let crate::ScrollDelta::Pixels(delta) = &mut e.delta {
++                    *delta = *delta / scale;
++                }
++            }
++            PlatformInput::Touch(e) => {
++                e.position = e.position / scale;
++                e.predicted_position = e.predicted_position.map(|p| p / scale);
++            }
++            PlatformInput::TouchDrag(e) => {
++                e.position = e.position / scale;
++                e.start_position = e.start_position / scale;
++            }
++            PlatformInput::LongPress(e) => {
++                e.position = e.position / scale;
++                e.start_position = e.start_position / scale;
++            }
++            PlatformInput::FileDrop(e) => match e {
++                FileDropEvent::Entered { position, .. }
++                | FileDropEvent::Pending { position }
++                | FileDropEvent::Submit { position }
++                | FileDropEvent::DataEntered { position, .. }
++                | FileDropEvent::DataSubmit { position, .. } => *position = *position / scale,
++                FileDropEvent::Exited | FileDropEvent::Ended => {}
++            },
++            PlatformInput::KeyDown(_)
++            | PlatformInput::KeyUp(_)
++            | PlatformInput::ModifiersChanged(_) => {}
++        }
++        event
+     }
+ 
+     /// Overrides the display scale factor for tests.
+@@ -8424,3 +8505,58 @@
+         assert_eq!(dropped[0].contents(&html), None);
+     }
+ }
++
++#[cfg(test)]
++mod ui_scale_tests {
++    use super::*;
++    use crate::TestAppContext;
++
++    struct EmptyView;
++    impl Render for EmptyView {
++        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
++            crate::div()
++        }
++    }
++
++    #[gpui::test]
++    fn ui_scale_maps_native_input_and_dpi_resize_but_not_synthetic_input(cx: &mut TestAppContext) {
++        let handle = cx.add_window(|_, _| EmptyView);
++        handle
++            .update(cx, |_, window, cx| {
++                let viewport = window.viewport_size();
++                let native_bounds = window.bounds();
++                let os_scale = window.scale_factor();
++                window.set_ui_scale(1.5);
++                assert_eq!(window.viewport_size(), viewport / 1.5);
++                assert_eq!(window.bounds(), native_bounds);
++                assert_eq!(window.scale_factor(), os_scale * 1.5);
++                let event = PlatformInput::MouseMove(MouseMoveEvent {
++                    position: point(px(300.), px(150.)),
++                    ..Default::default()
++                });
++                let PlatformInput::MouseMove(mapped) = window.input_from_native(event) else {
++                    panic!()
++                };
++                assert_eq!(mapped.position, point(px(200.), px(100.)));
++                window.dispatch_event(PlatformInput::MouseMove(mapped), cx);
++                assert_eq!(window.mouse_position(), point(px(200.), px(100.)));
++                let event = PlatformInput::ScrollWheel(crate::ScrollWheelEvent {
++                    position: point(px(300.), px(150.)),
++                    delta: crate::ScrollDelta::Pixels(point(px(0.), px(30.))),
++                    ..Default::default()
++                });
++                let PlatformInput::ScrollWheel(mapped) = window.input_from_native(event) else {
++                    panic!()
++                };
++                assert_eq!(mapped.delta.pixel_delta(px(10.)), point(px(0.), px(20.)));
++                window.bounds_changed(cx);
++                assert_eq!(window.viewport_size(), viewport / 1.5);
++                assert_eq!(window.scale_factor(), os_scale * 1.5);
++                window.set_ui_scale(f32::NAN);
++                assert_eq!(window.ui_scale(), 1.5);
++                window.set_ui_scale(1.);
++                assert_eq!(window.viewport_size(), viewport);
++            })
++            .unwrap();
++    }
++}
