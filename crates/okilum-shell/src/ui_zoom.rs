@@ -112,6 +112,13 @@ mod tests {
     use super::*;
     use ::core::prelude::v1::test;
 
+    struct Content;
+    impl Render for Content {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full()
+        }
+    }
+
     #[test]
     fn bounded_discrete_scale_and_invalid_saved_values() {
         assert_eq!(normalize(0.1), 0.5);
@@ -166,7 +173,7 @@ mod tests {
             reader_ui_state::set_text_zoom(1.4, cx);
         });
         let (_, visual) = cx.add_window_view(|window, cx| {
-            let content = cx.new(|_| ZoomLayer::default());
+            let content = cx.new(|_| Content);
             Root::new(content, window, cx)
         });
         visual.run_until_parked();
@@ -199,7 +206,7 @@ mod tests {
         });
         visual.run_until_parked();
         let (_, second) = cx.add_window_view(|window, cx| {
-            let content = cx.new(|_| ZoomLayer::default());
+            let content = cx.new(|_| Content);
             Root::new(content, window, cx)
         });
         second.run_until_parked();
