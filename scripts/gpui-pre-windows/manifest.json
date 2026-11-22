@@ -5,9 +5,16 @@
   "archive_sha256": "1a4b60579aa2cb4ef7b6f22133a7b9fe12458062961343bdcf36e259047bc7ad",
   "patch": "../patches/gpui-pre-windows/0001-directx-atlas-upload.diff",
   "patch_sha256": "e6ecfd1faf06aa446377ff0d8eebc9d56ac24977aefeefde1c65691bc723569e",
-  "tree_sha256": "991f1594c13721f951d2a476d0cfa853ed2e1bdce900ddb2861f506e308f69ad",
+  "tree_sha256": "f1bc1a800b5303d01379364d179946c9f893ddaaec6ebf4fc5b2ef97462006cc",
   "generated_path": "vendor/gpui-pre-windows-0.3.3",
   "changed_files": [
-    "src/directx_atlas.rs"
-  ]
+    "src/directx_atlas.rs",
+    "src/external_drop.rs",
+    "src/gpui_windows.rs",
+    "src/window.rs"
+  ],
+  "external_data_drop": {
+    "patch": "../patches/gpui-pre-windows/0002-external-data-drops.diff",
+    "sha256": "4035762305906d2eeba07ff1e5d6d1acddb85534ab0c55ff619e8e03125c470c"
+  }
 }

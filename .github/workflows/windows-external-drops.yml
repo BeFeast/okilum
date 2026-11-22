@@ -1,0 +1,40 @@
+name: Windows external drops
+on:
+  push:
+    branches: ['main', 't3/windows-external-data-drops']
+    paths:
+      - 'scripts/patches/gpui-pre*/**'
+      - 'scripts/gpui-pre*/**'
+      - 'scripts/*setup*'
+      - 'crates/okilum-shell/src/note_paste*'
+      - 'crates/okilum-shell/src/note_paste/**'
+      - 'crates/okilum-shell/src/platform/windows_note_clipboard*'
+      - 'scripts/ci/windows-external-drops.ps1'
+      - '.github/workflows/windows-external-drops.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: windows-external-drops-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  regression:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_BUILD_JOBS: '4'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: agent-windows-recovery-v1
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Prepare pinned vendor
+        shell: bash
+        run: bash scripts/vendor-setup.sh
+      - name: Windows OLE and router regression controls
+        shell: pwsh
+        run: ./scripts/ci/windows-external-drops.ps1

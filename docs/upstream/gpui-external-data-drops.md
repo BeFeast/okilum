@@ -85,7 +85,32 @@ the same paths-only event.
   compositor remains a manual integration check; the pinned crate has no
   display-server API limitation preventing this implementation.
 
-The Windows backend remains paths-only.
+`scripts/patches/gpui-pre-windows/0002-external-data-drops.diff` (Windows):
+
+- OLE `IDataObject` offers are queried for known `TYMED_HGLOBAL` formats.
+  Nonempty `CF_HDROP` paths keep the existing file route; empty/missing paths
+  fall back to `DataEntered`. Only type availability is queried on enter;
+  contents are copied at `Drop` and delivered as `DataSubmit`.
+- Accepts `CF_UNICODETEXT`, registered UTF-8 text, `HTML Format` (CF_HTML),
+  `UniformResourceLocatorW`/`UniformResourceLocator`, PNG/JFIF/JPEG/GIF/WebP/TIFF,
+  `CF_TIFF`, `CF_DIBV5` and `CF_DIB`. Private formats and promised `FileContents`
+  are not requested. One successful image prevents reading further images.
+- `GlobalSize` is checked before `GlobalLock` and copying: 32 MiB per text,
+  64 MiB per image, 128 MiB aggregate. DIB conversion reserves the extra
+  14-byte BMP header within both limits and validates pixel/palette/mask layout.
+  `ReleaseStgMedium` runs on all return paths; locks are released before medium
+  release. OLE delayed rendering remains synchronous on the apartment owning
+  the drop; byte bounds do not impose a deadline on an unresponsive provider.
+- `DroppedData` maps Windows names into the shared router's flavors, decodes
+  UTF-16, strips NUL termination, and extracts the CF_HTML fragment and source
+  URL with the same parser used for clipboard paste. Malformed HTML falls back
+  to the offered plain text. DIB is delivered as BMP image data.
+- `.github/workflows/windows-external-drops.yml` compiles the pinned Windows
+  backend and runs real shell `IDataObject`/`HGLOBAL` controls (including empty
+  and nonempty HDROP), image selection/budget/DIB controls, and Okilum router
+  and CF_HTML regression tests. Each test must appear as executed in the log.
+  Third-party application drags on an interactive Windows desktop remain a
+  manual integration check.
 
 ## Okilum side
 
@@ -98,18 +123,23 @@ at the pointer; on the rendered note it switches to Edit and goes in before the
 block under the pointer.
 
 Not covered yet: file promises without image data or HTML (some apps offer an
-image only as a promised file), and the Windows backend. Linux data drops use native MIME identifiers mapped
+image only as a promised file). Linux data drops use native MIME identifiers mapped
 by `DroppedData` to the router's existing flavor names; UTF-16 byte order and
 URI-list comments are decoded at that boundary.
 
 ## Upkeep
 
 The archives, patches and resulting trees are checksum-pinned in
-`scripts/gpui-pre/manifest.json`, `scripts/gpui-pre-macos/manifest.json` and
-`scripts/gpui-pre-linux/manifest.json`.
-On a `gpui-pre*` bump both diffs must be rebased and the digests of each
+`scripts/gpui-pre/manifest.json`, `scripts/gpui-pre-macos/manifest.json`,
+`scripts/gpui-pre-linux/manifest.json`, and `scripts/gpui-pre-windows/manifest.json`.
+On a `gpui-pre*` bump the affected diffs must be rebased and the digests of each
 manifest refreshed; a changed context fails patch application instead of
 silently changing behaviour.
+
+Windows upkeep preserves the separately pinned DirectX atlas patch unchanged.
+The Windows manifest additionally pins the external-drop diff; the setup allows
+only `src/external_drop.rs`, its module declaration, and `src/window.rs` alongside
+that existing atlas patch. Regeneration verifies this complete changed-file set.
 
 ## Upstream plan
 
@@ -142,3 +172,11 @@ The change is general (no Okilum hook) and suitable for upstream:
 
 Opening an upstream issue or PR needs Oleg's separate approval; none has been
 opened.
+
+Windows source belongs to Zed's `crates/gpui_windows` (not the snapshot publisher);
+the pinned [Windows package metadata](https://docs.rs/crate/gpui-pre-windows/0.3.3/source/Cargo.toml.orig)
+names `zed-industries/zed`. The Windows follow-up is general OLE format handling
+and uses the existing GPUI data events without Okilum hooks. Rebase on each
+snapshot bump, propose the bounded reader and event wiring as a separate upstream
+Windows change after the core events, and retire the downstream diff once included
+in a published snapshot. No upstream issue or PR is opened by this work.
