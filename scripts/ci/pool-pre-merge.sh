@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Pre-merge gate on a build-slot host. Same commands as the former hosted
-# pre-merge job: formatting, Python suites, clippy, and the release-binary
+# Shared pre-merge phases on hosted Linux or a build-slot host: formatting,
+# Python suites, clippy, and the release-binary
 # check. No Rust test suites and no desktop build.
 set -euo pipefail
 # shellcheck source=scripts/ci/pool-phase-lib.sh
