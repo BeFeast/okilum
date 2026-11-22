@@ -59,8 +59,42 @@ fn snapshot_reads_exact_lines_and_reports_unfinished_tail() {
     );
     assert!(last.message.contains("7 trailing bytes"));
 }
+/// Runs `name` alone in a fresh test process when not already inside one.
+///
+/// The SFTP worker reserves from the process-wide Log memory pool (#3213).
+/// Other tests in this binary deliberately exhaust that pool, so a run in the
+/// shared process can fail with "budget is busy" through no fault of the
+/// worker. Returns `true` in the parent, which must then return.
+fn ran_isolated(name: &str) -> bool {
+    const CHILD: &str = "OKILUM_SFTP_WORKER_ISOLATED_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        return false;
+    }
+    let module = module_path!().split_once("::").unwrap().1;
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", &format!("{module}::{name}"), "--nocapture"])
+        .env(CHILD, "1")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "isolated {name} failed: {stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // Positive control: `--exact` with a wrong path passes with 0 tests.
+    assert!(
+        stdout.contains("test result: ok. 1 passed"),
+        "isolated {name} did not run: {stdout}"
+    );
+    true
+}
+
 #[test]
 fn large_file_starts_at_a_line_in_its_last_mebibyte_and_says_so() {
+    if ran_isolated("large_file_starts_at_a_line_in_its_last_mebibyte_and_says_so") {
+        return;
+    }
     let line = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde\n";
     let mut bytes: Vec<u8> = line
         .iter()

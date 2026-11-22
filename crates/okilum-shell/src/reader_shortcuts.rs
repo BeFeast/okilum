@@ -16,6 +16,8 @@ pub(crate) enum Group {
     Format,
     Search,
     View,
+    /// Keys bound only in the start screen's `ReaderEntry` context (#3208).
+    StartScreen,
 }
 
 impl Group {
@@ -26,6 +28,7 @@ impl Group {
             Group::Format => "Format",
             Group::Search => "Search",
             Group::View => "View",
+            Group::StartScreen => "Start screen",
         }
     }
 }
@@ -236,6 +239,19 @@ fn catalog() -> Vec<Entry> {
         entry::<reader_settings::OpenSettings>("Settings", View),
         entry::<Dismiss>("Close or clear", View),
         entry::<DismissManagerModel>("Close model picker", View),
+        entry::<reader_welcome::EntryNext>("Next recent", StartScreen),
+        entry::<reader_welcome::EntryPrevious>("Previous recent", StartScreen),
+        entry::<reader_welcome::EntryFirst>("First recent", StartScreen),
+        entry::<reader_welcome::EntryLast>("Last recent", StartScreen),
+        entry::<reader_welcome::EntryPageDown>("Recents page down", StartScreen),
+        entry::<reader_welcome::EntryPageUp>("Recents page up", StartScreen),
+        entry::<reader_welcome::EntryOpen>("Open selected recent", StartScreen),
+        entry::<reader_welcome::OpenRecent>("Open recent by number", StartScreen),
+        entry::<reader_welcome::EntryRemove>("Remove recent from the list", StartScreen),
+        entry::<reader_welcome::EntryEscape>("Clear filter or cancel", StartScreen),
+        entry::<reader_welcome::EntryFocusNext>("Next start screen control", StartScreen),
+        entry::<reader_welcome::EntryFocusPrevious>("Previous start screen control", StartScreen),
+        entry::<NewUntitled>("New file", StartScreen),
     ]
 }
 
@@ -1080,11 +1096,19 @@ mod tests {
             Group::Format,
             Group::Search,
             Group::View,
+            Group::StartScreen,
         ] {
             assert!(groups.contains(&group), "{group:?} has rows");
         }
         let row = |label: &str| rows.iter().find(|row| row.label == label).unwrap();
         assert_eq!(row("New note").keys, [Os::CURRENT.shortcut("secondary-n")]);
+        // #3208: the start screen's own keys are listed under their group.
+        assert_eq!(row("New file").keys, [Os::CURRENT.shortcut("secondary-n")]);
+        assert_eq!(row("New file").group, Group::StartScreen);
+        assert_eq!(
+            row("Open recent by number").keys,
+            [Os::CURRENT.shortcut("secondary-1")]
+        );
         assert_eq!(
             row("Copy as Markdown").keys,
             [Os::CURRENT.shortcut(reader_read_menu::COPY_MARKDOWN_KEY)]
