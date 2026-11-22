@@ -37,6 +37,7 @@ use tungstenite::{stream::MaybeTlsStream, Message, WebSocket};
 use crate::Environment;
 
 pub use auth::NativeToken;
+pub use okilum_http::NetworkCause;
 pub use protocol::ThreadUpdate;
 
 /// Transport errors deliberately exclude HTTP bodies, socket URLs and peer
@@ -49,6 +50,10 @@ pub enum StreamError {
     MissingReadPermission,
     Http(u16),
     Unreachable,
+    /// A network failure with a cause the user can act on (#1944): an
+    /// untrusted certificate, the system proxy, proxy authentication or a
+    /// timeout. Retried like `Unreachable`. Never `NetworkCause::Connection`.
+    Network(NetworkCause),
     Protocol(&'static str),
     IncompatibleProtocol,
     Closed,
@@ -64,6 +69,11 @@ impl std::fmt::Display for StreamError {
             Self::MissingReadPermission => write!(f, "The native T3 session needs orchestration:read permission"),
             Self::Http(status) => write!(f, "T3 returned HTTP {status}"),
             Self::Unreachable => write!(f, "The T3 stream is unreachable"),
+            Self::Network(NetworkCause::Certificate) => write!(f, "T3's TLS certificate is not trusted by this computer"),
+            Self::Network(NetworkCause::Proxy) => write!(f, "The system proxy could not connect to T3"),
+            Self::Network(NetworkCause::ProxyAuthentication) => write!(f, "The proxy requires authentication (HTTP 407); integrated proxy authentication is not supported"),
+            Self::Network(NetworkCause::Timeout) => write!(f, "The connection to T3 timed out"),
+            Self::Network(NetworkCause::Connection) => write!(f, "The T3 stream is unreachable"),
             Self::Protocol(detail) => write!(f, "Unexpected T3 stream response: {detail}"),
             Self::IncompatibleProtocol => write!(f, "This T3 server does not support orchestration protocol v2"),
             Self::Closed => write!(f, "The T3 stream closed; reconnect with the retained projection"),
@@ -82,11 +92,39 @@ fn transport_failure(phase: &'static str, timeout: bool) -> StreamError {
     StreamError::Unreachable
 }
 
+/// As [`transport_failure`], keeping the typed cause from `error`'s chain.
+/// Logs only the phase and cause, never the error text (it may hold a URL).
+fn network_failure(phase: &'static str, error: &(dyn std::error::Error + 'static)) -> StreamError {
+    let cause = okilum_http::classify(error);
+    eprintln!("Native T3 transport failed: phase={phase}; cause={cause:?}");
+    match cause {
+        NetworkCause::Connection => StreamError::Unreachable,
+        cause => StreamError::Network(cause),
+    }
+}
+
 fn io_timeout(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
         std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
     )
+}
+
+/// #1944: the TLS backend is chosen here, not by Cargo feature unification.
+/// Windows: SChannel with the OS trust store (a corporate root CA installed
+/// for TLS inspection is trusted, as for every okilum_http client).
+/// macOS/Linux: rustls with bundled webpki roots, unchanged.
+fn connector() -> StreamResult<Option<tungstenite::Connector>> {
+    #[cfg(windows)]
+    {
+        native_tls::TlsConnector::new()
+            .map(|connector| Some(tungstenite::Connector::NativeTls(connector)))
+            .map_err(|_| transport_failure("TLS configuration", false))
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(None)
+    }
 }
 
 /// Belongs to a retained projection, not a durable delivery/replay ledger.
@@ -349,14 +387,36 @@ impl NativeClient {
             .append_pair("orchestrationProtocol", "2")
             .append_pair("wsTicket", &ticket);
         let host = self.environment.host();
+        let port = url.port_or_known_default().unwrap_or(80);
         if !self.access.allowed() {
             return Err(StreamError::Closed);
         }
-        let addresses = (host.as_str(), url.port_or_known_default().unwrap_or(80))
+        // #1944: the same Windows route as the ticket request (system/PAC
+        // proxy; loopback and LAN/tailnet literals direct). PAC sees the
+        // origin only, never the ticket query.
+        let route = okilum_http::local_network_socket_route(&url).map_err(|error| {
+            let error: &(dyn std::error::Error + 'static) = error.as_ref();
+            network_failure("proxy discovery", error)
+        })?;
+        let (connect_host, connect_port) = match &route {
+            okilum_http::SocketRoute::Direct => (host.clone(), port),
+            okilum_http::SocketRoute::Proxy { host, port } => (host.clone(), *port),
+        };
+        let via_proxy = matches!(route, okilum_http::SocketRoute::Proxy { .. });
+        // A proxy that cannot be resolved or reached is a proxy failure.
+        let unreachable = |phase: &'static str| {
+            if via_proxy {
+                network_failure(phase, &okilum_http::TunnelError::Closed)
+            } else {
+                transport_failure(phase, false)
+            }
+        };
+        let addresses = (connect_host.as_str(), connect_port)
             .to_socket_addrs()
-            .map_err(|_| transport_failure("DNS resolution", false))?;
+            .map_err(|_| unreachable("DNS resolution"))?;
         let deadline = Instant::now() + self.timeout;
         let mut connected = None;
+        let mut last_error = None;
         for address in addresses {
             if !self.access.allowed() {
                 return Err(StreamError::Closed);
@@ -364,19 +424,36 @@ impl NativeClient {
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 break;
             };
-            if let Ok(stream) = TcpStream::connect_timeout(&address, remaining) {
-                connected = Some(stream);
-                break;
+            match TcpStream::connect_timeout(&address, remaining) {
+                Ok(stream) => {
+                    connected = Some(stream);
+                    break;
+                }
+                Err(error) => last_error = Some(error),
             }
         }
-        let stream = connected
-            .ok_or_else(|| transport_failure("TCP connection", Instant::now() >= deadline))?;
+        let Some(mut stream) = connected else {
+            return Err(match last_error {
+                Some(error) if io_timeout(&error) || Instant::now() >= deadline => network_failure(
+                    "TCP connection",
+                    &std::io::Error::from(std::io::ErrorKind::TimedOut),
+                ),
+                _ => unreachable("TCP connection"),
+            });
+        };
         stream
             .set_read_timeout(Some(self.timeout))
             .map_err(|_| transport_failure("socket read configuration", false))?;
         stream
             .set_write_timeout(Some(self.timeout))
             .map_err(|_| transport_failure("socket write configuration", false))?;
+        if via_proxy {
+            if !self.access.allowed() {
+                return Err(StreamError::Closed);
+            }
+            okilum_http::connect_tunnel(&mut stream, &host, port, crate::network::USER_AGENT)
+                .map_err(|error| network_failure("proxy tunnel", &error))?;
+        }
         let cancel = stream
             .try_clone()
             .map_err(|_| transport_failure("socket cancellation handle", false))?;
@@ -389,30 +466,32 @@ impl NativeClient {
         let config = tungstenite::protocol::WebSocketConfig::default()
             .max_frame_size(Some(64 * 1024 * 1024));
         let (socket, _) =
-            tungstenite::client_tls_with_config(url.as_str(), stream, Some(config), None).map_err(
-                |error| match error {
-                    tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response))
-                        if response.status().as_u16() == 426 =>
-                    {
-                        StreamError::IncompatibleProtocol
-                    }
-                    tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response))
-                        if response.status().as_u16() == 401 =>
-                    {
-                        StreamError::PairingRequired
-                    }
-                    tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response)) => {
-                        StreamError::Http(response.status().as_u16())
-                    }
-                    tungstenite::HandshakeError::Failure(tungstenite::Error::Tls(_)) => {
-                        transport_failure("TLS handshake", false)
-                    }
-                    tungstenite::HandshakeError::Failure(tungstenite::Error::Io(error)) => {
-                        transport_failure("TLS/WebSocket upgrade", io_timeout(&error))
-                    }
-                    _ => transport_failure("WebSocket upgrade", false),
-                },
-            )?;
+            tungstenite::client_tls_with_config(url.as_str(), stream, Some(config), connector()?)
+                .map_err(|error| match error {
+                tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response))
+                    if response.status().as_u16() == 426 =>
+                {
+                    StreamError::IncompatibleProtocol
+                }
+                tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response))
+                    if response.status().as_u16() == 401 =>
+                {
+                    StreamError::PairingRequired
+                }
+                tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response)) => {
+                    StreamError::Http(response.status().as_u16())
+                }
+                // Any TLS failure here is the certificate path in practice
+                // (TLS inspection, an untrusted or mismatched certificate).
+                tungstenite::HandshakeError::Failure(tungstenite::Error::Tls(_)) => {
+                    let _ = transport_failure("TLS handshake", false);
+                    StreamError::Network(NetworkCause::Certificate)
+                }
+                tungstenite::HandshakeError::Failure(tungstenite::Error::Io(error)) => {
+                    network_failure("TLS/WebSocket upgrade", &error)
+                }
+                _ => transport_failure("WebSocket upgrade", false),
+            })?;
         let phases = ConnectPhases {
             auth_done,
             websocket_open: Instant::now(),

@@ -16,6 +16,8 @@ pub(crate) enum Group {
     Format,
     Search,
     View,
+    /// Keys bound only in the start screen's `ReaderEntry` context (#3208).
+    StartScreen,
 }
 
 impl Group {
@@ -26,6 +28,7 @@ impl Group {
             Group::Format => "Format",
             Group::Search => "Search",
             Group::View => "View",
+            Group::StartScreen => "Start screen",
         }
     }
 }
@@ -154,6 +157,7 @@ fn catalog() -> Vec<Entry> {
         menu_entry::<CopyFilePath>("Copy path", Notes),
         menu_entry::<CopyFileWikilink>("Copy wikilink", Notes),
         menu_entry::<OpenFileDefault>("Open with default app", Notes),
+        entry::<crate::open_in::OpenInDefaultEditor>("Open in default code editor", Notes),
         entry::<reader_read_menu::CopyAsMarkdown>("Copy as Markdown", Notes),
         entry::<reader_read_menu::CopyWithFormatting>("Copy as Rich Text", Notes),
         entry::<reader_log::CopyRawLine>("Copy raw log line", Notes),
@@ -237,6 +241,19 @@ fn catalog() -> Vec<Entry> {
         entry::<reader_settings::OpenSettings>("Settings", View),
         entry::<Dismiss>("Close or clear", View),
         entry::<DismissManagerModel>("Close model picker", View),
+        entry::<reader_welcome::EntryNext>("Next recent", StartScreen),
+        entry::<reader_welcome::EntryPrevious>("Previous recent", StartScreen),
+        entry::<reader_welcome::EntryFirst>("First recent", StartScreen),
+        entry::<reader_welcome::EntryLast>("Last recent", StartScreen),
+        entry::<reader_welcome::EntryPageDown>("Recents page down", StartScreen),
+        entry::<reader_welcome::EntryPageUp>("Recents page up", StartScreen),
+        entry::<reader_welcome::EntryOpen>("Open selected recent", StartScreen),
+        entry::<reader_welcome::OpenRecent>("Open recent by number", StartScreen),
+        entry::<reader_welcome::EntryRemove>("Remove recent from the list", StartScreen),
+        entry::<reader_welcome::EntryEscape>("Clear filter or cancel", StartScreen),
+        entry::<reader_welcome::EntryFocusNext>("Next start screen control", StartScreen),
+        entry::<reader_welcome::EntryFocusPrevious>("Previous start screen control", StartScreen),
+        entry::<NewUntitled>("New file", StartScreen),
     ]
 }
 
@@ -251,20 +268,34 @@ pub(crate) fn action_label(action: &str) -> String {
 /// Display text of every distinct key bound to `action`, highest precedence
 /// first (the one GPUI and the toolkit menus pick). On macOS a `ctrl` alias of
 /// a `cmd` binding exists for muscle memory and is not shown.
+///
+/// An action with a payload, such as the start screen's ⌘1–⌘9 opening row
+/// 1–9, has one bound value per key. Each value is listed in binding order,
+/// so that row shows ⌘1 … ⌘9 rather than only the first value's key.
 fn keys_for(keymap: &gpui::Keymap, action: &str, os: Os) -> Vec<String> {
-    let keys: Vec<String> = Vec::new();
-    let Some(target) = keymap
-        .bindings()
-        .find(|binding| binding.action().name() == action)
-    else {
-        return keys;
-    };
-    formatted_keys(keymap, target.action(), os)
+    let mut payloads: Vec<&dyn Action> = Vec::new();
+    for binding in keymap.bindings() {
+        let bound = binding.action();
+        if bound.name() == action && !payloads.iter().any(|seen| seen.partial_eq(bound)) {
+            payloads.push(bound);
+        }
+    }
+    display_keys(
+        payloads
+            .into_iter()
+            .flat_map(|payload| keymap.bindings_for_action(payload).rev()),
+        os,
+    )
 }
 
+/// The keys of exactly this `action` value, highest precedence first.
 fn formatted_keys(keymap: &gpui::Keymap, action: &dyn Action, os: Os) -> Vec<String> {
+    display_keys(keymap.bindings_for_action(action).rev(), os)
+}
+
+fn display_keys<'a>(bindings: impl Iterator<Item = &'a gpui::KeyBinding>, os: Os) -> Vec<String> {
     let mut keys = Vec::new();
-    for binding in keymap.bindings_for_action(action).rev() {
+    for binding in bindings {
         let text = binding
             .keystrokes()
             .iter()
@@ -946,13 +977,100 @@ mod tests {
         // Positive control: the action has a default on every OS.
         assert!(!strokes.is_empty(), "RevealFile lost its default");
         if cfg!(windows) {
-            assert_eq!(strokes, ["ctrl-shift-s"]);
+            assert_eq!(strokes, ["ctrl-shift-u"]);
         } else if cfg!(target_os = "macos") {
             assert_eq!(strokes, ["alt-win-r"]);
         }
-        // The Windows chord obeys the AltGr / language-switch rule too.
-        let windows = gpui::Keystroke::parse("ctrl-shift-s").unwrap();
+        // The Windows chord obeys the AltGr / language-switch rule too, and
+        // is not Ctrl+Shift+S, which Windows apps use for Save All (#3133).
+        let windows = gpui::Keystroke::parse(REVEAL_FILE_KEY_WINDOWS).unwrap();
         assert!(altgr_conflict(true, &windows.modifiers, &windows.key).is_none());
+        assert_ne!(REVEAL_FILE_KEY_WINDOWS, "ctrl-shift-s");
+    }
+
+    /// The Win+Alt chords Windows 11 keeps for itself (Xbox Game Bar and the
+    /// shell); a default on one of them is a dead key there.
+    fn windows_reserved(m: &gpui::Modifiers, key: &str) -> bool {
+        m.platform
+            && m.alt
+            && !m.control
+            && !m.shift
+            && ["b", "d", "g", "k", "m", "r", "t", "printscreen"].contains(&key)
+    }
+
+    #[gpui::test]
+    fn terminal3134_windows_open_in_terminal_key_reaches_okilum(cx: &mut TestAppContext) {
+        // Win+Alt+T shows or hides the Game Bar recording timer; Windows takes
+        // it before any app sees it, so the file menu advertised a dead key
+        // (#3134), as Win+Alt+R did for Reveal (#3110).
+        let keymap = reader_keymap(cx);
+        let strokes: Vec<String> = keymap
+            .bindings()
+            .filter(|binding| {
+                binding.action().name() == project_terminal::OpenInTerminal::name_for_type()
+            })
+            .flat_map(|binding| binding.keystrokes().iter())
+            .map(|stroke| {
+                let m = stroke.modifiers();
+                format!(
+                    "{}{}{}{}{}",
+                    if m.control { "ctrl-" } else { "" },
+                    if m.alt { "alt-" } else { "" },
+                    if m.shift { "shift-" } else { "" },
+                    if m.platform { "win-" } else { "" },
+                    stroke.key()
+                )
+            })
+            .collect();
+        // Positive control: the action has a default on every OS.
+        assert!(!strokes.is_empty(), "OpenInTerminal lost its default");
+        if cfg!(windows) {
+            assert_eq!(strokes, ["ctrl-shift-a"]);
+        } else if cfg!(target_os = "macos") {
+            assert_eq!(strokes, ["alt-win-t"]);
+        }
+        let windows = gpui::Keystroke::parse(OPEN_IN_TERMINAL_KEY_WINDOWS).unwrap();
+        assert!(altgr_conflict(true, &windows.modifiers, &windows.key).is_none());
+        assert!(!windows_reserved(&windows.modifiers, &windows.key));
+        // Reveal and Open in terminal both left Win+Alt on Windows; they must
+        // not land on the same chord there (#3133, #3134).
+        assert_ne!(OPEN_IN_TERMINAL_KEY_WINDOWS, REVEAL_FILE_KEY_WINDOWS);
+        // On Windows nothing else in the Reader keymap shares the chord.
+        if cfg!(windows) {
+            let sharing: Vec<_> = keymap
+                .bindings()
+                .filter(|binding| {
+                    binding.action().name() != project_terminal::OpenInTerminal::name_for_type()
+                        && binding.keystrokes().len() == 1
+                        && binding.keystrokes()[0].modifiers() == &windows.modifiers
+                        && binding.keystrokes()[0].key() == windows.key
+                })
+                .map(|binding| binding.action().name())
+                .collect();
+            assert!(
+                sharing.is_empty(),
+                "{OPEN_IN_TERMINAL_KEY_WINDOWS} is also {sharing:?}"
+            );
+        }
+        // Negative controls: the old Windows defaults are reserved chords.
+        for old in ["alt-cmd-t", "alt-cmd-r"] {
+            let stroke = gpui::Keystroke::parse(old).unwrap();
+            assert!(windows_reserved(&stroke.modifiers, &stroke.key), "{old}");
+        }
+        // No Windows default sits on a reserved chord.
+        if cfg!(windows) {
+            let offenders: Vec<_> = keymap
+                .bindings()
+                .filter(|binding| {
+                    binding
+                        .keystrokes()
+                        .iter()
+                        .any(|stroke| windows_reserved(stroke.modifiers(), stroke.key()))
+                })
+                .map(|binding| binding.action().name())
+                .collect();
+            assert!(offenders.is_empty(), "Win+Alt system chords: {offenders:?}");
+        }
     }
 
     #[gpui::test]
@@ -994,11 +1112,20 @@ mod tests {
             Group::Format,
             Group::Search,
             Group::View,
+            Group::StartScreen,
         ] {
             assert!(groups.contains(&group), "{group:?} has rows");
         }
         let row = |label: &str| rows.iter().find(|row| row.label == label).unwrap();
         assert_eq!(row("New note").keys, [Os::CURRENT.shortcut("secondary-n")]);
+        // #3208: the start screen's own keys are listed under their group.
+        assert_eq!(row("New file").keys, [Os::CURRENT.shortcut("secondary-n")]);
+        assert_eq!(row("New file").group, Group::StartScreen);
+        // One row for the parameterized ⌘1–⌘9, every key in order (#3213).
+        let numbers: Vec<String> = (1..=9)
+            .map(|n| Os::CURRENT.shortcut(&format!("secondary-{n}")))
+            .collect();
+        assert_eq!(row("Open recent by number").keys, numbers);
         assert_eq!(
             row("Copy as Markdown").keys,
             [Os::CURRENT.shortcut(reader_read_menu::COPY_MARKDOWN_KEY)]
@@ -1053,18 +1180,38 @@ mod tests {
         let _ = reader_keymap(cx);
         cx.update(|cx| {
             // Menus render the binding GPUI ranks highest; hints must agree.
+            // An action with a payload (⌘1–⌘9) is checked per bound value.
+            let keymap = cx.key_bindings();
+            let keymap = keymap.borrow();
             for entry in catalog() {
-                let keymap = cx.key_bindings();
-                let last = keymap
-                    .borrow()
-                    .bindings()
-                    .rfind(|binding| binding.action().name() == entry.action)
-                    .map(|binding| Os::CURRENT.shortcut(&binding.keystrokes()[0].unparse()));
-                let first = keys_for(&keymap.borrow(), entry.action, Os::CURRENT)
-                    .into_iter()
-                    .next();
-                assert_eq!(first, last, "{}", entry.label);
+                let mut checked = 0;
+                for (ix, binding) in keymap.bindings().enumerate() {
+                    let payload = binding.action();
+                    if payload.name() != entry.action {
+                        continue;
+                    }
+                    let first_of_value = keymap
+                        .bindings()
+                        .position(|other| other.action().partial_eq(payload))
+                        == Some(ix);
+                    if !first_of_value {
+                        continue;
+                    }
+                    let last = keymap
+                        .bindings()
+                        .rfind(|binding| binding.action().partial_eq(payload))
+                        .map(|binding| Os::CURRENT.shortcut(&binding.keystrokes()[0].unparse()));
+                    let first = formatted_keys(&keymap, payload, Os::CURRENT)
+                        .into_iter()
+                        .next();
+                    assert_eq!(first, last, "{}", entry.label);
+                    checked += 1;
+                }
+                if entry.action == reader_welcome::OpenRecent::name_for_type() {
+                    assert_eq!(checked, 9, "positive control: every ⌘1–⌘9 value is checked");
+                }
             }
+            drop(keymap);
             assert_eq!(
                 hint("New note", &NewNote, cx),
                 SharedString::from(format!("New note {}", Os::CURRENT.shortcut("secondary-n")))

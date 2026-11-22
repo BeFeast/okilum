@@ -38,6 +38,9 @@ jobs:
             build-essential cmake pkg-config curl git mold file patchelf gpgv libheif-examples \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev libvulkan1
+      # Same step as the producer: one key whatever the runner image (#3043).
+      - name: Keep only the pinned Rust toolchain
+        run: bash scripts/ci/rust-cache-toolchains.sh
       - uses: Swatinem/rust-cache@v2
         id: cargo-cache
         with:

@@ -45,6 +45,40 @@ pub(crate) fn state_directory() -> Result<PathBuf> {
         .context("No absolute Reader state directory is available")
 }
 
+/// How an opened vault or file goes into the history (#3208).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Recording {
+    /// `--no-history` / `OKILUM_NO_HISTORY=1`: not at all.
+    Off,
+    /// Remembered for its last note, never listed: nobody chose it as a vault.
+    Unlisted,
+    Listed,
+}
+
+/// `--no-history` switched recording off for this process (#3208).
+static NO_HISTORY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `--no-history`: this process records no recent vaults or files (#3208).
+pub(crate) fn disable_recording() {
+    NO_HISTORY.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Recording is off: `--no-history`, or `OKILUM_NO_HISTORY=1` (#3208). QA
+/// scripts, fixtures and one-off opens leave the recent list as it was.
+fn recording_disabled() -> bool {
+    static FROM_ENV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    NO_HISTORY.load(std::sync::atomic::Ordering::Relaxed)
+        || *FROM_ENV.get_or_init(|| no_history_from(std::env::var_os("OKILUM_NO_HISTORY")))
+}
+
+fn no_history_from(value: Option<std::ffi::OsString>) -> bool {
+    value.is_some_and(|value| {
+        let value = value.to_string_lossy();
+        let value = value.trim();
+        !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+    })
+}
+
 /// Tests point Readers at a temporary state directory instead of the user's.
 #[cfg(test)]
 pub(crate) struct TestSessionDirectory(pub PathBuf);
@@ -109,7 +143,15 @@ pub(crate) struct ReadingHistory {
     /// a single-file window lists them across folders.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     quick_files: Vec<(PathBuf, u64)>,
+    /// Vaults that were on a network volume when last opened (#3208), so an
+    /// unmounted share is named a network volume on the start screen.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    network_roots: std::collections::BTreeSet<PathBuf>,
 }
+
+/// The history keeps at most this many vaults (#3208); the next one drops
+/// the oldest that is not the default vault.
+const STORED_VAULTS: usize = 30;
 
 /// Recent of single-file windows lists at most this many files.
 const QUICK_FILES: usize = 40;
@@ -240,6 +282,9 @@ impl ReadingHistory {
             .last_opened
             .retain(|root, _| history.last_documents.contains_key(root));
         history.quick_files.retain(|(file, _)| file.is_absolute());
+        history
+            .network_roots
+            .retain(|root| history.last_documents.contains_key(root));
         if history.default_root.as_ref().is_some_and(|root| {
             !history.last_documents.contains_key(root)
                 || history.hidden_roots.contains(root)
@@ -279,6 +324,49 @@ impl ReadingHistory {
         single_file: bool,
         opened_at: Option<u64>,
     ) -> Result<()> {
+        // #3208: a folder nobody chooses as a vault (a test fixture, a temp
+        // or app-support folder) keeps its last note but is never listed or
+        // reopened at startup from the user's own history.
+        let recording = if recording_disabled() {
+            Recording::Off
+        } else if crate::reader_recent_vaults::users_history(directory)
+            && crate::reader_recent_vaults::Places::current().unchosen(root)
+        {
+            Recording::Unlisted
+        } else {
+            Recording::Listed
+        };
+        Self::record_as(directory, root, document, single_file, opened_at, recording)
+    }
+
+    fn record_as(
+        directory: &Path,
+        root: &Path,
+        document: &str,
+        single_file: bool,
+        opened_at: Option<u64>,
+        recording: Recording,
+    ) -> Result<()> {
+        validate_document(root, document)?;
+        match recording {
+            Recording::Off => Ok(()),
+            Recording::Unlisted => {
+                Self::record_opened(directory, root, document, single_file, opened_at, true)
+            }
+            Recording::Listed => {
+                Self::record_opened(directory, root, document, single_file, opened_at, false)
+            }
+        }
+    }
+
+    fn record_opened(
+        directory: &Path,
+        root: &Path,
+        document: &str,
+        single_file: bool,
+        opened_at: Option<u64>,
+        unchosen: bool,
+    ) -> Result<()> {
         validate_document(root, document)?;
         let _lock = Self::lock(directory, std::iter::once(root))?;
         let mut state = Self::load(directory)?.unwrap_or(Self {
@@ -290,8 +378,13 @@ impl ReadingHistory {
             last_opened: Default::default(),
             default_root: None,
             quick_files: Vec::new(),
+            network_roots: Default::default(),
         });
-        state.hidden_roots.remove(root);
+        if unchosen {
+            state.hidden_roots.insert(root.to_owned());
+        } else {
+            state.hidden_roots.remove(root);
+        }
         // #3123: a root already recorded as a full vault stays one when a
         // file inside it is opened on its own; only folders never opened as
         // a vault become quick-viewer roots.
@@ -324,6 +417,12 @@ impl ReadingHistory {
                 let previous = state.last_opened.entry(root.to_path_buf()).or_default();
                 *previous = (*previous).max(opened_at);
             }
+            if crate::reader_recent_vaults::on_network_volume(root) {
+                state.network_roots.insert(root.to_owned());
+            } else {
+                state.network_roots.remove(root);
+            }
+            state.drop_oldest_vaults(STORED_VAULTS);
         }
         state.persist(directory)
     }
@@ -341,6 +440,47 @@ impl ReadingHistory {
                 None
             }
         }))
+    }
+
+    /// Keep at most `keep` vaults, newest first; the default vault is never
+    /// dropped. Quick-viewer folders are not vaults and are not counted.
+    fn drop_oldest_vaults(&mut self, keep: usize) {
+        let vaults: Vec<PathBuf> = self
+            .recent_roots
+            .iter()
+            .chain(self.last_documents.keys())
+            .filter(|root| !self.quick_roots.contains(*root))
+            .fold(Vec::new(), |mut seen, root| {
+                if !seen.contains(root) {
+                    seen.push(root.clone());
+                }
+                seen
+            });
+        let dropped: Vec<PathBuf> = vaults
+            .into_iter()
+            .filter(|root| self.default_root.as_ref() != Some(root))
+            .skip(keep.saturating_sub(usize::from(self.default_root.is_some())))
+            .collect();
+        for root in dropped {
+            self.forget(&root);
+        }
+    }
+
+    fn forget(&mut self, root: &Path) {
+        self.last_documents.remove(root);
+        self.quick_roots.remove(root);
+        self.hidden_roots.remove(root);
+        self.last_opened.remove(root);
+        self.network_roots.remove(root);
+        if self.default_root.as_deref() == Some(root) {
+            self.default_root = None;
+        }
+        self.recent_roots.retain(|old| old != root);
+    }
+
+    /// Vaults last seen on a network volume (#3208).
+    pub fn network_roots(directory: &Path) -> Result<std::collections::BTreeSet<PathBuf>> {
+        Ok(Self::load(directory)?.map_or_else(Default::default, |state| state.network_roots))
     }
 
     pub fn startup_roots(directory: &Path) -> Result<(Option<PathBuf>, Vec<PathBuf>)> {
@@ -432,6 +572,46 @@ impl ReadingHistory {
         Ok(())
     }
 
+    /// Hide several entries at once (#3208): Clear list, and folders nobody
+    /// chose as a vault. Like [`Self::remove_from_list`], each keeps its last
+    /// reading place, and opening it again as a vault lists it again.
+    pub fn hide_roots(directory: &Path, roots: &[PathBuf]) -> Result<()> {
+        let _lock = Self::lock(directory, std::iter::empty())?;
+        let Some(mut state) = Self::load(directory)? else {
+            return Ok(());
+        };
+        let mut changed = false;
+        for root in roots {
+            if state.last_documents.contains_key(root) {
+                changed |= state.hidden_roots.insert(root.clone());
+            }
+            if state.default_root.as_ref() == Some(root) {
+                state.default_root = None;
+                changed = true;
+            }
+        }
+        if changed {
+            state.persist(directory)?;
+        }
+        Ok(())
+    }
+
+    /// Undo of Remove on the start screen (#3208): list hidden entries again.
+    pub fn unhide_roots(directory: &Path, roots: &[PathBuf]) -> Result<()> {
+        let _lock = Self::lock(directory, std::iter::empty())?;
+        let Some(mut state) = Self::load(directory)? else {
+            return Ok(());
+        };
+        let mut changed = false;
+        for root in roots {
+            changed |= state.hidden_roots.remove(root);
+        }
+        if changed {
+            state.persist(directory)?;
+        }
+        Ok(())
+    }
+
     /// Remove a vault from the start screen's list and from restore (#1368).
     /// Its folder is not touched; opening it again adds it back.
     pub fn forget_root(directory: &Path, root: &Path) -> Result<()> {
@@ -439,14 +619,7 @@ impl ReadingHistory {
         let Some(mut state) = Self::load(directory)? else {
             return Ok(());
         };
-        state.last_documents.remove(root);
-        state.quick_roots.remove(root);
-        state.hidden_roots.remove(root);
-        state.last_opened.remove(root);
-        if state.default_root.as_deref() == Some(root) {
-            state.default_root = None;
-        }
-        state.recent_roots.retain(|old| old != root);
+        state.forget(root);
         state.persist(directory)
     }
 
@@ -501,6 +674,77 @@ mod tests {
             let _ = fs::remove_dir_all(&self.0);
         }
     }
+    #[test]
+    fn issue3208_no_history_environment_values() {
+        for on in ["1", "true", "yes", " 1 "] {
+            assert!(no_history_from(Some(on.into())), "{on:?}");
+        }
+        for off in ["", "0", "false", "FALSE", "  "] {
+            assert!(!no_history_from(Some(off.into())), "{off:?}");
+        }
+        assert!(!no_history_from(None));
+    }
+
+    /// #3208: the history keeps the newest 30 vaults; the default vault stays
+    /// even when it is the oldest, and quick-viewer folders do not count.
+    #[test]
+    fn issue3208_history_keeps_thirty_vaults_and_the_default() {
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let quick = fixture.path().join("quick");
+        fs::create_dir(&quick).unwrap();
+        ReadingHistory::record_document_mode(&state, &quick, "a.md", true).unwrap();
+        let mut vaults = Vec::new();
+        for index in 0..STORED_VAULTS + 3 {
+            let root = fixture.path().join(format!("v{index:02}"));
+            fs::create_dir(&root).unwrap();
+            ReadingHistory::record_usable_document(&state, &root, "a.md").unwrap();
+            if index == 0 {
+                ReadingHistory::set_default_vault(&state, Some(root.as_path())).unwrap();
+            }
+            vaults.push(root);
+        }
+        let known = ReadingHistory::known_vault_roots(&state).unwrap();
+        assert_eq!(known.len(), STORED_VAULTS);
+        assert!(known.contains(&vaults[0]), "the default vault is kept");
+        assert!(!known.contains(&vaults[1]) && !known.contains(&vaults[3]));
+        assert!(
+            known.contains(&vaults[4]),
+            "the 29 newest besides the default"
+        );
+        assert_eq!(known[0], vaults[STORED_VAULTS + 2], "newest first");
+        assert_eq!(
+            ReadingHistory::quick_document(&state, &quick)
+                .unwrap()
+                .as_deref(),
+            Some("a.md")
+        );
+    }
+
+    /// #3208: with recording off nothing is written; control: the same call
+    /// recording normally lists the vault.
+    #[test]
+    fn issue3208_no_history_records_nothing() {
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let vault = fixture.path().join("Notes");
+        fs::create_dir(&vault).unwrap();
+        ReadingHistory::record_as(&state, &vault, "a.md", false, Some(1), Recording::Off).unwrap();
+        ReadingHistory::record_as(&state, &vault, "", true, None, Recording::Off).unwrap();
+        assert!(!state.join(FILE).exists(), "no history file at all");
+        assert!(
+            ReadingHistory::record_as(&state, &vault, "../x.md", false, None, Recording::Off)
+                .is_err(),
+            "invalid input is still refused"
+        );
+        ReadingHistory::record_as(&state, &vault, "a.md", false, Some(1), Recording::Listed)
+            .unwrap();
+        assert_eq!(
+            ReadingHistory::startup_roots(&state).unwrap().1,
+            std::slice::from_ref(&vault)
+        );
+    }
+
     #[test]
     fn isolated_state_directory_requires_an_absolute_path() {
         let absolute = std::env::temp_dir().join("okilum-qa-state");
@@ -1033,6 +1277,69 @@ mod tests {
                 .unwrap()
                 .as_deref(),
             Some("second.md")
+        );
+    }
+
+    /// #3208: a folder nobody chose as a vault is recorded for its last note
+    /// but never listed and never reopened at startup; opening it again does
+    /// not bring it back. Clear list hides every entry the same way.
+    #[test]
+    fn issue3208_unchosen_folders_stay_off_the_list_and_clear_hides_all() {
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let vault = fixture.path().join("Notes");
+        let qa = fixture.path().join("fixture-a");
+        for folder in [&vault, &qa] {
+            fs::create_dir(folder).unwrap();
+        }
+        ReadingHistory::record_opened(&state, &vault, "a.md", false, Some(1), false).unwrap();
+        ReadingHistory::record_opened(&state, &qa, "a.md", false, Some(2), true).unwrap();
+        ReadingHistory::record_opened(&state, &qa, "b.md", false, Some(3), true).unwrap();
+        let (last, listed) = ReadingHistory::startup_roots(&state).unwrap();
+        assert_eq!(listed, std::slice::from_ref(&vault));
+        assert_eq!(
+            last.as_ref(),
+            Some(&vault),
+            "the fixture never reopens at startup"
+        );
+        assert_eq!(
+            ReadingHistory::last_document(&state, &qa)
+                .unwrap()
+                .as_deref(),
+            Some("b.md"),
+            "its last note is kept"
+        );
+        assert_eq!(
+            ReadingHistory::known_vault_roots(&state).unwrap(),
+            std::slice::from_ref(&vault)
+        );
+        // Control: the same folder recorded as chosen is listed again.
+        ReadingHistory::record_opened(&state, &qa, "b.md", false, Some(4), false).unwrap();
+        assert_eq!(
+            ReadingHistory::startup_roots(&state).unwrap().1,
+            [qa.clone(), vault.clone()]
+        );
+
+        // Clear list: nothing is listed or restored, the default goes too,
+        // and the reading places stay.
+        ReadingHistory::set_default_vault(&state, Some(vault.as_path())).unwrap();
+        ReadingHistory::hide_roots(&state, &[qa.clone(), vault.clone()]).unwrap();
+        assert_eq!(
+            ReadingHistory::startup_roots(&state).unwrap(),
+            (None, Vec::new())
+        );
+        assert_eq!(ReadingHistory::default_vault(&state).unwrap(), None);
+        assert_eq!(
+            ReadingHistory::last_document(&state, &vault)
+                .unwrap()
+                .as_deref(),
+            Some("a.md")
+        );
+        // Opening a vault again after Clear list lists it again.
+        ReadingHistory::record_usable_document(&state, &vault, "a.md").unwrap();
+        assert_eq!(
+            ReadingHistory::startup_roots(&state).unwrap().1,
+            std::slice::from_ref(&vault)
         );
     }
 }

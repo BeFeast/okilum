@@ -1,5 +1,88 @@
 # Agent build/test checks on GitHub
 
+## Where the Linux jobs run (Oleg 20.11, 21.11)
+
+`pre-merge` runs on GitHub-hosted `ubuntu-24.04` (#3218). `hosted-pre-merge.py`
+executes the existing `pool-pre-merge.sh` phase script directly on that runner;
+it never dispatches a build-slot job. The workflow/job names, exact SHA binding,
+every phase command and the 1800-second execution ceiling are retained. The
+wrapper refuses execution outside a GitHub-hosted runner. Only a complete
+phase receipt and matching final exit produce a verdict; missing/truncated
+receipts, timeout or cancellation are infrastructure (helper exit 75). The
+unchanged per-phase reporters and `Verify every pre-merge phase passed` reject
+failed/skipped phases; no skipped Rust/Python check can be hidden by a completed
+wrapper. The execution receipt names `github-hosted` and the exact SHA; it is
+not a build-slot/OOM receipt. Branch runs restore main's cache and save none.
+
+The full verdict stays on the hosted Ubuntu `linux` job (`ubuntu-24.04`, the
+job as it was before #3186) until a pool run is green in ≤ 20 minutes
+(Oleg 21.11). The sharded pool gate (`pool-linux-gate.sh`) runs as the
+separate job `linux-pool`, only in a dispatched run with `pool_linux`
+(`gh-check.sh --dispatch --pool-linux`) and with `continue-on-error`.
+`gh-check.sh` ignores `linux-pool` for both verdicts: it can neither pass nor
+fail a full check, and the fast gate only accepts it skipped.
+
+`linux-pool` is split into six shards that run in parallel on different pool
+slots (Oleg 21.11: 4–6 shards, PR gate tickets first in build-slot, target
+≤ 20 minutes for the verdict). `pool-dispatch.sh linux-full` starts one
+`build-slot run --priority critical` per shard; the nightly scheduled run on
+`main` uses normal priority. Host capabilities come from the build-slot
+coordinator (`--needs`). A critical ticket skips the `--host` preference
+delay, so every shard is pinned with `--require-host` within each host's
+memory budget. Managed admission and Sync source sharing stay off ZFS
+okilum-build-nas, where managed admission overran its 600 s deadline; the
+desktop shard there still pairs through a real Syncthing. Each shard runs with umask 022 and its own `XDG_STATE_HOME` and
+`XDG_DATA_HOME`, as on a fresh hosted runner (`pool_hosted_env`): a pool host
+keeps one account across runs.
+
+| Shard | Host | Needs | Phases |
+|---|---|---|---|
+| `base` | baldr | `docker` | AppImage runtime image, helper controls, CI/releases/updater Python suites, Sync Help and brand, managed admission crash checkpoints |
+| `admission` | baldr | `tmpfs`, `pidns` | managed admission `remaining-0` and the negative controls, real disk-full transfer (private tmpfs) |
+| `sync` | okilum-dev | — | Sync source sharing, managed admission `remaining-1`, local writer authority |
+| `desktop` | okilum-build-nas | `dbus` | workspace clippy, `cargo fmt --check` and desktop build, pairing through `okilum sync serve`, reveal stress, vault regression controls |
+| `rust-a` | slava | `userbus`, `dbus` | `okilum-core` suite, Linux Rust groups outside the workspace census |
+| `rust-b` | okilum-dev | `userbus`, `dbus` | Linux Rust workspace census |
+
+Every shard also verifies the toolchain, vendor, locked dependencies and the
+Python environment, and reaps fixture daemons. `pool-aggregate.py` merges the
+shard receipts: a phase recorded by several shards passes only when every
+record passed, and a phase that an earlier failure skipped is recorded as
+skipped, so another shard's pass of the same phase cannot stand in for it.
+Any failing phase is a code verdict; a lost shard (queue, ssh, OOM kill,
+incomplete receipt) without a code failure fails the dispatch step, which is
+infrastructure. A shard counts only with a valid build-slot receipt whose
+`exit` equals the shard's exit code and whose `oom_kill` is an explicit count:
+a missing, malformed or incomplete slot receipt is infrastructure, never a
+pass. The last step of both pool jobs, `Verify every pool shard and phase
+passed` (`pool-phase.sh --overall`), fails unless every dispatched shard
+passed and no record anywhere failed or was skipped; `gh-check.sh` requires
+it, so a phase without its own reporter step cannot leave a green gate.
+
+Managed admission's host-discovery test refuses every same-uid Syncthing it
+does not own, and the other slots of a pool host run as the same user. On a
+pool slot it therefore runs in a private PID namespace (`pid-namespace.py`,
+`sudo unshare --pid --mount-proc`, then back to the calling user), after a
+positive control shows a same-uid decoy `syncthing` outside is invisible
+inside. Leaving the namespace kills whatever is left in it, so its PID 1 runs
+the fixture guard for the test's evidence root first and fails a successful
+test that left a fixture alive. This needs `sudo unshare --pid --mount-proc`,
+which `sudo` alone does not guarantee (okilum-dev refuses the `/proc` mount):
+the `admission` and `all` shards need build-slot capability `pidns`, and the
+slot probes it again first (no verdict without it). The namespace controls
+(`scripts/ci/test_pid_namespace.py`) run only in the `admission` shard, as
+phase `Verify PID-namespace isolation controls`; pre-merge and `base` exclude
+that module from their discovery by name (`OKILUM_UNITTEST_EXCLUDE`), and any
+other discovery skips it. Outside the pool the test runs as before. Managed admission keeps its unchanged 600 s deadline
+per process set: `crash`, `remaining-0` and `remaining-1` each check the full
+compiled inventory and run on their own shard, so no part waits behind
+another (`OKILUM_ADMISSION_PART`; default `all`). The two Rust shards use the
+same `linux-rust-tests.sh` parts as the daily hosted matrix (#3198): `rust-a`
+runs `checks`, `rust-b` runs `workspace` (`OKILUM_LINUX_RUST_PART`). `pool-dispatch.sh
+linux-single` runs every phase in one slot. Windows and
+macOS jobs are unchanged. Landing is unchanged: a reviewed PR with a green
+`agent-checks` run is merged as before (`AGENTS.md`).
+
 ## When which check runs (Oleg 13.11 ~14:20, ~15:10)
 
 - **Before merge:** formatting, script checks and a Linux workspace compile,
@@ -84,6 +167,14 @@ also runs complete discovery of `scripts/ci`, `scripts/releases` and
 concurrent fork cannot temporarily retain another fixture's installation lock
 before exec; all lifecycle assertions and test cases remain enabled. Both test shells raise their soft nofile limit via `test-nofile.sh`.
 The Linux Rust suites retain their existing conditional vendor workspace tests.
+
+The daily hosted Linux gate (`forgejo-linux.yml`, job `linux-checks`) runs
+`check-linux.sh` as two parallel matrix jobs (#3198): `checks` runs everything
+except the workspace census, and `workspace` compiles the census selection and
+then runs only `workspace-full`. As a single cold job it took 33–53 min and
+was cancelled by the 53 min bridge budget on 21.11. `needs.linux-checks.result`
+remains the verdict of both halves. Without an argument, both scripts still run
+the full list (agent checks and local runs).
 
 The canonical local Linux and shared gates use the same dev/test debug-info
 setting (`0`) as these required hosted checks. Run `26004` on `67e1d82b`

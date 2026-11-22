@@ -37,6 +37,81 @@ fn prepare(f: &tests::Fixture, v: &mut VisualTestContext) {
 }
 
 #[gpui::test]
+fn edit2803_paragraph_direction_does_not_copy_reused_long_note_rows(cx: &mut TestAppContext) {
+    // Markdown enables per-paragraph direction; plain-code fixtures do not.
+    // Open a small real note first, then insert the full fixture atomically
+    // after selecting unwrapped mode. Initial wrapped opening is a separate
+    // residual, not the paragraph-direction/reused-row path measured here.
+    let seed = "a{\r\nא\r\nshort\r\n";
+    let original = format!(
+        "a{{{}\r\nא{}\r\nshort\r\n",
+        "x".repeat(300 * 1024),
+        "y".repeat(300 * 1024)
+    );
+    diagnostic_error!("PARAGRAPH_DIRECTION_STAGE phase=open-small-reader-note");
+    let (f, v) = tests::open_file(cx, seed, "directions.md");
+    diagnostic_error!("PARAGRAPH_DIRECTION_STAGE phase=prepare-unwrapped-editor");
+    prepare(&f, v);
+    assert!(f.input.update_in(v, |i, w, cx| {
+        i.replace_source_range(0..seed.len(), &original, w, cx)
+    }));
+    diagnostic_error!("PARAGRAPH_DIRECTION_STAGE phase=large-source-inserted");
+    prepare(&f, v);
+    diagnostic_error!("PARAGRAPH_DIRECTION_STAGE phase=large-source-prepared");
+    let at = original.rfind("short").unwrap();
+    f.input.update(v, |i, cx| i.set_selected_range(at..at, cx));
+    draw(v);
+    let before = f.input.read_with(v, |i, _| i.layout_diagnostics().unwrap());
+    f.input
+        .update_in(v, |i, w, cx| i.replace_source_range(at..at, "!", w, cx));
+    draw(v);
+    let after = f.input.read_with(v, |i, _| i.layout_diagnostics().unwrap());
+    diagnostic_error!("PARAGRAPH_DIRECTION_STAGE phase=short-edit-painted");
+    let queries = after.paragraph_direction_queries - before.paragraph_direction_queries;
+    let source_bytes =
+        after.paragraph_direction_source_bytes - before.paragraph_direction_source_bytes;
+    assert!(
+        after.source_row_cache_hits >= before.source_row_cache_hits + 2,
+        "both long rows must actually reuse layouts"
+    );
+    assert!(queries >= 2, "actual paragraph-direction path must fire");
+    assert!(
+        source_bytes <= queries * 8,
+        "paragraph direction copied long rows: {source_bytes} source bytes for {queries} queries"
+    );
+
+    // Direction classification must keep exact caret/hit geometry, including
+    // the right-aligned Hebrew paragraph, across a cold effective-style pass.
+    let hebrew = original.find('א').unwrap() + 'א'.len_utf8();
+    diagnostic_error!("PARAGRAPH_DIRECTION_STAGE phase=check-rtl-geometry");
+    let warm = geometry(&f, v, hebrew);
+    tint(&f, v, gpui::rgb(0x2233aa).into());
+    assert_eq!(geometry(&f, v, hebrew), warm);
+    let expected = format!("{}!{}", &original[..at], &original[at..]);
+    assert_eq!(f.input.read_with(v, |i, _| i.value().to_string()), expected);
+    v.dispatch_action(Undo);
+    v.run_until_parked();
+    assert_eq!(f.input.read_with(v, |i, _| i.value().to_string()), original);
+    v.dispatch_action(Redo);
+    v.run_until_parked();
+    assert_eq!(f.input.read_with(v, |i, _| i.value().to_string()), expected);
+    diagnostic_error!("PARAGRAPH_DIRECTION_STAGE phase=save-on-edit-exit");
+    f.reader.update(v, |r, cx| {
+        // toggle_source uses this same guarded save/exit before starting a
+        // separate Read preparation. Verify the required canonical-save
+        // boundary directly; do not drain unrelated long-note Read rendering.
+        assert!(r.leave_source(cx), "the normal source-exit guard must save");
+        assert!(r.pane.editing.is_none(), "source exit must complete");
+        assert_eq!(
+            std::fs::read_to_string(f.directory.path().join("vault/directions.md")).unwrap(),
+            expected
+        );
+        diagnostic_error!("PARAGRAPH_DIRECTION_STAGE phase=guarded-source-exit-complete");
+    });
+    diagnostic_error!("PARAGRAPH_DIRECTION_STAGE phase=source-and-save-preserved");
+}
+
+#[gpui::test]
 fn edit2803_short_edit_reuses_unchanged_unicode_and_tab_rows(cx: &mut TestAppContext) {
     let original = source();
     let (f, v) = tests::open_file(cx, &original, "rows.rs");

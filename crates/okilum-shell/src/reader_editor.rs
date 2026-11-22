@@ -41,8 +41,8 @@ use gpui_component::input::{Editor, EditorState, WrappingIndent};
 pub(crate) use writing_modes::{toggle_focus_mode, toggle_typewriter_mode};
 
 /// The editor «Open block in …» names (#1993).
-pub(crate) fn external_editor_label() -> String {
-    external_edit::editor_label()
+pub(crate) fn external_editor_label(cx: &App) -> String {
+    external_edit::editor_label(cx)
 }
 
 /// What a paste that inserted nothing tells the user (#1602); it is never
@@ -1088,6 +1088,25 @@ impl Reader {
             input.prepare_highlighting(window, cx);
             input
         });
+        // The first frame of the editor wraps the whole note on the UI thread
+        // (#3073): log that re-wrap as its own phase, after the frame.
+        if let Some(trace) = reader_diagnostics::trace(cx) {
+            let bytes = store.text().len();
+            let measured = input.clone();
+            cx.on_next_frame(window, move |_, window, cx| {
+                cx.on_next_frame(window, move |_, _, cx| {
+                    let relayout = measured.read(cx).last_relayout();
+                    trace.event(
+                        "source_open_layout",
+                        serde_json::json!({
+                            "duration_ms": relayout.map(|r| r.duration.as_secs_f64() * 1000.),
+                            "rows": relayout.map(|r| r.rows),
+                            "bytes": bytes,
+                        }),
+                    );
+                });
+            });
+        }
         let current_input = cx.new(|cx| {
             let mut input = EditorState::new(window, cx)
                 .language(language)
@@ -3275,7 +3294,14 @@ impl Reader {
                 style.bg(brand::palette(cx).selected.opacity(0.12))
             })
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
-                this.drop_on_editor(paths, window, cx)
+                this.drop_on_editor(paths.into(), window, cx)
+            }))
+            // #1615: text, rich text, URLs and image data from other apps.
+            .drag_over::<ExternalData>(|style, _, _, cx| {
+                style.bg(brand::palette(cx).selected.opacity(0.12))
+            })
+            .on_drop(cx.listener(|this, data: &ExternalData, window, cx| {
+                this.drop_on_editor(data.into(), window, cx)
             }))
             .when(
                 editing.markdown && (editing.save_failed || editing.conflict_detected),

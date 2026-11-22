@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# Run one Okilum Linux gate on the build-slot pool and publish its phase receipt
+# for the following GitHub steps. Exit 0 when the suite produced a code verdict
+# (pass or fail). Exit 1 when the pool produced no verdict (queue, timeout, ssh,
+# OOM kill, missing receipt); gh_check.py counts this step as infrastructure.
+#
+# linux-full runs six shards of pool-linux-gate.sh in parallel on different
+# slots (Oleg 21.11: 4-6 shards, PR gate jobs first in build-slot, <= 20 min);
+# pool-aggregate.py merges their receipts. pre-merge is one slot.
+set -euo pipefail
+mode=${1:?linux-full, linux-single or pre-merge}
+sha=${OKILUM_SOURCE_COMMIT:-$(git rev-parse HEAD)}
+[[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "source is not a full SHA: $sha" >&2; exit 75; }
+export PATH="${HOME}/.local/bin:${HOME}/.cargo/bin:${PATH}"
+command -v build-slot >/dev/null || { echo "build-slot is not on PATH" >&2; exit 75; }
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+# shellcheck source=scripts/ci/pool-phase-lib.sh
+source "$here/pool-phase-lib.sh"
+ship=$(pool_receipt_dir)
+receipt="$ship/phases.json"
+short=$(printf '%s' "$sha" | cut -c1-12)
+
+# shard  mem(GiB)  needs(comma)  host  run minutes  cargo jobs
+# Memory: the unsharded full run peaked at 6.1 GiB (anon 4.0) on baldr, 20.11.
+# host `-` takes any capable host; a name is a hard pin (--require-host). A
+# critical ticket (every PR run) skips the --host preference delay, so a
+# preference placed shards by capability alone: base reached slava, which
+# lists docker but cannot open the socket, and both Rust shards met on
+# okilum-dev. The pins keep each host within its memory budget (baldr 4+3 of
+# 13, okilum-dev 7+4 of 12, slava 7 of 8, okilum-build-nas 7 of 14).
+# Managed admission's Syncthing fixtures are fsync- and timing-bound under an
+# unchanged 600 s deadline: on okilum-build-nas (ZFS) next to the desktop
+# compile, remaining-1 overran it (run 44902434687), so sync runs on ext4
+# okilum-dev and admission on baldr.
+# cargo jobs `-` keeps the slot default. The okilum-shell test binary alone
+# peaks at the 8 GiB slot limit in one rustc (anon 8.09 GB at --jobs 1 on
+# okilum-dev, 21.11); with any concurrent compile it was OOM-killed in every
+# sharded run, so the two Rust shards compile one crate at a time.
+case $mode in
+    pre-merge) shards=("pre-merge 7 - - 30 -") ;;
+    linux-single) shards=("all 7 docker,sudo,userbus,dbus,pidns - 70 -") ;;
+    linux-full)
+        shards=(
+            "base 4 docker baldr 25 -"
+            "admission 3 tmpfs,pidns baldr 25 -"
+            "rust-a 7 userbus,dbus slava 30 1"
+            "rust-b 7 userbus,dbus okilum-dev 25 1"
+            "sync 4 - okilum-dev 25 -"
+            "desktop 7 dbus okilum-build-nas 25 -"
+        )
+        ;;
+    *) echo "unknown pool mode: $mode" >&2; exit 64 ;;
+esac
+# The benchmark branch measures warm rebuilds in one slot.
+if [[ $mode == linux-full && ${GITHUB_REF:-} == refs/heads/agent-checks-benchmark/* ]]; then
+    shards=("all 7 docker,sudo,userbus,dbus,pidns - 70 -")
+fi
+
+archive=
+source_args=()
+if build-slot run --help 2>&1 | grep -q -- '--source-git'; then
+    source_args=(--source-git "$PWD" --source-rev "$sha")
+else
+    archive=$(mktemp "${TMPDIR:-/tmp}/okilum-src.XXXXXX.tar")
+    git archive --format=tar -o "$archive" "$sha"
+    source_args=(--source-tar "$archive")
+fi
+
+dispatch() {
+    local name=$1 mem=$2 needs=$3 host=$4 minutes=$5 jobs=$6
+    local dir="$ship/$name" script label
+    mkdir -p "$dir"
+    if [[ $name == pre-merge ]]; then
+        script=(bash scripts/ci/pool-pre-merge.sh)
+        label="ci-pre-merge-$short"
+    else
+        script=(bash scripts/ci/pool-linux-gate.sh "$name")
+        label="ci-linux-$name-$short"
+    fi
+    local args=(
+        run --project okilum --label "$label" --owner ci-pool
+        --wait-minutes 15 --timeout-minutes "$minutes" --mem "$mem"
+        --receipt "$dir/build-slot.json"
+        --ship "$dir"
+        --env "OKILUM_POOL_RECEIPT=$dir/phases.json"
+        --env "OKILUM_SOURCE_COMMIT=$sha"
+    )
+    if [[ $host != - ]]; then
+        args+=(--require-host "$host")
+    fi
+    if [[ $jobs != - ]]; then
+        args+=(--jobs "$jobs")
+    fi
+    local need
+    if [[ $needs != - ]]; then
+        for need in ${needs//,/ }; do
+            args+=(--needs "$need")
+        done
+    fi
+    # PR gates go first in the queue (Oleg 21.11); the nightly main run does not.
+    if [[ ${GITHUB_EVENT_NAME:-} != schedule ]]; then
+        args+=(--priority critical)
+    fi
+    if [[ ${GITHUB_REF:-} == refs/heads/agent-checks-benchmark/* ]]; then
+        args+=(--env OKILUM_POOL_BENCHMARK=1)
+    fi
+    if [[ -n ${PUBLICATION_BASELINE:-} ]]; then
+        args+=(--env "OKILUM_PUBLICATION_BASELINE=${PUBLICATION_BASELINE}")
+    fi
+    set +e
+    build-slot "${args[@]}" "${source_args[@]}" -- "${script[@]}" > "$dir/log" 2>&1
+    local rc=$?
+    set -e
+    printf '%s\n' "$rc" > "$dir/rc"
+}
+
+started=$(date +%s)
+pids=()
+dirs=()
+for row in "${shards[@]}"; do
+    read -r name mem needs host minutes jobs <<< "$row"
+    dispatch "$name" "$mem" "$needs" "$host" "$minutes" "$jobs" &
+    pids+=($!)
+    dirs+=("$ship/$name")
+done
+for pid in "${pids[@]}"; do
+    wait "$pid" || true
+done
+rm -f "$archive"
+for dir in "${dirs[@]}"; do
+    printf '::group::shard %s (rc %s)\n' "$(basename "$dir")" "$(cat "$dir/rc" 2>/dev/null || echo none)"
+    cat "$dir/log" 2>/dev/null || true
+    printf '::endgroup::\n'
+done
+
+summary=$(python3 "$here/pool-aggregate.py" --out "$receipt" --shards-out "$ship/shards.json" "${dirs[@]}")
+printf '%s\n' "$summary"
+kind=$(printf '%s\n' "$summary" | sed -n 's/^kind=//p')
+if [[ -n ${GITHUB_OUTPUT:-} ]]; then
+    printf 'kind=%s\n' "$kind" >> "$GITHUB_OUTPUT"
+fi
+if [[ -n ${GITHUB_ENV:-} ]]; then
+    printf 'OKILUM_POOL_RECEIPT=%s\n' "$receipt" >> "$GITHUB_ENV"
+    printf 'OKILUM_POOL_SHARDS=%s\n' "$ship/shards.json" >> "$GITHUB_ENV"
+fi
+printf 'pool dispatch mode=%s shards=%s kind=%s wall=%ss receipt=%s\n' \
+    "$mode" "${#shards[@]}" "$kind" "$(( $(date +%s) - started ))" "$receipt"
+if [[ $kind == verdict ]]; then
+    exit 0
+fi
+exit 1

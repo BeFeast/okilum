@@ -11,9 +11,13 @@
     {
       "path": "../patches/gpui-pre-macos/0002-prepare-metal-pipelines-at-startup.diff",
       "sha256": "44de949c8d9636e040dc739a2a88c9d247430d4210e75d9046d3d47b3047f031"
+    },
+    {
+      "path": "../patches/gpui-pre-macos/0003-external-data-drops.diff",
+      "sha256": "5c6adc296aaf5688d33de7b849b610d85325c373f6147164e94311ec9015e76b"
     }
   ],
-  "tree_sha256": "82b8f3eff797e024071e8de44a2a5ddb44d66e957de3ec34fc41cb099d3c0d75",
+  "tree_sha256": "5d3e52fb11356d5c5aaeac3220276532be3bde643c1fc7c1e63af6a0df6e232a",
   "generated_path": "vendor/gpui-pre-macos-0.3.3",
   "changed_files": [
     "src/platform.rs",

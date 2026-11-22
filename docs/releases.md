@@ -100,6 +100,13 @@ dependencies only: workspace and vendored path crates always compile from the
 producer's checkout. After a new entry is saved, the same workflow deletes every
 other `v0-rust-beta-appimage-v1-Linux-*` entry, so the beta cache occupies one
 entry (~1 GiB) of the 10 GiB quota.
+Before rust-cache, both jobs run `scripts/ci/rust-cache-toolchains.sh`, which
+leaves only the `rust-toolchain.toml` toolchain installed. rust-cache hashes
+every installed toolchain into its key, and GitHub's ubuntu-22.04 images differ
+in their preinstalled stable Rust (19.–20.11: 20261103 had 1.99.1, 20261111
+1.100.0). Each image produced its own key, the prune kept only one of them, and
+a producer on the other image compiled 847 crates cold: 12–20 minutes instead
+of about 6, and 17–27 minutes from merge to Linux beta instead of about 13 (#3043).
 
 The Ubuntu/Fedora smoke and disposable-key signing checks stay the beta gate
 (idunn installs every beta automatically). The producer is one hosted job:

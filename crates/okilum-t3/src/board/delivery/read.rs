@@ -398,11 +398,16 @@ pub fn refresh(area: &Path, binding: &Binding) -> Update {
             evidence(area, note).map_err(|e| format!("{note}: {e:#}")),
         ));
     }
-    let client = match reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(3))
-        .redirect(reqwest::redirect::Policy::none())
-        .user_agent("Okilum-Board-Delivery/1")
-        .build()
+    // #1944: feeds live on configured, unrelated origins; the proxy is decided
+    // per request. 30 s is reqwest's blocking default this client always had.
+    let client = match okilum_http::local_network_per_request_builder(
+        env!("CARGO_PKG_VERSION"),
+        Duration::from_secs(30),
+    )
+    .connect_timeout(Duration::from_secs(3))
+    .redirect(reqwest::redirect::Policy::none())
+    .user_agent("Okilum-Board-Delivery/1")
+    .build()
     {
         Ok(client) => client,
         Err(e) => {

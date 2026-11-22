@@ -441,6 +441,9 @@ impl State {
             }
             identities.push((path.clone(), present, placeholder));
         }
+        if !directories.is_empty() {
+            self.vault.invalidate_attachment_index();
+        }
         for (path, present) in &directories {
             self.vault.entries.retain(|entry| entry.path != *path);
             if *present {
@@ -1255,6 +1258,58 @@ mod tests {
 
     /// #8: files created or deleted by another application are listed without
     /// a full reconcile, and match what a fresh scan would list.
+    #[test]
+    fn issue3198_new_attachment_in_known_folder_gains_its_file_link_referrer() {
+        // The core half of reader_incremental/attachment_index_tests: a warm
+        // attachment index, then a file appears in an existing folder. Markdown
+        // file links are graph edges (#2905); image embeds are not.
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        std::fs::create_dir_all(root.join("integrations/module3/src")).unwrap();
+        std::fs::write(root.join("integrations/module3/src/file3_4.json"), "{}\n").unwrap();
+        std::fs::write(root.join("assets/diagram.png"), b"png").unwrap();
+        std::fs::write(
+            root.join("message.md"),
+            "# Message\n\n![](diagram.png)\n\n[spec](file3_4.json)\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("refs.md"), "Later: [new](new.png)\n").unwrap();
+        let (vault, snapshot, _) = reconcile(&root, None, false, &mut |_, _| Ok(())).unwrap();
+        let mut state = State::new(vault, snapshot);
+        state.vault.warm_attachment_index();
+        assert_eq!(
+            state
+                .vault
+                .backlinks("integrations/module3/src/file3_4.json")
+                .len(),
+            1,
+            "positive control: a bare-name file link is a graph edge"
+        );
+        assert!(
+            state.vault.backlinks("assets/diagram.png").is_empty(),
+            "an image embed is not a graph edge"
+        );
+        assert!(state.vault.backlinks("assets/new.png").is_empty());
+        std::fs::write(root.join("assets/new.png"), b"png").unwrap();
+        let batch = state
+            .apply(
+                &crate::Changes {
+                    directories: BTreeSet::from(["assets".into()]),
+                    ..Default::default()
+                },
+                &mut |_, _| Ok(()),
+            )
+            .unwrap();
+        assert!(batch.affected.contains("refs.md"), "{:?}", batch.affected);
+        assert_eq!(
+            state.vault.backlinks("assets/new.png").len(),
+            1,
+            "the unresolved referrer resolves to the new attachment"
+        );
+        compare(&state);
+    }
+
     #[test]
     fn attachment_hints_add_and_remove_listed_files_without_reconcile() {
         let (temp, mut state) = fixture();

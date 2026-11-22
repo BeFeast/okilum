@@ -28,7 +28,10 @@ pub(super) struct ConnectionFailure {
 pub(super) fn is_transient(error: &StreamError) -> bool {
     matches!(
         error,
-        StreamError::Closed | StreamError::Unreachable | StreamError::Http(408 | 429 | 500..=599)
+        StreamError::Closed
+            | StreamError::Unreachable
+            | StreamError::Network(_)
+            | StreamError::Http(408 | 429 | 500..=599)
     )
 }
 
@@ -84,7 +87,12 @@ mod tests {
 
     #[test]
     fn automatic_retry_is_limited_to_existing_transient_causes() {
-        for error in [StreamError::Closed, StreamError::Unreachable] {
+        for error in [
+            StreamError::Closed,
+            StreamError::Unreachable,
+            StreamError::Network(okilum_t3::stream::NetworkCause::Certificate),
+            StreamError::Network(okilum_t3::stream::NetworkCause::Timeout),
+        ] {
             assert!(is_transient(&error));
         }
         for status in 100..=599 {

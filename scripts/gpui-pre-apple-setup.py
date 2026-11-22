@@ -3,7 +3,8 @@
 
 Oleg approved two core GPUI patches on 2026-11-13 (#2825): no tab-group query for windows
 without tabbing, and the Metal shader library/pipelines built off the first window's
-critical path. Each crate is extracted from its exact crates.io archive, the listed
+critical path. On 2026-11-17 (#1615) he approved the macOS window accepting
+drags of text, HTML, RTF, URLs and image data. Each crate is extracted from its exact crates.io archive, the listed
 patches are applied in order, and the result must match the pinned tree digest.
 """
 import argparse
@@ -112,7 +113,7 @@ def main():
             version = json.loads((repo / "scripts" / name / "manifest.json").read_text())["version"]
             archive = args.archive_dir / f"{name}-{version}.crate"
         manifest = prepare(repo, name, archive, args.verify)
-        print(f"{name} ready: {manifest['version']} checksum-pinned source + {len(manifest['patches'])} approved first-window patch(es) verified")
+        print(f"{name} ready: {manifest['version']} checksum-pinned source + {len(manifest['patches'])} approved patch(es) verified")
 
 
 if __name__ == "__main__":

@@ -103,20 +103,105 @@ Deliberately outside the policy:
 - `okilum-brain` (model providers, Todoist, retrieval, second T3 stack), linked
   into `okilum-cored`, not into the Windows package.
 
-Open follow-ups, not covered by slice 2:
-- Multi-origin clients: paste page title (`note_paste/fetch.rs`), paste image
-  download (`note_paste/download.rs`, one client for every host), project logo
-  (`projects/icon.rs`), Board delivery feeds (`board/delivery/read.rs`). They
-  follow arbitrary URLs or cross-host redirects, so one per-origin PAC answer is
-  wrong for them. They need per-request resolution (for example
-  `reqwest::Proxy::custom` with a cached WinHTTP lookup) and a decision on
-  fail-open versus fail-closed when that closure cannot return an error.
-- T3 WebSocket (`stream.rs`, and `okilum-brain/t3.rs` if it ever ships on
-  Windows): tungstenite has no proxy support and uses bundled webpki roots. It
-  needs HTTP CONNECT through the resolved proxy and an OS-trust TLS connector.
-  Until then the ticket request follows the system proxy and OS trust but the
-  socket that spends it does not.
-- Typed WinHTTP/SChannel error classification, and mapping
-  `StreamError::Unreachable` to the real cause.
+- `okilum-brain`'s second T3 stack keeps webpki roots and a direct socket.
+  okilum-t3 now enables tungstenite's `native-tls` feature on Windows, so a
+  Windows build that also links `okilum-brain` would see that feature too; its
+  `client_tls_with_config(..., None)` would then pick SChannel through
+  unification. It does not ship on Windows; if it ever does, it must adopt the
+  slice-3 socket path below instead of relying on that.
 
-None of these may infer support from Cargo feature unification.
+## Slice 3: multi-origin clients, T3 WebSocket, typed causes
+
+### Multi-origin clients: per-request proxy
+
+| Client | Builder |
+|---|---|
+| Paste page title (`note_paste/fetch.rs`) | `per_request_builder` |
+| Paste image download (`note_paste/download.rs`, one client for every host) | `per_request_builder` |
+| Project logo (`okilum-t3/projects/icon.rs`) | `local_network_per_request_builder` |
+| Board delivery feeds (`okilum-t3/board/delivery/read.rs`) | `local_network_per_request_builder` |
+
+These clients reach hosts that are unknown when the client is built and may
+follow redirects to another host. On Windows the builder installs a
+`reqwest::Proxy::custom` hook; reqwest calls it for every connection,
+redirect hops included. The hook runs the same WinHTTP lookup as the
+single-origin builder (static, per-protocol, PAC, WPAD; system bypass list;
+`NO_PROXY`) for that request's own origin and caches the answer per
+`scheme://host:port` for five minutes. That is also how a network change
+(VPN on/off) reaches the long-lived paste client. A failed lookup is cached for
+30 seconds. The hook is installed whatever the environment holds. An
+environment proxy for the request's own scheme (`HTTP_PROXY` for http,
+`HTTPS_PROXY` for https, else `ALL_PROXY`) is used as is, minus `NO_PROXY`,
+and WinHTTP is not asked. A scheme without one keeps the WinHTTP answer, so
+`HTTP_PROXY` alone still leaves https on PAC (reqwest's own matcher would send
+it direct on a PAC-only network). TLS is SChannel, selected explicitly.
+
+`NO_PROXY` and the system bypass list are matched by reqwest 0.12's rules
+(hyper-util 0.1.20 `NoProxy`) in the hook and the socket route alike, so they
+agree with the ticket client. An entry that parses as an address or CIDR
+range (`10.1.2.3`, `192.168.1.0/24`, `fd00::/8`) matches IP hosts only. Every
+other entry is a domain matching that name and its subdomains; `*` matches
+every name but no IP host, and a bracketed `[::1]` matches nothing.
+
+A discovery failure sends that one request direct and logs the cause without
+the URL. That is fail-open, unlike the single-origin clients: these are
+best-effort previews (title, image, logo, feed), reqwest's hook cannot return
+an error, and browsers fall back to direct when a PAC script cannot be
+fetched. Each client keeps its own User-Agent, connect budget, total budget
+and redirect limit. Board delivery keeps 30 s, the reqwest blocking default it
+always had.
+
+### T3 WebSocket: system proxy and OS trust
+
+`stream.rs` asks `okilum_http::local_network_socket_route` for the route.
+On Windows that is the same decision as the ticket request's
+`local_network_builder`: loopback and private IP literals direct; otherwise
+the environment proxy, then the WinHTTP static/per-protocol/PAC/WPAD answer.
+PAC sees the origin only (`https://host[:port]/`), the same URL the ticket
+client resolves, so a PAC rule on the path cannot split the ticket from its
+socket; the path and the ticket query never reach discovery. Discovery errors fail closed, as for the ticket request. For a
+proxy route the client connects TCP to the proxy, sends `CONNECT host:port`
+(no credentials), requires a 2xx reply and reads it byte by byte, so no byte
+of the TLS handshake is consumed. TLS then runs end to end with T3 through the
+tunnel: the proxy never sees the ticket or frames. Only `http://` proxies can
+tunnel; a SOCKS or HTTPS proxy is refused with a proxy error, never bypassed.
+
+TLS is chosen in code: on Windows `tungstenite::Connector::NativeTls`
+(SChannel, Windows trust store, so a corporate TLS-inspection root is
+trusted), enabled by okilum-t3's own Windows-only `native-tls` feature.
+macOS/Linux keep rustls with bundled webpki roots and a direct socket.
+
+### Typed causes
+
+`okilum_http::classify` walks an error chain and returns `Certificate`,
+`Proxy`, `ProxyAuthentication`, `Timeout` or `Connection` by type: reqwest
+status/timeout, `io::Error` kinds and WinHTTP/Winsock/SChannel/CryptoAPI codes,
+`TunnelError` and `ProxyDiscoveryFailed`. The remaining text fallback (TLS
+libraries and hyper report certificate and tunnel failures only as text)
+skips each `reqwest::Error`'s own message, which names the URL, so a host
+called `ssl-gw.corp.example` no longer turns a refused connection into "The
+TLS certificate is not trusted". `okilum_http::reason` uses it.
+
+T3 native errors gain `StreamError::Network(cause)` with a T3-specific message
+(untrusted certificate, proxy, HTTP 407, timeout). It is retried like
+`Unreachable`, which remains for DNS failure and refusal. The ticket request,
+proxy discovery, TCP connect, tunnel and TLS handshake all map through it.
+
+NTLM/Kerberos (407) remains unsupported for every client: the message says
+so, and no OS credentials are read or sent.
+
+### Verification
+
+Linux-run unit tests: a redirect from a proxied origin to a direct one (each
+hop takes its own route, checked at both listeners), per-origin cache and
+failure caching, private literals never reach discovery, CONNECT request and
+byte-exact handoff, 407/403/malformed replies, header injection, route
+selection and refusal of non-HTTP proxies, typed classification with a
+URL-name control, T3 stall → `Network(Timeout)`. `client_inventory.rs` pins
+the four per-request builders with their connect budgets and the WebSocket's
+route, tunnel and SChannel markers, and that okilum-t3 enables tungstenite's
+`native-tls` on Windows itself. No hosted TLS-inspection or installed-network
+acceptance is claimed by these tests; the corporate fixture extension remains
+part of the nightly full gate as described for slice 1.
+
+None of these clients infer support from Cargo feature unification.

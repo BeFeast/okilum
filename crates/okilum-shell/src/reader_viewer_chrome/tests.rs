@@ -1400,3 +1400,108 @@ fn labels2813_fold_actions_carry_labels_and_yield_first(cx: &mut TestAppContext)
         "positive control: some label had to yield between 1,400 and 1,700 px"
     );
 }
+
+/// #1400: with editors installed the note toolbar carries «Open in <Editor>»
+/// for the default (first installed) editor; its chevron lists every editor
+/// with the shortcut on the default's row; opening the note in another one
+/// launches it with the file and makes it the remembered default, which the
+/// button and the shortcut then use.
+#[cfg(unix)]
+#[gpui::test]
+fn open_in1400_split_button_opens_and_remembers_the_default_editor(cx: &mut TestAppContext) {
+    use std::os::unix::fs::PermissionsExt as _;
+    cx.executor().allow_parking();
+    let launcher_dir = tempfile::tempdir().unwrap();
+    let marker = launcher_dir.path().join("launched");
+    let launcher = launcher_dir.path().join("editor.sh");
+    std::fs::write(
+        &launcher,
+        format!("#!/bin/sh\necho \"$@\" >> '{}'\n", marker.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let launched = |count: usize| {
+        for _ in 0..100 {
+            let text = std::fs::read_to_string(&marker).unwrap_or_default();
+            if text.lines().count() >= count {
+                return text;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        panic!("editor launch {count} never happened");
+    };
+
+    // Control: no editor installed, no split button.
+    crate::open_in::install_test_editors(&[], &launcher);
+    {
+        let (_, visual, _temp) = fixture(cx, "text.txt");
+        assert!(measured_bounds(visual, "viewer-open-in").is_none());
+        assert!(measured_bounds(visual, "viewer-open-with").is_some());
+    }
+
+    crate::open_in::install_test_editors(&["zed", "cursor"], &launcher);
+    let (reader, visual, temp) = fixture(cx, "text.txt");
+    let default = |visual: &mut VisualTestContext| {
+        visual.update(|_, cx| crate::open_in::preferred(cx).map(|e| e.id))
+    };
+    assert_eq!(default(visual), Some("zed"), "first installed");
+    assert!(measured_bounds(visual, "viewer-open-in").is_some());
+
+    let chevron = measured_bounds(visual, "viewer-open-in-list").expect("chevron");
+    visual.simulate_click(chevron.center(), Modifiers::default());
+    visual.run_until_parked();
+    let key =
+        visual.update(|_, cx| reader_shortcuts::shortcut(&crate::open_in::OpenInDefaultEditor, cx));
+    assert!(key.is_some(), "the default-editor action is bound");
+    assert_eq!(
+        crate::open_in::built_rows(),
+        [("zed", key), ("cursor", None)],
+        "every editor, the shortcut on the default's row only"
+    );
+    // The second row: Cursor.
+    visual.simulate_keystrokes("down down enter");
+    visual.run_until_parked();
+    let text = launched(1);
+    assert!(
+        text.starts_with("--new-window ") && text.trim_end().ends_with("text.txt"),
+        "Cursor got the note: {text}"
+    );
+    assert_eq!(
+        default(visual),
+        Some("cursor"),
+        "the last used is the default"
+    );
+    assert_eq!(
+        visual.update(|_, cx| reader_ui_state::open_in_editor(cx).to_owned()),
+        "cursor"
+    );
+
+    // The main part now opens in Cursor in one click.
+    let main = measured_bounds(visual, "viewer-open-in").expect("main part");
+    visual.simulate_click(main.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(launched(2).lines().nth(1).unwrap().contains("--new-window"));
+
+    // The shortcut's handler: deferred out of the Reader update, same editor.
+    reader.update_in(visual, |r, window, cx| r.open_in_default_editor(window, cx));
+    visual.run_until_parked();
+    assert!(launched(3).lines().nth(2).unwrap().contains("--new-window"));
+
+    // Remembered across restarts: the debounced state write lands on disk.
+    visual
+        .executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    visual.run_until_parked();
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(temp.path().join("state/reader-ui.json")).unwrap())
+            .unwrap();
+    assert_eq!(saved["open_in_editor"], "cursor");
+
+    // A Markdown note has its own header; the split button is there too.
+    let (_, visual, _temp) = fixture(cx, "note.md");
+    assert!(
+        measured_bounds(visual, "viewer-open-in").is_some(),
+        "note header"
+    );
+    crate::open_in::install_test_editors(&[], &launcher);
+}

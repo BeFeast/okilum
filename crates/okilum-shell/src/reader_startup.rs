@@ -1,11 +1,12 @@
 //! Local Reader startup. Saved managed identities are never read on this path.
-use super::{reader_history, reader_open, Opts};
-use gpui::{prelude::FluentBuilder, *};
-use gpui_component::{
-    button::{Button, ButtonVariants},
-    h_flex, v_flex, ActiveTheme, Root, Sizable, TitleBar,
+use super::{
+    reader_history, reader_open,
+    reader_recent_vaults::{self, Status, Unavailable},
+    Opts,
 };
-use std::path::PathBuf;
+use gpui::*;
+use gpui_component::Root;
+use std::path::{Path, PathBuf};
 
 #[derive(Default)]
 pub(crate) struct Startup {
@@ -13,6 +14,12 @@ pub(crate) struct Startup {
     entry: Option<AnyWindowHandle>,
 }
 impl Global for Startup {}
+impl Startup {
+    /// The start window, while it is up.
+    pub(crate) fn entry_window(&self) -> Option<AnyWindowHandle> {
+        self.entry
+    }
+}
 
 /// Explicit file delivery or a picker choice wins over an in-flight history read.
 ///
@@ -92,6 +99,18 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
                 let directory = directory
                     .map(Ok)
                     .unwrap_or_else(reader_history::state_directory);
+                // #3208: the user's own history drops folders nobody chose
+                // as a vault (fixtures, temp and app-support folders).
+                if let Ok(directory) = &directory {
+                    if reader_recent_vaults::users_history(directory) {
+                        if let Err(error) = reader_recent_vaults::prune(
+                            directory,
+                            reader_recent_vaults::Places::current(),
+                        ) {
+                            diagnostic_error!("Cannot tidy the recent vaults: {error:#}");
+                        }
+                    }
+                }
                 // The window set does not depend on the reading history: a
                 // damaged history still reopens every recorded window.
                 let windows = directory
@@ -103,31 +122,61 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
                     })
                     .unwrap_or_default();
                 let history = history(directory);
+                let listing = history
+                    .as_ref()
+                    .map(|(directory, _, _)| Listing::read(directory))
+                    .unwrap_or_default();
+                // Why a listed vault cannot be opened (#1368, #3208), each
+                // folder on its own thread with a deadline: a dead network
+                // share must not hold up the start screen.
+                let status: Vec<(PathBuf, Status)> = history
+                    .as_ref()
+                    .map(|(_, roots, restore)| {
+                        let mut checked: Vec<PathBuf> = roots
+                            .iter()
+                            .take(2 * reader_recent_vaults::LIMIT)
+                            .cloned()
+                            .collect();
+                        // The window that did not reopen is named by its reason
+                        // too, even a quick viewer's folder off the list.
+                        if let Some((last, Err(_))) = restore {
+                            if !checked.contains(last) {
+                                checked.push(last.clone());
+                            }
+                        }
+                        reader_recent_vaults::check_all(
+                            &checked,
+                            &listing.network,
+                            reader_recent_vaults::CHECK_PATIENCE,
+                        )
+                    })
+                    .unwrap_or_default();
+                let unavailable = |root: &PathBuf| {
+                    status
+                        .iter()
+                        .any(|(checked, status)| checked == root && status.unavailable().is_some())
+                };
                 // The start screen lists vaults by their names too (#1364).
                 let names: Vec<(PathBuf, String)> = history
                     .as_ref()
                     .map(|(_, roots, _)| {
                         roots
                             .iter()
+                            .filter(|root| !unavailable(root))
                             .filter_map(|root| {
                                 super::vault_name::read(root).map(|name| (root.clone(), name))
                             })
                             .collect()
                     })
                     .unwrap_or_default();
-                // Vaults whose folder is gone are marked on the start screen (#1368).
-                let missing: Vec<PathBuf> = history
-                    .as_ref()
-                    .map(|(_, roots, _)| roots.iter().filter(|root| gone(root)).cloned().collect())
-                    .unwrap_or_default();
                 let sync_names = history
                     .as_ref()
                     .map(|(profile, _, _)| super::vault_name::read_sync_names(profile))
                     .unwrap_or_default();
-                (windows, (history, names, missing, sync_names))
+                (windows, (history, names, status, sync_names, listing))
             })
             .await;
-        let (history, names, missing, sync_names) = history;
+        let (history, names, status, sync_names, listing) = history;
         cx.update(|cx| {
             super::vault_name::remember(names, cx);
             super::vault_name::remember_sync(sync_names, cx);
@@ -163,8 +212,16 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
                         Some((_, Ok(intent))) => (roots, Some(intent), None),
                         Some((last, Err(error))) => {
                             diagnostic_error!("Cannot restore {}: {error:#}", last.display());
-                            let notice = Notice::unopened(&last, missing.contains(&last), cx);
-                            (roots, None, Some(notice))
+                            // A listed vault shows why on its own row (#3208);
+                            // a window off the list is named above it.
+                            let notice = (!roots.contains(&last)).then(|| {
+                                let reason = status
+                                    .iter()
+                                    .find(|(root, _)| root == &last)
+                                    .and_then(|(_, status)| status.reason());
+                                Notice::unopened(&last, reason, cx)
+                            });
+                            (roots, None, notice)
                         }
                         None => (roots, None, None),
                     }
@@ -182,8 +239,9 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
             };
             let entry = EntryState {
                 directory: opts.session_directory.clone(),
-                missing: missing.into_iter().collect(),
+                status: status.into_iter().collect(),
                 notice,
+                listing,
             };
             if let Some(intent) = restore {
                 let last = intent.root.clone();
@@ -200,7 +258,7 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
                 }
                 if let Err(error) = reader_open::open_window(opts, cx) {
                     diagnostic_error!("Cannot open {}: {error:#}", last.display());
-                    let notice = Notice::unopened(&last, false, cx);
+                    let notice = Notice::unopened(&last, None, cx);
                     show_entry(
                         roots,
                         EntryState {
@@ -226,7 +284,10 @@ fn history(
     directory: anyhow::Result<PathBuf>,
 ) -> anyhow::Result<(PathBuf, Vec<PathBuf>, Option<Restore>)> {
     let directory = directory?;
-    let (last, roots) = reader_history::ReadingHistory::startup_roots(&directory)?;
+    let (last, _) = reader_history::ReadingHistory::startup_roots(&directory)?;
+    // Folders opened as vaults, newest first (#3208). A folder that only held
+    // a file opened on its own, or a folder view, was never chosen as a vault.
+    let roots = reader_history::ReadingHistory::known_vault_roots(&directory)?;
     // The caller tries the saved window set first. An explicit file/folder
     // delivery supersedes this entire path; a default never redirects it.
     let last = reader_history::ReadingHistory::default_vault(&directory)?.or(last);
@@ -401,6 +462,7 @@ fn skipped_notice(skipped: &[PathBuf], cx: &mut App) {
 
 /// A vault on the start screen: its name (display name, else folder) and
 /// where it is, as every other place names a vault (#1364).
+#[cfg_attr(not(test), allow(dead_code))] // The row draws name and path apart (#3208).
 pub(crate) fn recent_label(root: &std::path::Path, cx: &App) -> String {
     format!(
         "{} — {}",
@@ -409,46 +471,80 @@ pub(crate) fn recent_label(root: &std::path::Path, cx: &App) -> String {
     )
 }
 
-/// A vault folder that is no longer there (or no longer a folder).
-fn gone(root: &std::path::Path) -> bool {
-    !std::fs::metadata(root).is_ok_and(|metadata| metadata.is_dir())
-}
-
-/// What the start screen says about a vault it could not open, and which
-/// vault, so it can offer to remove it from the list (#1368).
-#[derive(Clone)]
-struct Notice {
-    text: String,
-    root: Option<PathBuf>,
+/// A notice the start screen shows above its list: the history could not be
+/// read, a window that is not on the list did not reopen, or the list could
+/// not be updated. A listed vault's problem is shown on its own row (#3208).
+#[derive(Clone, Debug)]
+pub(crate) struct Notice {
+    pub(crate) text: String,
+    pub(crate) root: Option<PathBuf>,
 }
 impl Notice {
-    fn unopened(root: &std::path::Path, missing: bool, cx: &App) -> Self {
+    fn unopened(root: &Path, reason: Option<String>, cx: &App) -> Self {
         let name = super::vault_name::shown(root, cx);
-        let text = if missing {
-            format!("“{name}” was moved or deleted. Choose its folder again, or remove it from the list.")
-        } else {
-            format!(
-                "“{name}” can’t be opened right now. Choose a folder, or remove it from the list."
-            )
-        };
+        let reason = reason.unwrap_or_else(|| "it can’t be opened right now".into());
         Self {
-            text,
+            text: format!("Couldn’t reopen “{name}”: {reason}."),
             root: Some(root.to_path_buf()),
         }
     }
 }
 
+/// What the start screen lists besides the vault roots, read off the UI
+/// thread with the history (#3208).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Listing {
+    /// Unsaved untitled drafts, newest first (#1528).
+    pub(crate) drafts: Vec<super::reader_untitled::Listed>,
+    /// When each vault was last opened (seconds since the epoch).
+    pub(crate) last_opened: std::collections::HashMap<PathBuf, u64>,
+    pub(crate) default_root: Option<PathBuf>,
+    /// Vaults last seen on a network volume.
+    pub(crate) network: std::collections::BTreeSet<PathBuf>,
+}
+impl Listing {
+    fn read(directory: &Path) -> Self {
+        let vaults = reader_history::ReadingHistory::known_vaults(directory).unwrap_or_default();
+        Self {
+            drafts: super::reader_untitled::list(directory),
+            last_opened: vaults
+                .iter()
+                .filter_map(|vault| vault.last_opened.map(|at| (vault.root.clone(), at)))
+                .collect(),
+            default_root: vaults
+                .iter()
+                .find(|vault| vault.is_default)
+                .map(|vault| vault.root.clone()),
+            network: reader_history::ReadingHistory::network_roots(directory).unwrap_or_default(),
+        }
+    }
+}
+
 /// Start screen state besides the vault list.
-struct EntryState {
+#[derive(Default)]
+pub(crate) struct EntryState {
     /// The Reader state the list comes from; removing a vault writes there.
-    directory: Option<PathBuf>,
-    missing: std::collections::HashSet<PathBuf>,
-    notice: Option<Notice>,
+    pub(crate) directory: Option<PathBuf>,
+    /// Whether each checked vault opens, and why not (#3208).
+    pub(crate) status: std::collections::HashMap<PathBuf, Status>,
+    pub(crate) notice: Option<Notice>,
+    pub(crate) listing: Listing,
+}
+impl EntryState {
+    pub(crate) fn unavailable(&self, root: &Path) -> Option<&Unavailable> {
+        self.status.get(root).and_then(Status::unavailable)
+    }
+}
+
+/// The start window's smallest size: the narrow layout goes down to here.
+fn entry_min_size() -> Size<Pixels> {
+    size(px(400.), px(420.))
 }
 
 fn show_entry(roots: Vec<PathBuf>, state: EntryState, cx: &mut App) {
-    let (options, frame_key) =
+    let (mut options, frame_key) =
         super::window_state::prepare(reader_open::window_options(cx), "entry", cx);
+    options.window_min_size = Some(entry_min_size());
     match cx.open_window(options, |window, cx| {
         super::sync_appearance(window, cx);
         window.set_window_title("Okilum");
@@ -458,7 +554,7 @@ fn show_entry(roots: Vec<PathBuf>, state: EntryState, cx: &mut App) {
                 window.refresh();
             })
             .detach();
-        let entry = cx.new(|_| Entry { roots, state });
+        let entry = cx.new(|cx| Entry::new(roots, state, window, cx));
         let root = cx.new(|cx| Root::new(entry, window, cx));
         super::window_state::track(&root, frame_key, window, cx);
         root
@@ -477,24 +573,183 @@ fn show_entry(roots: Vec<PathBuf>, state: EntryState, cx: &mut App) {
     }
 }
 
-struct Entry {
-    roots: Vec<PathBuf>,
-    state: EntryState,
+/// New file (#3208): an untitled draft (#1528) from the start screen, where
+/// no Reader exists to create one. The start screen closes once the draft's
+/// window is up, as for any other open.
+pub(crate) fn new_file(cx: &mut App) {
+    let directory = cx
+        .try_global::<Startup>()
+        .and_then(|startup| startup.entry)
+        .and_then(|window| {
+            window
+                .downcast::<Root>()?
+                .read(cx)
+                .ok()?
+                .view()
+                .clone()
+                .downcast::<Entry>()
+                .ok()
+        })
+        .and_then(|entry| entry.read(cx).state.directory.clone());
+    #[cfg(test)]
+    let directory = directory.or_else(|| {
+        cx.try_global::<reader_history::TestSessionDirectory>()
+            .map(|directory| directory.0.clone())
+    });
+    #[cfg(not(test))]
+    let directory = directory.or_else(|| reader_history::state_directory().ok());
+    let Some(session) = directory else {
+        diagnostic_error!("Draft storage is unavailable, so no untitled file was created");
+        return;
+    };
+    let creating = cx.background_executor().spawn({
+        let session = session.clone();
+        async move { super::reader_untitled::create(&session, None) }
+    });
+    cx.spawn(async move |cx| {
+        let created = creating.await;
+        cx.update(|cx| match created {
+            Ok(file) => {
+                if let Err(error) = reader_open::open_window(
+                    Opts {
+                        open_path: Some(file),
+                        single_file: true,
+                        created_note: true,
+                        session_directory: Some(session),
+                        ..Default::default()
+                    },
+                    cx,
+                ) {
+                    reader_open::show_error(error, cx);
+                }
+            }
+            Err(error) => {
+                diagnostic_error!("Could not create an untitled draft: {error:#}");
+                reader_open::show_error(
+                    anyhow::anyhow!("The untitled file couldn’t be created."),
+                    cx,
+                );
+            }
+        });
+    })
+    .detach();
+}
+
+/// One row of the recents list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Row {
+    /// An unsaved untitled draft: its file.
+    Draft(PathBuf),
+    Vault(PathBuf),
+}
+
+pub(crate) struct Entry {
+    /// Every vault in the history, newest first.
+    pub(crate) roots: Vec<PathBuf>,
+    pub(crate) state: EntryState,
+    pub(crate) view: super::reader_welcome::View,
 }
 impl Entry {
-    fn open(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+    fn new(
+        roots: Vec<PathBuf>,
+        state: EntryState,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut view = super::reader_welcome::View::new(window, cx);
+        // Availability is checked again whenever the window comes back to
+        // the front: a volume may have been mounted meanwhile (#3208).
+        view.keep(cx.observe_window_activation(window, |entry, window, cx| {
+            if window.is_window_active() {
+                entry.recheck(cx);
+            }
+        }));
+        let mut entry = Self { roots, state, view };
+        entry.select_first_available(cx);
+        let first_launch = entry.first_launch();
+        entry.view.focus_initial(first_launch, window, cx);
+        #[cfg(feature = "welcome-ui-harness")]
+        super::reader_welcome::apply_harness(&mut entry, window, cx);
+        entry
+    }
+
+    /// Nothing to list: the first-launch screen (#3208).
+    pub(crate) fn first_launch(&self) -> bool {
+        self.roots.is_empty() && self.state.listing.drafts.is_empty()
+    }
+
+    /// The vaults listed without Show all: the newest
+    /// [`reader_recent_vaults::LIMIT`], less the drafts listed above them.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn shown(&self) -> &[PathBuf] {
+        let (_, vaults, _) = super::reader_welcome::compose(
+            self.state.listing.drafts.len(),
+            self.roots.len(),
+            false,
+        );
+        &self.roots[..vaults]
+    }
+
+    fn select_first_available(&mut self, cx: &App) {
+        let rows = self.rows(cx);
+        self.view.selected = rows
+            .iter()
+            .position(|row| match row {
+                Row::Vault(root) => self.state.unavailable(root).is_none(),
+                Row::Draft(_) => false,
+            })
+            .unwrap_or(0);
+    }
+
+    /// The rows on screen now: drafts first, then vaults, filtered by the
+    /// query or capped unless Show all.
+    pub(crate) fn rows(&self, cx: &App) -> Vec<Row> {
+        super::reader_welcome::visible_rows(self, cx)
+    }
+
+    pub(crate) fn open_row(&mut self, row: Row, cx: &mut Context<Self>) {
+        match row {
+            Row::Vault(root) => self.open(root, cx),
+            Row::Draft(file) => {
+                if let Err(error) = reader_open::open_window(
+                    Opts {
+                        open_path: Some(file),
+                        single_file: true,
+                        session_directory: self.state.directory.clone(),
+                        ..Default::default()
+                    },
+                    cx,
+                ) {
+                    reader_open::show_error(error, cx);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn open(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+        self.view.start_opening(Row::Vault(root.clone()), cx);
         // The folder may have gone while the start screen was up. Checked off
         // the UI thread: a dead network share must not stall the window.
+        let network = self.state.listing.network.clone();
         let checking = cx.background_executor().spawn({
             let root = root.clone();
-            async move { gone(&root) }
+            async move {
+                reader_recent_vaults::check_all(
+                    std::slice::from_ref(&root),
+                    &network,
+                    reader_recent_vaults::CHECK_PATIENCE,
+                )
+                .pop()
+                .map_or(Status::Ready, |(_, status)| status)
+            }
         });
         cx.spawn(async move |entry, cx| {
-            let missing = checking.await;
+            let status = checking.await;
             let _ = entry.update(cx, |entry, cx| {
-                if missing {
-                    entry.state.missing.insert(root.clone());
-                    entry.state.notice = Some(Notice::unopened(&root, true, cx));
+                let unavailable = status.unavailable().is_some();
+                entry.state.status.insert(root.clone(), status);
+                if unavailable {
+                    entry.view.opening = None;
                     cx.notify();
                     return;
                 }
@@ -506,7 +761,11 @@ impl Entry {
                     cx,
                 ) {
                     diagnostic_error!("Cannot open recent folder: {error:#}");
-                    entry.state.notice = Some(Notice::unopened(&root, false, cx));
+                    entry.view.opening = None;
+                    entry.state.status.insert(
+                        root.clone(),
+                        Status::Unavailable(Unavailable::CantOpen(format!("{error:#}"))),
+                    );
                     cx.notify();
                 }
             });
@@ -514,27 +773,150 @@ impl Entry {
         .detach();
     }
 
-    /// Take a vault off the list; its folder is left alone.
-    fn remove(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+    /// Check every listed vault again (window back in front, Try again).
+    pub(crate) fn recheck(&mut self, cx: &mut Context<Self>) {
+        let roots: Vec<PathBuf> = self
+            .roots
+            .iter()
+            .take(2 * reader_recent_vaults::LIMIT)
+            .cloned()
+            .collect();
+        self.check(roots, cx);
+    }
+
+    /// Check these vaults off the UI thread and show what was found.
+    pub(crate) fn check(&mut self, roots: Vec<PathBuf>, cx: &mut Context<Self>) {
+        if roots.is_empty() {
+            return;
+        }
+        let network = self.state.listing.network.clone();
+        let checking = cx.background_executor().spawn(async move {
+            reader_recent_vaults::check_all(&roots, &network, reader_recent_vaults::CHECK_PATIENCE)
+        });
+        cx.spawn(async move |entry, cx| {
+            let checked = checking.await;
+            let _ = entry.update(cx, |entry, cx| {
+                for (root, status) in checked {
+                    entry.state.status.insert(root, status);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Try again on one vault; if it is still unavailable, its row briefly
+    /// says so.
+    pub(crate) fn try_again(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+        let network = self.state.listing.network.clone();
+        let checking = cx.background_executor().spawn({
+            let root = root.clone();
+            async move {
+                reader_recent_vaults::check_all(
+                    std::slice::from_ref(&root),
+                    &network,
+                    reader_recent_vaults::CHECK_PATIENCE,
+                )
+            }
+        });
+        cx.spawn(async move |entry, cx| {
+            let checked = checking.await;
+            let _ = entry.update(cx, |entry, cx| {
+                let still = checked
+                    .iter()
+                    .any(|(_, status)| status.unavailable().is_some());
+                for (checked, status) in checked {
+                    entry.state.status.insert(checked, status);
+                }
+                if still {
+                    entry.view.still_unavailable(root, cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Locate… / Allow access…: the folder chosen replaces the entry and
+    /// keeps its colour (its display name lives in the folder itself).
+    pub(crate) fn locate(&mut self, old: PathBuf, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Choose folder".into()),
+        });
+        cx.spawn(async move |entry, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else {
+                return;
+            };
+            let Some(chosen) = paths.into_iter().next() else {
+                return;
+            };
+            let chosen = cx
+                .background_executor()
+                .spawn(async move { okilum_core::vault::canonical_root(&chosen).ok() })
+                .await;
+            let Some(chosen) = chosen else {
+                return;
+            };
+            let _ = entry.update(cx, |entry, cx| {
+                if chosen != old {
+                    let color = super::reader_ui_state::vault_color(&old, cx);
+                    if color.is_some() {
+                        super::reader_ui_state::set_vault_color(&chosen, color, cx);
+                    }
+                    if let Some(index) = entry.roots.iter().position(|root| root == &old) {
+                        entry.roots[index] = chosen.clone();
+                    }
+                    entry.state.status.remove(&old);
+                    entry.forget_in_history(old.clone(), cx);
+                }
+                entry.open(chosen, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn forget_in_history(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+        let Some(directory) = self.state.directory.clone() else {
+            return;
+        };
+        cx.background_executor()
+            .spawn(async move {
+                if let Err(error) = reader_history::ReadingHistory::forget_root(&directory, &root) {
+                    diagnostic_error!("Cannot replace {} in the list: {error:#}", root.display());
+                }
+            })
+            .detach();
+    }
+
+    /// Take a vault off the list; its folder is left alone. Undo lists it
+    /// again in the same place.
+    pub(crate) fn remove(&mut self, root: PathBuf, cx: &mut Context<Self>) {
         let directory = self.state.directory.clone();
-        let forgetting = cx.background_executor().spawn({
+        let hiding = cx.background_executor().spawn({
             let root = root.clone();
             async move {
                 match directory {
-                    Some(directory) => {
-                        reader_history::ReadingHistory::forget_root(&directory, &root)
-                    }
+                    Some(directory) => reader_history::ReadingHistory::hide_roots(
+                        &directory,
+                        std::slice::from_ref(&root),
+                    ),
                     None => Ok(()),
                 }
             }
         });
         cx.spawn(async move |entry, cx| {
-            let result = forgetting.await;
+            let result = hiding.await;
             let _ = entry.update(cx, |entry, cx| {
                 match result {
                     Ok(()) => {
-                        entry.roots.retain(|old| old != &root);
-                        entry.state.missing.remove(&root);
+                        if let Some(index) = entry.roots.iter().position(|old| old == &root) {
+                            entry.roots.remove(index);
+                            entry.view.removed(root.clone(), index, cx);
+                        }
+                        entry.state.status.remove(&root);
                         if entry
                             .state
                             .notice
@@ -543,6 +925,8 @@ impl Entry {
                         {
                             entry.state.notice = None;
                         }
+                        let rows = entry.rows(cx).len();
+                        entry.view.clamp_selection(rows);
                     }
                     Err(error) => {
                         diagnostic_error!(
@@ -560,163 +944,114 @@ impl Entry {
         })
         .detach();
     }
-}
-impl Render for Entry {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut card = v_flex()
-            .w(px(440.))
-            .gap_4()
-            .items_center()
-            .child(super::brand::logo(52., cx))
-            .child(div().text_2xl().child("Open your notes"))
-            .child(div().text_center().text_color(cx.theme().muted_foreground).child(
-                "Okilum works with your Markdown files in place. Nothing changes until you edit.",
-            ))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(
-                        Button::new("startup-open-folder")
-                            .primary()
-                            .label("Open folder…")
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(reader_open::OpenFolder), cx)
-                            }),
-                    )
-                    .child(
-                        Button::new("startup-new-vault")
-                            .label("Create a new vault…")
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(reader_open::NewVault), cx)
-                            }),
-                    )
-                    .child(
-                        Button::new("startup-open-file")
-                            .label("Open file…")
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(reader_open::OpenFile), cx)
-                            }),
+
+    /// Undo of Remove: the vault returns to its place in the list.
+    pub(crate) fn undo_remove(&mut self, root: PathBuf, index: usize, cx: &mut Context<Self>) {
+        let directory = self.state.directory.clone();
+        let showing = cx.background_executor().spawn({
+            let root = root.clone();
+            async move {
+                match directory {
+                    Some(directory) => reader_history::ReadingHistory::unhide_roots(
+                        &directory,
+                        std::slice::from_ref(&root),
                     ),
-            )
-            .when(cfg!(any(target_os = "linux", target_os = "macos", windows)), |card| {
-                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-                let card = card.child(
-                    Button::new("startup-sync-pairing")
-                        .debug_selector(|| "startup-sync-pairing".into())
-                        .label("Get notes from another computer")
-                        .on_click(|_, window, cx| super::reader_settings::show_sync_pairing(window, cx)),
-                );
-                card
-            })
-            // Someone without notes yet: any folder works (#1357).
-            .child(
-                div()
-                    .text_sm()
-                    .text_center()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("A vault is a folder of Markdown files. An empty folder is fine to start with."),
-            );
-        if let Some(notice) = self.state.notice.clone() {
-            let mut actions = h_flex().gap_2().child(
-                Button::new("startup-notice-choose")
-                    .small()
-                    .label("Choose folder…")
-                    .on_click(|_, window, cx| {
-                        window.dispatch_action(Box::new(reader_open::OpenFolder), cx)
-                    }),
-            );
-            if let Some(root) = notice.root.filter(|root| self.roots.contains(root)) {
-                actions = actions.child(
-                    Button::new("startup-notice-remove")
-                        .small()
-                        .ghost()
-                        .label("Remove from list")
-                        .on_click(
-                            cx.listener(move |entry, _, _, cx| entry.remove(root.clone(), cx)),
-                        ),
-                );
-            }
-            card = card.child(
-                v_flex()
-                    .w_full()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        div()
-                            .text_center()
-                            .text_color(cx.theme().danger)
-                            .child(notice.text),
-                    )
-                    .child(actions),
-            );
-        }
-        if !self.roots.is_empty() {
-            let mut recent = v_flex()
-                .w_full()
-                .border_t_1()
-                .border_color(cx.theme().border)
-                .pt_4()
-                .gap_2();
-            for (index, root) in self.roots.iter().enumerate() {
-                let missing = self.state.missing.contains(root);
-                let label = if missing {
-                    format!("{} · not found", recent_label(root, cx))
-                } else {
-                    recent_label(root, cx)
-                };
-                let open = root.clone();
-                let mut row = h_flex().w_full().gap_1().child(
-                    Button::new(("recent-folder", index))
-                        .tooltip(super::vault_name::path_tooltip(root))
-                        .ghost()
-                        .flex_1()
-                        .label(label)
-                        .when(missing, |button| {
-                            // `Button` has a private method of this name.
-                            Styled::text_color(button, cx.theme().muted_foreground)
-                        })
-                        .on_click(cx.listener(move |entry, _, _, cx| entry.open(open.clone(), cx))),
-                );
-                if missing {
-                    let remove = root.clone();
-                    row =
-                        row.child(
-                            Button::new(("recent-remove", index))
-                                .ghost()
-                                .small()
-                                .label("Remove")
-                                .on_click(cx.listener(move |entry, _, _, cx| {
-                                    entry.remove(remove.clone(), cx)
-                                })),
-                        );
+                    None => Ok(()),
                 }
-                recent = recent.child(row);
             }
-            card = card.child(recent);
-        }
-        v_flex()
-            .size_full()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
-            // Same height as the Reader header so the traffic lights sit where
-            // they will after a folder opens (#365), but with nothing to show
-            // it blends into the page instead of drawing a separate strip.
-            .child(
-                TitleBar::new()
-                    .h(px(super::READER_HEADER_HEIGHT))
-                    .bg(cx.theme().background)
-                    .border_color(transparent_black())
-                    .when(window.is_fullscreen(), |bar| bar.pl(px(10.))),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .w_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(card),
-            )
+        });
+        cx.spawn(async move |entry, cx| {
+            let result = showing.await;
+            let _ = entry.update(cx, |entry, cx| {
+                match result {
+                    Ok(()) if !entry.roots.contains(&root) => {
+                        let index = index.min(entry.roots.len());
+                        entry.roots.insert(index, root.clone());
+                        entry.check(vec![root], cx);
+                    }
+                    Ok(()) => {}
+                    Err(error) => {
+                        diagnostic_error!("Cannot undo the removal: {error:#}");
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Discard an unsaved draft: its folder goes, after the person agreed.
+    pub(crate) fn discard_draft(&mut self, file: PathBuf, cx: &mut Context<Self>) {
+        let removing = cx.background_executor().spawn({
+            let file = file.clone();
+            async move {
+                match file.parent() {
+                    Some(folder) => std::fs::remove_dir_all(folder),
+                    None => Ok(()),
+                }
+            }
+        });
+        cx.spawn(async move |entry, cx| {
+            let result = removing.await;
+            let _ = entry.update(cx, |entry, cx| {
+                match result {
+                    Ok(()) => {
+                        entry
+                            .state
+                            .listing
+                            .drafts
+                            .retain(|draft| draft.file != file);
+                        let rows = entry.rows(cx).len();
+                        entry.view.clamp_selection(rows);
+                    }
+                    Err(error) => {
+                        diagnostic_error!("Cannot discard {}: {error:#}", file.display());
+                        entry.state.notice = Some(Notice {
+                            text: "The draft couldn’t be discarded. Try again.".into(),
+                            root: None,
+                        });
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Clear list (#3208): every listed vault leaves the list; the folders
+    /// and their reading places are left alone, unsaved drafts stay, and
+    /// opening one as a vault again lists it again.
+    pub(crate) fn clear(&mut self, cx: &mut Context<Self>) {
+        let directory = self.state.directory.clone();
+        let roots = self.roots.clone();
+        let hiding = cx.background_executor().spawn(async move {
+            match directory {
+                Some(directory) => reader_history::ReadingHistory::hide_roots(&directory, &roots),
+                None => Ok(()),
+            }
+        });
+        cx.spawn(async move |entry, cx| {
+            let result = hiding.await;
+            let _ = entry.update(cx, |entry, cx| {
+                match result {
+                    Ok(()) => {
+                        entry.roots.clear();
+                        entry.state.status.clear();
+                        entry.state.notice = None;
+                        entry.view.cleared();
+                    }
+                    Err(error) => {
+                        diagnostic_error!("Cannot clear the list of vaults: {error:#}");
+                        entry.state.notice = Some(Notice {
+                            text: "The list couldn’t be updated. Try again.".into(),
+                            root: None,
+                        });
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 }
 
@@ -913,7 +1248,10 @@ mod tests {
                 created_note: false,
             }
         );
-        assert!(roots.contains(&folder));
+        assert!(
+            !roots.contains(&folder),
+            "#3208: a quick viewer's folder is not a recent vault"
+        );
         assert!(
             ReadingHistory::known_vault_roots(&state)
                 .unwrap()
@@ -1076,8 +1414,7 @@ mod tests {
                 Vec::new(),
                 EntryState {
                     directory: None,
-                    missing: Default::default(),
-                    notice: None,
+                    ..Default::default()
                 },
                 cx,
             );
@@ -1119,8 +1456,7 @@ mod tests {
                 Vec::new(),
                 EntryState {
                     directory: None,
-                    missing: Default::default(),
-                    notice: None,
+                    ..Default::default()
                 },
                 cx,
             );
@@ -1146,8 +1482,9 @@ mod tests {
 
     #[gpui::test]
     fn a_missing_last_vault_is_named_plainly_and_can_be_removed(cx: &mut TestAppContext) {
-        // #1368: the folder of the last vault is gone. The start screen names
-        // it in plain words, marks it in the list and can take it off the list.
+        // #1368, #3208: the folder of the last vault is gone. Its own row
+        // says so in plain words (no detached notice), and Remove takes it
+        // off the list.
         use reader_history::ReadingHistory;
         let fixture =
             std::env::temp_dir().join(format!("okilum-missing1368-{}", uuid::Uuid::new_v4()));
@@ -1178,31 +1515,45 @@ mod tests {
         assert_eq!(cx.windows().len(), 1, "the start screen, no vault window");
         let entry = entry(cx);
         entry.read_with(cx, |entry, _| {
-            let notice = entry.state.notice.as_ref().expect("the start screen says why");
-            assert_eq!(
-                notice.text,
-                "“Work Notes” was moved or deleted. Choose its folder again, or remove it from the list."
+            assert!(
+                entry.state.notice.is_none(),
+                "the row says why, not a notice"
             );
-            assert!(!notice.text.contains("os error"));
-            assert_eq!(notice.root.as_ref(), Some(&gone_root));
+            assert_eq!(
+                entry
+                    .state
+                    .status
+                    .get(&gone_root)
+                    .and_then(Status::reason)
+                    .as_deref(),
+                Some("Folder was moved or deleted")
+            );
             assert_eq!(entry.roots, vec![gone_root.clone(), kept.clone()]);
-            assert!(entry.state.missing.contains(&gone_root));
-            assert!(!entry.state.missing.contains(&kept), "a vault that is there is not marked");
+            assert_eq!(
+                entry.view.selected, 1,
+                "the first available vault is selected, so Enter reopens it"
+            );
+            assert_eq!(
+                entry.state.unavailable(&gone_root),
+                Some(&Unavailable::Missing)
+            );
+            assert_eq!(
+                entry.state.unavailable(&kept),
+                None,
+                "a vault that is there is not marked"
+            );
         });
 
         // Choosing the missing vault in the list does not try to open it.
-        entry.update(cx, |entry, cx| {
-            entry.state.notice = None;
-            entry.open(gone_root.clone(), cx);
-        });
+        entry.update(cx, |entry, cx| entry.open(gone_root.clone(), cx));
         cx.run_until_parked();
         assert_eq!(cx.windows().len(), 1);
         entry.read_with(cx, |entry, _| {
-            assert!(entry
-                .state
-                .notice
-                .as_ref()
-                .is_some_and(|n| n.text.contains("moved or deleted")))
+            assert_eq!(
+                entry.state.unavailable(&gone_root),
+                Some(&Unavailable::Missing)
+            );
+            assert!(entry.view.opening.is_none(), "nothing is left opening");
         });
 
         // Removing it takes it off the list and out of the saved history; the
@@ -1212,11 +1563,185 @@ mod tests {
         entry.read_with(cx, |entry, _| {
             assert_eq!(entry.roots, vec![kept.clone()]);
             assert!(entry.state.notice.is_none(), "its notice goes with it");
-            assert!(entry.state.missing.is_empty());
+            assert_eq!(entry.state.unavailable(&gone_root), None);
         });
         let (last, roots) = ReadingHistory::startup_roots(&state).unwrap();
         assert_eq!(last, Some(kept.clone()));
         assert_eq!(roots, vec![kept.clone()]);
         std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    /// #3208: the start screen lists folders opened as vaults, newest first,
+    /// at most `LIMIT`; a folder that only held a file opened on its own is
+    /// not one. Clear list empties it for good.
+    #[gpui::test]
+    fn issue3208_recent_vaults_are_chosen_vaults_newest_first_capped(cx: &mut TestAppContext) {
+        use reader_history::ReadingHistory;
+        use reader_recent_vaults::LIMIT;
+        let fixture = tempfile::tempdir().unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        let state = base.join("state");
+        let mut vaults = Vec::new();
+        let quick = base.join("Downloads");
+        for index in 0..LIMIT + 2 {
+            let root = base.join(format!("Vault {index:02}"));
+            std::fs::create_dir(&root).unwrap();
+            std::fs::write(root.join("a.md"), "# A").unwrap();
+            if index == LIMIT {
+                // A file opened on its own from a folder: never a vault.
+                std::fs::create_dir(&quick).unwrap();
+                std::fs::write(quick.join("readme.md"), "# Readme").unwrap();
+                ReadingHistory::record_document_mode(&state, &quick, "readme.md", true).unwrap();
+            }
+            ReadingHistory::record_usable_document(&state, &root, "a.md").unwrap();
+            vaults.push(root);
+        }
+        // The newest vault is gone, so startup shows the start screen.
+        let newest = vaults.last().unwrap().clone();
+        std::fs::remove_dir_all(&newest).unwrap();
+        cx.update(|cx| {
+            crate::test_init(cx);
+            reader_open::install(cx);
+            launch(
+                Opts {
+                    session_directory: Some(state.clone()),
+                    ..Default::default()
+                },
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        assert_eq!(cx.windows().len(), 1, "the start screen, no vault window");
+        let entry = entry(cx);
+        let newest_first: Vec<PathBuf> = vaults.iter().rev().cloned().collect();
+        entry.read_with(cx, |entry, _| {
+            assert_eq!(
+                entry.roots, newest_first,
+                "chosen vaults only, newest first"
+            );
+            assert_eq!(entry.shown(), &newest_first[..LIMIT]);
+            assert_eq!(
+                entry.state.unavailable(&newest),
+                Some(&Unavailable::Missing)
+            );
+            assert_eq!(
+                entry
+                    .state
+                    .status
+                    .get(&newest)
+                    .and_then(Status::reason)
+                    .as_deref(),
+                Some("Folder was moved or deleted")
+            );
+            assert_eq!(entry.state.unavailable(&vaults[0]), None);
+        });
+
+        entry.update(cx, |entry, cx| entry.clear(cx));
+        cx.run_until_parked();
+        entry.read_with(cx, |entry, _| {
+            assert!(entry.roots.is_empty());
+            assert!(entry.shown().is_empty());
+            assert!(entry.state.notice.is_none());
+        });
+        assert!(ReadingHistory::known_vault_roots(&state)
+            .unwrap()
+            .is_empty());
+        // Only the quick viewer's folder is still remembered, as before.
+        assert_eq!(
+            ReadingHistory::startup_roots(&state).unwrap().1,
+            vec![quick]
+        );
+    }
+
+    /// #3208: type-to-filter narrows the list by name or path, ⌘n opens the
+    /// nth visible row, and New file creates an untitled draft that the
+    /// start screen then lists at the top once it holds text.
+    #[gpui::test]
+    fn issue3208_filter_number_keys_and_new_file(cx: &mut TestAppContext) {
+        use reader_history::ReadingHistory;
+        let fixture = tempfile::tempdir().unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        let state = base.join("state");
+        let mut vaults = Vec::new();
+        for name in [
+            "Gone",
+            "Personal",
+            "Zettel notes",
+            "Quokka",
+            "zettel-archive",
+        ] {
+            let root = base.join(name);
+            std::fs::create_dir(&root).unwrap();
+            vaults.push(root);
+        }
+        // Recorded oldest first: zettel-archive ends up newest, Gone (deleted
+        // below) last of all, so startup shows the start screen.
+        for root in vaults[1..].iter().chain(std::iter::once(&vaults[0])) {
+            ReadingHistory::record_usable_document(&state, root, "a.md").unwrap();
+        }
+        std::fs::remove_dir_all(&vaults[0]).unwrap();
+        cx.update(|cx| {
+            crate::test_init(cx);
+            reader_open::install(cx);
+            cx.set_global(reader_history::TestSessionDirectory(state.clone()));
+            launch(
+                Opts {
+                    session_directory: Some(state.clone()),
+                    ..Default::default()
+                },
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        let entry = entry(cx);
+        let window = cx.update(|cx| cx.global::<Startup>().entry.unwrap());
+        entry.update(cx, |entry, cx| entry.set_query("zettel".into(), cx));
+        entry.read_with(cx, |entry, cx| {
+            assert_eq!(
+                entry.rows(cx),
+                vec![Row::Vault(vaults[4].clone()), Row::Vault(vaults[2].clone()),],
+                "names holding «zettel», newest first"
+            );
+        });
+        // ⌘2 opens the second visible row of the filtered list.
+        window
+            .update(cx, |_, window, cx| {
+                entry.update(cx, |entry, cx| entry.open_nth(2, window, cx))
+            })
+            .unwrap();
+        entry.read_with(cx, |entry, _| {
+            assert_eq!(entry.view.opening, Some(Row::Vault(vaults[2].clone())));
+            assert_eq!(entry.view.selected, 1);
+        });
+        // A path match counts too.
+        let parent = base.file_name().unwrap().to_string_lossy().into_owned();
+        entry.update(cx, |entry, cx| entry.set_query("quokka".into(), cx));
+        entry.read_with(cx, |entry, cx| {
+            assert_eq!(entry.rows(cx), vec![Row::Vault(vaults[3].clone())]);
+        });
+        entry.update(cx, |entry, cx| entry.set_query(parent, cx));
+        entry.read_with(cx, |entry, cx| {
+            assert_eq!(
+                entry.rows(cx).len(),
+                5,
+                "every vault sits in the fixture folder"
+            );
+        });
+
+        // New file: a draft in the state directory, opened on its own.
+        cx.update(new_file);
+        cx.run_until_parked();
+        let created: Vec<_> = std::fs::read_dir(state.join("untitled"))
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.path().is_dir())
+            .collect();
+        assert_eq!(created.len(), 1, "one untitled draft folder");
+        let file = created[0].path().join("Untitled.md");
+        assert!(file.is_file());
+        std::fs::write(&file, "# Plan\n").unwrap();
+        let listing = Listing::read(&state);
+        assert_eq!(listing.drafts.len(), 1);
+        assert_eq!(listing.drafts[0].label, "Plan");
     }
 }

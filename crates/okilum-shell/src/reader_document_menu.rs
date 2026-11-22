@@ -247,6 +247,23 @@ impl Reader {
         if labels {
             spare -= labels_width;
         }
+        // «Open in <Editor>» (#1400) yields first; Document actions keep
+        // every editor under «Open in ▸». Its label needs room of its own.
+        let mut open_in_labelled = false;
+        let show_open_in = match open_in::toolbar_widths(cx, window) {
+            Some((wide, narrow)) if spare >= narrow + 4. => {
+                spare -= narrow + 4.;
+                #[cfg(any(unix, windows))]
+                if labels && spare >= wide - narrow {
+                    spare -= wide - narrow;
+                    open_in_labelled = true;
+                }
+                #[cfg(not(any(unix, windows)))]
+                let _ = wide;
+                true
+            }
+            _ => false,
+        };
         let collapse_parents = parent_width > compact_parent + spare.max(0.);
         let root = self.vault_root.clone();
         let rel = self.selected_file().to_owned();
@@ -351,6 +368,14 @@ impl Reader {
                 false,
                 full,
                 |_, _, cx| toggle_note_width(cx),
+                cx,
+            ));
+        }
+        if show_open_in {
+            row = row.children(open_in::toolbar_button(
+                root.clone(),
+                rel.clone(),
+                open_in_labelled,
                 cx,
             ));
         }

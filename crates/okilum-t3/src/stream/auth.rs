@@ -4,7 +4,7 @@ use std::time::Duration;
 use reqwest::blocking::{Client, Response};
 use serde::{Deserialize, Serialize};
 
-use super::{transport_failure, StreamError, StreamResult};
+use super::{network_failure, transport_failure, StreamError, StreamResult};
 use crate::Environment;
 
 const READ: &str = "orchestration:read";
@@ -169,14 +169,17 @@ impl NativeToken {
     }
 }
 
-/// The ticket client follows the shared per-origin policy. The WebSocket that
-/// spends the ticket does not yet (#1944 follow-up): see docs/windows-network-policy.md.
+/// The ticket client follows the shared per-origin policy; the WebSocket that
+/// spends the ticket takes the same route (#1944, docs/windows-network-policy.md).
 pub(super) fn http(environment: &Environment, timeout: Duration) -> StreamResult<Client> {
     if timeout.is_zero() {
         return Err(StreamError::Protocol("zero network timeout"));
     }
     crate::network::builder(&environment.origin(), timeout)
-        .map_err(|_| StreamError::Unreachable)?
+        .map_err(|error| {
+            let error: &(dyn std::error::Error + 'static) = error.as_ref();
+            network_failure("network policy", error)
+        })?
         .connect_timeout(timeout)
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -257,7 +260,7 @@ pub(super) fn ticket(
         .post(environment.endpoint("/api/auth/websocket-ticket"))
         .bearer_auth(&token.access_token)
         .send()
-        .map_err(|error| transport_failure("WebSocket ticket HTTP request", error.is_timeout()))?;
+        .map_err(|error| network_failure("WebSocket ticket HTTP request", &error))?;
     let ticket: Ticket = decode(response).inspect_err(|error| {
         if *error == StreamError::Unreachable {
             // decode deliberately erases the peer's body and I/O error.

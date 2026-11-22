@@ -6,6 +6,7 @@ struct Fake {
     bytes: Arc<Mutex<Vec<u8>>>,
     reads: Arc<Mutex<Vec<u64>>>,
     cancel_on_read: Option<Arc<AtomicBool>>,
+    report_size: bool,
 }
 impl Transport for Fake {
     fn open(&mut self, _: &Target) -> io::Result<()> {
@@ -20,6 +21,11 @@ impl Transport for Fake {
         let start = (offset as usize).min(bytes.len());
         Ok(bytes[start..bytes.len().min(start + limit)].to_vec())
     }
+    fn size(&mut self) -> io::Result<Option<u64>> {
+        Ok(self
+            .report_size
+            .then(|| self.bytes.lock().unwrap().len() as u64))
+    }
     fn disconnect(&mut self) {}
 }
 fn fixture(bytes: &[u8]) -> Fake {
@@ -27,6 +33,7 @@ fn fixture(bytes: &[u8]) -> Fake {
         bytes: Arc::new(Mutex::new(bytes.to_vec())),
         reads: Arc::new(Mutex::new(Vec::new())),
         cancel_on_read: None,
+        report_size: false,
     }
 }
 #[test]
@@ -51,6 +58,88 @@ fn snapshot_reads_exact_lines_and_reports_unfinished_tail() {
         "one\r\n雪\n".as_bytes()
     );
     assert!(last.message.contains("7 trailing bytes"));
+}
+/// Runs `name` alone in a fresh test process when not already inside one.
+///
+/// The SFTP worker reserves from the process-wide Log memory pool (#3213).
+/// Other tests in this binary deliberately exhaust that pool, so a run in the
+/// shared process can fail with "budget is busy" through no fault of the
+/// worker. Returns `true` in the parent, which must then return.
+fn ran_isolated(name: &str) -> bool {
+    const CHILD: &str = "OKILUM_SFTP_WORKER_ISOLATED_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        return false;
+    }
+    let module = module_path!().split_once("::").unwrap().1;
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", &format!("{module}::{name}"), "--nocapture"])
+        .env(CHILD, "1")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "isolated {name} failed: {stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // Positive control: `--exact` with a wrong path passes with 0 tests.
+    assert!(
+        stdout.contains("test result: ok. 1 passed"),
+        "isolated {name} did not run: {stdout}"
+    );
+    true
+}
+
+#[test]
+fn large_file_starts_at_a_line_in_its_last_mebibyte_and_says_so() {
+    if ran_isolated("large_file_starts_at_a_line_in_its_last_mebibyte_and_says_so") {
+        return;
+    }
+    let line = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde\n";
+    let mut bytes: Vec<u8> = line
+        .iter()
+        .copied()
+        .cycle()
+        .take(line.len() * 50_000)
+        .collect();
+    bytes.extend_from_slice(b"last\n");
+    let mut fake = fixture(&bytes);
+    fake.report_size = true;
+    let reads = fake.reads.clone();
+    let mut last = None;
+    let mut publications = 0;
+    run(
+        Target::parse("sftp://fixture/var/big.log").unwrap(),
+        fake,
+        false,
+        "tail".into(),
+        Arc::new(AtomicBool::new(false)),
+        |frame| {
+            if frame.active && frame.data.is_some() {
+                publications += 1;
+            }
+            // Consume frames like the view: retaining every immutable history
+            // snapshot exhausts the pool even in an otherwise empty process.
+            last = Some(frame);
+            true
+        },
+    );
+    let last = last.unwrap();
+    assert!(publications > 1, "exercise replacement of leased snapshots");
+    assert!(!last.active, "snapshot read must reach its terminal frame");
+    assert!(!last.error, "{}", last.message);
+    let shown = last.data.as_ref().unwrap().bytes();
+    let start = bytes.len() as u64 - TAIL_START_BYTES;
+    assert!(last
+        .message
+        .contains(&format!("started at byte {start}, last 1 MiB")));
+    assert!(shown.ends_with(b"last\n") && shown.starts_with(line));
+    assert!(shown.len() as u64 <= TAIL_START_BYTES && shown.len() % line.len() == 5);
+    assert_eq!(
+        reads.lock().unwrap()[0],
+        start - 1,
+        "no read before the tail"
+    );
 }
 #[test]
 fn rewrite_stops_follow_without_replacing_loaded_rows() {
@@ -204,8 +293,9 @@ fn dropped_connection_reconnects_without_duplicate_or_missing_records() {
     assert!(!last.active && !last.error);
     assert_eq!(last.message, "Stopped");
     assert_eq!(last.data.as_ref().unwrap().bytes(), DONE);
-    // Initial read, one EOF tick, two dropped polls, one recovered poll.
-    assert_eq!(remote.lock().unwrap().opens, 5);
+    // The first connection serves the initial read and the EOF tick; then
+    // two dropped reconnects and the recovered one.
+    assert_eq!(remote.lock().unwrap().opens, 4);
 }
 
 #[test]
@@ -313,8 +403,9 @@ fn stop_during_reconnect_backoff_opens_nothing_further() {
     assert!(!last.active && !last.error);
     assert_eq!(last.message, "Stopped");
     assert_eq!(last.data.as_ref().unwrap().bytes(), b"kept\n");
-    // First read, EOF tick, one dropped poll; nothing after Stop.
-    assert_eq!(remote.lock().unwrap().opens, 3);
+    // First connection (read + EOF tick), one dropped reconnect; nothing
+    // after Stop.
+    assert_eq!(remote.lock().unwrap().opens, 2);
 }
 
 #[test]

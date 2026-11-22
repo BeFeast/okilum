@@ -84,6 +84,10 @@ mod reader_encoding;
 #[cfg(any(unix, windows))]
 mod reader_external_changes;
 mod reader_feedback;
+// #1502: Windows own-window capture; its pixel checks also run in tests elsewhere.
+#[cfg(any(windows, test))]
+#[cfg_attr(not(windows), allow(dead_code))]
+mod own_window_capture;
 mod reader_file_copy;
 mod reader_files;
 mod reader_find_field;
@@ -137,6 +141,7 @@ mod reader_properties;
 mod reader_publication;
 mod reader_read_menu;
 mod reader_reading_controls;
+mod reader_recent_vaults;
 #[cfg(any(unix, windows))]
 mod reader_recovery;
 mod reader_replay;
@@ -187,6 +192,8 @@ mod input_frame_cost_tests;
 mod input_navigation_tests;
 #[cfg(test)]
 mod input_newline_tests;
+#[cfg(test)]
+mod issue3073_tests;
 mod reader_agent_imports;
 #[cfg(test)]
 mod reader_agent_imports_tests;
@@ -248,6 +255,7 @@ mod reader_typed_view;
 mod reader_ui_state;
 mod reader_untitled;
 mod reader_update_restart;
+mod reader_welcome;
 mod search_label;
 #[cfg(any(unix, windows))]
 mod source_presentation;
@@ -523,7 +531,19 @@ pub(crate) const VALIDATE_CODE_KEY: &str = windows_key("alt-shift-v", "ctrl-shif
 pub(crate) const REPAIR_CODE_KEY: &str = windows_key("alt-shift-r", "ctrl-shift-r");
 /// Show in Finder/folder/Explorer. Not Win+Alt+R on Windows: the Xbox Game
 /// Bar records the screen there and the key never reaches Okilum (#3110).
-pub(crate) const REVEAL_FILE_KEY: &str = windows_key("alt-cmd-r", "ctrl-shift-s");
+/// Not Ctrl+Shift+S either: that is Save All in Windows apps (#3133), and
+/// Ctrl+Shift+E is Live Preview. U is free in every Okilum context.
+pub(crate) const REVEAL_FILE_KEY_WINDOWS: &str = "ctrl-shift-u";
+pub(crate) const REVEAL_FILE_KEY: &str = windows_key("alt-cmd-r", REVEAL_FILE_KEY_WINDOWS);
+/// Open in terminal (#2837). Not Win+Alt+T on Windows: the Xbox Game Bar
+/// shows or hides its recording timer there and the key never reaches Okilum
+/// (#3134). Not Ctrl+Shift+U, which is Reveal (#3133), nor Ctrl+Shift+T,
+/// which is Paragraph. A is the last Ctrl+Shift letter free in every Okilum
+/// context (gpui-component binds it only on macOS; B is the Pinyin emoji
+/// panel and I the debug inspector).
+pub(crate) const OPEN_IN_TERMINAL_KEY_WINDOWS: &str = "ctrl-shift-a";
+pub(crate) const OPEN_IN_TERMINAL_KEY: &str =
+    windows_key("alt-cmd-t", OPEN_IN_TERMINAL_KEY_WINDOWS);
 
 /// ⌥⌘W / Ctrl+Alt+W (Ctrl+Shift+W on Windows): normal (reading width) or
 /// full note width. Free in every Reader context; W for width.
@@ -669,6 +689,11 @@ fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new(TOGGLE_PROJECT_KEY, ToggleProject, Some(READER_CONTEXT)),
         KeyBinding::new(REVEAL_FILE_KEY, RevealFile, Some(READER_CONTEXT)),
+        KeyBinding::new(
+            open_in::OPEN_IN_EDITOR_KEY,
+            open_in::OpenInDefaultEditor,
+            Some(READER_CONTEXT),
+        ),
         KeyBinding::new("alt-cmd-c", CopyVaultPath, Some(READER_CONTEXT)),
         // Quick Look is a macOS service; elsewhere Space would only report that.
         #[cfg(target_os = "macos")]
@@ -1133,6 +1158,8 @@ struct Opts {
     query: Option<String>,
     jump: bool,
     copy_source: bool,
+    /// `--no-history`: this process records no recent vaults or files (#3208).
+    no_history: bool,
     /// An external `okilum:` link to open (#1049, docs/deep-links.md).
     link: Option<String>,
     /// Where the link lands in `note` once it is open (#1049).
@@ -1914,6 +1941,12 @@ struct Reader {
     /// Why the last daily notes choice in Settings was not applied.
     #[cfg(any(unix, windows))]
     daily_notes_error: Option<String>,
+    /// Templates offered for daily notes, read with the preference.
+    #[cfg(any(unix, windows))]
+    daily_templates: reader_daily_notes::Templates,
+    /// The first-press daily notes dialog, while it is open.
+    #[cfg(any(unix, windows))]
+    daily_setup: Option<Entity<reader_daily_notes::Setup>>,
     /// Show the reminders note through the native Tasks view (#919).
     #[cfg(any(unix, windows))]
     reminders_view: bool,
@@ -2314,6 +2347,10 @@ impl Reader {
             daily_notes: None,
             #[cfg(any(unix, windows))]
             daily_notes_error: None,
+            #[cfg(any(unix, windows))]
+            daily_templates: Default::default(),
+            #[cfg(any(unix, windows))]
+            daily_setup: None,
             #[cfg(any(unix, windows))]
             reminders_view: false,
             #[cfg(any(unix, windows))]
@@ -5980,6 +6017,21 @@ impl Reader {
                             .flex_1()
                             .min_h_0()
                             .w_full()
+                            // #1615: files and data dropped onto the rendered
+                            // note go into Edit, before the block under the
+                            // pointer.
+                            .drag_over::<ExternalPaths>(|style, _, _, cx| {
+                                style.bg(brand::palette(cx).selected.opacity(0.12))
+                            })
+                            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                                this.drop_on_reader(paths.into(), window, cx)
+                            }))
+                            .drag_over::<ExternalData>(|style, _, _, cx| {
+                                style.bg(brand::palette(cx).selected.opacity(0.12))
+                            })
+                            .on_drop(cx.listener(|this, data: &ExternalData, window, cx| {
+                                this.drop_on_reader(data.into(), window, cx)
+                            }))
                             // The TextView drops link clicks while text is
                             // selected, so a right-click on a link would open
                             // nothing; open the link's menu here (#943).
@@ -8744,6 +8796,11 @@ impl Reader {
             .on_action(cx.listener(|this, _: &OpenFileDefault, window, cx| {
                 this.file_action(reader_files::FileAction::Open, window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &open_in::OpenInDefaultEditor, window, cx| {
+                    this.open_in_default_editor(window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &QuickLookFile, window, cx| {
                 this.file_action(reader_files::FileAction::QuickLook, window, cx)
             }))
@@ -9237,6 +9294,7 @@ OPTIONS:
     --query <TEXT>       Open full-text search with this query
     --jump               Open the first search hit, scrolled to the match
     --copy-source        Copy selections as Markdown source instead of plain text
+    --no-history         Record no recent vaults or files (or set OKILUM_NO_HISTORY=1)
     --html               Render the content pane as HTML instead of Markdown
     --uninstall-data     Remove this user's Okilum data, keeping your notes (Linux)
     --build-info         Print version and build facts for QA tools, then exit
@@ -9392,6 +9450,10 @@ fn main() {
             std::process::exit(2);
         }
     };
+
+    if opts.no_history {
+        reader_history::disable_recording();
+    }
 
     #[cfg(windows)]
     let opts = {

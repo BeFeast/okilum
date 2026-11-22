@@ -57,6 +57,15 @@ original combined titlebar and document controls:
   Open with holds the default app, installed editors under Open in, the
   platform file manager, Open in terminal (the file's folder, #2837), and
   Quick Look on macOS only.
+  With a code editor installed, a split button «Open in <Editor>» sits before
+  Open with, in note and file headers (#1400): its main part, with that
+  editor's application icon, opens the document in the default editor in one
+  click; its chevron lists every installed editor, each with its icon, and
+  the default editor's row shows the shortcut. The default is the editor last
+  used from any «Open in» list, remembered in UI state; when it is no longer
+  installed, the first installed one. The label shows only with toolbar labels
+  and room for it; the button yields before the other optional controls, and
+  Open with keeps the full list under Open in.
   Labels are opt-in from about 1,400 px of document width. The pure overflow
   policy reads the viewer's `overflow_order` table plus its action descriptors,
   and drops labels, Reveal in sidebar, width and Maximize, viewer actions,
@@ -980,8 +989,9 @@ Copy path, Open in new window, Move to Trash and Close note.
 
 Open in terminal (#2837) follows Reveal in sidebar row menus, breadcrumb and
 title menus, the file header's Open with and note Document actions, and is in
-the palette and shortcut catalog (Option+Command+T / Alt+Super+T). It opens
-the system terminal in the item's folder; a file opens its containing folder.
+the palette and shortcut catalog (Option+Command+T / Alt+Super+T, and
+Ctrl+Shift+A on Windows, #3134). It opens the system terminal in the item's
+folder; a file opens its containing folder.
 Entries inside a ZIP are not files on disk and have no file menu, so the
 action is absent there; the archive file itself opens its own folder.
 Launcher selection, argument safety and AppImage environment are described

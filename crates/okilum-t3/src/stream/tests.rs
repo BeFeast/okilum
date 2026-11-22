@@ -1808,3 +1808,61 @@ fn expired_native_metadata_is_display_only_and_still_origin_bound_2653() {
     assert_eq!(NativeToken::saved_expiry(&foreign, &secret), None);
     assert_eq!(NativeToken::saved_expiry(&env, b"not a credential"), None);
 }
+
+/// #1944: a network failure names its cause instead of "unreachable".
+#[test]
+fn network_failures_keep_an_actionable_cause() {
+    use std::io::{Error, ErrorKind};
+    assert_eq!(
+        network_failure(
+            "proxy tunnel",
+            &okilum_http::TunnelError::ProxyAuthentication
+        ),
+        StreamError::Network(NetworkCause::ProxyAuthentication)
+    );
+    assert_eq!(
+        network_failure("proxy tunnel", &okilum_http::TunnelError::Status(502)),
+        StreamError::Network(NetworkCause::Proxy)
+    );
+    assert_eq!(
+        network_failure("TCP connection", &Error::from(ErrorKind::TimedOut)),
+        StreamError::Network(NetworkCause::Timeout)
+    );
+    // Control: a refused connection keeps the existing variant and wording.
+    assert_eq!(
+        network_failure("TCP connection", &Error::from(ErrorKind::ConnectionRefused)),
+        StreamError::Unreachable
+    );
+    for cause in [
+        NetworkCause::Certificate,
+        NetworkCause::Proxy,
+        NetworkCause::ProxyAuthentication,
+        NetworkCause::Timeout,
+    ] {
+        let text = StreamError::Network(cause).to_string();
+        assert!(!text.contains("unreachable"), "{text}");
+    }
+}
+
+/// The ticket request that opens every socket reports a stall as a timeout.
+#[test]
+fn a_stalled_ticket_request_reports_a_timeout() {
+    let fixture = Fixture::start(|listener| {
+        let mut stream = accept(&listener);
+        let mut byte = [0];
+        let _ = stream.read(&mut byte);
+        // Hold the request past the client's budget, then hang up.
+        thread::sleep(Duration::from_millis(800));
+    });
+    let native = NativeClient::new(
+        fixture.env.clone(),
+        token(&fixture.env),
+        Duration::from_millis(200),
+    )
+    .unwrap();
+    assert_eq!(
+        native.subscribe("thread-1", None).err(),
+        Some(StreamError::Network(NetworkCause::Timeout))
+    );
+    fixture.finish();
+}
