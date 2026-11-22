@@ -503,7 +503,7 @@
      position: Point<Pixels>,
  }
  
-@@ -841,20 +838,40 @@
+@@ -841,20 +838,37 @@
                  }
  
                  if event.type_ == state.atoms.XdndEnter {
@@ -541,10 +541,7 @@
 +                    };
 +                    state.xdnd_state.types = offered
 +                        .into_iter()
-+                        .filter(|a| *a != 0)
-+                        .filter_map(|a| state.xcb_connection.get_atom_name(a).ok()?.reply().ok())
-+                        .filter_map(|r| String::from_utf8(r.name).ok())
-+                        .filter(|m| external_drop::limit(m).is_some())
++                        .filter_map(|atom| xdnd_mime(atom, &state.atoms).map(str::to_owned))
 +                        .collect();
 +                    let position = state.xdnd_state.position;
 +                    let types = state.xdnd_state.types.clone();
@@ -556,7 +553,7 @@
                      }
                  } else if event.type_ == state.atoms.XdndLeave {
                      let position = state.xdnd_state.position;
-@@ -871,81 +888,53 @@
+@@ -871,81 +885,53 @@
                          state.xdnd_state.position =
                              Point::new(px(pos.win_x as f32), px(pos.win_y as f32));
                      }
@@ -672,7 +669,7 @@
                  }
              }
              Event::ConfigureNotify(event) => {
-@@ -2288,54 +2277,24 @@
+@@ -2288,41 +2274,27 @@
      supported_atom_ids.contains(&atoms._GTK_FRAME_EXTENTS)
  }
  
@@ -711,10 +708,31 @@
 -        }
 -    }
 -    0
--}
--
++fn xdnd_mime(atom: u32, atoms: &XcbAtoms) -> Option<&'static str> {
++    // Atom names are interned at startup, never queried synchronously during
++    // a drag. Unknown/private atoms do not cause any selection request.
++    [
++        (atoms.TextUriList, "text/uri-list"),
++        (atoms.TEXT_PLAIN_UTF8, "text/plain;charset=utf-8"),
++        (atoms.UTF8_STRING, "UTF8_STRING"),
++        (atoms.TEXT_PLAIN, "text/plain"),
++        (atoms.DropUtf16, "text/plain;charset=utf-16"),
++        (atoms.DropUtf16Le, "text/plain;charset=utf-16le"),
++        (atoms.DropUtf16Be, "text/plain;charset=utf-16be"),
++        (atoms.DropHtml, "text/html"),
++        (atoms.DropPng, "image/png"),
++        (atoms.DropJpeg, "image/jpeg"),
++        (atoms.DropGif, "image/gif"),
++        (atoms.DropWebp, "image/webp"),
++        (atoms.DropTiff, "image/tiff"),
++    ]
++    .into_iter()
++    .find(|(id, _)| *id == atom)
++    .map(|(_, mime)| mime)
+ }
+ 
  fn xdnd_send_finished(
-     xcb_connection: &XCBConnection,
+@@ -2330,12 +2302,19 @@
      atoms: &XcbAtoms,
      source: xproto::Window,
      target: xproto::Window,
@@ -735,7 +753,7 @@
          sequence: 0,
          response_type: xproto::CLIENT_MESSAGE_EVENT,
      };
-@@ -2352,13 +2311,19 @@
+@@ -2352,13 +2331,19 @@
      atoms: &XcbAtoms,
      source: xproto::Window,
      target: xproto::Window,
@@ -759,7 +777,7 @@
      };
 --- /dev/null
 +++ b/src/linux/x11/external_drop.rs
-@@ -0,0 +1,309 @@
+@@ -0,0 +1,308 @@
 +//! XDND selection transfers on a dedicated connection, including INCR.
 +use crate::linux::external_drop::{self, TIMEOUT};
 +use std::time::Instant;
@@ -768,9 +786,7 @@
 +    connection::Connection,
 +    protocol::{
 +        Event,
-+        xproto::{
-+            self, AtomEnum, ConnectionExt, CreateWindowAux, EventMask, Property, WindowClass,
-+        },
++        xproto::{AtomEnum, ConnectionExt, CreateWindowAux, EventMask, Property, WindowClass},
 +    },
 +};
 +
@@ -924,6 +940,7 @@
 +    fn external_drop_x11_real_selection_and_incr() {
 +        // This is a real selection owner, not an unfired event probe. CI runs
 +        // it under Xvfb; missing DISPLAY must fail instead of passing silently.
++        let (_display_guard, _) = x11rb::connect(None).unwrap();
 +        for (incremental, oversized) in [(false, false), (true, false), (true, true)] {
 +            let (send, recv) = std::sync::mpsc::channel();
 +            let (done, wait_done) = std::sync::mpsc::channel();
@@ -1069,3 +1086,21 @@
 +        }
 +    }
 +}
+--- a/src/linux/x11/window.rs
++++ b/src/linux/x11/window.rs
+@@ -48,6 +48,15 @@
+         XdndTypeList,
+         XdndActionCopy,
+         TextUriList: b"text/uri-list",
++        DropHtml: b"text/html",
++        DropUtf16: b"text/plain;charset=utf-16",
++        DropUtf16Le: b"text/plain;charset=utf-16le",
++        DropUtf16Be: b"text/plain;charset=utf-16be",
++        DropPng: b"image/png",
++        DropJpeg: b"image/jpeg",
++        DropGif: b"image/gif",
++        DropWebp: b"image/webp",
++        DropTiff: b"image/tiff",
+         UTF8_STRING,
+         TEXT,
+         STRING,
