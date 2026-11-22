@@ -91,7 +91,7 @@ def controls(evidence):
         STATE.write_text(candidate[:begin] + old + candidate[end:])
         binary = compile_binary(evidence, "old")
         result = run(evidence, "old-test", 120,
-                     [binary, TEST, "--exact", "--test-threads=1"], cwd="crates/okilum-shell")
+                     [binary, TEST, "--exact", "--nocapture", "--test-threads=1"], cwd="crates/okilum-shell")
         assert result.returncode not in (124, 137, 143), "old control timed out or was killed"
         assert result.returncode != 0, "old full-row copy unexpectedly passed"
         assert "running 1 test" in result.stdout, "negative control never ran"
@@ -103,11 +103,14 @@ def controls(evidence):
         restore(evidence)
     binary = compile_binary(evidence, "candidate")
     result = run(evidence, "candidate-test", 120,
-                 [binary, "paragraph_direction", "--test-threads=1"], cwd="crates/okilum-shell")
+                 [binary, "paragraph_direction", "--nocapture", "--test-threads=1"], cwd="crates/okilum-shell")
     assert result.returncode == 0, "candidate direction controls failed"
     for name in (TEST, "vendor_bidi_geometry::tests::paragraph_direction_iterator_preserves_first_strong_semantics",
                  "vendor_bidi_geometry::tests::paragraph_direction_follows_the_first_strong_character"):
-        assert f"test {name} ... ok" in result.stdout, f"missing positive control: {name}"
+        assert f"test {name} ..." in result.stdout, f"missing positive control: {name}"
+    # --nocapture puts stage checkpoints between the harness's name and its
+    # final 'ok'. All three named controls must finish, with none ignored.
+    assert "test result: ok. 3 passed; 0 failed; 0 ignored;" in result.stdout, result.stdout
     assert STATE.read_bytes() == candidate_bytes, "control left the vendor tree changed"
     print("PARAGRAPH_DIRECTION_CANDIDATE_PASS", flush=True)
 

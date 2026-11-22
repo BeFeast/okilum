@@ -65,8 +65,12 @@ print('running 3 tests')
 for name in [{TEST!r},
     'vendor_bidi_geometry::tests::paragraph_direction_iterator_preserves_first_strong_semantics',
     'vendor_bidi_geometry::tests::paragraph_direction_follows_the_first_strong_character']:
-    print('test '+name+' ... ok')
-print('test result: ok. 3 passed; 0 failed;')
+    print('test '+name+' ... checkpoint')
+    print('ok')
+if os.environ.get('FIXTURE_MODE')=='ignored-candidate':
+    print('test result: ok. 2 passed; 0 failed; 1 ignored;')
+else:
+    print('test result: ok. 3 passed; 0 failed; 0 ignored;')
 ''')
         binary.chmod(0o755)
         self.env = dict(os.environ, PATH=str(bindir) + os.pathsep + os.environ["PATH"],
@@ -128,3 +132,9 @@ print('test result: ok. 3 passed; 0 failed;')
         self.assertNotEqual(restored.returncode, 0)
         self.assertIn("candidate backup hash mismatch", restored.stderr)
         self.assertEqual(self.state.read_text(), "keep the current source")
+
+    def test_printed_names_with_ignored_candidate_are_not_a_pass(self):
+        result = self.run_control("ignored-candidate")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("PARAGRAPH_DIRECTION_CANDIDATE_PASS", result.stdout)
+        self.assertEqual(self.state.read_text(), CANDIDATE)

@@ -52,6 +52,20 @@ exercise the real supervisor against a TERM-resistant fake compiler, require
 also reject corrupt backups, zero tests and unrelated runtime failures. These
 harness tests do not compile Rust or certify the product regression.
 
+The next attempt (`45013666421`, head `9b3a5a8e6`) restored the main cache,
+compiled the old-path binary in 172.8 seconds, then timed out in the Reader
+test's 120-second runtime phase before its required assertion. Both hash
+restoration and complete vendor verification passed. This is still no product
+or negative-control verdict. The fixture previously opened the full long note
+with Markdown's initial wrapping before disabling wrap, and omitted the `{`
+required by its shared code-operations setup. It now opens a small real note,
+selects unwrapped mode, and atomically inserts the same two 300 KiB LTR/RTL
+rows before establishing the measured baseline. This scopes the control to
+paragraph direction and actual reused rows; initial wrapped opening remains
+a separate residual. Named live checkpoints identify every setup/measurement
+boundary. Source-work, geometry, Undo/Redo and canonical-save assertions, both
+row sizes and all deadlines are retained.
+
 This is a source-work correction, not acceptance of the reporter issue or a
 native latency, frame-budget or leak claim. Changed-row shaping, glyph copying,
 Tree/Parser/Rope ownership and the other large-editor residuals remain open.
