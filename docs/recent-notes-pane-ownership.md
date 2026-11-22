@@ -18,3 +18,15 @@ release, then require both pane documents to stay put. A positive control starts
 a new gesture in the new pane and requires it to navigate. Canonical bytes stay
 unchanged. These controls must be run against the unchanged implementation before
 claiming a defect or a fix; source inspection alone is not runtime evidence.
+
+The unchanged-production run on `86506061e` confirmed both failures:
+[hosted shell controls](https://github.com/BeFeast/okilum/actions/runs/45033853247).
+Control release navigated the new active pane from A to C, and a focus change
+left an already queued gesture open. A separate existing cached-frame timing
+assertion also failed in that run; it is not evidence for this gesture defect.
+
+Actual pane activation cancels the existing switcher state, including its release
+generation. The queued callback therefore becomes stale, and a later release has
+no selected target to commit. Save/exit's temporary swaps do not call activation,
+so they keep a valid current-pane gesture. No navigation, save guard, source API,
+MRU ordering or release delay changes.

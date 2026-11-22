@@ -599,6 +599,9 @@ impl Reader {
     /// Linked from, the window title, the session record and the document
     /// itself, re-read in case the source changed while the pane was inactive.
     pub(super) fn pane_activated(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // MRU selection and its deferred Control release belong to the pane
+        // that started the gesture, never to the newly active surface.
+        self.recent_switcher.cancel();
         self.outline_list
             .reset_with_uniform_height(self.pane.outline.len(), px(OUTLINE_ROW_HEIGHT));
         if !self.pane.current_rel.is_empty() {

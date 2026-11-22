@@ -1342,4 +1342,34 @@ mod tests {
             assert_eq!(r.split.as_ref().unwrap().other.current_rel, "B.md");
         });
     }
+
+    #[gpui::test]
+    fn pane773_temporary_exit_guard_swap_keeps_the_current_recent_gesture(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (reader, visual, _fixture) = split_recent_fixture(cx);
+        visual.simulate_keystrokes("ctrl-tab");
+        visual.run_until_parked();
+        reader.update(visual, |r, cx| {
+            let other = r.split.as_ref().unwrap().other.id;
+            assert_eq!(r.recent_switcher.paths[r.recent_switcher.selected], "C.md");
+            assert_eq!(r.guard_pane_exit(other, cx), Ok(()));
+            assert!(
+                r.recent_switcher.open(),
+                "a temporary guard swap must keep the gesture"
+            );
+            assert_eq!(r.pane.current_rel, "B.md");
+        });
+        visual.simulate_event(gpui::ModifiersChangedEvent::default());
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_millis(100));
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert_eq!(
+                r.pane.current_rel, "C.md",
+                "the original pane still accepts its gesture"
+            );
+            assert_eq!(r.split.as_ref().unwrap().other.current_rel, "A.md");
+        });
+    }
 }
