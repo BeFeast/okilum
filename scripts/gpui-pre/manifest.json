@@ -11,12 +11,17 @@
     {
       "path": "../patches/gpui-pre/0002-external-data-drops.diff",
       "sha256": "f7f14f752b6f6b956fde5f3ed8c6d2a8e70b5f3cffead4798dff99834d126e50"
+    },
+    {
+      "path": "../patches/gpui-pre/0003-window-ui-scale.diff",
+      "sha256": "2c1c96f3f08bfa1f76cbc28f8aaf1fcb71f622759b5b62b4a098f1aa7de9dc95"
     }
   ],
-  "tree_sha256": "be1310a86ad7b97d478b0c48c2db3ff119be2d01d1be6c323d96320d457a7a08",
+  "tree_sha256": "d57a9e419565dcbd31c7ace8df8a28329a4d84e13a7a5e64f86df13df5bfb7f3",
   "generated_path": "vendor/gpui-pre-0.3.3",
   "changed_files": [
     "src/interactive.rs",
+    "src/platform.rs",
     "src/text_system/line_layout.rs",
     "src/window.rs"
   ]
