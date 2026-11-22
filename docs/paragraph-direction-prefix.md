@@ -66,6 +66,21 @@ a separate residual. Named live checkpoints identify every setup/measurement
 boundary. Source-work, geometry, Undo/Redo and canonical-save assertions, both
 row sizes and all deadlines are retained.
 
+Run `45014941250` on `739b6eb90` fired the old-path assertion as required:
+614,413 source bytes for four direction queries, with one named test failed in
+0.96 seconds. Candidate compilation passed, and its Reader case passed source
+work, RTL geometry and Undo/Redo before timing out after `save-on-edit-exit`.
+The fixture then called `toggle_source` followed by `settle`, combining the
+guarded save/exit with a new asynchronous long-note Read preparation. Its log
+does not distinguish the synchronous guard from that subsequent preparation;
+it does not prove a disk-save stall. The test now verifies the exact same
+production `leave_source` guard directly, requires Edit to end, and checks the
+complete canonical file immediately at that boundary. It retains all prior
+assertions without waiting for the unrelated Read representation, which this
+paragraph-direction control never asserted. No initial/exit Read-rendering
+performance result follows. A complete candidate pass still requires a new
+runtime receipt; the partial run is not accepted as one.
+
 This is a source-work correction, not acceptance of the reporter issue or a
 native latency, frame-budget or leak claim. Changed-row shaping, glyph copying,
 Tree/Parser/Rope ownership and the other large-editor residuals remain open.

@@ -96,12 +96,18 @@ fn edit2803_paragraph_direction_does_not_copy_reused_long_note_rows(cx: &mut Tes
     v.run_until_parked();
     assert_eq!(f.input.read_with(v, |i, _| i.value().to_string()), expected);
     eprintln!("PARAGRAPH_DIRECTION_STAGE phase=save-on-edit-exit");
-    f.reader.update_in(v, |r, w, cx| r.toggle_source(w, cx));
-    tests::settle(v);
-    assert_eq!(
-        std::fs::read_to_string(f.directory.path().join("vault/directions.md")).unwrap(),
-        expected
-    );
+    f.reader.update(v, |r, cx| {
+        // toggle_source uses this same guarded save/exit before starting a
+        // separate Read preparation. Verify the required canonical-save
+        // boundary directly; do not drain unrelated long-note Read rendering.
+        assert!(r.leave_source(cx), "the normal source-exit guard must save");
+        assert!(r.pane.editing.is_none(), "source exit must complete");
+        assert_eq!(
+            std::fs::read_to_string(f.directory.path().join("vault/directions.md")).unwrap(),
+            expected
+        );
+        eprintln!("PARAGRAPH_DIRECTION_STAGE phase=guarded-source-exit-complete");
+    });
     eprintln!("PARAGRAPH_DIRECTION_STAGE phase=source-and-save-preserved");
 }
 
