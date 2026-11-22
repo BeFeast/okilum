@@ -38,6 +38,7 @@ pub(crate) fn init(cx: &mut App) {
         if let Some(window) = window {
             window.set_ui_scale(reader_ui_state::ui_zoom(cx));
             root.add_overlay(cx.new(|_| ZoomLayer::default()));
+            cx.notify();
         }
     })
     .detach();
@@ -164,11 +165,12 @@ mod tests {
             init(cx);
             reader_ui_state::set_text_zoom(1.4, cx);
         });
-        let (first, visual) = cx.add_window_view(|window, cx| {
+        let (_, visual) = cx.add_window_view(|window, cx| {
             let content = cx.new(|_| ZoomLayer::default());
             Root::new(content, window, cx)
         });
         visual.run_until_parked();
+        let first_window = visual.update(|window, _| window.window_handle());
         visual.simulate_keystrokes("secondary-shift-=");
         visual.run_until_parked();
         visual.update(|window, cx| {
@@ -210,6 +212,8 @@ mod tests {
             reader_ui_state::set_ui_zoom(1., cx);
         });
         second.run_until_parked();
-        first.update_in(second, |_, window, _| assert_eq!(window.ui_scale(), 1.));
+        first_window
+            .update(second, |_, window, _| assert_eq!(window.ui_scale(), 1.))
+            .unwrap();
     }
 }

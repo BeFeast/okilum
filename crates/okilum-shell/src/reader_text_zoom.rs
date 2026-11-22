@@ -569,6 +569,14 @@ mod tests {
             );
             assert_eq!(reader_ui_state::base_font_size(cx), base);
         });
+        visual.simulate_keystrokes("secondary-shift-=");
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            assert_eq!(reader_ui_state::ui_zoom(cx), 1.1);
+            assert_eq!(window.ui_scale(), 1.1);
+            assert!((reader_ui_state::text_zoom(cx) - 1.1).abs() < 0.001);
+        });
+        visual.simulate_keystrokes("secondary-shift-0");
         visual.simulate_keystrokes("secondary-0");
         visual.run_until_parked();
         reader.update(visual, |reader, cx| {
@@ -1456,6 +1464,9 @@ mod tests {
             ("Zoom In", ZoomIn.name()),
             ("Zoom Out", ZoomOut.name()),
             ("Actual Size", Reset.name()),
+            ("Zoom In UI", ui_zoom::ZoomIn.name()),
+            ("Zoom Out UI", ui_zoom::ZoomOut.name()),
+            ("Actual UI Size", ui_zoom::Reset.name()),
         ] {
             assert!(
                 actions.contains(&(label.to_string(), action.to_string())),
