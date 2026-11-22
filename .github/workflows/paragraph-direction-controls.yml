@@ -51,6 +51,8 @@ jobs:
         run: |
           bash scripts/vendor-setup.sh
           bash scripts/vendor-setup.sh --verify
+      - name: Prepare isolated Python test dependencies
+        run: bash scripts/ci/setup-python-tests.sh
       - name: Verify harness timeout and restoration controls
         run: python3 -m unittest discover -s scripts/ci -p test_paragraph_direction_controls.py -v
       - name: Run compiled old-copy and candidate controls

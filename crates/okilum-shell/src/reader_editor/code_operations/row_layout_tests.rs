@@ -48,16 +48,16 @@ fn edit2803_paragraph_direction_does_not_copy_reused_long_note_rows(cx: &mut Tes
         "x".repeat(300 * 1024),
         "y".repeat(300 * 1024)
     );
-    eprintln!("PARAGRAPH_DIRECTION_STAGE phase=open-small-reader-note");
+    diagnostic_error!("PARAGRAPH_DIRECTION_STAGE phase=open-small-reader-note");
     let (f, v) = tests::open_file(cx, seed, "directions.md");
-    eprintln!("PARAGRAPH_DIRECTION_STAGE phase=prepare-unwrapped-editor");
+    diagnostic_error!("PARAGRAPH_DIRECTION_STAGE phase=prepare-unwrapped-editor");
     prepare(&f, v);
     assert!(f.input.update_in(v, |i, w, cx| {
         i.replace_source_range(0..seed.len(), &original, w, cx)
     }));
-    eprintln!("PARAGRAPH_DIRECTION_STAGE phase=large-source-inserted");
+    diagnostic_error!("PARAGRAPH_DIRECTION_STAGE phase=large-source-inserted");
     prepare(&f, v);
-    eprintln!("PARAGRAPH_DIRECTION_STAGE phase=large-source-prepared");
+    diagnostic_error!("PARAGRAPH_DIRECTION_STAGE phase=large-source-prepared");
     let at = original.rfind("short").unwrap();
     f.input.update(v, |i, cx| i.set_selected_range(at..at, cx));
     draw(v);
@@ -66,7 +66,7 @@ fn edit2803_paragraph_direction_does_not_copy_reused_long_note_rows(cx: &mut Tes
         .update_in(v, |i, w, cx| i.replace_source_range(at..at, "!", w, cx));
     draw(v);
     let after = f.input.read_with(v, |i, _| i.layout_diagnostics().unwrap());
-    eprintln!("PARAGRAPH_DIRECTION_STAGE phase=short-edit-painted");
+    diagnostic_error!("PARAGRAPH_DIRECTION_STAGE phase=short-edit-painted");
     let queries = after.paragraph_direction_queries - before.paragraph_direction_queries;
     let source_bytes =
         after.paragraph_direction_source_bytes - before.paragraph_direction_source_bytes;
@@ -83,7 +83,7 @@ fn edit2803_paragraph_direction_does_not_copy_reused_long_note_rows(cx: &mut Tes
     // Direction classification must keep exact caret/hit geometry, including
     // the right-aligned Hebrew paragraph, across a cold effective-style pass.
     let hebrew = original.find('א').unwrap() + 'א'.len_utf8();
-    eprintln!("PARAGRAPH_DIRECTION_STAGE phase=check-rtl-geometry");
+    diagnostic_error!("PARAGRAPH_DIRECTION_STAGE phase=check-rtl-geometry");
     let warm = geometry(&f, v, hebrew);
     tint(&f, v, gpui::rgb(0x2233aa).into());
     assert_eq!(geometry(&f, v, hebrew), warm);
@@ -95,7 +95,7 @@ fn edit2803_paragraph_direction_does_not_copy_reused_long_note_rows(cx: &mut Tes
     v.dispatch_action(Redo);
     v.run_until_parked();
     assert_eq!(f.input.read_with(v, |i, _| i.value().to_string()), expected);
-    eprintln!("PARAGRAPH_DIRECTION_STAGE phase=save-on-edit-exit");
+    diagnostic_error!("PARAGRAPH_DIRECTION_STAGE phase=save-on-edit-exit");
     f.reader.update(v, |r, cx| {
         // toggle_source uses this same guarded save/exit before starting a
         // separate Read preparation. Verify the required canonical-save
@@ -106,9 +106,9 @@ fn edit2803_paragraph_direction_does_not_copy_reused_long_note_rows(cx: &mut Tes
             std::fs::read_to_string(f.directory.path().join("vault/directions.md")).unwrap(),
             expected
         );
-        eprintln!("PARAGRAPH_DIRECTION_STAGE phase=guarded-source-exit-complete");
+        diagnostic_error!("PARAGRAPH_DIRECTION_STAGE phase=guarded-source-exit-complete");
     });
-    eprintln!("PARAGRAPH_DIRECTION_STAGE phase=source-and-save-preserved");
+    diagnostic_error!("PARAGRAPH_DIRECTION_STAGE phase=source-and-save-preserved");
 }
 
 #[gpui::test]
