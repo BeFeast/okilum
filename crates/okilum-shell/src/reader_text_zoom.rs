@@ -40,9 +40,9 @@ thread_local! {
 
 pub(crate) fn bind_keys(cx: &mut App) {
     let context = Some("Reader");
-    // GPUI menus show the last binding of an action: ⌘= / Ctrl+= stays last.
+    // Shift-plus belongs to whole-UI zoom. GPUI key_char matching can strip
+    // Shift from "+", so do not retain a secondary-+ alias for note zoom.
     cx.bind_keys([
-        KeyBinding::new("secondary-+", ZoomIn, context),
         KeyBinding::new("secondary-=", ZoomIn, context),
         KeyBinding::new("secondary--", ZoomOut, context),
         KeyBinding::new("secondary-0", Reset, context),
@@ -569,7 +569,7 @@ mod tests {
             );
             assert_eq!(reader_ui_state::base_font_size(cx), base);
         });
-        visual.simulate_keystrokes("secondary-shift-=");
+        visual.simulate_keystrokes("secondary-shift-=->+");
         visual.run_until_parked();
         visual.update(|window, cx| {
             assert_eq!(reader_ui_state::ui_zoom(cx), 1.1);
