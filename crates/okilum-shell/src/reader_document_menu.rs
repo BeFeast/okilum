@@ -33,6 +33,8 @@ impl Reader {
         // Pinned files stay above whatever the Reader shows (#2789).
         let pins = self.render_pin_row(cx);
         let surface = self.render_reader_surface(window, cx);
+        // A split window draws the inactive pane beside the active one (#773).
+        let surface = self.render_split(surface, window, cx);
         match pins {
             Some(pins) => pinned_surface(pins, surface),
             None => surface,

@@ -394,14 +394,14 @@ fn pane773_last_pane_close_and_unsplit_keep_editor_and_draft(cx: &mut gpui::Test
     let a = note_path(&reader, visual, "A.md");
     let saved = std::fs::read_to_string(&a).unwrap();
     start_editing(&reader, visual, "draft ");
-    reader.update(visual, |r, cx| {
+    reader.update_in(visual, |r, window, cx| {
         let pane = r.pane.id();
         assert_eq!(
-            r.close_pane(reader_panes::PaneId::next(), cx),
+            r.close_pane(reader_panes::PaneId::next(), window, cx),
             Err(PaneExit::Missing)
         );
-        assert_eq!(r.close_pane(pane, cx), Err(PaneExit::LastPane));
-        assert_eq!(r.unsplit(cx), Err(PaneExit::LastPane));
+        assert_eq!(r.close_pane(pane, window, cx), Err(PaneExit::LastPane));
+        assert_eq!(r.unsplit(window, cx), Err(PaneExit::LastPane));
         let editing = r.pane.editing.as_ref().expect("editor kept");
         assert!(editing
             .input()
@@ -461,4 +461,358 @@ fn pane773_pane_exit_saves_or_refuses_through_the_lifecycle(cx: &mut gpui::TestA
     });
     visual.run_until_parked();
     assert_eq!(std::fs::read_to_string(&a).unwrap(), "saved-external\n");
+}
+
+// Stage 4: the second pane. `Reader::pane` is always the active surface;
+// `Reader::split` holds the inactive one beside it.
+
+fn rel_of(surface: &super::Surface) -> &str {
+    surface.current_rel.as_str()
+}
+
+fn other_rel(r: &Reader) -> String {
+    r.split
+        .as_ref()
+        .map(|split| rel_of(&split.other).to_owned())
+        .unwrap_or_default()
+}
+
+#[gpui::test]
+fn pane773_split_opens_beside_and_focus_keeps_each_pane(cx: &mut gpui::TestAppContext) {
+    let (reader, visual, _dir) = fixture(cx);
+    assert!(
+        visual.debug_bounds("reader-inactive-pane").is_none(),
+        "one pane at first"
+    );
+    reader.update_in(visual, |r, window, cx| {
+        r.open_beside("B.md", None, window, cx)
+    });
+    settle(visual);
+    reader.read_with(visual, |r, _| {
+        assert_eq!(
+            r.pane.current_rel, "B.md",
+            "the new pane is active and shows B"
+        );
+        assert_eq!(other_rel(r), "A.md", "the first pane keeps A");
+        assert!(
+            !r.split.as_ref().unwrap().active_left,
+            "B opened on the right"
+        );
+        assert_eq!(r.pane.navigation.history, ["B.md"]);
+    });
+    assert!(
+        visual.debug_bounds("reader-inactive-pane").is_some(),
+        "both panes drawn"
+    );
+    reader.update_in(visual, |r, window, cx| {
+        r.open_note("C.md", None, window, cx)
+    });
+    settle(visual);
+    reader.update_in(visual, |r, window, cx| r.focus_other_pane(window, cx));
+    settle(visual);
+    reader.read_with(visual, |r, _| {
+        assert_eq!(r.pane.current_rel, "A.md", "focus brings A back as it was");
+        assert_eq!(
+            r.pane.navigation.history,
+            ["A.md"],
+            "A's history is its own"
+        );
+        assert_eq!(other_rel(r), "C.md");
+        let other = &r.split.as_ref().unwrap().other;
+        assert_eq!(
+            other.navigation.history,
+            ["B.md", "C.md"],
+            "and the other pane keeps its own"
+        );
+    });
+}
+
+#[gpui::test]
+fn pane773_click_on_the_inactive_pane_only_focuses_it(cx: &mut gpui::TestAppContext) {
+    let (reader, visual, _dir) = fixture(cx);
+    reader.update_in(visual, |r, window, cx| {
+        r.open_beside("B.md", None, window, cx)
+    });
+    settle(visual);
+    let layer = visual
+        .debug_bounds("reader-inactive-pane-focus")
+        .expect("the inactive pane's focus layer is drawn");
+    visual.simulate_click(layer.center(), Modifiers::default());
+    settle(visual);
+    reader.read_with(visual, |r, _| {
+        assert_eq!(r.pane.current_rel, "A.md", "the clicked pane is active");
+        assert_eq!(other_rel(r), "B.md", "and nothing else changed");
+    });
+}
+
+#[gpui::test]
+fn pane773_modified_click_on_a_note_link_opens_it_beside(cx: &mut gpui::TestAppContext) {
+    let (reader, visual, dir) = fixture(cx);
+    std::fs::write(dir.path().join("notes/C.md"), "# C\n\nSee [[B]].\n").unwrap();
+    reader.update_in(visual, |r, window, cx| {
+        r.open_note("C.md", None, window, cx)
+    });
+    settle(visual);
+    let url = reader.read_with(visual, |r, _| {
+        r.pane
+            .link_identities
+            .iter()
+            .find(|link| link.target == "B")
+            .expect("positive control: the link is prepared")
+            .url
+            .clone()
+    });
+    assert_eq!(
+        super::Destination::of_click(gpui::Modifiers::secondary_key()),
+        super::Destination::Beside
+    );
+    visual.update(|window, cx| {
+        reader_link_navigation::handle_link_to(
+            &reader.downgrade(),
+            &url,
+            super::Destination::Beside,
+            window,
+            cx,
+        )
+    });
+    settle(visual);
+    reader.read_with(visual, |r, _| {
+        assert_eq!(
+            r.pane.current_rel, "B.md",
+            "the link opened in the new pane"
+        );
+        assert_eq!(
+            other_rel(r),
+            "C.md",
+            "the pane the link was in keeps its note"
+        );
+    });
+    // An ordinary click still navigates in place.
+    visual.update(|window, cx| {
+        reader_link_navigation::handle_link(&reader.downgrade(), &url, window, cx)
+    });
+    settle(visual);
+    reader.read_with(visual, |r, _| assert_eq!(other_rel(r), "C.md"));
+}
+
+#[gpui::test]
+fn pane773_same_note_can_be_edited_in_one_pane_only(cx: &mut gpui::TestAppContext) {
+    let (reader, visual, _dir) = fixture(cx);
+    reader.update_in(visual, |r, window, cx| r.toggle_split(window, cx));
+    settle(visual);
+    reader.read_with(visual, |r, _| {
+        assert_eq!(r.pane.current_rel, "A.md");
+        assert_eq!(other_rel(r), "A.md", "the split shows A in both panes");
+    });
+    reader.update_in(visual, |r, window, cx| r.focus_other_pane(window, cx));
+    settle(visual);
+    start_editing(&reader, visual, "mine ");
+    reader.update_in(visual, |r, window, cx| {
+        r.focus_other_pane(window, cx);
+        r.toggle_source(window, cx);
+        assert!(r.pane.editing.is_none(), "the second pane is refused");
+        assert_eq!(r.link_notice.as_deref(), Some(super::EDITED_ELSEWHERE));
+        let owner = r.split.as_ref().unwrap().other.editing.as_ref();
+        assert!(owner.is_some(), "the owner keeps its editor");
+    });
+}
+
+#[gpui::test]
+fn pane773_unsplit_runs_the_inactive_panes_guard(cx: &mut gpui::TestAppContext) {
+    let (reader, visual, _dir) = fixture(cx);
+    let a = note_path(&reader, visual, "A.md");
+    start_editing(&reader, visual, "mine ");
+    reader.update_in(visual, |r, window, cx| {
+        r.open_beside("B.md", None, window, cx)
+    });
+    settle(visual);
+    std::fs::write(&a, "external\n").unwrap();
+    reader.update_in(visual, |r, window, cx| {
+        assert_eq!(
+            r.unsplit(window, cx),
+            Err(PaneExit::Refused),
+            "A's edit conflicts"
+        );
+        assert!(r.split.is_some(), "the layout stays split");
+        let editing = r
+            .split
+            .as_ref()
+            .unwrap()
+            .other
+            .editing
+            .as_ref()
+            .expect("A keeps its editor");
+        assert!(editing
+            .input()
+            .read(cx)
+            .value()
+            .to_string()
+            .starts_with("mine "));
+        assert_eq!(r.pane.current_rel, "B.md", "the active pane is untouched");
+    });
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), "external\n");
+}
+
+#[gpui::test]
+fn pane773_unsplit_keeps_the_active_pane(cx: &mut gpui::TestAppContext) {
+    let (reader, visual, _dir) = fixture(cx);
+    reader.update_in(visual, |r, window, cx| {
+        r.open_beside("B.md", None, window, cx)
+    });
+    settle(visual);
+    reader.update_in(visual, |r, window, cx| {
+        let b = r.pane.id();
+        assert_eq!(r.unsplit(window, cx), Ok(()));
+        assert!(r.split.is_none());
+        assert_eq!(r.pane.id(), b, "the active pane stays");
+        assert_eq!(r.pane.current_rel, "B.md");
+    });
+    settle(visual);
+    assert!(visual.debug_bounds("reader-inactive-pane").is_none());
+}
+
+#[gpui::test]
+fn pane773_quit_protection_saves_the_inactive_pane_too(cx: &mut gpui::TestAppContext) {
+    let (reader, visual, _dir) = fixture(cx);
+    let a = note_path(&reader, visual, "A.md");
+    start_editing(&reader, visual, "unsaved ");
+    reader.update_in(visual, |r, window, cx| {
+        r.open_beside("B.md", None, window, cx)
+    });
+    settle(visual);
+    reader.update(visual, |r, cx| {
+        let results = r.for_each_pane(cx, |r, cx| {
+            (r.pane.current_rel.clone(), r.save_source_for_close(cx))
+        });
+        assert_eq!(results.len(), 2, "both panes are visited");
+        assert!(results.iter().all(|(_, saved)| *saved));
+        assert_eq!(r.pane.current_rel, "B.md", "order restored after the visit");
+    });
+    settle(visual);
+    assert!(std::fs::read_to_string(&a).unwrap().starts_with("unsaved "));
+}
+
+#[gpui::test]
+fn pane773_a_pane_loading_in_the_background_publishes_on_activation(cx: &mut gpui::TestAppContext) {
+    let (reader, visual, _dir) = fixture(cx);
+    let (release, hold) = async_channel::bounded(1);
+    reader.update_in(visual, |r, window, cx| {
+        r.open_beside("", None, window, cx);
+        r.pane.preparation_hold = Some(hold);
+        r.open_note("B.md", None, window, cx);
+        // Back to A while B is still preparing.
+        r.focus_other_pane(window, cx);
+    });
+    settle(visual);
+    release.try_send(()).unwrap();
+    settle(visual);
+    reader.read_with(visual, |r, _| {
+        assert_eq!(
+            r.pane.current_rel, "A.md",
+            "the active pane was never touched"
+        );
+        let other = &r.split.as_ref().unwrap().other;
+        assert_eq!(rel_of(other), "", "B waits while its pane is inactive");
+        assert!(
+            !other.deferred.is_empty(),
+            "positive control: the result was kept"
+        );
+    });
+    reader.update_in(visual, |r, window, cx| r.focus_other_pane(window, cx));
+    settle(visual);
+    reader.read_with(visual, |r, _| {
+        assert_eq!(
+            r.pane.current_rel, "B.md",
+            "B publishes when its pane is active"
+        );
+        assert_eq!(other_rel(r), "A.md");
+    });
+}
+
+#[gpui::test]
+fn pane773_window_close_refuses_while_the_inactive_pane_cannot_save(cx: &mut gpui::TestAppContext) {
+    let (reader, visual, _dir) = fixture(cx);
+    let a = note_path(&reader, visual, "A.md");
+    start_editing(&reader, visual, "mine ");
+    reader.update_in(visual, |r, window, cx| {
+        r.open_beside("B.md", None, window, cx)
+    });
+    settle(visual);
+    // A, now inactive, conflicts with the disk; B (active) is clean.
+    std::fs::write(&a, "external\n").unwrap();
+    reader.update_in(visual, |r, window, cx| {
+        assert!(
+            !r.prepare_window_close(window, cx),
+            "the window stays open while the inactive pane's edit is unsaved"
+        );
+        let editing = r
+            .split
+            .as_ref()
+            .unwrap()
+            .other
+            .editing
+            .as_ref()
+            .expect("A keeps its editor");
+        assert!(editing
+            .input()
+            .read(cx)
+            .value()
+            .to_string()
+            .starts_with("mine "));
+        assert_eq!(
+            r.pane.current_rel, "B.md",
+            "pane order restored after the visit"
+        );
+    });
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), "external\n");
+}
+
+#[gpui::test]
+fn pane773_window_close_saves_both_clean_panes(cx: &mut gpui::TestAppContext) {
+    let (reader, visual, _dir) = fixture(cx);
+    reader.update_in(visual, |r, window, cx| {
+        r.open_beside("B.md", None, window, cx)
+    });
+    settle(visual);
+    reader.update_in(visual, |r, window, cx| {
+        assert!(
+            r.prepare_window_close(window, cx),
+            "positive control: nothing to refuse"
+        );
+    });
+}
+
+#[gpui::test]
+fn pane773_unsplit_leaves_no_window_state_from_the_closed_pane(cx: &mut gpui::TestAppContext) {
+    let (reader, visual, dir) = fixture(cx);
+    std::fs::write(
+        dir.path().join("notes/B.md"),
+        "# B\n\n## One\n\nText.\n\n## Two\n\nText.\n\n## Three\n\nText.\n",
+    )
+    .unwrap();
+    reader.update_in(visual, |r, window, cx| {
+        r.open_beside("B.md", None, window, cx)
+    });
+    settle(visual);
+    start_editing(&reader, visual, "edit ");
+    reader.update_in(visual, |r, window, cx| {
+        assert!(
+            r.pane.outline.len() > 1,
+            "positive control: B has several headings"
+        );
+        r.focus_other_pane(window, cx);
+        assert_eq!(r.pane.current_rel, "A.md");
+        r.ui_state.live_preview = true;
+        assert_eq!(r.unsplit(window, cx), Ok(()), "B's clean edit leaves");
+        assert!(r.split.is_none());
+        assert_eq!(
+            r.outline_list.item_count(),
+            r.pane.outline.len(),
+            "«On this page» rows are A's, not the closed pane's"
+        );
+        assert!(
+            r.ui_state.live_preview,
+            "the closed pane's editor did not change it"
+        );
+    });
 }

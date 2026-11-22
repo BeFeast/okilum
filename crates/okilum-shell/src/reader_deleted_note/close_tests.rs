@@ -275,7 +275,7 @@ fn quit_choices(cx: &mut TestAppContext, mode: Option<bool>) {
     // save guard without a fresh prompt or a canonical recreation.
     reader.read_with(cx, |r, _| {
         assert!(r.pane.editing.is_none());
-        assert!(r.deleted_note.is_none());
+        assert!(r.pane.deleted_note.is_none());
         assert!(!r.deleted_note_asking);
     });
     assert!(!visual.update(|window, cx| window.has_active_dialog(cx)));
@@ -339,4 +339,130 @@ fn quit_asks_each_window_and_cancelling_the_second_keeps_its_contents(cx: &mut T
     .unwrap());
     assert!(!first_root.join("Start.md").exists());
     assert!(!second_root.join("Start.md").exists());
+}
+
+/// #773: Start is edited in a pane that becomes inactive, then deleted on
+/// disk. Opens Other beside it and returns the reader with Start inactive.
+fn split_with_deleted_inactive(
+    cx: &mut TestAppContext,
+    root: &Path,
+    state: &Path,
+) -> (Entity<Reader>, VisualTestContext, AnyWindowHandle) {
+    let (reader, mut visual, handle) = open(cx, root, state, Some(false));
+    reader.update_in(&mut visual, |r, window, cx| {
+        r.open_beside("Other.md", None, window, cx)
+    });
+    settle(&mut visual, &reader, "Other opened beside", |r| {
+        r.pane.current_rel == "Other.md" && r.document_ready()
+    });
+    std::fs::remove_file(root.join("Start.md")).unwrap();
+    reader.read_with(cx, |r, _| {
+        let other = &r.split.as_ref().expect("split").other;
+        assert_eq!(other.current_rel, "Start.md", "Start is the inactive pane");
+        assert!(
+            other.editing.is_some(),
+            "positive control: Start keeps its editor"
+        );
+    });
+    (reader, visual, handle)
+}
+
+#[gpui::test]
+fn close_asks_about_a_deleted_note_in_the_inactive_pane(cx: &mut TestAppContext) {
+    let (temp, root) = vault();
+    let state = temp.path().join("state");
+    let (reader, mut visual, handle) = split_with_deleted_inactive(cx, &root, &state);
+    assert!(
+        !visual.simulate_close(),
+        "the inactive pane's deleted note blocks an unchosen close"
+    );
+    visual.run_until_parked();
+    assert_choices(&mut visual);
+    reader.read_with(cx, |r, _| {
+        assert_eq!(
+            r.pane.current_rel, "Start.md",
+            "the dialog's note is focused"
+        );
+        assert!(r.split.is_some(), "the layout stays split");
+    });
+    click(&mut visual, "deleted-note-cancel");
+    assert!(
+        cx.update(|cx| cx.windows().contains(&handle)),
+        "Cancel keeps the window"
+    );
+    reader.read_with(cx, |r, cx| {
+        assert_eq!(
+            r.deleted_contents(cx).as_deref(),
+            Some(EDITED),
+            "contents kept"
+        );
+    });
+    assert!(!visual.simulate_close(), "asks again after Cancel");
+    visual.run_until_parked();
+    click(&mut visual, "deleted-note-dont-save");
+    assert!(
+        !cx.update(|cx| cx.windows().contains(&handle)),
+        "an explicit choice closes"
+    );
+    assert!(
+        !root.join("Start.md").exists(),
+        "deleted source never recreated"
+    );
+    assert!(
+        okilum_core::file_editor::FileEditor::has_unsaved_draft(
+            &root.join("Start.md"),
+            &state.join("editor-drafts")
+        )
+        .unwrap(),
+        "the edited contents remain recoverable"
+    );
+}
+
+#[gpui::test]
+fn the_active_pane_does_not_clear_the_inactive_panes_deleted_note(cx: &mut TestAppContext) {
+    let (temp, root) = vault();
+    let state = temp.path().join("state");
+    let (reader, mut visual, _) = split_with_deleted_inactive(cx, &root, &state);
+    reader.update_in(&mut visual, |r, window, cx| {
+        // Each pane records its own deletion.
+        r.focus_other_pane(window, cx);
+        assert!(
+            r.track_deleted_note(&Default::default(), cx),
+            "Start is gone"
+        );
+        assert!(r.pane.deleted_note.is_some());
+        r.focus_other_pane(window, cx);
+        assert_eq!(r.pane.current_rel, "Other.md");
+        assert!(
+            !r.track_deleted_note(&Default::default(), cx),
+            "Other is on disk"
+        );
+        assert!(
+            r.split.as_ref().unwrap().other.deleted_note.is_some(),
+            "Start's record survives while Other is active"
+        );
+    });
+}
+
+#[gpui::test]
+fn quit_asks_about_a_deleted_note_in_the_inactive_pane(cx: &mut TestAppContext) {
+    let (temp, root) = vault();
+    let state = temp.path().join("state");
+    let (reader, mut visual, _) = split_with_deleted_inactive(cx, &root, &state);
+    visual.simulate_keystrokes("secondary-q");
+    visual.run_until_parked();
+    assert_choices(&mut visual);
+    reader.read_with(cx, |r, _| {
+        assert_eq!(
+            r.pane.current_rel, "Start.md",
+            "the dialog's note is focused"
+        );
+    });
+    click(&mut visual, "deleted-note-dont-save");
+    reader.read_with(cx, |r, _| {
+        assert!(r.pane.editing.is_none());
+        assert!(r.pane.deleted_note.is_none());
+        assert!(!r.deleted_note_asking);
+    });
+    assert!(!root.join("Start.md").exists());
 }

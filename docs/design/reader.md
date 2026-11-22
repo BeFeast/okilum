@@ -588,7 +588,7 @@ glyphs are added as Okilum assets under `icons/` and loaded with `Icon::path`.
 
 | Action | Icon | Shortcut / tooltip |
 | --- | --- | --- |
-| Toggle sidebar | `PanelLeft` | «Notes ⌘\\» |
+| Toggle sidebar | `PanelLeft` | «Notes ⇧⌘\\» |
 | Back / Forward | `ArrowLeft` / `ArrowRight` | «Back ⌥←», «Forward ⌥→», disabled at the ends |
 | Find in note | `TextSearch` | «Find in note ⌘F» |
 | Toggle right panel | `PanelRight` | «On this page ⌥⌘\\» |
@@ -665,7 +665,8 @@ New note move into one More menu before the name truncates. There is no total
 note count or second search button. The app search retains keyboard focus and
 Enter/Space activation; the quick-open shortcut remains unchanged.
 Neither panel header has a close (×) button (#442).
-Title-bar toggles and ⌘\ / ⌥⌘\ (Ctrl outside macOS) control panel visibility.
+Title-bar toggles and ⇧⌘\ / ⌥⌘\ (Ctrl outside macOS) control panel visibility;
+⌘\ / Ctrl+\ is reserved for split view (#773).
 Esc in preview or source leaves panel visibility unchanged (#483).
 In compact overlay mode, a click outside closes the panel; the outside
 click is consumed before reaching the document. While an overlay panel is open,

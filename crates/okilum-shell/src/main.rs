@@ -449,6 +449,8 @@ actions!(
         ScrollTop,
         ScrollBottom,
         ToggleNotes,
+        ToggleSplit,
+        FocusOtherPane,
         ToggleBacklinks,
         MaximizeNote,
         ToggleProject,
@@ -513,6 +515,15 @@ const PASTE_AS_TITLED_LINK_KEY: &str = windows_key("secondary-alt-v", "ctrl-shif
 pub(crate) const MAXIMIZE_NOTE_KEY: &str = windows_key("secondary-alt-f", "ctrl-shift-enter");
 /// Not Ctrl+Shift+B on Windows: Microsoft Pinyin opens its emoji panel there.
 /// Y is free in every Okilum context and in the common Windows IMEs.
+/// The Notes sidebar (Oleg, 2026-11-17, #773): ⌘⇧\\ / Ctrl+Shift+\\, so that
+/// ⌘\\ / Ctrl+\\ is free for split view. macOS folds Shift into punctuation:
+/// Cmd+Shift+backslash arrives as cmd-|. Now / Tree, which used this chord,
+/// keeps its menu item and toolbar button without a default shortcut.
+pub(crate) const NOTES_KEY: &str = if cfg!(target_os = "macos") {
+    "cmd-|"
+} else {
+    "ctrl-shift-\\"
+};
 pub(crate) const BACKLINKS_KEY: &str = windows_key("ctrl-alt-\\", "ctrl-shift-y");
 pub(crate) const PARAGRAPH_KEY: &str = windows_key("secondary-alt-0", "ctrl-shift-t");
 pub(crate) const FORMAT_CODE_KEY: &str = windows_key("alt-shift-f", "ctrl-shift-g");
@@ -566,6 +577,8 @@ pub(crate) fn view_menu(cx: &App) -> Menu {
             MenuItem::action("Actual Size", reader_text_zoom::Reset),
             MenuItem::separator(),
             MenuItem::action("Now / Tree", ToggleLeftMode),
+            MenuItem::action("Split View", ToggleSplit),
+            MenuItem::action("Focus Other Pane", FocusOtherPane),
             MenuItem::action("Reveal in Tree", FocusCurrentFolder),
             MenuItem::action("Maximize Note", MaximizeNote),
             MenuItem::action("Full Note Width", ToggleNoteWidth)
@@ -870,25 +883,16 @@ fn bind_keys(cx: &mut App) {
             FocusCurrentFolder,
             Some("Reader > Input"),
         ),
+        // Split view (Oleg, 2026-11-17, #773); the Notes toggle moved to NOTES_KEY.
+        KeyBinding::new("secondary-\\", ToggleSplit, ctx),
+        KeyBinding::new("secondary-\\", ToggleSplit, Some("Reader > Input")),
+        KeyBinding::new(NOTES_KEY, ToggleNotes, ctx),
+        // Layouts that report Shift+backslash as the bar itself.
         #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-shift-\\", ToggleLeftMode, ctx),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-|", ToggleLeftMode, ctx),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-shift-\\", ToggleLeftMode, Some("Reader > Input")),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-|", ToggleLeftMode, Some("Reader > Input")),
-        // macOS folds Shift into punctuation: Cmd+Shift+backslash is cmd-|.
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-|", ToggleLeftMode, ctx),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-|", ToggleLeftMode, Some("Reader > Input")),
-        KeyBinding::new("ctrl-\\", ToggleNotes, ctx),
+        KeyBinding::new("ctrl-|", ToggleNotes, ctx),
         KeyBinding::new(BACKLINKS_KEY, ToggleBacklinks, ctx),
         KeyBinding::new(MAXIMIZE_NOTE_KEY, MaximizeNote, ctx),
         KeyBinding::new(MAXIMIZE_NOTE_KEY, MaximizeNote, Some("Reader > Input")),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-\\", ToggleNotes, ctx),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-alt-\\", ToggleBacklinks, ctx),
         KeyBinding::new("down", TreeDown, Some("ReaderTree && !Input")),
@@ -1514,7 +1518,10 @@ fn reader_plugins_at(
                     this.file_link_menu(url, event.position(), window, cx)
                 });
             } else {
-                handle_link(&entity, url, window, cx);
+                // Cmd/Ctrl+click opens a resolved note beside, +Shift in a
+                // new window (#773); every other link keeps its own route.
+                let destination = reader_pane::Destination::of_click(event.modifiers());
+                reader_link_navigation::handle_link_to(&entity, url, destination, window, cx);
             }
         }),
         Arc::new(move |url| {
@@ -2018,13 +2025,10 @@ struct Reader {
     /// Transient "− 110% + Reset" overlay after a note text zoom (#1652).
     zoom_hud: reader_text_zoom::Hud,
     link_notice: Option<reader_toast::Notice>,
-    /// The note on screen was deleted outside Okilum (#1986).
-    deleted_note: Option<reader_deleted_note::DeletedNote>,
     displayed_deleted_notice: Option<(String, reader_deleted_note::Disk)>,
     deleted_notice_generation: u64,
     /// «Save the deleted note?» is open; a second navigation does not stack another.
     deleted_note_asking: bool,
-    deleted_note_leaving: Option<(PathBuf, String, u64)>,
     displayed_notice: Option<reader_toast::Notice>,
     displayed_choices: Vec<(String, Option<String>)>,
     displayed_recovery: Option<(String, u64)>,
@@ -2136,6 +2140,8 @@ struct Reader {
     /// drawing the focused element, the focus-lost listener moves focus to
     /// the document (#2957).
     refocus_if_lost: bool,
+    /// The second pane, when the window is split (#773).
+    split: Option<reader_pane::Split>,
     _subs: Vec<Subscription>,
 }
 
@@ -2365,11 +2371,9 @@ impl Reader {
             #[cfg(any(unix, windows))]
             move_index: None,
             link_notice: None,
-            deleted_note: None,
             displayed_deleted_notice: None,
             deleted_notice_generation: 0,
             deleted_note_asking: false,
-            deleted_note_leaving: None,
             displayed_notice: None,
             displayed_choices: Vec::new(),
             displayed_recovery: None,
@@ -2461,6 +2465,7 @@ impl Reader {
             body_viewport_width: window.viewport_size().width,
             resizing_panel: None,
             refocus_if_lost: false,
+            split: None,
             _subs: vec![find_sub],
         };
         let weak = cx.weak_entity();
@@ -8923,6 +8928,14 @@ impl Reader {
             .on_action(cx.listener(|this, _: &ToggleNotes, window, cx| {
                 this.toggle_panel(reader_layout::Panel::Notes, window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &ToggleSplit, window, cx| this.toggle_split(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &FocusOtherPane, window, cx| {
+                    this.focus_other_pane(window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &ToggleBacklinks, window, cx| {
                 this.toggle_panel(reader_layout::Panel::Backlinks, window, cx)
             }))
@@ -12798,8 +12811,29 @@ mod document_link_landing_tests {
             visual.simulate_keystrokes("escape");
             visual.run_until_parked();
             view.read_with(visual, |v, _| assert!(v.panels.visible(side, 800.)));
+            if side == reader_layout::Panel::Notes {
+                // #773: the old chord now splits the view and no longer
+                // toggles the sidebar; pressing it again unsplits.
+                let split_key = if cfg!(target_os = "macos") {
+                    "cmd-\\"
+                } else {
+                    "ctrl-\\"
+                };
+                visual.simulate_keystrokes(split_key);
+                visual.run_until_parked();
+                view.read_with(visual, |v, _| {
+                    assert!(v.panels.visible(side, 800.));
+                    assert!(
+                        v.split.is_some(),
+                        "positive control: the chord split the view"
+                    );
+                });
+                visual.simulate_keystrokes(split_key);
+                visual.run_until_parked();
+                view.read_with(visual, |v, _| assert!(v.split.is_none()));
+            }
             visual.simulate_keystrokes(if side == reader_layout::Panel::Notes {
-                "ctrl-\\"
+                NOTES_KEY
             } else {
                 BACKLINKS_KEY
             });
@@ -13643,7 +13677,7 @@ mod document_link_landing_tests {
         });
         visual.run_until_parked();
         std::fs::remove_file(preference).unwrap();
-        visual.simulate_keystrokes("ctrl-\\");
+        visual.simulate_keystrokes(NOTES_KEY);
         visual.run_until_parked();
         view.update_in(visual, |v, window, cx| {
             assert_eq!(
