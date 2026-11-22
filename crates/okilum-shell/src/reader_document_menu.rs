@@ -406,6 +406,8 @@ impl Reader {
                   window: &mut Window,
                   cx: &mut Context<gpui_component::menu::PopupMenu>| {
                 menu = menu
+                    .scrollable(true)
+                    .max_h(reader_ui_zoom::menu_limit(window))
                     .menu_with_icon(
                         "Reveal in sidebar",
                         Icon::default().path(brand::READER_FOCUS_ICON),
@@ -425,6 +427,13 @@ impl Reader {
                         .menu("Actual Size", Box::new(reader_text_zoom::Reset))
                         .separator();
                 }
+                // Linux and Windows have no menu bar, so interface zoom lives
+                // here as well as in the View menu (#2848).
+                menu = menu
+                    .menu("Zoom Interface In", Box::new(reader_ui_zoom::ZoomIn))
+                    .menu("Zoom Interface Out", Box::new(reader_ui_zoom::ZoomOut))
+                    .menu("Actual Interface Size", Box::new(reader_ui_zoom::Reset))
+                    .separator();
                 if (!is_file || editing) && !show_find {
                     menu = menu.menu_with_icon(
                         "Find in note",

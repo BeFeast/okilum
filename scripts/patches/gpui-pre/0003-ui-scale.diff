@@ -1,0 +1,551 @@
+gpui: application UI scale separate from the display scale
+
+Window::scale_factor stays the device scale (display scale times UI zoom).
+The logical viewport and incoming pointer coordinates are divided by the
+UI zoom, and outgoing native rectangles are multiplied back, so one
+physical window can show a larger or smaller interface. UI zoom 1 leaves
+coordinates unchanged. App::set_ui_scale stores the zoom; each window
+applies it on the next draw or platform resize.
+
+diff --git a/src/app.rs b/src/app.rs
+index 9811fc376..e7c5bd8d5 100644
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -759,6 +759,10 @@ pub struct App {
+     pub(crate) mode: GpuiMode,
+     pub(crate) cursor_hide_mode: CursorHideMode,
+     pub(crate) reduce_motion: bool,
++    /// Application UI zoom, independent of the display scale. `1.0` is the
++    /// normal size. Windows divide platform coordinates by this zoom and paint
++    /// at display scale × zoom.
++    pub(crate) ui_scale: f32,
+     /// Origin of the shared clock that phase-locks synced repeating animations.
+     pub(crate) synced_animation_epoch: Instant,
+     /// Whether the app was created by [`Application::new_inaccessible`]. No
+@@ -862,6 +866,7 @@ impl App {
+                 quitting: false,
+                 cursor_hide_mode: CursorHideMode::default(),
+                 reduce_motion: false,
++                ui_scale: 1.,
+                 synced_animation_epoch,
+                 accessibility_force_disabled: false,
+ 
+@@ -1069,6 +1074,24 @@ impl App {
+         }
+     }
+ 
++    /// Application UI zoom, independent of the display scale. `1.0` is the
++    /// normal size. The same physical window then shows a larger or smaller
++    /// interface; pointer coordinates and outgoing native rectangles move with it.
++    pub fn ui_scale(&self) -> f32 {
++        self.ui_scale
++    }
++
++    /// Sets the application UI zoom for every window. Non-finite and non-positive
++    /// values are ignored. Each window applies the zoom on its next draw, or
++    /// immediately on the next platform resize.
++    pub fn set_ui_scale(&mut self, ui_scale: f32) {
++        if !ui_scale.is_finite() || ui_scale <= 0. || self.ui_scale == ui_scale {
++            return;
++        }
++        self.ui_scale = ui_scale;
++        self.refresh_windows();
++    }
++
+     /// Schedules all windows in the application to be redrawn. This can be called
+     /// multiple times in an update cycle and still result in a single redraw.
+     pub fn refresh_windows(&mut self) {
+diff --git a/src/platform.rs b/src/platform.rs
+index eeba999da..48ad06793 100644
+--- a/src/platform.rs
++++ b/src/platform.rs
+@@ -1534,7 +1534,11 @@ impl PlatformInputHandler {
+ 
+     pub fn bounds_for_range(&mut self, range_utf16: Range<usize>) -> Option<Bounds<Pixels>> {
+         self.cx
+-            .update(|window, cx| self.handler.bounds_for_range(range_utf16, window, cx))
++            .update(|window, cx| {
++                self.handler
++                    .bounds_for_range(range_utf16, window, cx)
++                    .map(|bounds| window.to_platform_bounds(bounds))
++            })
+             .ok()
+             .flatten()
+     }
+@@ -1602,7 +1606,10 @@ impl PlatformInputHandler {
+     #[allow(unused)]
+     pub fn character_index_for_point(&mut self, point: Point<Pixels>) -> Option<usize> {
+         self.cx
+-            .update(|window, cx| self.handler.character_index_for_point(point, window, cx))
++            .update(|window, cx| {
++                let point = window.from_platform_point(point);
++                self.handler.character_index_for_point(point, window, cx)
++            })
+             .ok()
+             .flatten()
+     }
+diff --git a/src/window.rs b/src/window.rs
+index 2b6a47a94..5dded8517 100644
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -1190,6 +1190,11 @@ pub struct Window {
+     mouse_hit_test: HitTest,
+     modifiers: Modifiers,
+     capslock: Capslock,
++    /// Display scale reported by the platform, without application UI zoom.
++    display_scale: f32,
++    /// Application UI zoom. Platform coordinates are divided by this to produce
++    /// the logical viewport and pointer position.
++    ui_scale: f32,
+     scale_factor: f32,
+     pub(crate) bounds_observers: SubscriberSet<(), AnyObserver>,
+     appearance: WindowAppearance,
+@@ -1495,6 +1500,22 @@ fn default_bounds(display_id: Option<DisplayId>, cx: &mut App) -> WindowBounds {
+     window_bounds_ctor(Bounds::new(final_origin, base_size))
+ }
+ 
++fn logical_viewport(
++    ui_scale: f32,
++    content_size: Size<Pixels>,
++    mouse_position: Point<Pixels>,
++) -> (Size<Pixels>, Point<Pixels>) {
++    if ui_scale == 1. {
++        (content_size, mouse_position)
++    } else {
++        let inverse = 1. / ui_scale;
++        (
++            size(content_size.width * inverse, content_size.height * inverse),
++            mouse_position * inverse,
++        )
++    }
++}
++
+ impl Window {
+     pub(crate) fn new(
+         handle: AnyWindowHandle,
+@@ -1560,11 +1581,14 @@ impl Window {
+ 
+         let display_id = platform_window.display().map(|display| display.id());
+         let sprite_atlas = platform_window.sprite_atlas();
+-        let mouse_position = platform_window.mouse_position();
+         let modifiers = platform_window.modifiers();
+         let capslock = platform_window.capslock();
+         let content_size = platform_window.content_size();
+-        let scale_factor = platform_window.scale_factor();
++        let display_scale = platform_window.scale_factor();
++        let ui_scale = cx.ui_scale;
++        let scale_factor = display_scale * ui_scale;
++        let (viewport_size, mouse_position) =
++            logical_viewport(ui_scale, content_size, platform_window.mouse_position());
+         let appearance = platform_window.appearance();
+         let text_system = Arc::new(WindowTextSystem::new(cx.text_system().clone()));
+         let invalidator = WindowInvalidator::new(handle.window_id());
+@@ -1895,7 +1919,10 @@ impl Window {
+             let mut cx = cx.to_async();
+             Box::new(move |event| {
+                 handle
+-                    .update(&mut cx, |_, window, cx| window.dispatch_event(event, cx))
++                    .update(&mut cx, |_, window, cx| {
++                        let event = window.scale_platform_input(event);
++                        window.dispatch_event(event, cx)
++                    })
+                     .log_err()
+                     .unwrap_or(DispatchEventResult::default())
+             })
+@@ -1987,7 +2014,7 @@ impl Window {
+             text_rendering_mode: cx.text_rendering_mode.clone(),
+             rem_size: px(16.),
+             rem_size_override_stack: SmallVec::new(),
+-            viewport_size: content_size,
++            viewport_size,
+             layout_engine: Some(TaffyLayoutEngine::new()),
+             root: None,
+             element_id_stack: SmallVec::default(),
+@@ -2014,6 +2041,8 @@ impl Window {
+             mouse_hit_test: HitTest::default(),
+             modifiers,
+             capslock,
++            display_scale,
++            ui_scale,
+             scale_factor,
+             bounds_observers: SubscriberSet::new(),
+             appearance,
+@@ -2293,6 +2322,12 @@ impl Window {
+     /// surface be moved out of others' exclusive zones, and -1 ignores reserved
+     /// space and may extend under other surfaces. (Wayland layer-shell windows only)
+     pub fn set_exclusive_zone(&self, zone: Pixels) {
++        // Zero and negative values are Wayland sentinels, not lengths.
++        let zone = if f32::from(zone) > 0. {
++            self.to_platform_px(zone)
++        } else {
++            zone
++        };
+         self.platform_window.set_exclusive_zone(zone);
+     }
+ 
+@@ -2319,7 +2354,20 @@ impl Window {
+     /// - `Some(&[])` is an empty region, so the window receives no pointer or touch input.
+     /// - `None` resets the region to the default, so the whole window receives input again.
+     pub fn set_input_region(&self, region: Option<&[Bounds<Pixels>]>) {
+-        self.platform_window.set_input_region(region);
++        if self.ui_scale == 1. {
++            self.platform_window.set_input_region(region);
++            return;
++        }
++        let Some(region) = region else {
++            self.platform_window.set_input_region(None);
++            return;
++        };
++        let scaled: Vec<_> = region
++            .iter()
++            .copied()
++            .map(|bounds| self.to_platform_bounds(bounds))
++            .collect();
++        self.platform_window.set_input_region(Some(&scaled));
+     }
+ 
+     /// Return the `WindowBounds` to indicate that how a window should be opened
+@@ -2584,10 +2632,9 @@ impl Window {
+     /// the platform window, then notifies observers. Normally called automatically
+     /// by the platform's resize callback, but exposed publicly for test infrastructure.
+     pub fn bounds_changed(&mut self, cx: &mut App) {
+-        self.scale_factor = self.platform_window.scale_factor();
+-        self.viewport_size = self.platform_window.content_size();
++        self.ui_scale = cx.ui_scale;
++        self.adopt_platform_viewport();
+         self.display_id = self.platform_window.display().map(|display| display.id());
+-        self.mouse_position = self.platform_window.mouse_position();
+ 
+         self.refresh();
+ 
+@@ -2621,7 +2668,7 @@ impl Window {
+ 
+     /// Set the content size of the window.
+     pub fn resize(&mut self, size: Size<Pixels>) {
+-        self.platform_window.resize(size);
++        self.platform_window.resize(self.to_platform_size(size));
+     }
+ 
+     /// Returns whether or not the window is currently fullscreen
+@@ -2687,7 +2734,8 @@ impl Window {
+ 
+     /// Opens the native title bar context menu, useful when implementing client side decorations (Wayland and X11)
+     pub fn show_window_menu(&self, position: Point<Pixels>) {
+-        self.platform_window.show_window_menu(position)
++        self.platform_window
++            .show_window_menu(self.to_platform_point(position))
+     }
+ 
+     /// Handle window movement for Linux and macOS.
+@@ -2701,7 +2749,8 @@ impl Window {
+     /// When using client side decorations, set this to the width of the invisible decorations (Wayland and X11)
+     pub fn set_client_inset(&mut self, inset: Pixels) {
+         self.client_inset = Some(inset);
+-        self.platform_window.set_client_inset(inset);
++        self.platform_window
++            .set_client_inset(self.to_platform_px(inset));
+     }
+ 
+     /// Returns the client_inset value by [`Self::set_client_inset`].
+@@ -2738,7 +2787,8 @@ impl Window {
+     /// Sets the position of the macOS traffic light buttons.
+     #[cfg(target_os = "macos")]
+     pub fn set_traffic_light_position(&self, position: Point<Pixels>) {
+-        self.platform_window.set_traffic_light_position(position);
++        self.platform_window
++            .set_traffic_light_position(self.to_platform_point(position));
+     }
+ 
+     /// Sets the application identifier.
+@@ -2776,13 +2826,164 @@ impl Window {
+         self.platform_window.show_character_palette();
+     }
+ 
+-    /// The scale factor of the display associated with the window. For example, it could
+-    /// return 2.0 for a "retina" display, indicating that each logical pixel should actually
+-    /// be rendered as two pixels on screen.
++    /// Device pixels per logical pixel: the display scale times [`Self::ui_scale`].
++    /// At the default UI zoom this is the display scale, for example 2.0 on a retina display.
+     pub fn scale_factor(&self) -> f32 {
+         self.scale_factor
+     }
+ 
++    /// The operating system's display scale, without application UI zoom.
++    pub fn display_scale(&self) -> f32 {
++        self.display_scale
++    }
++
++    /// Application UI zoom for this window. `1.0` is the normal size.
++    /// [`App::set_ui_scale`] changes it for every window.
++    pub fn ui_scale(&self) -> f32 {
++        self.ui_scale
++    }
++
++    fn adopt_platform_viewport(&mut self) {
++        self.display_scale = self.platform_window.scale_factor();
++        self.scale_factor = self.display_scale * self.ui_scale;
++        let (viewport, mouse) = logical_viewport(
++            self.ui_scale,
++            self.platform_window.content_size(),
++            self.platform_window.mouse_position(),
++        );
++        self.viewport_size = viewport;
++        self.mouse_position = mouse;
++    }
++
++    fn sync_ui_scale(&mut self, cx: &App) {
++        if self.ui_scale == cx.ui_scale {
++            return;
++        }
++        self.ui_scale = cx.ui_scale;
++        self.adopt_platform_viewport();
++    }
++
++    pub(crate) fn from_platform_point(&self, position: Point<Pixels>) -> Point<Pixels> {
++        if self.ui_scale == 1. {
++            position
++        } else {
++            position * (1. / self.ui_scale)
++        }
++    }
++
++    fn to_platform_point(&self, position: Point<Pixels>) -> Point<Pixels> {
++        if self.ui_scale == 1. {
++            position
++        } else {
++            position * self.ui_scale
++        }
++    }
++
++    fn to_platform_size(&self, size: Size<Pixels>) -> Size<Pixels> {
++        if self.ui_scale == 1. {
++            size
++        } else {
++            crate::size(size.width * self.ui_scale, size.height * self.ui_scale)
++        }
++    }
++
++    pub(crate) fn to_platform_px(&self, value: Pixels) -> Pixels {
++        if self.ui_scale == 1. {
++            value
++        } else {
++            value * self.ui_scale
++        }
++    }
++
++    pub(crate) fn to_platform_bounds(&self, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
++        if self.ui_scale == 1. {
++            bounds
++        } else {
++            Bounds {
++                origin: self.to_platform_point(bounds.origin),
++                size: self.to_platform_size(bounds.size),
++            }
++        }
++    }
++
++    fn scale_platform_input(&self, event: PlatformInput) -> PlatformInput {
++        if self.ui_scale == 1. {
++            return event;
++        }
++        let inverse = 1. / self.ui_scale;
++        let point = |position: Point<Pixels>| position * inverse;
++        match event {
++            PlatformInput::MouseMove(mut event) => {
++                event.position = point(event.position);
++                PlatformInput::MouseMove(event)
++            }
++            PlatformInput::MouseDown(mut event) => {
++                event.position = point(event.position);
++                PlatformInput::MouseDown(event)
++            }
++            PlatformInput::MouseUp(mut event) => {
++                event.position = point(event.position);
++                PlatformInput::MouseUp(event)
++            }
++            PlatformInput::MousePressure(mut event) => {
++                event.position = point(event.position);
++                PlatformInput::MousePressure(event)
++            }
++            PlatformInput::MouseExited(mut event) => {
++                event.position = point(event.position);
++                PlatformInput::MouseExited(event)
++            }
++            PlatformInput::ScrollWheel(mut event) => {
++                event.position = point(event.position);
++                if let crate::ScrollDelta::Pixels(delta) = event.delta {
++                    event.delta = crate::ScrollDelta::Pixels(delta * inverse);
++                }
++                PlatformInput::ScrollWheel(event)
++            }
++            PlatformInput::Pinch(mut event) => {
++                event.position = point(event.position);
++                PlatformInput::Pinch(event)
++            }
++            PlatformInput::LongPress(mut event) => {
++                event.position = point(event.position);
++                event.start_position = point(event.start_position);
++                PlatformInput::LongPress(event)
++            }
++            PlatformInput::TouchDrag(mut event) => {
++                event.position = point(event.position);
++                event.start_position = point(event.start_position);
++                PlatformInput::TouchDrag(event)
++            }
++            PlatformInput::Touch(mut event) => {
++                event.position = point(event.position);
++                event.predicted_position = event.predicted_position.map(point);
++                PlatformInput::Touch(event)
++            }
++            PlatformInput::FileDrop(drop) => PlatformInput::FileDrop(match drop {
++                FileDropEvent::Entered { position, paths } => FileDropEvent::Entered {
++                    position: point(position),
++                    paths,
++                },
++                FileDropEvent::Pending { position } => FileDropEvent::Pending {
++                    position: point(position),
++                },
++                FileDropEvent::Submit { position } => FileDropEvent::Submit {
++                    position: point(position),
++                },
++                FileDropEvent::DataEntered { position, data } => FileDropEvent::DataEntered {
++                    position: point(position),
++                    data,
++                },
++                FileDropEvent::DataSubmit { position, data } => FileDropEvent::DataSubmit {
++                    position: point(position),
++                    data,
++                },
++                other => other,
++            }),
++            other => other,
++        }
++    }
++
+     /// Overrides the display scale factor for tests.
+     #[cfg(any(test, feature = "test-support"))]
+     pub fn set_scale_factor(&mut self, scale_factor: f32) {
+@@ -3020,6 +3221,7 @@ impl Window {
+     /// the contents of the new [`Scene`], use [`Self::present`].
+     #[profiling::function]
+     pub fn draw(&mut self, cx: &mut App) -> ArenaClearNeeded {
++        self.sync_ui_scale(cx);
+         // Drain every draw in profiler builds so a previous frame's
+         // first-invalidation timestamp can't be attributed to this one.
+         #[cfg(feature = "profiler")]
+@@ -6274,7 +6476,9 @@ impl Window {
+         self.on_next_frame(|window, cx| {
+             if let Some(mut input_handler) = window.platform_window.take_input_handler() {
+                 if let Some(bounds) = input_handler.selected_bounds(window, cx) {
+-                    window.platform_window.update_ime_position(bounds);
++                    window
++                        .platform_window
++                        .update_ime_position(window.to_platform_bounds(bounds));
+                 }
+                 window.platform_window.set_input_handler(input_handler);
+             }
+@@ -7433,10 +7637,11 @@ mod tests {
+         AnyWindowHandle, AppContext as _, Bounds, Context, DispatchPhase, DragMoveEvent, Empty,
+         ExternalData, ExternalDragPayload, ExternalPaths, FileDragPaths, FileDropEvent,
+         FocusHandle, InputEvent as _, InteractiveElement as _, IntoElement, LongPressEvent,
+-        MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Render,
+-        RequestFrameOptions, SharedString, StatefulInteractiveElement as _, Styled, TestAppContext,
+-        TouchDragEvent, TouchEvent, TouchId, TouchPhase, Window, WindowAppearance, WindowOptions,
+-        canvas, div, point, px, size,
++        Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels,
++        PlatformInput, Point, Render, RequestFrameOptions, ScrollDelta, ScrollWheelEvent,
++        SharedString, StatefulInteractiveElement as _, Styled, TestAppContext, TouchDragEvent,
++        TouchEvent, TouchId, TouchPhase, Window, WindowAppearance, WindowOptions, canvas, div,
++        point, px, size,
+     };
+ 
+     struct EmptyView;
+@@ -8423,4 +8628,88 @@ mod tests {
+         assert_eq!(dropped[0].contents(&text), Some(&b"dropped"[..]));
+         assert_eq!(dropped[0].contents(&html), None);
+     }
++
++    #[gpui::test]
++    fn ui_scale_remaps_viewport_pointer_scroll_and_resize(cx: &mut TestAppContext) {
++        let window = cx.add_window(|_, _| Empty);
++        let test_window = cx.test_window(window.into());
++        test_window.simulate_resize(size(px(1500.), px(900.)));
++        cx.update_window(window.into(), |_, window, _| {
++            assert_eq!(window.ui_scale(), 1.);
++            assert_eq!(window.display_scale(), 2.);
++            assert_eq!(window.scale_factor(), 2.);
++            assert_eq!(window.viewport_size(), size(px(1500.), px(900.)));
++        })
++        .unwrap();
++
++        cx.update(|cx| {
++            cx.set_ui_scale(f32::NAN);
++            cx.set_ui_scale(0.);
++            assert_eq!(cx.ui_scale(), 1.);
++            cx.set_ui_scale(2.);
++        });
++        test_window.simulate_resize(size(px(1500.), px(900.)));
++        cx.update_window(window.into(), |_, window, _| {
++            assert_eq!(window.ui_scale(), 2.);
++            assert_eq!(window.display_scale(), 2.);
++            assert_eq!(window.scale_factor(), 4.);
++            assert_eq!(window.viewport_size(), size(px(750.), px(450.)));
++            window.resize(size(px(200.), px(100.)));
++            let scaled =
++                window.scale_platform_input(PlatformInput::ScrollWheel(ScrollWheelEvent {
++                    position: point(px(80.), px(40.)),
++                    delta: ScrollDelta::Pixels(point(px(20.), px(-10.))),
++                    modifiers: Modifiers::default(),
++                    touch_phase: TouchPhase::Moved,
++                }));
++            match scaled {
++                PlatformInput::ScrollWheel(event) => {
++                    assert_eq!(event.position, point(px(40.), px(20.)));
++                    assert_eq!(event.delta.pixel_delta(px(1.)), point(px(10.), px(-5.)));
++                }
++                other => panic!("scroll was rewritten into {other:?}"),
++            }
++            let lines = window.scale_platform_input(PlatformInput::ScrollWheel(ScrollWheelEvent {
++                position: point(px(8.), px(4.)),
++                delta: ScrollDelta::Lines(point(1., -1.)),
++                modifiers: Modifiers::default(),
++                touch_phase: TouchPhase::Moved,
++            }));
++            match lines {
++                PlatformInput::ScrollWheel(event) => {
++                    assert_eq!(event.delta.pixel_delta(px(16.)), point(px(16.), px(-16.)));
++                }
++                other => panic!("line scroll was rewritten into {other:?}"),
++            }
++        })
++        .unwrap();
++        assert_eq!(test_window.bounds().size, size(px(400.), px(200.)));
++
++        test_window.simulate_input(PlatformInput::MouseMove(MouseMoveEvent {
++            position: point(px(100.), px(40.)),
++            pressed_button: None,
++            modifiers: Modifiers::default(),
++        }));
++        cx.update_window(window.into(), |_, window, _| {
++            assert_eq!(window.mouse_position(), point(px(50.), px(20.)));
++        })
++        .unwrap();
++
++        cx.update(|cx| cx.set_ui_scale(1.));
++        test_window.simulate_resize(size(px(1500.), px(900.)));
++        cx.update_window(window.into(), |_, window, _| {
++            assert_eq!(window.viewport_size(), size(px(1500.), px(900.)));
++            assert_eq!(window.scale_factor(), 2.);
++        })
++        .unwrap();
++        test_window.simulate_input(PlatformInput::MouseMove(MouseMoveEvent {
++            position: point(px(80.), px(80.)),
++            pressed_button: None,
++            modifiers: Modifiers::default(),
++        }));
++        cx.update_window(window.into(), |_, window, _| {
++            assert_eq!(window.mouse_position(), point(px(80.), px(80.)));
++        })
++        .unwrap();
++    }
+ }
