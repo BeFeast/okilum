@@ -147,3 +147,134 @@ fn edit2803_saves_and_ui_renders_reuse_the_background_attachment_index(cx: &mut 
         assert!(rendered.contains("assets/new.png"), "{rendered}");
     });
 }
+
+#[gpui::test]
+fn edit2803_body_batches_retire_indexes_off_ui(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        crate::test_init(cx);
+        bind_keys(cx);
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("vault");
+    std::fs::create_dir_all(&root).unwrap();
+    for n in 0..192 {
+        std::fs::write(
+            root.join(format!("note-{n}.md")),
+            format!("# Note {n}\n\n- [ ] Task {n}\n"),
+        )
+        .unwrap();
+    }
+    let mut entity = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let reader = cx.new(|cx| {
+            Reader::new(
+                Opts {
+                    vault: Some(root.clone()),
+                    note: Some("note-0.md".into()),
+                    index_dir: Some(temp.path().join("cache")),
+                    session_directory: Some(temp.path().join("state")),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            )
+        });
+        entity = Some(reader.clone());
+        Root::new(reader, window, cx)
+    });
+    let reader = entity.unwrap();
+    visual.run_until_parked();
+    let (inventory, titles, old_workbench) = reader.read_with(visual, |r, _| {
+        assert!(r.incremental_state.is_some());
+        assert_eq!(r.quick_open.inventory.as_ref().unwrap().len(), 192);
+        assert_eq!(r.backlink_titles.len(), 192, "full title-map control");
+        (
+            Arc::downgrade(r.quick_open.inventory.as_ref().unwrap()),
+            Arc::downgrade(&r.backlink_titles),
+            Arc::downgrade(&r.workbench),
+        )
+    });
+    // Simulate only the already-successful save notification. Canonical writes
+    // and the editor save machinery are deliberately outside this measurement.
+    let source = "# Changed title\n\n- [ ] New task\n";
+    std::fs::write(root.join("note-0.md"), source).unwrap();
+    reader_editor::work::reset();
+    reader.update_in(visual, |r, window, cx| {
+        r.start_incremental(
+            okilum_core::Changes {
+                changed: std::collections::BTreeSet::from(["note-0.md".into()]),
+                ..Default::default()
+            },
+            window,
+            cx,
+        );
+    });
+    visual.run_until_parked();
+    let work = reader_editor::work::take();
+    // This existing allocator scope covers the real UI publication, including
+    // destruction. The original code frees every title/path in this scope.
+    assert!(work.nanos > 0, "publication measurement must fire");
+    assert!(work.frees < 128, "vault-sized UI destruction: {work:?}");
+    reader.read_with(visual, |r, _| {
+        assert!(!r.incremental_active, "the worker batch completed");
+        assert_eq!(r.backlink_titles["note-0.md"], "Changed title");
+        assert!(titles.upgrade().is_none(), "old title map actually retired");
+        assert!(
+            inventory.upgrade().is_none(),
+            "old inventory actually retired"
+        );
+        assert_eq!(r.quick_open.inventory.as_ref().unwrap().len(), 192);
+        assert_eq!(
+            std::fs::read_to_string(root.join("note-0.md")).unwrap(),
+            source
+        );
+    });
+    // Supersede the body publication with a real watcher echo at 250 ms. At
+    // 501 ms only rejected callbacks run; the accepted callback is due at 750.
+    // This excludes accepted UI observer/render work from retirement accounting.
+    visual.executor().advance_clock(Duration::from_millis(250));
+    visual.run_until_parked();
+    reader.update_in(visual, |r, window, cx| {
+        r.start_incremental(
+            okilum_core::Changes {
+                changed: std::collections::BTreeSet::from(["note-0.md".into()]),
+                ..Default::default()
+            },
+            window,
+            cx,
+        );
+    });
+    visual.run_until_parked();
+    reader_editor::work::reset();
+    visual.executor().advance_clock(Duration::from_millis(251));
+    visual.run_until_parked();
+    let delayed = reader_editor::work::take();
+    assert!(
+        old_workbench.upgrade().is_none(),
+        "superseded index actually retired"
+    );
+    assert!(delayed.nanos > 0, "delayed publication control must fire");
+    assert!(
+        delayed.frees < 128,
+        "superseded Now UI destruction: {delayed:?}"
+    );
+    // Topology is a fired control: new files must still replace the inventory.
+    std::fs::write(root.join("added.md"), "# Added\n").unwrap();
+    reader.update_in(visual, |r, window, cx| {
+        r.start_incremental(
+            okilum_core::Changes {
+                changed: std::collections::BTreeSet::from(["added.md".into()]),
+                ..Default::default()
+            },
+            window,
+            cx,
+        );
+    });
+    visual.run_until_parked();
+    reader.read_with(visual, |r, _| {
+        let next = r.quick_open.inventory.as_ref().unwrap();
+        assert_eq!(next.len(), 193);
+        assert!(next.iter().any(|note| note.path == "added.md"));
+        assert!(!inventory.ptr_eq(&Arc::downgrade(next)));
+    });
+}

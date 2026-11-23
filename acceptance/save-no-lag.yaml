@@ -1,0 +1,64 @@
+# State -> action -> visible result, 1366x768. Visible smoke only.
+# Full post-Repair/menu flow and canonical-byte controls are recorded in
+# docs/incremental-index-publication.md. The runner supports generated fixtures
+# and action-to-visible timing; this smoke does not assert the 16.7 ms budget.
+note: |
+  # Save latency acceptance
+
+  Small note remains responsive after indexing.
+
+  ```
+  menu target
+  ```
+
+  A short paragraph keeps the document close to the reported size.
+
+  A short paragraph keeps the document close to the reported size.
+
+  A short paragraph keeps the document close to the reported size.
+
+  A short paragraph keeps the document close to the reported size.
+
+  A short paragraph keeps the document close to the reported size.
+
+  A short paragraph keeps the document close to the reported size.
+
+  A short paragraph keeps the document close to the reported size.
+
+  A short paragraph keeps the document close to the reported size.
+
+  A short paragraph keeps the document close to the reported size.
+
+  A short paragraph keeps the document close to the reported size.
+
+  A short paragraph keeps the document close to the reported size.
+
+  A short paragraph keeps the document close to the reported size.
+
+  A short paragraph keeps the document close to the reported size.
+
+  A short paragraph keeps the document close to the reported size.
+
+  A short paragraph keeps the document close to the reported size.
+
+  A short paragraph keeps the document close to the reported size.
+
+  A short paragraph keeps the document close to the reported size.
+
+  A short paragraph keeps the document close to the reported size.
+
+region: [300, 90, 800, 540]
+ready_text: Small note remains responsive
+steps:
+  - id: enter-editor
+    keys: [e]
+    mods: [ctrl]
+    text: Save latency acceptance
+  - id: type-line
+    keys: [End, Return, s, a, v, e, d]
+    text: saved
+  - id: save-line
+    keys: [s]
+    mods: [ctrl]
+    wait: 1.5
+    text: saved

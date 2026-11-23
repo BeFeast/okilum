@@ -136,6 +136,7 @@ impl Reader {
         });
         cx.spawn(async move |this, cx| {
             let next = task.await;
+            let retired = next.clone();
             let _ = this.update(cx, |this, cx| {
                 if this.vault_root == root
                     && this.watcher_generation == generation
@@ -144,6 +145,9 @@ impl Reader {
                     this.publish_workbench(next, cx);
                 }
             });
+            cx.background_executor()
+                .spawn(async move { drop((original, retired)) })
+                .detach();
         })
         .detach();
     }
@@ -178,6 +182,11 @@ impl Reader {
                 .timer(Duration::from_millis(500))
                 .await;
             let labels = labels.await;
+            #[cfg(test)]
+            let _work = reader_editor::work::scope();
+            // A superseded or orphaned completion still owns a whole index.
+            // Keep it outside the UI update until acceptance is established.
+            let mut publication = Some((index, labels));
             let _ = this.update(cx, |this, cx| {
                 if this.vault_root == root
                     && this.watcher_generation == generation
@@ -186,11 +195,22 @@ impl Reader {
                     if this.sidebar.initialize_now() {
                         this.save_sidebar(cx);
                     }
-                    this.workbench_ready = Some(index);
-                    this.workbench_times = labels;
+                    let (index, labels) = publication.take().unwrap();
+                    // This is the delayed owner of the previous published
+                    // index; releasing it also walks vault-sized metadata.
+                    let retired = (
+                        this.workbench_ready.replace(index),
+                        std::mem::replace(&mut this.workbench_times, labels),
+                    );
+                    cx.background_executor()
+                        .spawn(async move { drop(retired) })
+                        .detach();
                     cx.notify();
                 }
             });
+            cx.background_executor()
+                .spawn(async move { drop(publication) })
+                .detach();
         })
         .detach();
     }

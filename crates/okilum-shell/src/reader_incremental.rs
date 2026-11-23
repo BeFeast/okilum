@@ -228,6 +228,22 @@ impl Reader {
                             inventory,
                             candidates,
                         )) => {
+                            // Arc assignment can be the last owner of a vault-sized
+                            // map. Keep replaced indexes alive until the worker can
+                            // destroy them; pointer swaps alone are cheap on the UI.
+                            let retired = (
+                                this.tasks_index.clone(), this.projects.clone(),
+                                this.workbench.clone(), this.vault.clone(),
+                                this.searcher.clone(), this.backlink_titles.clone(),
+                                this.quick_open.inventory.clone(),
+                                {
+                                    #[cfg(any(unix, windows))] { this.move_index.clone() }
+                                    #[cfg(not(any(unix, windows)))] { None::<()> }
+                                },
+                                // Keep cached search files leased until their
+                                // retired searcher is closed (tuple drops in order).
+                                this.cache_lease.clone(),
+                            );
                             this.source_publication_epoch = this.source_publication_epoch.wrapping_add(1);
                             this.tasks_index = Some(tasks);
                             #[cfg(any(unix, windows))]
@@ -267,6 +283,7 @@ impl Reader {
                             if let Some(trace) = &publish_trace {
                                 trace.event("incremental_ui_publish", serde_json::json!({"duration_ms":publish_started.elapsed().as_secs_f64()*1000.,"queued_duration_ms":requested.elapsed().as_secs_f64()*1000.,"epoch":epoch}));
                             }
+                            cx.background_executor().spawn(async move { drop(retired); }).detach();
                             cx.notify();
                             Some((state, searcher, !batch.affected.is_empty() || batch.topology_changed, !batch.affected.is_empty()))
                         }
