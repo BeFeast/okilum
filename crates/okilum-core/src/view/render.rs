@@ -163,7 +163,9 @@ pub fn render_markdown(result: &ViewResult) -> String {
             }
             continue;
         }
-        if section.groups.is_empty() {
+        if let Some(nodes) = &section.nodes {
+            render_tree(&mut markdown, nodes, section, 0);
+        } else if section.groups.is_empty() {
             render_rows(&mut markdown, section, &section.rows);
         } else {
             let mut offset = 0;
@@ -207,16 +209,51 @@ pub fn render_markdown(result: &ViewResult) -> String {
     markdown
 }
 
+fn render_tree(markdown: &mut String, nodes: &[super::TreeNode], section: &Section, depth: usize) {
+    let indent = "  ".repeat(depth);
+    for node in nodes {
+        writeln!(
+            markdown,
+            "{indent}- {} ({})",
+            escape(&node.label),
+            node.count
+        )
+        .unwrap();
+        render_tree(markdown, &node.children, section, depth + 1);
+        for &index in &node.rows {
+            let row = &section.rows[index];
+            writeln!(
+                markdown,
+                "{indent}  - {}",
+                list_item(row, &column_values(section, row))
+            )
+            .unwrap();
+        }
+    }
+}
+
+fn column_values(section: &Section, row: &Row) -> String {
+    section
+        .cols
+        .iter()
+        .filter_map(|key| row.fields.get(key))
+        .map(cell)
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+fn list_item(row: &Row, values: &str) -> String {
+    if values.is_empty() {
+        source_link(row)
+    } else {
+        format!("{values} — {}", source_link(row))
+    }
+}
+
 fn render_rows(markdown: &mut String, section: &Section, rows: &[Row]) {
-    if matches!(section.show, Show::List | Show::Sections | Show::Tree) {
+    if matches!(section.show, Show::List | Show::Sections) {
         for row in rows {
-            let values = section
-                .cols
-                .iter()
-                .filter_map(|key| row.fields.get(key))
-                .map(cell)
-                .collect::<Vec<_>>()
-                .join(" · ");
+            let values = column_values(section, row);
             if section.show == Show::Sections {
                 writeln!(
                     markdown,
@@ -234,10 +271,8 @@ fn render_rows(markdown: &mut String, section: &Section, rows: &[Row]) {
                 if let Some(content) = &row.markdown {
                     writeln!(markdown, "{content}\n").unwrap();
                 }
-            } else if values.is_empty() {
-                writeln!(markdown, "- {}", source_link(row)).unwrap();
             } else {
-                writeln!(markdown, "- {values} — {}", source_link(row)).unwrap();
+                writeln!(markdown, "- {}", list_item(row, &values)).unwrap();
             }
         }
     } else {

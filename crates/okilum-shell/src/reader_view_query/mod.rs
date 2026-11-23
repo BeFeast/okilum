@@ -2,12 +2,20 @@
 use super::*;
 use okilum_core::document_links::HeadingEntry;
 use okilum_core::view;
+use std::collections::BTreeMap;
 
 mod index;
 mod markdown;
 
 pub(super) use index::Index;
 pub(super) use index::{load as load_index, update as update_index};
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct Bindings {
+    pub key: String,
+    pub label: String,
+    pub args: BTreeMap<String, serde_json::Value>,
+}
 
 #[derive(Default)]
 pub(super) struct Navigation {
@@ -76,6 +84,7 @@ impl Reader {
 struct Request {
     epoch: u64,
     source: Arc<str>,
+    bindings: Option<Bindings>,
 }
 
 #[derive(Default)]
@@ -100,13 +109,16 @@ fn evaluate(
             .collect::<Vec<_>>()
             .join(" ")
     })?;
-    let projection = match index.as_ref() {
+    let projection = match &index.projection {
         Ok(projection) => projection,
         Err(error) => return Ok(markdown::unavailable(error)),
     };
     let mut run = view::RunContext::new(projection, vault, chrono::Local::now().fixed_offset());
     run.generation = request.epoch;
     run.searcher = searcher;
+    if let Some(bindings) = &request.bindings {
+        run.args = bindings.args.clone();
+    }
     Ok(markdown::render(&view::run(&doc, &run)))
 }
 
@@ -132,6 +144,7 @@ pub(super) fn render(
     let request = Request {
         epoch: reader.view_query_generation,
         source,
+        bindings: reader.pane.navigation.view_bindings().cloned(),
     };
     let Some(index) = &reader.view_query_index else {
         return Some(loading(reader, cx));
@@ -145,11 +158,9 @@ pub(super) fn render(
         let input_path = path.clone();
         let pane = reader.pane.id();
         cache.update(cx, |cache, _| {
-            if cache
-                .request
-                .as_ref()
-                .is_none_or(|previous| previous.source != request.source)
-            {
+            if cache.request.as_ref().is_none_or(|previous| {
+                previous.source != request.source || previous.bindings != request.bindings
+            }) {
                 cache.content = None;
                 cache.fallback = false;
             }

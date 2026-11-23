@@ -231,6 +231,7 @@ impl Reader {
         if self.single_file
             || self.project_navigation.active.is_some()
             || self.sidebar.left_mode == mode
+            || (mode == LeftMode::Areas && self.areas_tree().is_none())
         {
             return;
         }
@@ -240,7 +241,7 @@ impl Reader {
         }
         self.sidebar.left_mode = mode;
         // Keep the tree object, cursor and scroll handle intact. No reveal or rebuild.
-        if mode == LeftMode::Now && self.tree_focus.contains_focused(window, cx) {
+        if mode != LeftMode::Tree && self.tree_focus.contains_focused(window, cx) {
             self.focus_handle.focus(window, cx);
         }
         self.save_sidebar(cx);
@@ -274,8 +275,8 @@ impl Reader {
     }
 
     pub(super) fn toggle_left_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let mode = match self.sidebar.left_mode {
-            LeftMode::Now => LeftMode::Tree,
+        let mode = match self.left_sidebar_mode() {
+            LeftMode::Now | LeftMode::Areas => LeftMode::Tree,
             LeftMode::Tree => LeftMode::Now,
         };
         self.set_left_mode(mode, window, cx);
@@ -285,13 +286,16 @@ impl Reader {
         let views: Vec<_> = [
             ("left-mode-tree", "Tree", LeftMode::Tree),
             ("left-mode-now", "Now", LeftMode::Now),
+            ("left-mode-areas", "Areas", LeftMode::Areas),
         ]
         .into_iter()
+        .filter(|(_, _, mode)| *mode != LeftMode::Areas || self.areas_tree().is_some())
         .map(|(id, label, mode)| {
             let reader = cx.entity().downgrade();
             let icon = match mode {
                 LeftMode::Now => Icon::default().path(brand::READER_CLOCK_ICON),
                 LeftMode::Tree => Icon::default().path("icons/list.svg"),
+                LeftMode::Areas => Icon::default().path("icons/view-tree.svg"),
             };
             let mut action = reader_viewer_chrome::ViewerAction::new(
                 id,
@@ -301,10 +305,12 @@ impl Reader {
                     let _ = reader.update(cx, |this, cx| this.set_left_mode(mode, window, cx));
                 }),
             );
-            action.tooltip = reader_shortcuts::hint("Now / Tree", &ToggleLeftMode, cx);
+            if mode != LeftMode::Areas {
+                action.tooltip = reader_shortcuts::hint("Now / Tree", &ToggleLeftMode, cx);
+            }
             reader_viewer_chrome::ViewerView {
                 action,
-                active: self.sidebar.left_mode == mode,
+                active: self.left_sidebar_mode() == mode,
             }
         })
         .collect();

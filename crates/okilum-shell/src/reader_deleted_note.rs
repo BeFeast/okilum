@@ -1593,6 +1593,7 @@ mod tests {
         reader.update_in(visual, |r, window, cx| {
             r.accept_prepared_document(
                 prepared_links::DocumentRequest {
+                    view: None,
                     rel: "Other.md".into(),
                     jump: None,
                     heading: None,

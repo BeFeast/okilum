@@ -529,6 +529,7 @@ impl Reader {
         let document = okilum_core::render::reader_document_from_source(&self.vault, &rel, source);
         self.accept_prepared_document(
             prepared_links::DocumentRequest {
+                view: None,
                 rel,
                 jump: None,
                 heading: None,

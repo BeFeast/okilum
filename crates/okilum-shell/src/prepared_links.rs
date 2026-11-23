@@ -238,6 +238,8 @@ impl PreparedDocument {
 pub(crate) enum Landing {
     /// An explicit bare document link opens at the top, without a flash.
     Top,
+    /// A template opened from an Areas branch with its typed arguments.
+    View(reader_view_query::Bindings),
     Task(okilum_core::tasks::Task),
     /// A file line from an external link (#1049), 1-based.
     Line(u32),
@@ -252,6 +254,7 @@ pub(crate) struct DocumentRequest {
     pub heading: Option<String>,
     pub history_index: Option<usize>,
     pub restore_position: Option<ListOffset>,
+    pub view: Option<reader_view_query::Bindings>,
 }
 
 enum LinkSource {
@@ -362,6 +365,10 @@ impl Reader {
             jump: location.0.map(str::to_owned),
             heading: location.1.map(str::to_owned),
             history_index: self.pane.navigation.history_nav,
+            view: match &landing {
+                Some(Landing::View(bindings)) => Some(bindings.clone()),
+                _ => None,
+            },
             restore_position: self
                 .pane
                 .navigation
@@ -449,7 +456,7 @@ impl Reader {
                             let target = match landing {
                                 // Acceptance already starts a replacement at the
                                 // top; an empty document needs no pending landing.
-                                Some(Landing::Top) => None,
+                                Some(Landing::Top | Landing::View(_)) => None,
                                 Some(Landing::Task(task)) => {
                                     let original = document.original.as_deref().ok_or_else(|| {
                                         anyhow::anyhow!("Task navigation is unavailable in HTML mode")
@@ -558,20 +565,20 @@ impl Reader {
                 // Only a successfully accepted current request may reopen the
                 // chosen editor. Explicit link landings above keep ownership.
                 if this.pane.navigation.generation != navigation
-                    && this.ui_state.source_mode
                     && this.pane.editing.is_none()
+                    && this.pane.navigation.view_bindings().is_none()
                 {
                     let tree_had_focus = this.tree_focus.contains_focused(window, cx);
-                    this.toggle_source(window, cx);
-                    // An asynchronous mode restore must keep tree navigation
-                    // and rename keys in the navigator that opened the note.
-                    if tree_had_focus {
-                        this.tree_focus.focus(window, cx);
+                    if this.ui_state.source_mode {
+                        this.toggle_source(window, cx);
+                        // Keep navigation and rename keys in the navigator.
+                        if tree_had_focus {
+                            this.tree_focus.focus(window, cx);
+                        }
+                    } else {
+                        // #2817: the Settings default opens a note in Edit.
+                        this.open_note_by_default(tree_had_focus, window, cx);
                     }
-                } else if this.pane.navigation.generation != navigation && this.pane.editing.is_none() {
-                    // #2817: the Settings default opens a note in Edit.
-                    let tree_had_focus = this.tree_focus.contains_focused(window, cx);
-                    this.open_note_by_default(tree_had_focus, window, cx);
                 }
                 if let Some(line) = unplaced_line {
                     this.link_notice = Some(

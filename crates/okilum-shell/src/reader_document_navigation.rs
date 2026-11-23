@@ -157,6 +157,16 @@ impl Reader {
             }
         };
         let rel = request.rel.as_str();
+        let view = request.view.or_else(|| {
+            request.history_index.and_then(|index| {
+                let navigation = &self.pane.navigation;
+                navigation
+                    .history_views
+                    .get(&index)
+                    .filter(|_| navigation.history.get(index).map(String::as_str) == Some(rel))
+                    .cloned()
+            })
+        });
         let jump_term = request.jump.as_deref();
         let heading = request.heading.as_deref();
         let heading_ix = if let Some(target) = heading {
@@ -324,7 +334,9 @@ impl Reader {
         self.pane.usable_document = true;
         self.record_usable_document(cx);
         self.refresh_link_preparation(cx);
-        self.pane.current_title = self.note_label(rel);
+        self.pane.current_title = view
+            .as_ref()
+            .map_or_else(|| self.note_label(rel), |view| view.label.clone());
         self.set_backlinks(self.vault.backlinks(rel), true);
         self.show_window_title(Some(self.pane.current_title.clone()), window, cx);
         if request.history_index.is_none()
@@ -335,25 +347,11 @@ impl Reader {
                     .history
                     .get(self.pane.navigation.history_ix)
                     .map(String::as_str)
-                    != Some(rel))
+                    != Some(rel)
+                || self.pane.navigation.view_bindings() != view.as_ref())
         {
             // A new branch: forward entries are dropped, like a browser.
-            if !self.pane.navigation.history.is_empty() {
-                self.pane
-                    .navigation
-                    .history
-                    .truncate(self.pane.navigation.history_ix + 1);
-                self.pane
-                    .navigation
-                    .history_positions
-                    .truncate(self.pane.navigation.history_ix + 1);
-            }
-            self.pane.navigation.history.push(rel.to_string());
-            self.pane.navigation.history_positions.push(ListOffset {
-                item_ix: 0,
-                offset_in_item: px(0.),
-            });
-            self.pane.navigation.history_ix = self.pane.navigation.history.len() - 1;
+            self.pane.navigation.push_history(rel.to_owned(), view);
         }
         if self.pane.find_open {
             self.run_find(window, cx);

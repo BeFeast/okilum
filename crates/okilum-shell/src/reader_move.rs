@@ -1026,6 +1026,7 @@ impl Reader {
                 self.pane.current_title = self.vault.note_title(&next_current);
                 self.accept_prepared_document(
                     prepared_links::DocumentRequest {
+                        view: None,
                         rel: next_current,
                         jump: None,
                         heading: None,

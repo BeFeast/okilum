@@ -256,6 +256,7 @@ mod reader_update_restart;
 mod reader_view_query;
 mod reader_welcome;
 mod search_label;
+mod sidebar_view_tree;
 #[cfg(any(unix, windows))]
 mod source_presentation;
 mod text_ranges;

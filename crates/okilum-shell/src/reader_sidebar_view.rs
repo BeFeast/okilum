@@ -98,6 +98,17 @@ const SIDEBAR_AVATAR: f32 = 18.;
 
 /// Every sidebar tree row, inline create and rename rows included.
 pub(super) const TREE_ROW_HEIGHT: f32 = 28.;
+
+pub(super) fn tree_row_base(id: SharedString) -> Stateful<Div> {
+    h_flex()
+        .id(id)
+        .w_full()
+        .h(px(TREE_ROW_HEIGHT))
+        .gap(px(6.))
+        .pr_2()
+        .rounded(px(6.))
+        .whitespace_nowrap()
+}
 pub(super) const HIDDEN_FILES_MENU: &str = "Show hidden files";
 /// One sidebar header action (#1512): a 28 px button and its 2 px gap.
 pub(super) const SIDEBAR_ACTION_SLOT: f32 = 30.;
@@ -1043,20 +1054,25 @@ impl Reader {
             0.
         };
         let modes_visible = !self.single_file && project.is_none();
-        let modes_inline = modes_visible && width >= 260.;
-        let actions = if self.sidebar.left_mode == reader_sidebar::LeftMode::Now
-            && !self.single_file
-            && project.is_none()
-        {
+        let areas_space = if self.areas_tree().is_some() { 62. } else { 0. };
+        let modes_inline = modes_visible && width >= 260. + areas_space;
+        let mode = self.left_sidebar_mode();
+        let actions = if mode == reader_sidebar::LeftMode::Areas {
+            &SidebarAction::ALL[..0]
+        } else if mode == reader_sidebar::LeftMode::Now && !self.single_file && project.is_none() {
             // New note and Today's note.
             &SidebarAction::ALL[..2 * usize::from(cfg!(any(unix, windows)))]
-        } else if self.sidebar.left_mode == reader_sidebar::LeftMode::Tree && project.is_none() {
+        } else if mode == reader_sidebar::LeftMode::Tree && project.is_none() {
             // Creation and Collapse all have permanent slots beside Vault Index.
             &SidebarAction::ALL[4..]
         } else {
             SidebarAction::available()
         };
-        let room = width - 24. - dot - 2. * SIDEBAR_NAME_GAP - if modes_inline { 132. } else { 0. };
+        let room = width
+            - 24.
+            - dot
+            - 2. * SIDEBAR_NAME_GAP
+            - if modes_inline { 132. + areas_space } else { 0. };
         let name = toolbar_text_width(&title, FontWeight::SEMIBOLD, window) + SIDEBAR_NAME_CHROME;
         let visible = if modes_inline {
             0
@@ -1232,7 +1248,7 @@ impl Reader {
             // note on it still moves the note to the vault root.
             .map(|row| {
                 #[cfg(any(unix, windows))]
-                let row = if in_vault {
+                let row = if in_vault && mode != reader_sidebar::LeftMode::Areas {
                     reader_move_picker::drop_target(row, reader.clone(), drop_root, String::new())
                 } else {
                     row
@@ -1288,13 +1304,12 @@ impl Reader {
         if self.project_navigation.active.is_some() {
             return div().into_any_element();
         }
-        let content = if self.sidebar.left_mode == reader_sidebar::LeftMode::Tree
-            || !self.sidebar.now_enabled()
-            || self.single_file
-        {
-            self.render_tree(window, cx)
-        } else {
-            self.render_workbench(window, cx)
+        let content = match self.left_sidebar_mode() {
+            reader_sidebar::LeftMode::Areas if !self.single_file => self.render_areas_tree(cx),
+            reader_sidebar::LeftMode::Now if self.sidebar.now_enabled() && !self.single_file => {
+                self.render_workbench(window, cx)
+            }
+            _ => self.render_tree(window, cx),
         };
         div()
             .relative()
@@ -1372,16 +1387,7 @@ impl Reader {
         let render_row = Rc::new(move |item: SideItem, ix: usize| {
             let entity = entity.clone();
             let act = act.clone();
-            let row_base = |id: SharedString| {
-                h_flex()
-                    .id(id)
-                    .w_full()
-                    .h(px(28.))
-                    .gap(px(6.))
-                    .pr_2()
-                    .rounded(px(6.))
-                    .whitespace_nowrap()
-            };
+            let row_base = tree_row_base;
             let pin = |path: String, group: SharedString, on: bool| {
                 let entity = entity.clone();
                 let act = act.clone();

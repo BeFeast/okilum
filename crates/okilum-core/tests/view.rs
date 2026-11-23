@@ -93,7 +93,41 @@ fn all_examples_are_deterministic_and_match_golden_json() {
             .join("tests/fixtures/view-golden")
             .join(format!("{name}.json"));
         assert_eq!(actual, fs::read_to_string(expected).unwrap(), "{name}");
-        assert!(!view::render_markdown(&result).is_empty(), "{name}");
+        let markdown = view::render_markdown(&result);
+        assert!(!markdown.is_empty(), "{name}");
+        if name == "sidebar" {
+            assert!(doc.is_sidebar_tree());
+            let section = &result.sections[0];
+            let path = section
+                .resolve_node_view(&vault, doc.path())
+                .unwrap()
+                .unwrap();
+            assert_eq!(path, "@views/domain.md");
+            let template = view::parse(&path, &text(&path).unwrap()).unwrap();
+            let health = section
+                .nodes
+                .as_ref()
+                .unwrap()
+                .iter()
+                .find(|node| node.label == "Health")
+                .unwrap();
+            let context = &health.children[0];
+            let layer = &context.children[0];
+            let mut branch = Vec::new();
+            for node in [health, context, layer] {
+                branch.push((node.field.clone(), node.value.clone()));
+                let args = template.node_args(&branch);
+                assert_eq!(args.len(), branch.len());
+                assert_eq!(args["domain"], "Health");
+                if branch.len() >= 2 {
+                    assert_eq!(args["context"], "sleep-tracking");
+                }
+                if branch.len() == 3 {
+                    assert_eq!(args["layer"], "state");
+                }
+            }
+            assert!(markdown.contains("- Health (4)\n  - sleep\\-tracking (2)\n    - state (1)\n      - Sleep tracking — "));
+        }
     }
 }
 

@@ -389,7 +389,8 @@ def run(args, scenario, output, result):
             **scenario.get('preferences', {}),
         }))
         rig_options = scenario.get('rig', {})
-        require(set(rig_options) <= {'output_scale', 'floating'}, f'Unknown rig keys: {rig_options}')
+        require(set(rig_options) <= {'output_scale', 'floating', 'persistent_pointer'},
+                f'Unknown rig keys: {rig_options}')
         rig = Rig(root, 1366, input_methods=None, **rig_options)
         rig.env['OKILUM_STATE_DIR'] = str(state)
         proc = None

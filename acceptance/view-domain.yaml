@@ -1,0 +1,56 @@
+# Open an ordinary note, then navigate the Areas tree into the Health view.
+vault: crates/okilum-core/tests/fixtures/views
+open: knowledge/sleep-hygiene.md
+appearance: light
+preferences:
+  note_open_mode: read
+rig:
+  persistent_pointer: true
+region: [265, 90, 840, 645]
+ready_text: Sleep hygiene
+steps:
+  - id: areas-tab
+    wait: 6
+    region: [10, 92, 205, 35]
+    text: Areas
+  - id: starts-in-tree
+    region: [4, 164, 110, 78]
+    text: inbox
+  - id: health-count
+    click: [159, 110]
+    region: [0, 132, 250, 142]
+    text: Health 4
+  - id: health-view
+    click: [50, 200]
+    region: [340, 128, 430, 58]
+    text: Health
+  - id: sleep-tracking-row
+    region: [363, 299, 112, 50]
+    text: "Sleep\ntracking"
+  - id: log-fallback
+    text: Timeline shown as table
+  - id: expand-health
+    click: [18, 200]
+    region: [4, 207, 260, 60]
+    text: sleep-tracking
+  - id: expand-context
+    click: [31, 228]
+    region: [4, 237, 260, 62]
+    text: state 1
+  - id: expand-layer
+    click: [45, 256]
+    region: [4, 266, 260, 34]
+    text: Sleep tracking
+  - id: open-project-leaf
+    click: [126, 284]
+    text: Logging bedtime and wake time every day.
+  - id: reveal-in-tree
+    keys: [l]
+    mods: [ctrl, shift]
+    region: [0, 142, 255, 560]
+    text: index
+    pixels:
+      region: [145, 496, 100, 31]
+      expression: "r<0.1 && g>0.35 && g<0.5 && b>0.8 ? 1 : 0"
+      min: 180
+      max: 220

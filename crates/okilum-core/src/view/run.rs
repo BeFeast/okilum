@@ -143,6 +143,15 @@ pub struct Section {
     pub node_view: Option<String>,
 }
 
+impl Section {
+    pub fn resolve_node_view(&self, vault: &Vault, from: &str) -> Result<Option<String>, String> {
+        self.node_view
+            .as_deref()
+            .map(|target| resolve(vault, from, target))
+            .transpose()
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct Row {
     pub path: String,
@@ -245,18 +254,7 @@ impl Runner<'_, '_> {
     }
 
     fn resolve(&self, doc: &ViewDoc, target: &str) -> Result<String, String> {
-        let target = parse::wikilink(target).unwrap_or(target);
-        match self.ctx.vault.resolve_from(target, &doc.path) {
-            Resolution::Resolved { path } => Ok(path),
-            Resolution::Unresolved => Err(format!("Unresolved link '{target}'")),
-            Resolution::Ambiguous { mut candidates } => {
-                candidates.sort();
-                Err(format!(
-                    "Ambiguous link '{target}': {}",
-                    candidates.join(", ")
-                ))
-            }
-        }
+        resolve(self.ctx.vault, &doc.path, target)
     }
 
     fn reachable(&self, start: &str, depth: usize, outgoing: bool) -> BTreeSet<String> {
@@ -810,6 +808,21 @@ fn groups(rows: &[Input], block: &Block, computed: &Computations, vault: &Vault)
     })
     .map(group)
     .collect()
+}
+
+fn resolve(vault: &Vault, from: &str, target: &str) -> Result<String, String> {
+    let target = parse::wikilink(target).unwrap_or(target);
+    match vault.resolve_from(target, from) {
+        Resolution::Resolved { path } => Ok(path),
+        Resolution::Unresolved => Err(format!("Unresolved link '{target}'")),
+        Resolution::Ambiguous { mut candidates } => {
+            candidates.sort();
+            Err(format!(
+                "Ambiguous link '{target}': {}",
+                candidates.join(", ")
+            ))
+        }
+    }
 }
 
 fn tree(

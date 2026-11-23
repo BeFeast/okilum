@@ -3,20 +3,61 @@ virtual keyboard, and fcitx5 with the requested input methods. Nothing reaches
 a real screen. Used by check-ime-native.py and check-external-link-native.py.
 Needs: sway, wtype, wlrctl, grim, fcitx5, gdbus, dbus-launch."""
 import json, os, shutil, subprocess, tempfile, time
+import socket, struct
 from pathlib import Path
+
+
+def keep_pointer(env):
+    """Keep pointer capability on the headless seat between wlrctl calls."""
+    connection = socket.socket(socket.AF_UNIX)
+    connection.settimeout(5)
+    display, registry, manager, pointer, ready = range(1, 6)
+    interface = b'zwlr_virtual_pointer_manager_v1\0'
+
+    def request(obj, opcode, payload):
+        connection.sendall(struct.pack('=II', obj, ((len(payload) + 8) << 16) | opcode) + payload)
+
+    try:
+        connection.connect(str(Path(env['XDG_RUNTIME_DIR']) / env['WAYLAND_DISPLAY']))
+        with connection.makefile('rb') as events:
+            request(display, 1, struct.pack('=I', registry))  # wl_display.get_registry
+            while header := events.read(8):
+                obj, word = struct.unpack('=II', header)
+                opcode = word & 0xffff
+                payload = events.read((word >> 16) - 8)
+                if (obj, opcode) == (registry, 0):  # wl_registry.global
+                    name, length = struct.unpack_from('=II', payload)
+                    if payload[8:8 + length] != interface:
+                        continue
+                    padded = interface + b'\0' * (-len(interface) % 4)
+                    request(registry, 0, struct.pack('=II', name, length) + padded
+                            + struct.pack('=II', 1, manager))  # wl_registry.bind
+                    request(manager, 0, struct.pack('=II', 0, pointer))  # create_virtual_pointer
+                    request(display, 0, struct.pack('=I', ready))  # wl_display.sync
+                elif (obj, opcode) == (ready, 0):
+                    return connection
+                elif (obj, opcode) == (display, 0):  # wl_display.error
+                    break
+        raise RuntimeError('Could not create a persistent Wayland virtual pointer')
+    except Exception:
+        connection.close()
+        raise
 
 
 class Rig:
     """Headless sway + a virtual keyboard + fcitx5 with the input methods."""
 
-    def __init__(self, root, width, input_methods=(), path_prefix=None, output_scale=None, floating=False):
+    def __init__(self, root, width, input_methods=(), path_prefix=None, output_scale=None,
+                 floating=False, persistent_pointer=False):
         """output_scale: a (fractional) output scale such as 1.3; floating: every
         window floats with client-side decorations (sway's `border csd`, as on
         GNOME, which has no server decorations), so sway follows the client's
         window geometry instead of tiling the window to the output. A
         [width, height] value also sets that logical window size once, smaller
-        than the output, so sway never clamps it."""
+        than the output, so sway never clamps it. persistent_pointer keeps the
+        seat's pointer capability present for mouse input between commands."""
         self.root = root
+        self.pointer = None
         self.run = Path(tempfile.mkdtemp(prefix='okime-'))
         cfg = root / 'home' / '.config'
         (cfg / 'fcitx5').mkdir(parents=True, exist_ok=True)
@@ -59,6 +100,12 @@ class Rig:
                 break
             time.sleep(.25)
         self.env = env
+        if persistent_pointer:
+            try:
+                self.pointer = keep_pointer(env)
+            except Exception:
+                self.close()
+                raise
         # Headless sway has no keyboard; the input method's grab needs one with a keymap.
         self.procs.append(subprocess.Popen(['wtype', '-s', '3600000', '-k', 'F24'], env=env))
         time.sleep(.5)
@@ -136,6 +183,8 @@ class Rig:
         return path
 
     def close(self):
+        if self.pointer is not None:
+            self.pointer.close()
         for p in reversed(self.procs):
             if p.poll() is None:
                 p.terminate()

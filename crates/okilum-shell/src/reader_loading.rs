@@ -1872,6 +1872,7 @@ impl Reader {
         self.deferred_vault_changes = Default::default();
         if !preserve_document {
             self.pane.navigation.history.clear();
+            self.pane.navigation.history_views.clear();
             self.pane.navigation.history_positions.clear();
             self.pane.navigation.history_ix = 0;
         }
@@ -1890,6 +1891,7 @@ impl Reader {
         } else {
             self.accept_prepared_document_using(
                 prepared_links::DocumentRequest {
+                    view: None,
                     rel: pending.rel,
                     jump: None,
                     heading: None,
@@ -2231,6 +2233,7 @@ impl Reader {
                     // replacement instead of substituting the not-yet-landed top.
                     let position = this.retained_document_position(cx);
                     let request = prepared_links::DocumentRequest {
+                        view: None,
                         rel,
                         jump: None,
                         heading: None,
@@ -3094,7 +3097,7 @@ impl Reader {
                                 let index_task = cx.background_executor().spawn(async move {
                                     let tasks = reader_tasks::from_snapshot(&move_snapshot);
                                     let projects = Arc::new(okilum_core::projects::Index::from_snapshot(&move_snapshot));
-                                    let view_query = reader_view_query::load_index(&state_vault.root, &move_snapshot);
+                                    let view_query = reader_view_query::load_index(&state_vault, &move_snapshot);
                                     let workbench = reader_workbench::from_snapshot(&move_snapshot, &state_vault.root);
                                     let state = okilum_core::vault::warm::incremental::State::new((*state_vault).clone(), *move_snapshot);
                                     #[cfg(any(unix, windows))]

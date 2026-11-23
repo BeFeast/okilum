@@ -533,22 +533,7 @@ impl Reader {
                     .map(String::as_str)
                     != Some(rel)
                 {
-                    if !self.pane.navigation.history.is_empty() {
-                        self.pane
-                            .navigation
-                            .history
-                            .truncate(self.pane.navigation.history_ix + 1);
-                        self.pane
-                            .navigation
-                            .history_positions
-                            .truncate(self.pane.navigation.history_ix + 1);
-                    }
-                    self.pane.navigation.history.push(rel.into());
-                    self.pane.navigation.history_positions.push(ListOffset {
-                        item_ix: 0,
-                        offset_in_item: px(0.),
-                    });
-                    self.pane.navigation.history_ix = self.pane.navigation.history.len() - 1;
+                    self.pane.navigation.push_history(rel.into(), None);
                 }
                 let mut preview = preview;
                 if okilum_core::excalidraw::is_drawing(rel) {

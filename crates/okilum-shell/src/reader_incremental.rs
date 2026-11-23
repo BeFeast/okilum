@@ -138,7 +138,7 @@ impl Reader {
             for path in &view_paths { projects.replace_snapshot(&state.snapshot, path); }
             projects.refresh();
             let projects = Arc::new(projects);
-            let view_query = reader_view_query::update_index(view_query, &state.vault.root, &state.snapshot, &batch, &worker_changes);
+            let view_query = reader_view_query::update_index(view_query, &state.vault, &state.snapshot, &batch, &worker_changes);
             let mut workbench = (*workbench).clone();
             reader_workbench::update_index(&mut workbench, &state.snapshot, &batch.removed, &view_paths);
             let workbench = Arc::new(workbench);

@@ -1,7 +1,7 @@
 //! Vault sidebar state: the folder tree's collapse and hidden-file settings,
 //! plus the Recent and Pinned stores the title bar reads (#1508). The sidebar
-//! offers Now and Tree. Inbox remains an inventory projection consumed
-//! by the application section, never a sidebar.
+//! offers Tree, Now and an optional Areas view. The application section
+//! consumes the Inbox inventory projection.
 use anyhow::{Context, Result};
 use okilum_core::Vault;
 use serde::{Deserialize, Serialize};
@@ -44,6 +44,7 @@ pub const LEFT_SECTIONS: [Section; 1] = [Section::Folders];
 #[serde(rename_all = "lowercase")]
 pub enum LeftMode {
     Now,
+    Areas,
     #[default]
     Tree,
 }
@@ -63,7 +64,7 @@ impl Section {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct State {
-    #[serde(default)]
+    #[serde(default, serialize_with = "write_left_mode")]
     pub left_mode: LeftMode,
     /// Second brain is opt-in. Explicit choices are persisted per vault.
     #[serde(default)]
@@ -77,6 +78,8 @@ pub struct State {
     pub now_collapsed: BTreeSet<String>,
     #[serde(default)]
     pub now_expanded: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub areas_expanded: BTreeSet<String>,
     /// Most recent first: (root-relative note, unix seconds).
     #[serde(default)]
     pub recent: Vec<(String, u64)>,
@@ -112,6 +115,18 @@ pub struct State {
     /// project not listed here shows its own notes, the default (#1517).
     #[serde(default)]
     pub nav_all_vault: BTreeSet<String>,
+}
+
+fn write_left_mode<S: serde::Serializer>(
+    mode: &LeftMode,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    // Areas is session-local. Reopening the vault starts in its physical tree.
+    match mode {
+        LeftMode::Areas => LeftMode::Tree,
+        mode => *mode,
+    }
+    .serialize(serializer)
 }
 
 fn write_collapsed<S: serde::Serializer>(
@@ -366,6 +381,25 @@ pub fn age_label(then: u64, now: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn areas_expansion_is_saved_for_the_vault() {
+        let directory = tempfile::tempdir().unwrap();
+        let vault = directory.path().join("vault");
+        let state_path = State::path(directory.path(), &vault);
+        let mut state = State::default();
+        state.initialize_now();
+        state.left_mode = LeftMode::Areas;
+        state.areas_expanded.insert("health".into());
+        state.save(&state_path).unwrap();
+
+        let reopened = State::load(&state_path);
+        assert_eq!(reopened.left_mode, LeftMode::Tree);
+        assert_eq!(reopened.areas_expanded, state.areas_expanded);
+        let other = State::path(directory.path(), &vault.with_file_name("other"));
+        assert!(State::load(&other).areas_expanded.is_empty());
+    }
+
     #[test]
     fn agents_offer_decline_survives_a_stale_window_save_and_is_folder_scoped() {
         let directory = tempfile::tempdir().unwrap();

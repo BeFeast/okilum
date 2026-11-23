@@ -23,6 +23,27 @@ impl ViewDoc {
     pub fn path(&self) -> &str {
         &self.path
     }
+
+    pub fn is_sidebar_tree(&self) -> bool {
+        self.front.sidebar
+            && self.front.extends.is_none()
+            && matches!(self.blocks.as_slice(), [section]
+                if section.block.as_ref().is_ok_and(|block| block.show == Show::Tree))
+    }
+
+    /// Bind only values present on this branch, using the template's parameter
+    /// types rather than assuming its parameter names match the tree fields.
+    pub fn node_args(&self, branch: &[(String, Json)]) -> BTreeMap<String, Json> {
+        self.front
+            .params
+            .iter()
+            .filter_map(|(name, param)| {
+                let field = param.kind().field()?;
+                let (_, value) = branch.iter().rev().find(|(key, _)| key == field)?;
+                (!value.is_null()).then(|| (name.clone(), value.clone()))
+            })
+            .collect()
+    }
 }
 
 #[derive(Clone, Debug)]

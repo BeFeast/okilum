@@ -425,7 +425,7 @@ fn update(
     let batch = state.apply(&note_changes, &mut |_, _| Ok(()))?;
     published.view_query = Some(reader_view_query::update_index(
         published.view_query.take(),
-        &state.vault.root,
+        &state.vault,
         &state.snapshot,
         &batch,
         &note_changes,
