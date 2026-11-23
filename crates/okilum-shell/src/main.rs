@@ -14082,3 +14082,6 @@ mod issue2957_focus_kept_tests;
 
 #[cfg(test)]
 mod issue1669_test_teardown_tests;
+
+#[cfg(test)]
+mod action_inventory_tests;
