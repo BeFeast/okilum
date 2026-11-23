@@ -30,7 +30,7 @@ def main():
     for case in cases:
         # --nocapture diagnostics may separate a test's name from its final ok.
         assert f"test {case} ..." in complete.stdout, f"case did not execute: {case}"
-    source = Path("crates/okilum-shell/src/main.rs")
+    source = Path("crates/okilum-shell/src/reader_sidebar_view.rs")
     original = source.read_bytes()
     condition = b"if modifiers.control || modifiers.platform || modifiers.shift {"
     assert original.count(condition) == 1

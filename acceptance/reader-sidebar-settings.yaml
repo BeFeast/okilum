@@ -1,0 +1,31 @@
+appearance: light
+note: |
+  # Reader navigation
+
+  The quick brown fox is ready to read.
+region: [300, 90, 800, 540]
+ready_text: quick brown fox
+steps:
+  - id: notes-tree
+    click: [500, 205]
+    region: [5, 48, 265, 150]
+    text: scenario
+  - id: hide-notes
+    keys: [bar]
+    mods: [ctrl, shift]
+    text: quick brown fox
+    changed_from: notes-tree
+    min_changed_pixels: 500
+  - id: show-notes
+    keys: [bar]
+    mods: [ctrl, shift]
+    region: [5, 48, 265, 150]
+    text: scenario
+  - id: open-settings
+    keys: [comma]
+    mods: [ctrl]
+    region: [0, 20, 1366, 620]
+    text: Appearance
+  - id: return-to-reader
+    keys: [Escape]
+    text: quick brown fox
