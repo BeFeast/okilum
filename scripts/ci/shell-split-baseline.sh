@@ -2,8 +2,9 @@
 # Baseline of the okilum-shell crate before and during its split (#3232, epic
 # #3241). A heavy run: it compiles the okilum-shell test harness. Run it in the
 # build queue with the shared compile cache off, so every rustc is a child of
-# cargo and `/usr/bin/time` sees its peak RSS:
+# cargo and its peak RSS is counted:
 #
+#   mkdir -p "$qa/out"   # build-slot ships back only directories that exist
 #   okilum-slot run --label shell-split-baseline-<sha8> --mem 9 \
 #     --env BUILD_SLOT_SCCACHE=off --require-host okilum-build-nas \
 #     --source-git "$PWD" --receipt "$qa/receipt.json" \
@@ -51,13 +52,25 @@ target_dir=$(cargo metadata --format-version 1 --no-deps --locked |
     python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
 
 # measure NAME CMD...: peak RSS of the largest process in CMD's tree
-# (GNU time reports the children's ru_maxrss) and wall time; keeps --timings.
+# and wall time, the same figure as `/usr/bin/time -f %M` (the build hosts do
+# not all ship GNU time): RUSAGE_CHILDREN's ru_maxrss covers every reaped
+# descendant, here each rustc cargo waits for. Keeps --timings.
+peak_rss() {
+    python3 -c '
+import resource, subprocess, sys, time
+start = time.monotonic()
+rc = subprocess.call(sys.argv[2:])
+peak = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+open(sys.argv[1], "w").write(f"{peak} {time.monotonic() - start:.1f}\n")
+sys.exit(rc)
+' "$@"
+}
 measure() {
     local name=$1 rc=0 before
     shift
     before=$(ls -t "$target_dir"/cargo-timings/cargo-timing-*.html 2>/dev/null | head -1 || true)
     echo "MEASURE_START=$name unix=$(date +%s)"
-    /usr/bin/time -f '%M %e' -o "$OUT/time-$name.txt" "$@" || rc=$?
+    peak_rss "$OUT/time-$name.txt" "$@" || rc=$?
     read -r kib wall <"$OUT/time-$name.txt" || { kib=0 wall=0; }
     printf '%s: status=%s peak_rss_kib=%s peak_rss_gib=%s wall_s=%s cmd=%s\n' "$name" "$rc" "$kib" \
         "$(awk -v k="$kib" 'BEGIN {printf "%.2f", k / 1048576}')" "$wall" "$*" | tee -a "$summary"
