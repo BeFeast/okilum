@@ -62,7 +62,7 @@ pub(crate) fn button(cx: &App) -> impl IntoElement {
     .debug_selector(|| "reader-feedback".into())
     .on_click(|_, window, cx| show(window, cx))
 }
-fn metadata(window: &Window) -> Metadata {
+fn metadata(window: &Window, cx: &App) -> Metadata {
     Metadata {
         version: env!("OKILUM_RELEASE_VERSION").into(),
         build: env!("OKILUM_BUILD_VERSION").into(),
@@ -86,6 +86,8 @@ fn metadata(window: &Window) -> Metadata {
             Decorations::Client { .. } => "CSD",
         }
         .into(),
+        // #3244: GPUI render scale, UI zoom and the native window/layer scales.
+        render: crate::ui_zoom_diagnostics::snapshot(window, cx),
     }
 }
 // Prefer the backing scale of this actual AppKit window, not the main screen
@@ -159,7 +161,7 @@ fn show_mode(window: &mut Window, cx: &mut App, send_immediately: bool) {
         .find(|handle| handle.window_id() == owner)
         .map(|handle| reader_owned_windows::owner(handle, cx))
         .unwrap_or_else(|| window.window_handle());
-    let meta = metadata(window);
+    let meta = metadata(window, cx);
     // Menu/button dispatch may still borrow the caller's window. Opening or
     // activating another window happens only after that borrow is released.
     cx.defer(move |cx| show_for(owner.window_id(), meta, send_immediately, cx));

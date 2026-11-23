@@ -47,3 +47,16 @@ hitboxes at 50/100/150/200%, More and nested menus, CJK IME caret and click look
 OS DPI transitions, two windows and a newly opened auxiliary window, and the
 independence of document zoom. The preserved spike screenshots cover only the old
 X11 proof; they are not acceptance evidence for this implementation.
+
+## Render-scale diagnostics (#3244)
+
+A blur after resetting a restored zoom was reported on macOS and did not
+reproduce on Linux. Each window therefore logs a `ui_scale` line to the
+diagnostic log when it opens, on its first frame, on every UI-zoom change, and
+on bounds callbacks whose scale, display, screen presence or drawable match
+changed. Feedback metadata carries the same reading as flat keys: GPUI
+`render_scale`, `ui_zoom`, `viewport`, `display` and, on macOS, the screen and
+window `backingScaleFactor`, `window_on_screen` (GPUI assumes 2.0 for a window
+without a screen), the window frame, the layer `contentsScale` and size, the
+`drawableSize` and whether it matches the layer. The code only reads these
+values and never changes a scale.

@@ -69,6 +69,17 @@ pub(crate) fn init(cx: &mut App) {
     cx.observe_new::<Root>(|root, window, cx| {
         if let Some(window) = window {
             window.set_ui_scale(reader_ui_state::ui_zoom(cx));
+            // #3244: record the restored scale, the first drawn frame (after
+            // the window is registered, so native callbacks reach it) and every
+            // later scale or display change.
+            crate::ui_zoom_diagnostics::note("open", window, cx);
+            window.on_next_frame(|window, cx| {
+                crate::ui_zoom_diagnostics::note("first_frame", window, cx)
+            });
+            cx.observe_window_bounds(window, |_, window, cx| {
+                crate::ui_zoom_diagnostics::note("bounds", window, cx)
+            })
+            .detach();
             root.add_overlay(cx.new(|_| ZoomLayer::default()));
             cx.notify();
         }

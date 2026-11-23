@@ -248,6 +248,8 @@ pub(super) struct Metadata {
     pub window_width: f32,
     pub window_height: f32,
     pub decorations: String,
+    #[serde(flatten)]
+    pub render: crate::ui_zoom_diagnostics::Snapshot,
 }
 impl Metadata {
     pub fn summary(&self) -> String {
