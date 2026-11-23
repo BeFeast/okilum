@@ -72,8 +72,9 @@ pub(crate) fn init(cx: &mut App) {
             // #3244: a restored window is moved while it is still being built
             // (macOS window_state restore sends setFrame). Native resize and
             // backing-scale callbacks cannot reach a window that is not yet
-            // registered and are dropped, leaving GPUI's scale and viewport
-            // stale. Re-read them from the platform once it is registered.
+            // registered and are dropped. set_ui_scale above re-reads the
+            // platform only when the zoom differs from 1.0, so re-read the
+            // scale and size once the window is registered in every case.
             cx.defer_in(window, |_, window, cx| window.bounds_changed(cx));
             root.add_overlay(cx.new(|_| ZoomLayer::default()));
             cx.notify();
@@ -283,8 +284,9 @@ mod tests {
     }
 
     /// #3244: native scale/size callbacks fired while a restored window is
-    /// built are dropped. The window re-reads the platform once registered;
-    /// a plain window (control) keeps the stale value, so the probe is live.
+    /// built are dropped. At 100% set_ui_scale does not re-read the platform,
+    /// so the window must re-read it once registered. A plain window (the
+    /// control) keeps the stale value, so the probe is live.
     #[gpui::test]
     fn restored_window_rereads_the_platform_scale_after_it_is_registered(cx: &mut TestAppContext) {
         let temp = tempfile::tempdir().unwrap();
@@ -292,9 +294,7 @@ mod tests {
             crate::test_init(cx);
             reader_ui_state::install(temp.path(), cx);
             init(cx);
-            reader_ui_state::set_ui_zoom(2., cx);
         });
-        cx.run_until_parked();
         let os = cx
             .add_window(|_, _| Content)
             .update(cx, |_, window, _| window.scale_factor())
@@ -327,16 +327,20 @@ mod tests {
             .unwrap();
         restored
             .update(cx, |_, window, _| {
-                assert_eq!(window.ui_scale(), 2.);
-                assert_eq!(window.scale_factor(), os * 2., "OS scale × restored zoom");
+                assert_eq!(window.ui_scale(), 1.);
+                assert_eq!(window.scale_factor(), os, "re-read from the platform");
             })
             .unwrap();
-        // Reset after the restore lands on the plain OS scale.
-        cx.update(|cx| reader_ui_state::set_ui_zoom(1., cx));
-        cx.run_until_parked();
-        restored
-            .update(cx, |_, window, _| assert_eq!(window.scale_factor(), os))
-            .unwrap();
+        // Zoom and reset after that keep following the platform scale.
+        for zoom in [2., 1.] {
+            cx.update(|cx| reader_ui_state::set_ui_zoom(zoom, cx));
+            cx.run_until_parked();
+            restored
+                .update(cx, |_, window, _| {
+                    assert_eq!(window.scale_factor(), os * zoom)
+                })
+                .unwrap();
+        }
     }
 
     #[gpui::test]
