@@ -51,6 +51,17 @@ h1, h2 { font-family: 'Rubik'; font-weight: 600; }
 .markdown-preview-view hr {
   border-image-source: linear-gradient(to right, transparent, var(--text-accent), transparent);
 }
+.markdown-preview-view hr::after {
+  content: '\\00a7';
+  display: inline-block;
+  position: absolute;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(60deg);
+  transform-origin: 50% 50%;
+  padding: 0.5rem;
+  color: var(--text-sub-accent);
+  background-color: var(--background-primary);
+}
 .markdown-preview-view blockquote {
   border-left: 3px rgba(14, 210, 247, 0.5) solid;
   background: linear-gradient(135deg, rgba(32, 28, 41, 0.45), #100e17);
@@ -197,7 +208,14 @@ class Conversion(unittest.TestCase):
         deco = dark["decorations"]
         self.assertEqual(deco["headingRule"], {"levels": [2, 3], "from": "#f4569d",
                                                "to": "#100e17", "toAt": 0.5})
-        self.assertEqual(deco["hr"], {"edge": "#00000000", "middle": "#0fb6d6"})
+        # #3252: Obsidianite's `hr::after`, a pink `§` turned 60°, 0.5rem gap.
+        self.assertEqual(deco["hr"], {"edge": "#00000000", "middle": "#0fb6d6",
+                                      "ornament": {"glyph": "§", "color": "#f4569d",
+                                                   "rotate": 60.0, "size": 14.0, "gap": 8.0}})
+        light_ornament = light["decorations"]["hr"]["ornament"]
+        self.assertEqual({k: v for k, v in light_ornament.items() if k != "color"},
+                         {"glyph": "§", "rotate": 60.0, "size": 14.0, "gap": 8.0})
+        self.assertTrue(light_ornament["color"].startswith("#"))  # derived like every slot colour
         self.assertEqual(deco["boldGradient"], {"angle": 62.0, "from": "#87c2fd", "to": "#dcb9fc"})
         self.assertEqual(deco["blockquote"]["angle"], 135.0)
         self.assertEqual(deco["blockquote"]["bars"]["top"]["width"], 0.6)
@@ -274,6 +292,19 @@ class AppSyntaxSchema(unittest.TestCase):
 
 
 class ReviewFixes(unittest.TestCase):
+    def test_hr_without_ornament_is_reported_and_other_glyphs_are_flagged(self):
+        css = PRE_1_0_DARK[: PRE_1_0_DARK.index(".markdown-preview-view hr::after")] \
+            + PRE_1_0_DARK[PRE_1_0_DARK.index(".markdown-preview-view blockquote {"):]
+        theme, report = conv.convert(css, theme_id="plain", name="Plain")
+        self.assertNotIn("ornament", theme["modes"]["dark"]["decorations"]["hr"])
+        self.assertIn("dark: hr: no `hr::after` ornament (content) in the theme; the rule has none",
+                      report.decorations)
+        starred = PRE_1_0_DARK.replace("'\\00a7'", '"*"').replace("rotate(60deg)", "rotate(0.25turn)")
+        theme, report = conv.convert(starred, theme_id="star", name="Star")
+        ornament = theme["modes"]["dark"]["decorations"]["hr"]["ornament"]
+        self.assertEqual((ornament["glyph"], ornament["rotate"]), ("*", 90.0))
+        self.assertTrue(any("glyph '*' has no vector path" in n for n in report.decorations))
+
     def test_non_linear_or_stopless_gradients_are_reported_not_fatal(self):
         css = PRE_1_0_DARK + """
 .markdown-preview-view h4 { border-image-source: radial-gradient(circle, red, blue); }

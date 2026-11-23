@@ -1354,12 +1354,56 @@ def _selector_has(selector: str, pattern: str) -> bool:
 
 HEADING_RE = r"(?:^|[\s>,])h([1-6])(?![\w-])|HyperMD-header-([1-6])|cm-header-([1-6])"
 
+# An `hr::after` ornament's glyph height is a share of its font size:
+# a `§` in a text face is about seven eighths of an em tall.
+ORNAMENT_GLYPH_EM = 0.875
+ROOT_FONT_PX = 16.0
+
+
+def css_content(value: str) -> str:
+    """The text of a CSS `content` string: quotes dropped, escapes decoded."""
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"":
+        text = text[1:-1]
+    else:
+        raise Unresolved(f"content {value!r} is not a string")
+    return re.sub(r"\\([0-9a-fA-F]{1,6})\s?", lambda m: chr(int(m[1], 16)), text)
+
+
+def css_px(value: str) -> float:
+    """A length in px; one rem or em counts ROOT_FONT_PX."""
+    m = re.fullmatch(r"\s*(-?[\d.]+)(px|rem|em)?\s*", value)
+    if not m:
+        raise Unresolved(f"length {value!r} is not px, rem or em")
+    return float(m[1]) * (1 if m[2] in (None, "px") else ROOT_FONT_PX)
+
+
+def find_hr_ornament(props: dict, resolver: "Resolver", opaque) -> dict:
+    """`hr::after { content; color; transform: rotate(); padding; font-size }`
+    as the `hr` slot's `ornament` (#3252): glyph, colour, clockwise degrees,
+    glyph height and the blank line on each side of the glyph, in px."""
+    if "content" not in props:
+        raise Unresolved("no content")
+    glyph = css_content(props["content"])
+    if not glyph:
+        raise Unresolved("empty content")
+    ornament = {"glyph": glyph, "color": to_hex(opaque(resolver.color(props.get("color", "inherit"))))}
+    turn = re.search(r"rotate\(\s*([^)]+?)\s*\)", props.get("transform", ""))
+    ornament["rotate"] = round(_hue(turn[1]), 3) if turn else 0.0
+    font = css_px(props["font-size"]) if "font-size" in props else ROOT_FONT_PX
+    ornament["size"] = round(font * ORNAMENT_GLYPH_EM, 2)
+    padding = [p for p in split_top(props.get("padding", "0").strip(), " ") if p.strip()]
+    # The horizontal padding: the second value when there are two or more.
+    ornament["gap"] = css_px(padding[1] if len(padding) > 1 else padding[0])
+    return ornament
+
 
 def find_decorations(sheet: Sheet, variables: Variables, mode: str,
                      tokens: dict) -> tuple[dict, dict, set, list[str]]:
     """Decoration slots, syntax palette, consumed (rule, prop) ids, notes."""
     resolver = Resolver(variables, mode)
     deco, syntax, used, notes = {}, {}, set(), []
+    ornament = None
 
     def applies(rule, selector):
         sm = selector_mode(selector)
@@ -1406,6 +1450,19 @@ def find_decorations(sheet: Sheet, variables: Variables, mode: str,
                         used.add((idx, p))
                 except Unresolved as err:
                     notes.append(f"hr (L{rule.line}): {err}")
+            # hr ornament (#3252): the glyph `hr::after` draws on the rule.
+            if _selector_has(selector, r"(?:^|[\s>])hr::?after\s*$") and "content" in props:
+                try:
+                    ornament = find_hr_ornament(props, resolver, opaque)
+                    for p in ("content", "color", "transform", "transform-origin", "padding",
+                              "font-size", "background-color", "background", "display",
+                              "position", "left", "top"):
+                        used.add((idx, p))
+                    if ornament["glyph"] != "§":
+                        notes.append(f"hr ornament (L{rule.line}): glyph {ornament['glyph']!r} "
+                                     "has no vector path in Okilum (only `§`); the app draws the rule without it")
+                except Unresolved as err:
+                    notes.append(f"hr ornament (L{rule.line}): {err}")
             # Blockquote: gradient background, bars from ::before/::after, left border.
             if _selector_has(selector, r"blockquote|HyperMD-quote(?![\w-])"):
                 pseudo = re.search(r"::?(before|after)\s*$", selector)
@@ -1486,6 +1543,11 @@ def find_decorations(sheet: Sheet, variables: Variables, mode: str,
                                 used.add((idx, "color"))
                             except Unresolved as err:
                                 notes.append(f"syntax {slot} (L{rule.line}): {err}")
+    if "hr" in deco:
+        if ornament:
+            deco["hr"]["ornament"] = ornament
+        else:
+            notes.append("hr: no `hr::after` ornament (content) in the theme; the rule has none")
     return deco, syntax, used, notes
 
 

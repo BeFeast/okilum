@@ -1,0 +1,261 @@
+diff --git a/crates/base/src/text/decorations.rs b/crates/base/src/text/decorations.rs
+index ebc05b4d..d4262c09 100644
+--- a/crates/base/src/text/decorations.rs
++++ b/crates/base/src/text/decorations.rs
+@@ -83,12 +83,15 @@ impl GradientBar {
+     }
+ }
+ 
+-/// `hr`: `edge → middle → edge`, drawn as two two-stop halves.
++/// `hr`: `edge → middle → edge`, drawn as two two-stop halves. With an
++/// [`HrOrnament`] the halves stop short of the centre and the ornament is
++/// drawn in the gap.
+ #[derive(Clone, Copy, Debug, PartialEq)]
+ pub struct HorizontalRule {
+     pub edge: Hsla,
+     pub middle: Hsla,
+     pub thickness: Pixels,
++    pub ornament: Option<HrOrnament>,
+ }
+ 
+ impl HorizontalRule {
+@@ -100,20 +103,117 @@ impl HorizontalRule {
+         ]
+     }
+ 
+-    /// Paints the rule with its top-left corner at `origin`.
++    /// The two halves' `(left, width)` along a rule `width` wide that starts
++    /// at x = 0: they meet in the middle, or stop at the ornament's gap.
++    pub fn half_spans(&self, width: Pixels) -> [(Pixels, Pixels); 2] {
++        let blank = self
++            .ornament
++            .map_or(px(0.), |o| o.blank_width())
++            .min(width);
++        let half = (width - blank) / 2.;
++        [(px(0.), half), (width - half, half)]
++    }
++
++    /// Paints the rule with its top-left corner at `origin`; the ornament
++    /// is centred on the rule's line and may reach above and below it.
+     pub fn paint(&self, origin: Point<Pixels>, width: Pixels, window: &mut Window) {
+-        if width <= px(0.) || self.thickness <= px(0.) {
++        if width <= px(0.) {
+             return;
+         }
+-        let half = width / 2.;
+-        for (ix, gradient) in self.halves().into_iter().enumerate() {
+-            window.paint_quad(gpui::fill(
+-                Bounds::new(
+-                    origin + point(half * ix as f32, px(0.)),
+-                    gpui::size(half, self.thickness),
+-                ),
+-                gradient.background(),
+-            ));
++        if self.thickness > px(0.) {
++            for ((left, half), gradient) in self.half_spans(width).into_iter().zip(self.halves()) {
++                if half <= px(0.) {
++                    continue;
++                }
++                window.paint_quad(gpui::fill(
++                    Bounds::new(origin + point(left, px(0.)), gpui::size(half, self.thickness)),
++                    gradient.background(),
++                ));
++            }
++        }
++        if let Some(ornament) = self.ornament {
++            ornament.paint(origin + point(width / 2., self.thickness / 2.), window);
++        }
++    }
++}
++
++/// The glyphs an [`HrOrnament`] can draw. Each is a vector path, so a
++/// rotated ornament needs no text shaping and no rotated glyph paint.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum OrnamentGlyph {
++    /// `§`, the section sign.
++    Section,
++}
++
++impl OrnamentGlyph {
++    /// The glyph for a theme's `glyph` string, if it is one we can draw.
++    pub fn from_text(text: &str) -> Option<Self> {
++        match text {
++            "§" => Some(Self::Section),
++            _ => None,
++        }
++    }
++
++    /// The glyph's strokes as cubic Béziers `[start, control a, control b,
++    /// end]` in a box one unit tall centred on (0, 0), y down. `§` is two
++    /// interlocking S curves, each the other turned half a circle.
++    fn strokes(self) -> [[(f32, f32); 4]; 4] {
++        match self {
++            Self::Section => {
++                let upper = [
++                    [(0.2, -0.33), (0.15, -0.5), (-0.22, -0.5), (-0.2, -0.3)],
++                    [(-0.2, -0.3), (-0.18, -0.14), (0.24, -0.12), (0.22, 0.08)],
++                ];
++                let turn = |c: [(f32, f32); 4]| c.map(|(x, y)| (-x, -y));
++                [upper[0], upper[1], turn(upper[0]), turn(upper[1])]
++            }
++        }
++    }
++}
++
++/// An ornament in the middle of an `hr`, like a theme's `hr::after`: a
++/// glyph `size` pixels tall, turned `rotate` degrees clockwise (CSS
++/// `rotate()`), with `gap` pixels of blank line on each side of its box.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct HrOrnament {
++    pub glyph: OrnamentGlyph,
++    pub color: Hsla,
++    pub rotate: f32,
++    pub size: Pixels,
++    pub gap: Pixels,
++}
++
++impl HrOrnament {
++    /// The width the rule leaves blank: the glyph's box and a gap each side.
++    pub fn blank_width(&self) -> Pixels {
++        (self.size + self.gap * 2.).max(px(0.))
++    }
++
++    /// The glyph's strokes in window coordinates, centred on `center`.
++    fn curves(&self, center: Point<Pixels>) -> [[Point<Pixels>; 4]; 4] {
++        let (sin, cos) = self.rotate.to_radians().sin_cos();
++        let scale = f32::from(self.size);
++        // y grows downwards, so this turns clockwise on screen, as CSS does.
++        let place = |(x, y): (f32, f32)| {
++            let (x, y) = (x * scale, y * scale);
++            center + point(px(x * cos - y * sin), px(x * sin + y * cos))
++        };
++        self.glyph.strokes().map(|curve| curve.map(place))
++    }
++
++    /// Paints the ornament centred on `center`.
++    pub fn paint(&self, center: Point<Pixels>, window: &mut Window) {
++        if self.size <= px(0.) {
++            return;
++        }
++        // Stroke weight of a regular-weight glyph at this size.
++        let mut builder = gpui::PathBuilder::stroke((self.size * 0.09).max(px(1.)));
++        for [start, a, b, end] in self.curves(center) {
++            builder.move_to(start);
++            builder.cubic_bezier_to(end, a, b);
++        }
++        if let Ok(path) = builder.build() {
++            window.paint_path(path, self.color);
+         }
+     }
+ }
+@@ -426,6 +526,76 @@ mod tests {
+         assert_eq!((top, bottom), (px(110.), px(115.)));
+     }
+ 
++    fn rule(ornament: Option<HrOrnament>) -> HorizontalRule {
++        HorizontalRule {
++            edge: gpui::transparent_black(),
++            middle: gpui::blue(),
++            thickness: px(1.),
++            ornament,
++        }
++    }
++
++    fn section(rotate: f32) -> HrOrnament {
++        HrOrnament {
++            glyph: OrnamentGlyph::Section,
++            color: gpui::red(),
++            rotate,
++            size: px(16.),
++            gap: px(8.),
++        }
++    }
++
++    #[test]
++    fn rule_without_ornament_meets_in_the_middle() {
++        assert_eq!(
++            rule(None).half_spans(px(200.)),
++            [(px(0.), px(100.)), (px(100.), px(100.))]
++        );
++    }
++
++    #[test]
++    fn ornament_halves_stop_at_the_gap() {
++        // 16 px glyph box and 8 px each side: 32 px blank around x = 100.
++        let spans = rule(Some(section(60.))).half_spans(px(200.));
++        assert_eq!(spans, [(px(0.), px(84.)), (px(116.), px(84.))]);
++        // A rule narrower than the blank draws no halves.
++        let narrow = rule(Some(section(60.))).half_spans(px(20.));
++        assert_eq!(narrow, [(px(0.), px(0.)), (px(20.), px(0.))]);
++    }
++
++    #[test]
++    fn ornament_glyph_is_centred_and_turns_clockwise() {
++        let center = point(px(50.), px(50.));
++        let upright = section(0.).curves(center);
++        let turned = section(90.).curves(center);
++        let all = |c: &[[Point<Pixels>; 4]; 4]| c.iter().flatten().copied().collect::<Vec<_>>();
++        // Point-symmetric about the centre: the § is two S curves.
++        let pts = all(&upright);
++        let (sx, sy) = pts.iter().fold((0., 0.), |(x, y), p| {
++            (x + f32::from(p.x), y + f32::from(p.y))
++        });
++        assert!((sx / pts.len() as f32 - 50.).abs() < 1e-3);
++        assert!((sy / pts.len() as f32 - 50.).abs() < 1e-3);
++        // 90° clockwise on screen: (x, y) offset becomes (-y, x).
++        for (u, t) in all(&upright).iter().zip(all(&turned)) {
++            let (dx, dy) = (f32::from(u.x) - 50., f32::from(u.y) - 50.);
++            assert!((f32::from(t.x) - 50. + dy).abs() < 1e-3);
++            assert!((f32::from(t.y) - 50. - dx).abs() < 1e-3);
++        }
++        // The upright glyph is taller than it is wide, and `size` tall at most.
++        let height = pts.iter().map(|p| f32::from(p.y)).fold(f32::MIN, f32::max)
++            - pts.iter().map(|p| f32::from(p.y)).fold(f32::MAX, f32::min);
++        let width = pts.iter().map(|p| f32::from(p.x)).fold(f32::MIN, f32::max)
++            - pts.iter().map(|p| f32::from(p.x)).fold(f32::MAX, f32::min);
++        assert!(height > width && height <= 16.);
++    }
++
++    #[test]
++    fn only_drawable_glyphs_parse() {
++        assert_eq!(OrnamentGlyph::from_text("§"), Some(OrnamentGlyph::Section));
++        assert_eq!(OrnamentGlyph::from_text("*"), None);
++    }
++
+     #[test]
+     fn empty_decorations_are_the_default() {
+         assert!(TextDecorations::default().is_empty());
+diff --git a/crates/base/src/text/node.rs b/crates/base/src/text/node.rs
+index 51595287..348b08bf 100644
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -3116,6 +3116,29 @@ impl BlockNode {
+                     // Theme slot: edge -> middle -> edge, two two-stop halves.
+                     // The rule keeps the default rule's 2 px box; the halves
+                     // are centred in it, so no block height changes.
++                    // With an ornament (#3252) the rule paints itself in one
++                    // canvas: halves stopping at the gap and the glyph centred
++                    // on the line, overflowing the 2 px box without layout.
++                    Some(rule) if rule.ornament.is_some() => div()
++                        .id("horizontal-rule")
++                        .h(px(2.))
++                        .child(
++                            canvas(
++                                |_, _, _| {},
++                                move |bounds, _, window, _| {
++                                    rule.paint(
++                                        gpui::point(
++                                            bounds.left(),
++                                            bounds.center().y - rule.thickness / 2.,
++                                        ),
++                                        bounds.size.width,
++                                        window,
++                                    )
++                                },
++                            )
++                            .size_full(),
++                        )
++                        .into_any_element(),
+                     Some(rule) => {
+                         let [left, right] = rule.halves();
+                         h_flex()
