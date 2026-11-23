@@ -23,6 +23,19 @@ Keep design decisions in `docs/` or the project brain, not only in commit messag
 | Full set | `scripts/agent/gh-check.sh` (no `--fast`) + the Forgejo full gate | GitHub pool shards, Forgejo | not measured here; see `docs/agent-checks.md` |
 | Format | `cargo fmt` | any host, the only Cargo command allowed on maestro | — |
 | Local hardware checks | `okilum-slot run` (build slots) | build-slot pool | not measured |
+| One-line shell rebuild | `scripts/verify reader-basic --measure-incremental` (build portion) | Linux rig build slot, 3 jobs | **55.553 s** |
+| Launch to first frame | same run, GPUI `ui_scale/first_frame` callback | headless sway, 1366×768 | **0.714 s** process wall (callback: 0.688 s) |
+| Reader acceptance, unchanged source | `scripts/verify reader-basic` | same warm slot, build + rig + OCR + screenshot | **7.059 s** in slot; **11.617 s** command wall, including queue/source/evidence transfer |
+
+Measured 2026-11-23 on `dd6c156d7`, same Linux host/session: a temporary
+`std::hint::black_box(());` line in `okilum-shell/src/ui_zoom.rs::init` was
+compiled, then the source restored. The pool uses `CARGO_INCREMENTAL=0`:
+“incremental” here means a warm dependency build, not rustc's incremental mode.
+The unchanged-source check spent 1.535 s in vendor verification + Cargo; its
+first frame took 0.564 s. The first run encountered a cold/oversized target;
+these warm measurements exclude that automatic pool cleanup.
+After restoring the changed line, the ordinary verify command took 70.853 s
+end to end (60.286 s vendor + rebuild, 65.756 s total in the slot).
 
 ## Merge gate
 
