@@ -2,7 +2,7 @@
 virtual keyboard, and fcitx5 with the requested input methods. Nothing reaches
 a real screen. Used by check-ime-native.py and check-external-link-native.py.
 Needs: sway, wtype, wlrctl, grim, fcitx5, gdbus, dbus-launch."""
-import os, shutil, subprocess, time
+import os, shutil, subprocess, tempfile, time
 from pathlib import Path
 
 
@@ -11,9 +11,7 @@ class Rig:
 
     def __init__(self, root, width, input_methods=(), path_prefix=None):
         self.root = root
-        self.run = Path(f'/tmp/okime-{os.getpid()}-{width}')
-        shutil.rmtree(self.run, ignore_errors=True)
-        self.run.mkdir(mode=0o700)
+        self.run = Path(tempfile.mkdtemp(prefix='okime-'))
         cfg = root / 'home' / '.config'
         (cfg / 'fcitx5').mkdir(parents=True, exist_ok=True)
         (root / 'sway.conf').write_text(f'output HEADLESS-1 resolution {width}x768\ndefault_border none\n')
@@ -37,6 +35,9 @@ class Rig:
             socks = [p.name for p in self.run.iterdir() if p.name.startswith('wayland-') and not p.name.endswith('.lock')]
             if socks:
                 break
+        if not socks:
+            self.close()
+            raise RuntimeError(f'Headless sway did not start; see {root / "sway.log"}')
         env['WAYLAND_DISPLAY'] = socks[0]
         # swaymsg finds sway only through SWAYSOCK.
         for _ in range(20):
@@ -49,6 +50,9 @@ class Rig:
         # Headless sway has no keyboard; the input method's grab needs one with a keymap.
         self.procs.append(subprocess.Popen(['wtype', '-s', '3600000', '-k', 'F24'], env=env))
         time.sleep(.5)
+        # Acceptance scenarios without IME need only the virtual keyboard.
+        if input_methods is None:
+            return
         self.procs.append(subprocess.Popen(['fcitx5', '--disable', 'notificationitem', '-r'], env=env,
                                            stdout=open(root / 'fcitx5.log', 'w'), stderr=subprocess.STDOUT))
         time.sleep(4)
@@ -104,7 +108,13 @@ class Rig:
 
     def close(self):
         for p in reversed(self.procs):
-            p.terminate()
+            if p.poll() is None:
+                p.terminate()
+                try:
+                    p.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+                    p.wait()
         if getattr(self, 'dbus_pid', None):
             subprocess.run(['kill', str(self.dbus_pid)])
         shutil.rmtree(self.run, ignore_errors=True)

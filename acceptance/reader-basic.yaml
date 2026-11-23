@@ -1,0 +1,11 @@
+# State -> action -> visible result. Coordinates: 1366x768, isolated light theme.
+note: |
+  # Acceptance Reader
+
+  The quick brown fox verifies the visible Reader content.
+region: [300, 90, 800, 540]
+ready_text: quick brown fox
+steps:
+  - id: reader-content
+    click: [700, 180]
+    text: quick brown fox

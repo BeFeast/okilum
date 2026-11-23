@@ -1,0 +1,21 @@
+# #3252: Obsidianite renders a pink rotated section sign in the centre of hr.
+appearance: dark
+preferences: {theme: obsidianite}
+note: |
+  # Divider acceptance
+
+  Above the divider
+
+  ---
+
+  Below the divider
+region: [300, 90, 800, 540]
+ready_text: Above the divider
+steps:
+  - id: hr-ornament
+    text: Below the divider
+    pixels:
+      region: [600, 100, 300, 300]
+      expression: 'r>0.6 && b>0.3 && r>g*1.5 ? 1 : 0'
+      min: 12
+      max: 600

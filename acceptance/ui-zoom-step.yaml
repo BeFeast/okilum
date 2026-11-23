@@ -1,0 +1,27 @@
+# #3228: one UI zoom action is 5%, reset returns to the starting rendering.
+note: |
+  # Zoom acceptance
+
+  The quick brown fox stays readable while the interface grows.
+region: [300, 90, 800, 540]
+ready_text: quick brown fox
+steps:
+  - id: initial
+    text: quick brown fox
+    ui_scale: 1.0
+  - id: zoom-in
+    # wtype needs the shifted keysym; "equal" would synthesize Ctrl+= (text zoom).
+    keys: [plus]
+    mods: [ctrl, shift]
+    text: quick brown fox
+    changed_from: initial
+    min_changed_pixels: 500
+    ui_scale: 1.05
+  - id: reset
+    keys: [parenright]
+    mods: [ctrl, shift]
+    text: quick brown fox
+    ui_scale: 1.0
+    changed_from: initial
+    min_changed_pixels: 0
+    max_changed_pixels: 100

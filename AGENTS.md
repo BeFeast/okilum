@@ -37,6 +37,40 @@ these warm measurements exclude that automatic pool cleanup.
 After restoring the changed line, the ordinary verify command took 70.853 s
 end to end (60.286 s vendor + rebuild, 65.756 s total in the slot).
 
+### Native acceptance
+
+```bash
+scripts/verify reader-basic
+scripts/verify hr-ornament
+scripts/verify ui-zoom-step
+```
+
+Each command streams the working tree (including an uncommitted acceptance
+file) into `okilum-slot`, builds the app alone in its shared target, starts an
+isolated 1366×768 Wayland rig, and returns 0/1 with PNGs, `result.json`, source
+identity and the slot receipt under a unique `~/work/qa-evidence/verify-*`.
+That directory is scratch: preserve wanted evidence before its daily cleanup.
+The default is the existing `okilum-dev` rig host; `OKILUM_VERIFY_HOST` selects
+another pool host with sway, wtype, wlrctl, grim, dbus-launch, ImageMagick,
+Tesseract English and Python PyYAML. `--binary` skips building for bisect on a
+Linux rig host. `--output` in pool mode must stay under `~/work/qa-evidence`.
+Steps use stable ids for evidence, keyboard keysyms or fixed pixel coordinates;
+text checks OCR the screenshot, pixel checks count a stated colour/region,
+and zoom checks combine actual window scale with a screenshot difference.
+There is no app-side automation protocol or new test framework.
+
+Day-0 regression proof (2026-11-23): `hr-ornament` on `180ae5779` (parent of
+the #3252 fix merge) built/launched and read both paragraphs, then exited 1:
+0 pink pixels in the centre region. The same scenario on `3feba9093` exited 0
+with 28 pixels. Only the harness was added to the old worktree; its ignored
+generated Windows vendor tree was regenerated for the pre-#3257 bootstrap.
+`ui-zoom-step` observed 1 → 1.05 → 1 and 0 changed pixels after reset.
+
+A Mac variant needs a permitted Mac build host plus a WindowServer session,
+screen capture and CGEvent/Accessibility input, replacing the Wayland `Rig`
+and translating keysyms/coordinates at a fixed scale. The YAML assertion model
+can stay the same. This Linux work does not build or run on Oleg's M4.
+
 ## Merge gate
 
 Rule as of 23.11 (pilot to 28.11 15:00; project area `AGENTS.md`, Oleg 21.11 and 23.11):
