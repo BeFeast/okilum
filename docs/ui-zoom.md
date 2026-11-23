@@ -3,8 +3,11 @@
 The application UI scale is shared by all windows and saved as `ui_zoom` in the
 existing application UI state. It is separate from `text_zoom`, the OS display
 scale and native window placement. Existing state without `ui_zoom` opens at
-100%; malformed non-finite values normalize to 100%. Steps are 10%, from 50% to
-200%. Saving uses the existing generation-aware, locked atomic state writer and
+100%; malformed non-finite values normalize to 100%. The range is 50% to 200%.
+Each wheel notch or key press moves by the step chosen in Settings → Appearance
+→ UI zoom step (`ui_zoom_step`: 2%, 5% or 10%; default 5%, since 10% was
+reported as too coarse in #3228) and lands on a whole multiple of it. Unknown or
+malformed step values fall back to 5% without rejecting the rest of the state. Saving uses the existing generation-aware, locked atomic state writer and
 merges only this changed field, preserving independent settings.
 
 Use Cmd/Ctrl+Shift+wheel, Cmd/Ctrl+Shift+plus/minus/0, or View → Zoom In UI /

@@ -1664,6 +1664,7 @@ impl Settings {
                             ),
                         cx,
                     ))
+                    .child(ui_zoom_step_setting(cx))
                     .child(
                         v_flex()
                             .gap_2()
@@ -2475,6 +2476,26 @@ pub(crate) fn update_status_row(id: &'static str, cx: &App) -> Option<AnyElement
     render_update_status(id, updater::status::get(), updater::restart_now, cx)
 }
 
+/// Settings → Appearance → UI zoom step (#3228).
+fn ui_zoom_step_setting(cx: &App) -> impl IntoElement {
+    setting_row(
+        "UI zoom step",
+        "How much Cmd/Ctrl+Shift+wheel and Cmd/Ctrl+Shift+plus or minus change the size of the whole interface at a time.",
+        h_flex()
+            .gap_1()
+            .children(crate::ui_zoom::STEPS.into_iter().map(|step| {
+                let id = SharedString::from(format!("settings-ui-zoom-step-{step}"));
+                let selector = id.clone();
+                Button::new(id)
+                    .debug_selector(move || selector.to_string())
+                    .label(format!("{step}%"))
+                    .selected(reader_ui_state::ui_zoom_step(cx) == step)
+                    .on_click(move |_, _, cx| reader_ui_state::set_ui_zoom_step(step, cx))
+            })),
+        cx,
+    )
+}
+
 /// Settings → Editor → Open notes in (#2817).
 fn note_open_mode_setting(cx: &App) -> impl IntoElement {
     use reader_ui_state::NoteOpenMode;
@@ -3128,6 +3149,23 @@ mod tests {
         visual.simulate_click(labels.center(), Modifiers::default());
         visual.run_until_parked();
         assert!(visual.update(|_, cx| reader_ui_state::toolbar_labels(cx)));
+        // UI zoom step (#3228): 5% by default, a click picks another size.
+        assert_eq!(visual.update(|_, cx| reader_ui_state::ui_zoom_step(cx)), 5);
+        for (selector, step) in [
+            ("settings-ui-zoom-step-2", 2),
+            ("settings-ui-zoom-step-10", 10),
+            ("settings-ui-zoom-step-5", 5),
+        ] {
+            let button = visual
+                .debug_bounds(selector)
+                .expect("UI zoom step choice visible");
+            visual.simulate_click(button.center(), Modifiers::default());
+            visual.run_until_parked();
+            assert_eq!(
+                visual.update(|_, cx| reader_ui_state::ui_zoom_step(cx)),
+                step
+            );
+        }
         // The normal-width slider renders (its range used to panic: min > max)
         // and shows the stored width.
         assert!(

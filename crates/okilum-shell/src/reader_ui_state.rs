@@ -127,6 +127,15 @@ fn lenient_string<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<S
     })
 }
 
+/// The UI zoom step; a value of another type or range keeps the default
+/// for this field only, never rejecting the whole state.
+fn lenient_zoom_step<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
+    Ok(serde_json::Value::deserialize(deserializer)?
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .map_or(crate::ui_zoom::DEFAULT_STEP, crate::ui_zoom::normalize_step))
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 struct Saved {
@@ -138,6 +147,10 @@ struct Saved {
     code_font: String,
     text_zoom: f32,
     ui_zoom: f32,
+    /// Whole-UI zoom change per wheel notch or key press, in percent
+    /// (#3228); see `ui_zoom::STEPS`.
+    #[serde(deserialize_with = "lenient_zoom_step")]
+    ui_zoom_step: u32,
     reading_width: f32,
     /// The note column spans the whole note pane instead of the reading
     /// width; one app-wide toggle, kept with the reading width.
@@ -240,6 +253,7 @@ impl Default for Saved {
             code_font: brand::MONO_FONT.into(),
             text_zoom: 1.,
             ui_zoom: 1.,
+            ui_zoom_step: crate::ui_zoom::DEFAULT_STEP,
             reading_width: READER_MAX_WIDTH,
             full_note_width: false,
             find_case_sensitive: false,
@@ -294,6 +308,7 @@ struct Store {
     font_families_changed: [bool; 2],
     zoom_changed: bool,
     ui_zoom_changed: bool,
+    ui_zoom_step_changed: bool,
     width_changed: bool,
     find_changed: bool,
     typed_views_changed: bool,
@@ -411,6 +426,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         font_families_changed: [false; 2],
         zoom_changed: !path.exists(),
         ui_zoom_changed: !path.exists(),
+        ui_zoom_step_changed: false,
         width_changed: !path.exists(),
         find_changed: false,
         // No migration input: opening a new window must not overwrite a
@@ -654,6 +670,7 @@ struct WriteJob {
     font_families_changed: [bool; 2],
     zoom_changed: bool,
     ui_zoom_changed: bool,
+    ui_zoom_step_changed: bool,
     width_changed: bool,
     find_changed: bool,
     typed_views_changed: bool,
@@ -730,6 +747,9 @@ impl WriteJob {
         }
         if self.ui_zoom_changed {
             latest.ui_zoom = self.saved.ui_zoom;
+        }
+        if self.ui_zoom_step_changed {
+            latest.ui_zoom_step = self.saved.ui_zoom_step;
         }
         if self.zoom_changed {
             latest.text_zoom = self.saved.text_zoom;
@@ -929,6 +949,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.appearance_changed
             && !state.theme_changed
             && !state.ui_zoom_changed
+            && !state.ui_zoom_step_changed
             && !state.zoom_changed
             && !state.font_changed
             && !state.font_families_changed.iter().any(|changed| *changed)
@@ -979,6 +1000,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         font_families_changed: state.font_families_changed,
         zoom_changed: state.zoom_changed,
         ui_zoom_changed: state.ui_zoom_changed,
+        ui_zoom_step_changed: state.ui_zoom_step_changed,
         width_changed: state.width_changed,
         find_changed: state.find_changed,
         typed_views_changed: state.typed_views_changed,
@@ -2308,6 +2330,29 @@ pub(crate) fn ui_zoom(cx: &App) -> f32 {
     crate::ui_zoom::normalize(cx.try_global::<Store>().map_or(1., |s| s.saved.ui_zoom))
 }
 
+/// The whole-UI zoom step in percent (#3228); unknown saved values fall
+/// back to the default.
+pub(crate) fn ui_zoom_step(cx: &App) -> u32 {
+    crate::ui_zoom::normalize_step(
+        cx.try_global::<Store>()
+            .map_or(crate::ui_zoom::DEFAULT_STEP, |s| s.saved.ui_zoom_step),
+    )
+}
+
+pub(crate) fn set_ui_zoom_step(step: u32, cx: &mut App) {
+    if !installed(cx) || !crate::ui_zoom::STEPS.contains(&step) {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    if state.saved.ui_zoom_step == step {
+        return;
+    }
+    state.saved.ui_zoom_step = step;
+    state.ui_zoom_step_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
 pub(crate) fn set_ui_zoom(zoom: f32, cx: &mut App) {
     if !zoom.is_finite() || !installed(cx) {
         return;
@@ -2425,6 +2470,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.font_families_changed = [false; 2];
         state.zoom_changed = false;
         state.ui_zoom_changed = false;
+        state.ui_zoom_step_changed = false;
         state.width_changed = false;
         state.find_changed = false;
         state.typed_views_changed = false;
@@ -2961,6 +3007,41 @@ mod tests {
     }
 
     #[gpui::test]
+    fn ui_zoom_step_defaults_and_bad_values_fall_back_without_rejecting_state(
+        cx: &mut TestAppContext,
+    ) {
+        for (value, expected) in [
+            (None, 5),
+            (Some("2"), 2),
+            (Some("10"), 10),
+            (Some("7"), 5),
+            (Some("-5"), 5),
+            (Some("2.5"), 5),
+            (Some("\"10\""), 5),
+            (Some("null"), 5),
+        ] {
+            let fixture = tempfile::tempdir().unwrap();
+            let state = fixture.path().join("state");
+            std::fs::create_dir(&state).unwrap();
+            let step = value.map_or(String::new(), |value| format!(",\"ui_zoom_step\":{value}"));
+            std::fs::write(
+                state.join("reader-ui.json"),
+                format!("{{\"version\":{VERSION},\"tree_auto_reveal\":true{step}}}"),
+            )
+            .unwrap();
+            cx.update(|cx| {
+                if cx.has_global::<Store>() {
+                    cx.remove_global::<Store>();
+                }
+                install(&state, cx);
+                assert!(installed(cx), "{value:?}: the saved UI state still loads");
+                assert!(tree_auto_reveal(cx), "{value:?}: other settings are kept");
+                assert_eq!(ui_zoom_step(cx), expected, "{value:?}");
+            });
+        }
+    }
+
+    #[gpui::test]
     fn saved_log_regexes_persist_merge_and_clear_pending_changes(cx: &mut TestAppContext) {
         use okilum_core::log::regex_text::Definition;
         let directory = tempfile::tempdir().unwrap();
@@ -3430,6 +3511,7 @@ mod tests {
                 font_families_changed: [false; 2],
                 zoom_changed: false,
                 ui_zoom_changed: false,
+                ui_zoom_step_changed: false,
                 width_changed: false,
                 find_changed: false,
                 typed_views_changed: true,

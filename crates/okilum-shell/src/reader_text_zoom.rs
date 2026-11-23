@@ -572,8 +572,9 @@ mod tests {
         visual.simulate_keystrokes("secondary-shift-=->+");
         visual.run_until_parked();
         visual.update(|window, cx| {
-            assert_eq!(reader_ui_state::ui_zoom(cx), 1.1);
-            assert_eq!(window.ui_scale(), 1.1);
+            // One default 5% UI step (#3228); note text zoom stays put.
+            assert_eq!(reader_ui_state::ui_zoom(cx), 1.05);
+            assert_eq!(window.ui_scale(), 1.05);
             assert!((reader_ui_state::text_zoom(cx) - 1.1).abs() < 0.001);
         });
         visual.simulate_keystrokes("secondary-shift-0");
