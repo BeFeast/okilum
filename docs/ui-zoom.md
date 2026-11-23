@@ -14,6 +14,11 @@ is accepted too. Precision wheel input accumulates 40 OS logical pixels before
 one step so trackpad event frequency does not drive the scale immediately to a
 limit. Root overlays capture before scrolling editors, dialogs or menus.
 
+Linux (xkb) reports symbol keys with Shift already applied and drops the Shift
+modifier: Ctrl+Shift+= arrives as `ctrl-+`, Ctrl+Shift+- as `ctrl-_` and
+Ctrl+Shift+0 as `ctrl-)`. Those forms are bound as well (#3229); the shifted
+forms stay last so menus keep showing Ctrl+Shift+= / - / 0.
+
 At 150%, a 1440px-wide window at OS scale 1 has a 960 UI-pixel viewport. The
 existing 1000 UI-pixel sidebar breakpoint intentionally uses mutually exclusive
 overlays here. Crossing into compact mode closes transient overlays and retains
