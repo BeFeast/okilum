@@ -168,6 +168,7 @@ struct Runner<'a, 'ctx> {
     searcher: OnceCell<Result<Searcher, String>>,
     outgoing: OnceCell<BTreeMap<String, BTreeSet<String>>>,
     source_cache: BTreeMap<String, MarkdownSource>,
+    coverage: Option<Vec<Coverage>>,
 }
 
 impl Runner<'_, '_> {
@@ -418,14 +419,18 @@ impl Runner<'_, '_> {
         result: &mut Section,
     ) -> Result<(), Finding> {
         let failure = |key, message: String| section.finding(&doc.path, key, message);
-        let query = bind::bind(
-            doc,
-            section,
-            block,
-            self.ctx.projection.schema(),
-            vars,
-            self.clock,
-        )?;
+        let query = if self.coverage.is_some() {
+            None
+        } else {
+            bind::bind(
+                doc,
+                section,
+                block,
+                self.ctx.projection.schema(),
+                vars,
+                self.clock,
+            )?
+        };
         let mut computations = Computations::compile(block);
         computations
             .bind(block, self.ctx.projection.schema(), vars, self.clock)
@@ -487,12 +492,41 @@ impl Runner<'_, '_> {
                 filters.iter().all(|filter| filter.contains(path))
             })
         };
+        let mut missing = BTreeMap::<String, BTreeSet<String>>::new();
+        if self.coverage.is_some() {
+            if let Some(filter) = &block.filter {
+                let (_, syntax) =
+                    crate::log::query::Query::parse_view(filter).map_err(|error| {
+                        section.where_finding(&doc.path, filter, error.span.start, error.message)
+                    })?;
+                missing.extend(
+                    syntax
+                        .fields
+                        .into_iter()
+                        .map(|(field, _)| (field, BTreeSet::new())),
+                );
+            }
+        }
         rows.retain_mut(|row| {
             computations.apply(&mut row.fields, self.clock);
+            for (field, paths) in &mut missing {
+                if bind::get(&row.fields, field).is_none() {
+                    paths.insert(row.path.clone());
+                }
+            }
             query
                 .as_ref()
                 .is_none_or(|query| query.matches(&row.fields))
         });
+        if let Some(coverage) = &mut self.coverage {
+            coverage.extend(missing.into_iter().map(|(field, missing)| Coverage {
+                view: doc.path.clone(),
+                section: section.id.clone(),
+                field,
+                missing,
+            }));
+            return Ok(());
+        }
         rows.sort_by(|left, right| {
             compare_keys(left, right, block.group(), Some(&block.order))
                 .then_with(|| compare_keys(left, right, block.sort(), None))
@@ -886,18 +920,46 @@ fn new_section(section: &SectionDoc, title: String) -> Section {
 /// Evaluate sections independently over one typed publication at a caller-fixed
 /// time. This function reads sources and never changes the vault.
 pub fn run(doc: &ViewDoc, ctx: &RunContext<'_>) -> ViewResult {
-    let schema = ctx.projection.schema();
-    let mut runner = Runner {
+    execute(doc, &mut runner(ctx, None))
+}
+
+#[derive(Debug, Serialize)]
+pub struct Coverage {
+    pub view: String,
+    pub section: String,
+    pub field: String,
+    pub missing: BTreeSet<String>,
+}
+
+/// Report field presence after source narrowing and computed fields, before
+/// applying the where expression, row limit or output budget.
+pub fn coverage(doc: &ViewDoc, ctx: &RunContext<'_>) -> Vec<Coverage> {
+    let mut runner = runner(ctx, Some(Vec::new()));
+    execute(doc, &mut runner);
+    runner.coverage.expect("coverage was enabled")
+}
+
+fn runner<'a, 'ctx>(
+    ctx: &'a RunContext<'ctx>,
+    coverage: Option<Vec<Coverage>>,
+) -> Runner<'a, 'ctx> {
+    Runner {
         ctx,
         clock: Clock {
             at: ctx.as_of,
-            zone: schema.timezone,
+            zone: ctx.projection.schema().timezone,
         },
         rooted: OnceCell::new(),
         searcher: OnceCell::new(),
         outgoing: OnceCell::new(),
         source_cache: BTreeMap::new(),
-    };
+        coverage,
+    }
+}
+
+fn execute(doc: &ViewDoc, runner: &mut Runner<'_, '_>) -> ViewResult {
+    let ctx = runner.ctx;
+    let schema = ctx.projection.schema();
     let mut result = ViewResult {
         view_api: 0,
         view: ViewIdentity {

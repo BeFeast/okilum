@@ -2,16 +2,20 @@
 //!
 //! Depth 0 of the t3 integration decided at the spike: no editor patches, no
 //! shell dependency, just a stdio JSON-RPC server that any MCP client can
-//! spawn. Every tool here is a thin wrapper over an operation `handle()`
-//! already serves — the point is that agent tooling and the JSON-lines client
-//! reach the vault through one core, not two.
+//! spawn. Reader tools share their implementation with the JSON-lines
+//! protocol. View tools share their implementation with the view CLI.
 //!
 //! Protocol version pinned to the MCP spec revision this was written against.
 //! Only the subset needed for tools is implemented: `initialize`,
 //! `tools/list`, `tools/call`, `ping`, and the `notifications/initialized`
 //! no-op. Everything else returns method-not-found rather than pretending.
 
-use std::io::{BufRead, Write};
+use std::{
+    io::{BufRead, Write},
+    path::Path,
+};
+
+use crate::view_cmd::{self, ValidateRequest};
 
 use okilum_core::{ir, render_html, Resolution, Searcher, Vault};
 use serde_json::{json, Value};
@@ -98,6 +102,34 @@ fn tools() -> Value {
             }
         },
         {
+            "name": "run_view",
+            "description": "Run a declarative vault view and return the view_api: 0 JSON result.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Vault-relative view file path"},
+                    "args": {
+                        "type": "object",
+                        "additionalProperties": {"type": ["string", "number"]}
+                    },
+                    "as_of": {"type": "string", "format": "date-time"},
+                    "all_fields": {"type": "boolean", "default": false}
+                },
+                "required": ["path"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "validate_view",
+            "description": "Validate a vault-relative view file or directory of views.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+                "additionalProperties": false
+            }
+        },
+        {
             "name": "explain_hit",
             "description": "Why a note matched a query: the engine's scoring tree. Null if it is not a hit.",
             "inputSchema": {
@@ -124,7 +156,23 @@ fn tool_error(msg: impl Into<String>) -> Value {
     json!({"content": [{"type": "text", "text": msg.into()}], "isError": true})
 }
 
-fn call_tool(vault: &Vault, searcher: &Searcher, name: &str, args: &Value) -> Value {
+// Opening a disk index writes derived files. Defer it until a tool needs it,
+// so a session using only view tools can use a read-only vault.
+struct Search<'a> {
+    directory: &'a Path,
+    searcher: Option<Searcher>,
+}
+
+impl Search<'_> {
+    fn get(&mut self, vault: &Vault) -> anyhow::Result<&Searcher> {
+        if self.searcher.is_none() {
+            self.searcher = Some(Searcher::open_or_build(vault, self.directory)?);
+        }
+        Ok(self.searcher.as_ref().expect("opened search index"))
+    }
+}
+
+fn call_tool(vault: &Vault, search: &mut Search<'_>, name: &str, args: &Value) -> Value {
     let s = |k: &str| args.get(k).and_then(Value::as_str).unwrap_or("");
     match name {
         "list_notes" => json_result(&json!(vault.notes)),
@@ -134,7 +182,10 @@ fn call_tool(vault: &Vault, searcher: &Searcher, name: &str, args: &Value) -> Va
                 .and_then(Value::as_u64)
                 .unwrap_or(30)
                 .clamp(1, 100) as usize;
-            match searcher.search(s("query"), limit) {
+            match search
+                .get(vault)
+                .and_then(|searcher| searcher.search(s("query"), limit))
+            {
                 Ok(hits) => json_result(&json!(hits)),
                 Err(e) => tool_error(e.to_string()),
             }
@@ -162,12 +213,35 @@ fn call_tool(vault: &Vault, searcher: &Searcher, name: &str, args: &Value) -> Va
             };
             json_result(&r)
         }
-        "explain_hit" => match searcher.explain(s("query"), s("path")) {
-            Ok(e) => json_result(&json!({"explanation": e})),
-            Err(e) => tool_error(e.to_string()),
-        },
+        "explain_hit" => {
+            match search
+                .get(vault)
+                .and_then(|searcher| searcher.explain(s("query"), s("path")))
+            {
+                Ok(e) => json_result(&json!({"explanation": e})),
+                Err(e) => tool_error(e.to_string()),
+            }
+        }
+        "run_view" => run_view(&vault.root, args).unwrap_or_else(|e| tool_error(format!("{e:#}"))),
+        "validate_view" => {
+            validate_view(&vault.root, args).unwrap_or_else(|e| tool_error(format!("{e:#}")))
+        }
         other => tool_error(format!("unknown tool: {other}")),
     }
+}
+
+fn run_view(root: &Path, args: &Value) -> anyhow::Result<Value> {
+    let request = serde_json::from_value(args.clone())?;
+    Ok(match view_cmd::run(root, request)? {
+        Ok(result) => text_result(okilum_core::view::render_json(&result)?),
+        Err(findings) => tool_error(serde_json::to_string_pretty(&findings)?),
+    })
+}
+
+fn validate_view(root: &Path, args: &Value) -> anyhow::Result<Value> {
+    let request: ValidateRequest = serde_json::from_value(args.clone())?;
+    let validation = view_cmd::validate(root, &request.path, false)?;
+    Ok(text_result(serde_json::to_string_pretty(&validation)?))
 }
 
 fn rpc_error(id: Value, code: i64, msg: impl Into<String>) -> Value {
@@ -179,7 +253,7 @@ fn rpc_ok(id: Value, result: Value) -> Value {
 }
 
 /// Handle one JSON-RPC message. `None` for notifications, which get no reply.
-pub fn handle(vault: &Vault, searcher: &Searcher, line: &str) -> Option<Value> {
+fn handle(vault: &Vault, search: &mut Search<'_>, line: &str) -> Option<Value> {
     let req: Value = match serde_json::from_str(line) {
         Ok(v) => v,
         Err(e) => return Some(rpc_error(Value::Null, -32700, format!("parse error: {e}"))),
@@ -197,7 +271,7 @@ pub fn handle(vault: &Vault, searcher: &Searcher, line: &str) -> Option<Value> {
             "capabilities": {"tools": {}},
             "serverInfo": {"name": "okilum", "version": env!("CARGO_PKG_VERSION")},
             "instructions": "Read-only access to a plain-Markdown vault: list, search, read, \
-                             render, resolve links, backlinks. Nothing here writes to the vault."
+                             render, resolve links, backlinks, run and validate views."
         }),
         "ping" => json!({}),
         "tools/list" => json!({"tools": tools()}),
@@ -207,7 +281,7 @@ pub fn handle(vault: &Vault, searcher: &Searcher, line: &str) -> Option<Value> {
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            call_tool(vault, searcher, name, &args)
+            call_tool(vault, search, name, &args)
         }
         other => return Some(rpc_error(id, -32601, format!("method not found: {other}"))),
     };
@@ -215,7 +289,11 @@ pub fn handle(vault: &Vault, searcher: &Searcher, line: &str) -> Option<Value> {
 }
 
 /// Serve MCP over stdio until stdin closes.
-pub fn serve(vault: &Vault, searcher: &Searcher) -> anyhow::Result<()> {
+pub fn serve(vault: &Vault, index_dir: &Path) -> anyhow::Result<()> {
+    let mut search = Search {
+        directory: index_dir,
+        searcher: None,
+    };
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
@@ -224,7 +302,7 @@ pub fn serve(vault: &Vault, searcher: &Searcher) -> anyhow::Result<()> {
         if line.trim().is_empty() {
             continue;
         }
-        if let Some(resp) = handle(vault, searcher, &line) {
+        if let Some(resp) = handle(vault, &mut search, &line) {
             writeln!(out, "{resp}")?;
             out.flush()?;
         }

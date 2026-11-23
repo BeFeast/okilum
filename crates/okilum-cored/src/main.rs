@@ -1,4 +1,4 @@
-//! JSON-lines sidecar over stdin/stdout, plus `index`, `mcp` and `brain`
+//! JSON-lines sidecar over stdin/stdout, plus `index`, `mcp`, `view` and `brain`
 //! subcommands.
 //!
 //! This is the reusable half of Okilum: any second client - a web view, an MCP
@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 mod mcp;
+mod view_cmd;
 
 use okilum_core::{ir, render_html, Resolution, Searcher, Vault};
 
@@ -20,6 +21,7 @@ okilum-cored - JSON-lines sidecar over a Okilum vault
 
 USAGE:
     okilum-cored [index|mcp] --vault <PATH> [--index-dir <PATH>]
+    okilum-cored view --help
     okilum-cored brain --brain-id <ID> --vault <PATH> --operational-dir <PATH>
                        --records-dir <PATH> --listen <ADDR> [--managed-brain]
                        [--config <PATH>] [--connector-config <PATH>]
@@ -28,6 +30,7 @@ USAGE:
     `index` builds the search index and exits.
     `mcp`   serves the Model Context Protocol (JSON-RPC over stdio) instead —
             the same operations as tools, for agent clients.
+    `view`  runs or validates a read-only declarative vault view.
     `brain` (Unix only) serves the separate ai-brain/v1 JSON-lines service on a loopback
             TCP address (docs/ai-brain-service.md). It is not part of the
             read-only reader protocol and takes its own options.
@@ -48,6 +51,9 @@ fn main() -> Result<()> {
         return okilum_brain::service::run_cli(&args[2..]);
         #[cfg(not(unix))]
         anyhow::bail!("The AI Brain source-store runtime is only available on Unix");
+    }
+    if args.get(1).is_some_and(|arg| arg == "view") {
+        std::process::exit(i32::from(view_cmd::run_cli(&args[2..])));
     }
     let mut vault_root = std::env::var_os("OKILUM_VAULT").map(PathBuf::from);
     let mut index_dir_arg = std::env::var_os("OKILUM_INDEX_DIR").map(PathBuf::from);
@@ -87,12 +93,12 @@ fn main() -> Result<()> {
     }
 
     let vault = Vault::scan(&corpus)?;
-    let searcher = Searcher::open_or_build(&vault, &index_dir)?;
     if do_mcp {
         // No readiness line: MCP clients speak first (initialize), and a stray
         // non-JSON-RPC line on stdout would break them.
-        return mcp::serve(&vault, &searcher);
+        return mcp::serve(&vault, &index_dir);
     }
+    let searcher = Searcher::open_or_build(&vault, &index_dir)?;
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut out = stdout.lock();

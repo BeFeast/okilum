@@ -8,8 +8,8 @@ mod run;
 pub use parse::{parse, validate, Show, ViewDoc};
 pub use render::{render_json, render_markdown};
 pub use run::{
-    run, Group, Index, NearProvider, Row, RunContext, Section, Status, TreeNode, ViewIdentity,
-    ViewResult,
+    coverage, run, Coverage, Group, Index, NearProvider, Row, RunContext, Section, Status,
+    TreeNode, ViewIdentity, ViewResult,
 };
 
 use serde::Serialize;

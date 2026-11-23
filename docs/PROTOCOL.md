@@ -11,7 +11,7 @@ vault: guessing one is a good way to index the wrong directory.
 `okilum-cored index --vault <path>` rebuilds the persistent tantivy index and
 exits. The index is derived data — deleting it is always safe.
 
-`okilum-cored mcp` serves the same operations over MCP (see below), and
+`okilum-cored mcp` serves reader operations and declarative views over MCP (see below), and
 `okilum-cored brain …` serves the separate `ai-brain/v1` transport (see the end
 of this document).
 
@@ -103,9 +103,9 @@ and has already changed once, at the port out of the spike.
 ## MCP — the same core, a second wire
 
 `okilum-cored mcp` serves the Model Context Protocol (JSON-RPC 2.0 over
-stdio, protocol revision `2025-06-18`) instead of JSON-lines. Every tool maps
-one-to-one onto an op above, through the same functions — the point is that
-agent tooling and the JSON-lines client cannot disagree about the vault.
+stdio, protocol revision `2025-06-18`) instead of JSON-lines. MCP and JSON-lines
+use the same reader functions. The view tools use the same functions as the
+`view` subcommand.
 
 | Tool | JSON-lines op |
 |---|---|
@@ -117,11 +117,46 @@ agent tooling and the JSON-lines client cannot disagree about the vault.
 | `backlinks` | `backlinks` |
 | `resolve_link` | `resolve` — returns `kind: resolved | ambiguous | unresolved` |
 | `explain_hit` | `explain` |
+| `run_view` | See [Declarative views](#declarative-views) |
+| `validate_view` | See [Declarative views](#declarative-views) |
 
 Only `initialize`, `ping`, `tools/list`, `tools/call` and the
 `notifications/initialized` no-op are implemented. Other methods return
 `-32601` rather than pretending. The MCP wire is versioned by the MCP spec
 revision, not by this protocol's v0.x; the two evolve independently.
+
+## Declarative views
+
+```sh
+okilum-cored view @views/questions.md --format json --as-of 2026-11-24T01:30:00+02:00
+okilum-cored view @views/domain.md --arg domain=Health --format md
+okilum-cored view --validate @views --coverage
+```
+
+The CLI and MCP tools take vault-relative paths. Use `--vault <path>` or
+`OKILUM_VAULT` to select the vault. Runs default to JSON and the current time.
+Pass an RFC 3339 `--as-of` to reproduce time-dependent results, repeat
+`--arg KEY=VALUE` to bind parameters, and use `--all-fields` to include all
+projected fields. JSON uses the `view_api: 0` envelope. Markdown renders the
+same result with links to sources.
+
+Validation accepts a file or recursively checks Markdown files in a directory.
+It returns JSON with `valid` and `findings`. Each finding carries a path,
+one-based line and column, severity and message. `--coverage` also lists the
+note paths missing each `where` field in each evaluable section's source scope,
+before the `where` filter and row limit. CLI exit codes are `0` for success,
+`1` for error findings, and `2` for usage or I/O errors.
+
+MCP returns these payloads as JSON in its text content:
+
+- `run_view {path, args?, as_of?, all_fields?}` accepts an object of string or
+  number arguments, an RFC 3339 timestamp and a boolean. It returns the same
+  JSON as the CLI. Errors in individual sections remain in the result.
+- `validate_view {path}` returns the validation report. Callers can inspect
+  findings even when `valid` is false.
+
+View runs evaluate actions as row metadata. The CLI and view tools only read
+the vault and use an in-memory search index when a view uses `match`.
 
 ## Read-only boundary
 
