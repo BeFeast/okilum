@@ -233,14 +233,20 @@ mod tests {
             Root::new(content, window, cx)
         });
         visual.run_until_parked();
-        for (keys, expected) in [
-            ("secondary-+", 1.1),
-            ("secondary-+", 1.2),
-            ("secondary-_", 1.1),
-            ("secondary-)", 1.),
-            ("secondary-shift-=", 1.1),
-            ("secondary-shift--", 1.),
+        // Default 5% step first, then the chosen 10% step (#3228).
+        for (step, keys, expected) in [
+            (None, "secondary-+", 1.05),
+            (None, "secondary-+", 1.1),
+            (None, "secondary-_", 1.05),
+            (None, "secondary-)", 1.),
+            (None, "secondary-shift-=", 1.05),
+            (None, "secondary-shift--", 1.),
+            (Some(10), "secondary-+", 1.1),
+            (None, "secondary-_", 1.),
         ] {
+            if let Some(step) = step {
+                visual.update(|_, cx| reader_ui_state::set_ui_zoom_step(step, cx));
+            }
             visual.simulate_keystrokes(keys);
             visual.run_until_parked();
             visual.update(|window, cx| {
