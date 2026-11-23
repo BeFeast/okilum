@@ -54,6 +54,220 @@ def text(path, region):
                    capture_output=True).stdout.decode()
 
 
+SENTENCES = (
+    'The river carried the morning light past the old stone bridge and into the quiet harbor.',
+    'Mara opened her notebook and recorded the small changes that another traveler might overlook.',
+    'Beyond the garden wall, a narrow path followed the fields toward a village among the hills.',
+    'The keeper set a lantern beside the window while the last boat returned from the eastern shore.',
+)
+MIB = 1024 * 1024
+
+
+def fixture_size(spec):
+    return int(spec['bytes']) if 'bytes' in spec else int(float(spec['mib']) * MIB)
+
+
+def generate_markdown(spec):
+    """Exactly N ASCII bytes: `# first_line` opens it, `last_line` is the final line."""
+    size = fixture_size(spec)
+    head = f"# {spec.get('first_line', 'Generated note')}\n\n"
+    tail = f"{spec['last_line']}\n" if 'last_line' in spec else ''
+    chunks, used, index = [head], len(head), 0
+    while True:
+        remaining = size - used - len(tail)
+        require(remaining >= 0, f'Fixture {spec["path"]} is smaller than its markers')
+        if remaining == 0:
+            break
+        if index % 40 == 0:
+            heading = f'## Passage {index // 40 + 1:05d}\n\n'
+            if remaining >= len(heading) + 12:
+                chunks.append(heading)
+                used += len(heading)
+                remaining -= len(heading)
+        # Whole paragraphs while room remains; the last one absorbs the exact remainder.
+        length = remaining if remaining < 300 else 240
+        if length < 4:  # too small for a paragraph: pad with blank lines
+            chunks.append('\n' * length)
+            used += length
+            continue
+        text = ' '.join(SENTENCES[index % 4:] + SENTENCES[:index % 4])
+        text = (text * (length // len(text) + 1))[:length - 3] + '.\n\n'
+        chunks.append(text)
+        used += len(text)
+        index += 1
+    data = ''.join(chunks) + tail
+    require(len(data) == size, f'Generated {len(data)} bytes, wanted {size}')
+    return data.encode('ascii')
+
+
+def generate_json(spec):
+    """Exactly N ASCII bytes of one JSON array, one record per line. `valid: false`
+    puts a trailing comma (error_at: end) or a bare word (error_at: middle) in it."""
+    size = fixture_size(spec)
+    valid = spec.get('valid', True)
+    if spec.get('single_line'):
+        sep, opener = ',', '['
+    else:
+        sep, opener = ',\n', '[\n'
+    closer = '\n]\n' if not spec.get('single_line') else ']\n'
+    records, used, index = [], len(opener) + len(closer), 0
+    while True:
+        record = json.dumps({'id': index, 'name': f'record-{index:07d}', 'tags': ['alpha', 'beta', index % 7],
+                             'note': SENTENCES[index % 4], 'nested': {'ok': True, 'ratio': index / 8}})
+        if used + len(record) + len(sep) + 40 > size:
+            break
+        records.append(record)
+        used += len(record) + len(sep)
+        index += 1
+    # The last record is padded to land on the exact size.
+    pad = size - used - len('{"id": -1, "pad": ""}')
+    require(pad >= 0, f'Fixture {spec["path"]} too small')
+    records.append(json.dumps({'id': -1, 'pad': 'x' * pad}))
+    body = sep.join(records)
+    if not valid:
+        if spec.get('error_at', 'end') == 'middle':
+            at = body.find(sep, len(body) // 2)
+            body = body[:at] + sep + 'broken' + body[at:]
+            # keep the size exact by trimming the final record's padding
+            body = body.replace('x' * (len('broken') + len(sep)), '', 1)
+        else:
+            body += ','
+            body = body.replace('x', '', 1)
+    data = (opener + body + closer).encode('ascii')
+    require(len(data) == size, f'Generated {len(data)} bytes, wanted {size}')
+    return data
+
+
+def write_fixtures(vault, specs):
+    for spec in specs:
+        target = vault / spec['path']
+        require(not Path(spec['path']).is_absolute() and '..' not in Path(spec['path']).parts,
+                f'Fixture path must stay inside the vault: {spec["path"]}')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        kind = spec['kind']
+        require(kind in ('markdown', 'json'), f'Unknown fixture kind: {kind}')
+        target.write_bytes(generate_markdown(spec) if kind == 'markdown' else generate_json(spec))
+
+
+def condition(path, rule, default_region):
+    """Does the screenshot satisfy a step's `text` and/or `pixels` rule? (ok, details)"""
+    details, ok = {}, True
+    if 'text' in rule:
+        details['text'] = text(path, rule.get('region', default_region))
+        ok = ok and rule['text'] in details['text']
+    if 'pixels' in rule:
+        spec = rule['pixels']
+        details['pixels'] = pixels(path, spec['region'], spec['expression'])
+        ok = ok and spec['min'] <= details['pixels'] <= spec['max']
+    return ok, details
+
+
+def act(rig, spec):
+    """Deliver a step's keys/click without settling sleeps; returns the time just
+    before the final input event is sent."""
+    if 'click' in spec:
+        wlr = lambda *a: subprocess.run(['wlrctl', 'pointer', *map(str, a)], env=rig.env, check=True)
+        wlr('move', -10000, -10000)
+        wlr('move', *spec['click'])
+        time.sleep(.3)
+        started = time.monotonic()
+        wlr('click', 'left')
+        return started
+    args = []
+    for m in spec.get('mods', ()):
+        args += ['-M', m]
+    for name in spec['keys']:
+        args += ['-k', name]
+    for m in reversed(spec.get('mods', ())):
+        args += ['-m', m]
+    started = time.monotonic()
+    subprocess.run(['wtype', *args], env=rig.env, check=True)
+    return started
+
+
+def grab(rig, path):
+    start = time.monotonic()
+    subprocess.run(['grim', '-t', 'ppm', str(path)], env=rig.env, check=True)
+    return start, time.monotonic(), path
+
+
+def timed_step(rig, step, scenario, output, scratch, check):
+    """Measure action -> condition. Frames are grabbed back to back with their
+    timestamps and read (OCR) only afterwards, so reading costs no latency.
+    Reported `ms` is when the grab that first showed the condition finished: an
+    upper bound (`ms_lower` is when that grab started). The condition must be
+    false in a frame taken before the action, or an unfired action would pass."""
+    name, region = step['id'], scenario['region']
+    require('text' in step or 'pixels' in step, f'Timed step {name} needs a text or pixels condition')
+    probe = step.get('probe')
+    cache = {}
+
+    def holds(frame, rule):
+        key = (frame[2], id(rule))
+        if key not in cache:
+            cache[key] = condition(frame[2], rule, region)
+        return cache[key]
+
+    baseline = grab(rig, scratch / f'{name}-base.ppm')
+    require(not holds(baseline, step)[0], {'id': name, 'error': 'condition already true before the action'})
+    if probe:
+        require(not holds(baseline, probe)[0], {'id': name, 'error': 'probe condition already true before the action'})
+    t0 = act(rig, step)
+    window = max(step['max_ms'] * 1.5, step['max_ms'] + 500) / 1000
+    if probe:
+        window = max(window, probe.get('after_ms', 0) / 1000 + max(probe['max_ms'] * 1.5, probe['max_ms'] + 500) / 1000)
+    frames, t1 = [], None
+    while time.monotonic() - t0 < window:
+        if probe and t1 is None and (time.monotonic() - t0) * 1000 >= probe.get('after_ms', 0):
+            t1 = act(rig, probe)
+        frames.append(grab(rig, scratch / f'{name}-{len(frames):03d}.ppm'))
+    # Identical consecutive frames need one reading.
+    digests = {f[2]: hashlib.md5(f[2].read_bytes()).hexdigest() for f in frames}
+    by_digest = {}
+
+    def reads(frame, rule):
+        key = (digests[frame[2]], id(rule))
+        if key not in by_digest:
+            by_digest[key] = condition(frame[2], rule, region)
+        return by_digest[key]
+
+    def first(rule, since):
+        for frame in frames:
+            if frame[0] >= since:
+                ok, details = reads(frame, rule)
+                if ok:
+                    return frame, details
+        return None, None
+
+    frame, details = first(step, t0)
+    shot = output / f'{name}.png'
+    command('convert', (frame or frames[-1])[2], shot)
+    check['screenshot'] = str(shot)
+    check['max_ms'] = step['max_ms']
+    if frame is None:
+        check['text'] = reads(frames[-1], step)[1]
+        raise AssertionError({**check, 'error': f'condition not seen within {round(window * 1000)} ms'})
+    check.update(details)
+    check['ms'] = round((frame[1] - t0) * 1000)
+    check['ms_lower'] = round((frame[0] - t0) * 1000)
+    require(check['ms'] <= step['max_ms'], check)
+    if probe:
+        pframe, pdetails = first(probe, t1)
+        check['probe'] = {'after_ms': probe.get('after_ms', 0), 'max_ms': probe['max_ms'],
+                          'issued_ms': round((t1 - t0) * 1000)}
+        if pframe is None:
+            command('convert', frames[-1][2], output / f'{name}-probe.png')
+            raise AssertionError({**check, 'error': 'probe effect never appeared'})
+        command('convert', pframe[2], output / f'{name}-probe.png')
+        check['probe'].update(pdetails)
+        check['probe']['ms'] = round((pframe[1] - t1) * 1000)
+        check['probe']['ms_lower'] = round((pframe[0] - t1) * 1000)
+        require(check['probe']['ms'] <= probe['max_ms'], check)
+    for path in scratch.glob(f'{name}-*.ppm'):
+        path.unlink()
+    return shot
+
+
 def run(args, scenario, output, result):
     from native_binary_guard import require_app_binary
     from wayland_rig import Rig
@@ -92,7 +306,11 @@ def run(args, scenario, output, result):
         root = Path(scratch)
         vault = root / 'vault'
         vault.mkdir()
-        (vault / 'scenario.md').write_text(scenario['note'])
+        if 'note' in scenario:
+            (vault / 'scenario.md').write_text(scenario['note'])
+        write_fixtures(vault, scenario.get('generate', ()))
+        frames_dir = root / 'frames'
+        frames_dir.mkdir()
         state = root / 'home/state/okilum'
         state.mkdir(parents=True)
         (state / 'reader-ui.json').write_text(json.dumps({
@@ -106,7 +324,7 @@ def run(args, scenario, output, result):
             with (output / 'app.log').open('w') as log:
                 start = time.monotonic()
                 proc = subprocess.Popen([binary, '--vault', str(vault), '--index-dir', str(root / 'index'),
-                                         '--note', 'scenario.md'], env=rig.env, stdout=log, stderr=log)
+                                         '--note', scenario.get('open', 'scenario.md')], env=rig.env, stdout=log, stderr=log)
                 # The app's after-first-frame diagnostic, not a sleep/window-exists proxy.
                 deadline = time.monotonic() + 45
                 while time.monotonic() < deadline:
@@ -134,19 +352,22 @@ def run(args, scenario, output, result):
                 result['checks'] = []
                 for step in scenario['steps']:
                     name = step['id']
-                    if 'keys' in step:
-                        rig.keys(*step['keys'], mods=step.get('mods', ()))
-                    if 'click' in step:
-                        rig.click(*step['click'])
-                    time.sleep(step.get('wait', .4))
                     shot = output / f'{name}.png'
-                    rig.shot(shot)
                     check = {'id': name, 'screenshot': str(shot)}
                     result['checks'].append(check)
-                    if 'text' in step:
+                    if 'max_ms' in step:
+                        timed_step(rig, step, scenario, output, frames_dir, check)
+                    else:
+                        if 'keys' in step:
+                            rig.keys(*step['keys'], mods=step.get('mods', ()))
+                        if 'click' in step:
+                            rig.click(*step['click'])
+                        time.sleep(step.get('wait', .4))
+                        rig.shot(shot)
+                    if 'max_ms' not in step and 'text' in step:
                         check['text'] = text(shot, step.get('region', scenario['region']))
                         require(step['text'] in check['text'], check)
-                    if 'pixels' in step:
+                    if 'max_ms' not in step and 'pixels' in step:
                         rule = step['pixels']
                         check['pixels'] = pixels(shot, rule['region'], rule['expression'])
                         require(rule['min'] <= check['pixels'] <= rule['max'], check)

@@ -82,6 +82,25 @@ can stay the same. This Linux work does not build or run on Oleg's M4.
 7. Assert visible `text`, bounded colour `pixels`, `ui_scale`, or `changed_from`.
 8. Run the new scenario before the fix and confirm a visible assertion fails, not the build.
 9. Implement the fix, run it green, and inspect the saved PNGs plus `result.json`.
+
+Large fixtures and timing (no big files in git):
+
+- `generate:` is a list written into the isolated vault before launch:
+  `{path, kind: markdown, mib|bytes, first_line, last_line}` (exact size, `# first_line`
+  heading first, `last_line` last) or `{path, kind: json, mib|bytes, valid: true|false,
+  error_at: end|middle, single_line}` (one array, exact size; invalid = trailing comma at
+  the end or a bare word in the middle). `open: <path>` launches that note instead of
+  `scenario.md` (`note:` is then optional).
+- A step with `max_ms: N` and a `text`/`pixels` condition is timed from the input event
+  to the first screenshot that satisfies the condition. Frames are grabbed back to back
+  and read afterwards, so OCR adds no latency. `result.json` has `ms` (when that grab
+  finished, an upper bound; it is the gated value) and `ms_lower` (when it started).
+  The condition must be false before the action, otherwise the step fails.
+- `probe:` inside a timed step: `{after_ms, keys|click, mods, text|pixels, region, max_ms}`
+  issues a second input `after_ms` after the first, while the long operation runs, and
+  requires its visible effect within `max_ms` of the probe (`probe.ms` in the result).
+  Choose a probe whose condition differs from the main one.
+
 10. Run affected scenarios before pushing; during the direct-session experiment this own smoke replaces the daytime PR/CI gate.
 
 ## Merge gate
