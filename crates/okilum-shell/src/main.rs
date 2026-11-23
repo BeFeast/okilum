@@ -183,9 +183,9 @@ mod url_protocol;
 mod vault_name;
 mod version_info;
 use reader_link_navigation::handle_link;
-mod contextual_help;
 #[cfg(test)]
 mod action_inventory_tests;
+mod contextual_help;
 #[cfg(test)]
 mod input_anchor_tests;
 #[cfg(test)]
