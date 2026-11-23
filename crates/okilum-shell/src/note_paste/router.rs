@@ -2120,13 +2120,17 @@ mod tests {
                 .as_deref(),
             Some("שלום 🧠")
         );
-        assert_eq!(
-            route(&dropped(&[("UTF8_STRING", "Привет\0".as_bytes())]), &cx)
-                .unwrap()
-                .insert
-                .as_deref(),
-            Some("Привет")
-        );
+        for kind in ["UTF8_STRING", "text/plain;charset=utf-8"] {
+            for bytes in ["Привет\0".as_bytes(), "Привет\0padding".as_bytes()] {
+                assert_eq!(
+                    route(&dropped(&[(kind, bytes)]), &cx)
+                        .unwrap()
+                        .insert
+                        .as_deref(),
+                    Some("Привет")
+                );
+            }
+        }
         for (kind, bytes) in [
             ("UniformResourceLocator", b"https://example.org/\0".to_vec()),
             (

@@ -275,7 +275,11 @@ impl offer::Pasteboard for DroppedData {
         if native == "HTML Format" {
             return self.windows_html().map(|(html, _)| html.into_bytes());
         }
-        self.0.contents(native).map(<[u8]>::to_vec)
+        let bytes = self.0.contents(native)?;
+        if kind == offer::UTF8_TEXT {
+            return Some(bytes.split(|byte| *byte == 0).next()?.to_vec());
+        }
+        Some(bytes.to_vec())
     }
     fn string(&self, kind: &str) -> Option<String> {
         if kind == offer::CHROMIUM_SOURCE_URL && self.0.contents("HTML Format").is_some() {
