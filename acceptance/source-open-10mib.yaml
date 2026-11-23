@@ -1,0 +1,24 @@
+# #3073: open a 10 MiB Markdown note in Source, then jump to its last line.
+# Runner support needed: resolve note_fixture via scripts/perf/speed/notes.py,
+# append last_line after the final Markdown block, shorten a prose line by
+# the same byte count, and write the result into the isolated vault. Use the
+# #2094 open metric: median launch-to-Source-frame latency over the paired
+# tiny-note control. Measure the keypress to the first frame showing the end.
+note_fixture:
+  name: ten-mib.md
+  bytes: 10485760
+  last_line: End of the field notes
+open_control: tiny.md
+preferences: {note_open_mode: edit}
+region: [300, 90, 780, 678]
+ready_text: Ten mebibytes of field notes
+max_additional_open_ms: 1000
+steps:
+  - id: focus-source
+    click: [700, 180]
+    text: Ten mebibytes of field notes
+  - id: source-end
+    keys: [End]
+    mods: [ctrl]
+    text: End of the field notes
+    max_response_ms: 1000
