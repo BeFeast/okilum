@@ -101,7 +101,7 @@ Items are enabled only while a note editor has focus.
 | Zoom In | `reader_text_zoom::ZoomIn` | ⌘= | Ctrl+= | | note text only; Shift+= is interface zoom |
 | Zoom Out | `ZoomOut` | ⌘- | Ctrl+- | | |
 | Actual Size | `reader_text_zoom::Reset` | ⌘0 | Ctrl+0 | | |
-| Zoom In UI | `ui_zoom::ZoomIn` | ⇧⌘= | Ctrl+Shift+= | | whole UI, 10% steps, 50–200% (#2848) |
+| Zoom In UI | `ui_zoom::ZoomIn` | ⇧⌘= | Ctrl+Shift+= | | whole UI, step from Settings → Appearance (#2848, #3228) |
 | Zoom Out UI | `ui_zoom::ZoomOut` | ⇧⌘- | Ctrl+Shift+- | | |
 | Actual UI Size | `ui_zoom::Reset` | ⇧⌘0 | Ctrl+Shift+0 |  | |
 | — | | | | | `:559` |
