@@ -38,8 +38,12 @@ fn registered_actions_include_every_pre_split_action() {
         "tests/fixtures/actions.txt holds {} actions; regenerate it (see module docs)",
         golden.len()
     );
+    let brain_absent = cfg!(not(all(unix, feature = "brain")));
     let missing: Vec<_> = golden
         .iter()
+        // `mod brain` only exists with `all(unix, feature = "brain")`; the golden
+        // is generated on Linux with it, so other builds skip those names.
+        .filter(|name| !(brain_absent && name.starts_with("brain::")))
         .filter(|name| !registered.contains(*name))
         .collect();
     assert!(
