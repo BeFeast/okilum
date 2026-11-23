@@ -262,8 +262,8 @@ impl AssetSource for Assets {
             return Ok(Some(Cow::Borrowed(bytes)));
         }
         // The full Lucide set for project icons (#1627), unpacked on first use.
-        if path.starts_with(okilum_shell::lucide::ASSET_PREFIX) {
-            return Ok(okilum_shell::lucide::load(path).map(Cow::Owned));
+        if path.starts_with(crate::lucide::ASSET_PREFIX) {
+            return Ok(crate::lucide::load(path).map(Cow::Owned));
         }
         gpui_kit_assets::Assets.load(path)
     }
@@ -299,28 +299,28 @@ pub fn load_fonts(cx: &App) -> anyhow::Result<()> {
             "../../okilum-shell/assets/brand/fonts/noto-sans-700.ttf"
         )),
         Cow::Borrowed(include_bytes!(
-            "../assets/brand/fonts/noto-sans-italic-400.ttf"
+            "../../okilum-shell/assets/brand/fonts/noto-sans-italic-400.ttf"
         )),
         Cow::Borrowed(include_bytes!(
-            "../assets/brand/fonts/noto-sans-italic-500.ttf"
+            "../../okilum-shell/assets/brand/fonts/noto-sans-italic-500.ttf"
         )),
         Cow::Borrowed(include_bytes!(
-            "../assets/brand/fonts/noto-sans-italic-600.ttf"
+            "../../okilum-shell/assets/brand/fonts/noto-sans-italic-600.ttf"
         )),
         Cow::Borrowed(include_bytes!(
-            "../assets/brand/fonts/noto-sans-italic-700.ttf"
+            "../../okilum-shell/assets/brand/fonts/noto-sans-italic-700.ttf"
         )),
         Cow::Borrowed(include_bytes!(
-            "../assets/brand/fonts/cascadia-code-400.ttf"
+            "../../okilum-shell/assets/brand/fonts/cascadia-code-400.ttf"
         )),
         Cow::Borrowed(include_bytes!(
-            "../assets/brand/fonts/cascadia-code-500.ttf"
+            "../../okilum-shell/assets/brand/fonts/cascadia-code-500.ttf"
         )),
         Cow::Borrowed(include_bytes!(
-            "../assets/brand/fonts/cascadia-code-600.ttf"
+            "../../okilum-shell/assets/brand/fonts/cascadia-code-600.ttf"
         )),
         Cow::Borrowed(include_bytes!(
-            "../assets/brand/fonts/cascadia-code-700.ttf"
+            "../../okilum-shell/assets/brand/fonts/cascadia-code-700.ttf"
         )),
     ])
 }

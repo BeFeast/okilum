@@ -6297,6 +6297,7 @@ dependencies = [
  "okilum-gpui",
  "okilum-http",
  "okilum-paste",
+ "okilum-shell-kit",
  "okilum-sync-controller",
  "okilum-t3",
  "okilum-write-authority",
@@ -6341,6 +6342,30 @@ dependencies = [
  "x11rb",
  "zbus",
  "zip 9.5.1",
+]
+
+[[package]]
+name = "okilum-shell-kit"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs 6.0.0",
+ "flate2",
+ "gpui-base",
+ "gpui-component",
+ "gpui-kit-assets",
+ "gpui-pre-wgpu",
+ "okilum-core",
+ "okilum-gpui",
+ "okilum-t3",
+ "resvg 0.45.1",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "url",
+ "uuid",
 ]
 
 [[package]]
