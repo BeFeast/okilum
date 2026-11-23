@@ -13,8 +13,7 @@ use super::offer::VIDEO_EXTENSIONS;
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
-/// Default for Settings → Editor → "Ask before copying files larger than".
-pub const DEFAULT_ASK_ABOVE_MB: u32 = 100;
+pub use okilum_shell_kit::note_paste_settings::DEFAULT_ASK_ABOVE_MB;
 /// Names tried in one folder before giving up.
 const MAX_SUFFIX: usize = 999;
 /// Chunk size of a copy across volumes, between progress reports.

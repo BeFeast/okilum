@@ -4,26 +4,7 @@ use gpui::{canvas, DispatchPhase, ScrollDelta, ScrollWheelEvent};
 
 gpui::actions!(ui_zoom, [ZoomIn, ZoomOut, Reset]);
 
-/// Step choices in percent offered in Settings → Appearance (#3228).
-pub(crate) const STEPS: [u32; 3] = [2, 5, 10];
-/// 10% per wheel notch was reported as too coarse (#3228).
-pub(crate) const DEFAULT_STEP: u32 = 5;
-
-pub(crate) fn normalize(value: f32) -> f32 {
-    if value.is_finite() {
-        (value.clamp(0.5, 2.) * 100.).round() / 100.
-    } else {
-        1.
-    }
-}
-
-pub(crate) fn normalize_step(step: u32) -> u32 {
-    if STEPS.contains(&step) {
-        step
-    } else {
-        DEFAULT_STEP
-    }
-}
+pub(crate) use okilum_shell_kit::ui_zoom::{normalize, normalize_step, DEFAULT_STEP, STEPS};
 
 /// The next whole multiple of `step` percent in `direction`, so 103% with a
 /// 5% step goes to 105% / 100%, not 108% / 98%.
