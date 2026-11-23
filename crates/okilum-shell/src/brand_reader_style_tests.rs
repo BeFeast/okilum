@@ -2,6 +2,8 @@
 //! app crate, so these two brand tests moved here from
 //! `okilum_shell_kit::brand::tests` (#3233).
 use super::*;
+// `gpui::test` expands to `#[test]`; without this the glob import makes it recurse.
+use ::core::prelude::v1::test;
 use brand::{
     apply_theme, palette, reader_palette_for_theme, syntax_theme, theme_palette, ThemeChoice,
     ThemeId,
