@@ -107,7 +107,7 @@ def main():
     written = re.sub(r"^\s*(?:#+ |\d+\. )", "", written, flags=re.M).replace("**", "").replace("`", "")
     assert normalize(written) in normalize("".join(page.guide)), "Website and in-app instructions diverged"
     # The app bundles exactly the files the website receives.
-    source = (ROOT.parents[2] / "crates/okilum-shell/src/reader_projects_help.rs").read_text()
+    source = (ROOT.parents[2] / "crates/okilum-shell-kit/src/reader_projects_help.rs").read_text()
     bundled = re.findall(r'^\s*"([^"]+)",\s*\n\s*include_bytes!\("[./]+docs/help/projects/([^"]+)"\)', source, flags=re.M)
     assert bundled and all(a == b for a, b in bundled), bundled
     assert "docs/help/projects/setup.md" in source

@@ -12,7 +12,7 @@ use std::{
 /// An absolute `OKILUM_STATE_DIR` gives a QA instance its own state, instance
 /// lock, drafts, diagnostics and presentation config, so it neither forwards to
 /// nor shares files with the user's running Reader. Windows has no XDG override.
-pub(crate) fn isolated_state_directory() -> Option<PathBuf> {
+pub fn isolated_state_directory() -> Option<PathBuf> {
     isolated_from(std::env::var_os("OKILUM_STATE_DIR"))
 }
 
@@ -22,8 +22,8 @@ fn isolated_from(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
 
 /// App-owned Reader state location, outside any vault or index directory.
 /// Tests use `TestSessionDirectory` instead.
-#[cfg_attr(test, allow(dead_code))]
-pub(crate) fn state_directory() -> Result<PathBuf> {
+#[cfg_attr(any(test, feature = "test-support"), allow(dead_code))]
+pub fn state_directory() -> Result<PathBuf> {
     if let Some(directory) = isolated_state_directory() {
         return Ok(directory);
     }
@@ -59,7 +59,7 @@ enum Recording {
 static NO_HISTORY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// `--no-history`: this process records no recent vaults or files (#3208).
-pub(crate) fn disable_recording() {
+pub fn disable_recording() {
     NO_HISTORY.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
@@ -80,9 +80,9 @@ fn no_history_from(value: Option<std::ffi::OsString>) -> bool {
 }
 
 /// Tests point Readers at a temporary state directory instead of the user's.
-#[cfg(test)]
-pub(crate) struct TestSessionDirectory(pub PathBuf);
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
+pub struct TestSessionDirectory(pub PathBuf);
+#[cfg(any(test, feature = "test-support"))]
 impl gpui::Global for TestSessionDirectory {}
 
 const SCHEMA: u32 = 1;
@@ -96,7 +96,7 @@ struct InvalidHistory;
 /// Another writer of this process holds the history lock for a moment;
 /// the caller retries rather than reporting it (#1325).
 #[derive(Debug)]
-pub(crate) struct Busy;
+pub struct Busy;
 impl std::fmt::Display for Busy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Reader state is busy; retry without losing the existing history")
@@ -125,7 +125,7 @@ fn validate_document(root: &Path, document: &str) -> Result<()> {
 
 /// Older builds stored extra restart fields in the same file; serde ignores them.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub(crate) struct ReadingHistory {
+pub struct ReadingHistory {
     schema: u32,
     #[serde(default)]
     last_documents: BTreeMap<PathBuf, String>,
@@ -157,7 +157,7 @@ const STORED_VAULTS: usize = 30;
 const QUICK_FILES: usize = 40;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct KnownVault {
+pub struct KnownVault {
     pub root: PathBuf,
     pub last_opened: Option<u64>,
     pub is_default: bool,
@@ -296,7 +296,7 @@ impl ReadingHistory {
     }
     /// #338 supplies a validated, already published usable document, not a pending
     /// request or full-index completion. Callers surface I/O failures explicitly.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn record_usable_document(directory: &Path, root: &Path, document: &str) -> Result<()> {
         validate_document(root, document)?;
         if document.is_empty() {
@@ -305,7 +305,7 @@ impl ReadingHistory {
         Self::record_document_mode(directory, root, document, false)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn record_document_mode(
         directory: &Path,
         root: &Path,
@@ -396,9 +396,7 @@ impl ReadingHistory {
                 state
                     .quick_files
                     .retain(|(old, _)| old != &file && old.is_file());
-                state
-                    .quick_files
-                    .insert(0, (file, crate::reader_sidebar::now()));
+                state.quick_files.insert(0, (file, crate::clock::now()));
                 state.quick_files.truncate(QUICK_FILES);
             }
             if !full_vault {

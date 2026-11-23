@@ -365,7 +365,7 @@ fn t3_creates_the_project_with_its_icon_and_the_manifest_binds_it(cx: &mut TestA
             Some("new-1")
         );
         assert_eq!(
-            okilum_shell::project_avatar::avatar(&project, cx),
+            okilum_shell_kit::project_avatar::avatar(&project, cx),
             Avatar::Icon(icon.clone()),
             "T3's icon"
         );

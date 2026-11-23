@@ -240,7 +240,7 @@ fn resume(feature: Feature, cx: &mut App) {
 fn suspend(feature: Feature, cx: &mut App) {
     if feature == Feature::Agents {
         reader_t3_settings::suspend(cx);
-        cx.set_global(okilum_shell::project_avatar::ProjectIcons::default());
+        cx.set_global(okilum_shell_kit::project_avatar::ProjectIcons::default());
     }
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     if feature == Feature::Sync {

@@ -54,7 +54,7 @@ jobs:
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Reader tests
-        run: cargo test -p okilum-core -p okilum-shell
+        run: cargo test -p okilum-core -p okilum-shell -p okilum-shell-kit
       # Only main saves Cargo caches (10 GB repo quota, #2881); branches restore main's.
       - name: Save Cargo cache
         if: ${{ success() && steps.cargo-cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' }}

@@ -1,6 +1,6 @@
 //! Project workspace owns Board and Manager; Files restores the vault browser.
 use super::*;
-use okilum_shell::projects_picker::{
+use okilum_shell_kit::projects_picker::{
     picker::{ManagerObservation, PickerModel},
     LeaveProject, NewProject, Presentation, ProjectMenu, ProjectsPicker, Selected,
 };
@@ -373,7 +373,7 @@ impl Reader {
             generation,
             ..Default::default()
         };
-        cx.set_global(okilum_shell::project_avatar::ProjectIcons::default());
+        cx.set_global(okilum_shell_kit::project_avatar::ProjectIcons::default());
         self.tree_sticky.clear();
         self.tree_earlier_roots.clear();
     }
@@ -530,7 +530,7 @@ impl Reader {
         &self,
         query: &str,
         limit: usize,
-    ) -> Vec<okilum_shell::projects_picker::picker::Row> {
+    ) -> Vec<okilum_shell_kit::projects_picker::picker::Row> {
         let navigation = &self.project_navigation;
         if navigation.discovery.projects.is_empty() {
             return Vec::new();
@@ -624,7 +624,7 @@ impl Reader {
         links: std::collections::BTreeMap<PathBuf, Counterpart>,
         cx: &mut Context<Self>,
     ) {
-        let icons = cx.default_global::<okilum_shell::project_avatar::ProjectIcons>();
+        let icons = cx.default_global::<okilum_shell_kit::project_avatar::ProjectIcons>();
         for folder in folders {
             icons.links.remove(&folder);
         }
@@ -751,9 +751,9 @@ impl Reader {
         cx: &mut Context<Self>,
     ) {
         use gpui_component::WindowExt as _;
-        use okilum_shell::project_icon_dialog::{IconDialogEvent, ProjectIconDialog, TITLE};
+        use okilum_shell_kit::project_icon_dialog::{IconDialogEvent, ProjectIconDialog, TITLE};
         self.file_menu = None;
-        let current = okilum_shell::project_avatar::manual_icon(&project, cx);
+        let current = okilum_shell_kit::project_avatar::manual_icon(&project, cx);
         let name = project.name.clone();
         let dialog = cx.new(|cx| ProjectIconDialog::new(&name, current.as_ref(), window, cx));
         // The choice arrives with the window of the press. A subscription
@@ -907,7 +907,7 @@ impl Reader {
         let navigation = &self.project_navigation;
         ShownIcon {
             link: cx
-                .try_global::<okilum_shell::project_avatar::ProjectIcons>()
+                .try_global::<okilum_shell_kit::project_avatar::ProjectIcons>()
                 .and_then(|icons| icons.links.get(folder).cloned()),
             manifest: navigation
                 .active
@@ -926,7 +926,7 @@ impl Reader {
         cx: &mut Context<Self>,
     ) {
         let linked = match cx
-            .default_global::<okilum_shell::project_avatar::ProjectIcons>()
+            .default_global::<okilum_shell_kit::project_avatar::ProjectIcons>()
             .links
             .get_mut(folder)
         {
@@ -945,7 +945,7 @@ impl Reader {
 
     /// Puts back what the project showed before a failed save.
     fn restore_project_icon(&mut self, folder: &Path, shown: ShownIcon, cx: &mut Context<Self>) {
-        let icons = cx.default_global::<okilum_shell::project_avatar::ProjectIcons>();
+        let icons = cx.default_global::<okilum_shell_kit::project_avatar::ProjectIcons>();
         match shown.link {
             Some(link) => {
                 icons.links.insert(folder.to_owned(), link);
@@ -1739,7 +1739,7 @@ mod icon_save_tests {
         visual.run_until_parked();
         reader.read_with(visual, |_, cx| {
             assert_eq!(
-                okilum_shell::project_avatar::avatar(&project, cx),
+                okilum_shell_kit::project_avatar::avatar(&project, cx),
                 Avatar::Icon(old_icon.clone())
             )
         });
@@ -1767,7 +1767,7 @@ mod icon_save_tests {
         let refreshed = Avatar::Icon(t3.icon.lock().unwrap().clone().unwrap());
         reader.read_with(visual, |_, cx| {
             assert_eq!(
-                okilum_shell::project_avatar::avatar(&project, cx),
+                okilum_shell_kit::project_avatar::avatar(&project, cx),
                 refreshed
             )
         });
@@ -1787,7 +1787,7 @@ mod icon_save_tests {
         });
         reader.read_with(visual, |_, cx| {
             assert_eq!(
-                okilum_shell::project_avatar::avatar(&project, cx),
+                okilum_shell_kit::project_avatar::avatar(&project, cx),
                 refreshed
             )
         });
@@ -1849,7 +1849,7 @@ mod icon_save_tests {
         let t3 = Arc::new(IconT3::default());
         reader.update_in(visual, |r, window, cx| {
             connect(r, &t3);
-            cx.default_global::<okilum_shell::project_avatar::ProjectIcons>()
+            cx.default_global::<okilum_shell_kit::project_avatar::ProjectIcons>()
                 .links
                 .insert(
                     folder.clone(),
@@ -1862,7 +1862,7 @@ mod icon_save_tests {
                 );
             r.save_project_icon(project.clone(), Some(icon.clone()), window, cx);
             assert_eq!(
-                okilum_shell::project_avatar::avatar(&project, cx),
+                okilum_shell_kit::project_avatar::avatar(&project, cx),
                 Avatar::Icon(icon.clone()),
                 "the icon shows before T3 answers"
             );
@@ -1871,7 +1871,7 @@ mod icon_save_tests {
         assert_eq!(*t3.writes.lock().unwrap(), [Some(icon.clone())]);
         reader.read_with(visual, |_, cx| {
             assert_eq!(
-                okilum_shell::project_avatar::avatar(&project, cx),
+                okilum_shell_kit::project_avatar::avatar(&project, cx),
                 Avatar::Icon(icon.clone())
             );
         });
@@ -1890,7 +1890,7 @@ mod icon_save_tests {
             connect(r, &refusing);
             r.save_project_icon(project.clone(), Some(rocket.clone()), window, cx);
             assert_eq!(
-                okilum_shell::project_avatar::avatar(&project, cx),
+                okilum_shell_kit::project_avatar::avatar(&project, cx),
                 Avatar::Icon(rocket.clone())
             );
         });
@@ -1898,7 +1898,7 @@ mod icon_save_tests {
         assert_eq!(*refusing.writes.lock().unwrap(), [Some(rocket.clone())]);
         reader.read_with(visual, |_, cx| {
             assert_eq!(
-                okilum_shell::project_avatar::avatar(&project, cx),
+                okilum_shell_kit::project_avatar::avatar(&project, cx),
                 Avatar::Icon(icon.clone()),
                 "the icon T3 kept is back"
             );

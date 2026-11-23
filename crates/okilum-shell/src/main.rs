@@ -27,11 +27,9 @@ mod app_footprint;
 mod appimage_acceptance;
 #[cfg(all(unix, feature = "brain"))]
 mod brain;
-mod brand;
 mod build_info;
 #[cfg(all(unix, feature = "brain"))]
 mod connectors;
-mod count_label;
 mod desktop_app_menu;
 #[cfg(all(unix, feature = "brain"))]
 mod export;
@@ -95,7 +93,6 @@ mod reader_fonts;
 mod reader_har;
 #[cfg(target_os = "linux")]
 mod reader_header_cache;
-mod reader_history;
 mod reader_hover;
 #[cfg(any(target_os = "macos", test))]
 mod reader_icloud;
@@ -141,7 +138,6 @@ mod reader_properties;
 mod reader_publication;
 mod reader_read_menu;
 mod reader_reading_controls;
-mod reader_recent_vaults;
 #[cfg(any(unix, windows))]
 mod reader_recovery;
 mod reader_replay;
@@ -183,7 +179,6 @@ mod url_protocol;
 mod vault_name;
 mod version_info;
 use reader_link_navigation::handle_link;
-mod contextual_help;
 #[cfg(test)]
 mod input_anchor_tests;
 #[cfg(test)]
@@ -206,9 +201,6 @@ mod reader_agents_offer;
 mod reader_document_decorations;
 mod reader_features;
 mod reader_file_access_notice;
-mod reader_help_assets;
-mod reader_projects_help;
-mod reader_sync_help;
 #[cfg(test)]
 use reader_features::test_init;
 mod reader_batch;
@@ -310,6 +302,13 @@ use okilum_core::render::{
     split_open_url, AMBIGUOUS_SCHEME, EMBED_LANG, EMBED_MISSING, UNRESOLVED_SCHEME, WIKI_SCHEME,
 };
 use okilum_core::{Backlink, Searcher, Vault, VaultWatcher};
+
+// Former app modules, now in okilum-shell-kit (#3233); `crate::brand::…`
+// paths keep working through these imports.
+use okilum_shell_kit::{
+    brand, contextual_help, count_label, reader_help_assets, reader_history,
+    reader_projects_help, reader_recent_vaults, reader_sync_help,
+};
 
 /// Body size for the reader; the heading scale and the sidebar derive from it.
 const BODY_FONT_SIZE: f32 = brand::READING_FONT_SIZE;
@@ -4756,7 +4755,7 @@ impl Reader {
             .project_navigation
             .active
             .as_ref()
-            .map(|project| okilum_shell::project_avatar::project_avatar(project, 16., cx));
+            .map(|project| okilum_shell_kit::project_avatar::project_avatar(project, 16., cx));
         h_flex()
             .debug_selector(|| "reader-backlinks-header".into())
             .h(px(READER_HEADER_HEIGHT))
@@ -4828,7 +4827,7 @@ impl Reader {
             .flatten();
         // In a project its avatar stands where the vault's dot does (#1627).
         let avatar = project.as_ref().map(|project| {
-            okilum_shell::project_avatar::project_avatar(project, SIDEBAR_AVATAR, cx)
+            okilum_shell_kit::project_avatar::project_avatar(project, SIDEBAR_AVATAR, cx)
         });
         let dot = if accent.is_some() { VAULT_DOT_SLOT } else { 0. };
         // The avatar narrows the name, never the fixed action slots.
@@ -14085,3 +14084,6 @@ mod issue1669_test_teardown_tests;
 
 #[cfg(test)]
 mod action_inventory_tests;
+
+#[cfg(test)]
+mod brand_reader_style_tests;

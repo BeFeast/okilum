@@ -5,7 +5,7 @@
 //! picks an existing verified owner without creating a T3 project or thread.
 use super::*;
 use crate::reader_project_navigation::{t3_gateways, Gateways};
-use okilum_shell::new_project_dialog::{NewProjectDialog, NewProjectEvent, TITLE};
+use okilum_shell_kit::new_project_dialog::{NewProjectDialog, NewProjectEvent, TITLE};
 use okilum_t3::projects::{
     create::{self, Created, Draft, T3Created, T3Link},
     icon::Counterpart,
@@ -241,7 +241,7 @@ impl Reader {
         cx: &mut Context<Self>,
     ) {
         use gpui_component::WindowExt as _;
-        use okilum_shell::project_icon_dialog::{IconDialogEvent, ProjectIconDialog};
+        use okilum_shell_kit::project_icon_dialog::{IconDialogEvent, ProjectIconDialog};
         let Some(current) = dialog.upgrade() else {
             return;
         };
@@ -266,7 +266,7 @@ impl Reader {
         });
         let content = picker.clone();
         window.open_dialog(cx, move |d, _, _| {
-            d.title(okilum_shell::project_icon_dialog::TITLE)
+            d.title(okilum_shell_kit::project_icon_dialog::TITLE)
                 .width(px(520.))
                 .on_ok(|_, _, _| false)
                 .child(content.clone())

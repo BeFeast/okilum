@@ -6,7 +6,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/test-nofile.sh"
 # Retain admission's package feature union in later default-feature filters.
 # Switching back to single-package roots otherwise recompiles the same GUI
 # and core dependencies inside short operation groups after cold admission.
-packages=(-p okilum-write-authority -p okilum-core -p okilum-shell -p okilum-t3)
+packages=(-p okilum-write-authority -p okilum-core -p okilum-shell -p okilum-shell-kit -p okilum-t3)
 # The daily hosted gate runs the workspace census in its own parallel job (#3198)
 # and the pool gate runs it on its own shard: `all` (default) runs every suite,
 # `checks` all but workspace-full, `workspace` only workspace-full. The part is
@@ -122,7 +122,7 @@ suite issue2044 120 cargo test --locked -p okilum-shell --bin okilum issue2044_ 
 if [[ $part == workspace ]]; then
     # Alone in a cold job: compile the census selection (same packages and
     # features as workspace-rust-tests.py COMMAND) before its deadline starts.
-    cargo test --locked -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3 --no-run || failed=1
+    cargo test --locked -p okilum-core -p okilum-shell -p okilum-shell-kit -p okilum-sync -p okilum-t3 --no-run || failed=1
 fi
 suite workspace-full 1320 python3 scripts/ci/workspace-rust-tests.py
 # #1915: explicit filters make unsupported-flag coverage inspectable in CI.

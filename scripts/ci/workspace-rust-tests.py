@@ -8,7 +8,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
-COMMAND = ["cargo", "test", "--locked", "-p", "okilum-core", "-p", "okilum-shell",
+COMMAND = ["cargo", "test", "--locked", "-p", "okilum-core", "-p", "okilum-shell", "-p", "okilum-shell-kit",
            "-p", "okilum-sync", "-p", "okilum-t3", "--no-fail-fast", "--"]
 LOG = "reader_log"
 REVEAL = "platform::reveal::tests::"

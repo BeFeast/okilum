@@ -1,7 +1,7 @@
 //! Contextual Projects instructions, mounted in the Projects section header.
 //! Available before any project exists; reading it writes no vault files.
 use crate::contextual_help::Guide;
-use crate::*;
+use crate::prelude::*;
 
 const GUIDE: &str = include_str!("../../../docs/help/projects/setup.md");
 const FILES: &[(&str, &[u8])] = &[
@@ -43,6 +43,6 @@ static PROJECTS: Guide = Guide {
     files: FILES,
 };
 
-pub(crate) fn entry() -> Button {
+pub fn entry() -> Button {
     crate::contextual_help::entry(&PROJECTS)
 }

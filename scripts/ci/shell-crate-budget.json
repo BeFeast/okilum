@@ -2,8 +2,12 @@
   "note": "Line budget per crate source directory, checked by shell-crate-budget.py in the pre-merge gate (#3232, epic #3241). Each okilum-shell split PR lowers max_lines; raise it only with the reason in the PR.",
   "crates": {
     "crates/okilum-shell/src": {
-      "max_lines": 455000,
-      "measured": {"lines": 441056, "commit": "e81e9ba60", "date": "2026-11-23"}
+      "max_lines": 447000,
+      "measured": {
+        "lines": 432987,
+        "commit": "kit split (#3233)",
+        "date": "2026-11-23"
+      }
     }
   }
 }

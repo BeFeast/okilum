@@ -13,18 +13,18 @@ use std::{
 };
 
 /// The start screen lists at most this many vaults, most recent first.
-pub(crate) const LIMIT: usize = 10;
+pub const LIMIT: usize = 10;
 
 /// How long the availability check waits for a folder before it calls its
 /// volume unresponsive: a dead network share must not hold up the start
 /// screen, and `stat` on one can block for minutes.
-pub(crate) const CHECK_PATIENCE: Duration = Duration::from_millis(1500);
+pub const CHECK_PATIENCE: Duration = Duration::from_millis(1500);
 
 /// Places nobody picks as a vault: the system's temporary folders, QA
 /// evidence, app-support and cache directories, and the trash. Folders there
 /// were opened by a test, a script or another app, not chosen by a person.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct Places {
+pub struct Places {
     temp: Vec<PathBuf>,
 }
 
@@ -53,7 +53,7 @@ const APP_DATA: &[&[&str]] = &[
 impl Places {
     /// The temporary folders of this machine, as typed and as resolved:
     /// recorded roots are canonical (`/private/var/folders/…` on macOS).
-    pub(crate) fn current() -> &'static Self {
+    pub fn current() -> &'static Self {
         static PLACES: OnceLock<Places> = OnceLock::new();
         PLACES.get_or_init(|| {
             let mut temp = vec![std::env::temp_dir()];
@@ -76,7 +76,7 @@ impl Places {
         })
     }
 
-    pub(crate) fn with_temp(temp: Vec<PathBuf>) -> Self {
+    pub fn with_temp(temp: Vec<PathBuf>) -> Self {
         let mut temp: Vec<PathBuf> = temp
             .into_iter()
             .map(|path| okilum_core::vault::plain_path(&path))
@@ -87,7 +87,7 @@ impl Places {
     }
 
     /// A folder nobody chose as a vault: it never belongs on the list.
-    pub(crate) fn unchosen(&self, root: &Path) -> bool {
+    pub fn unchosen(&self, root: &Path) -> bool {
         let plain = okilum_core::vault::plain_path(root);
         if self.temp.iter().any(|temp| plain.starts_with(temp)) {
             return true;
@@ -110,7 +110,7 @@ impl Places {
 
 /// Whether a listed vault can be opened and edited now.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Status {
+pub enum Status {
     Ready,
     /// It opens, but edits cannot be saved; the text says why.
     #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
@@ -120,7 +120,7 @@ pub(crate) enum Status {
 
 /// Why a listed vault cannot be opened right now, specific enough to act on.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Unavailable {
+pub enum Unavailable {
     /// The volume the folder lives on is not there: an unmounted network
     /// share or disk (`/Volumes/<name>`, `/mnt/<name>`), a drive letter, a
     /// Windows share.
@@ -143,7 +143,7 @@ pub(crate) enum Unavailable {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Volume {
+pub enum Volume {
     /// A mount point whose `fstab` entry is a network filesystem.
     Network,
     /// A mount point nothing more is known about once it is gone.
@@ -156,7 +156,7 @@ pub(crate) enum Volume {
 
 impl Unavailable {
     /// The reason the start screen shows on the vault's row (#3208 spec).
-    pub(crate) fn reason(&self) -> String {
+    pub fn reason(&self) -> String {
         match self {
             Unavailable::VolumeMissing { name, kind } => match kind {
                 Volume::Network if cfg!(target_os = "macos") => {
@@ -179,7 +179,7 @@ impl Unavailable {
     }
 
     /// The one fitting action next to the reason.
-    pub(crate) fn action(&self) -> Fix {
+    pub fn action(&self) -> Fix {
         match self {
             Unavailable::VolumeMissing { .. } | Unavailable::NotResponding => Fix::TryAgain,
             Unavailable::Missing | Unavailable::NotAFolder => Fix::Locate,
@@ -192,7 +192,7 @@ impl Unavailable {
 
 /// What the inline button on an unavailable row does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Fix {
+pub enum Fix {
     /// Check again: the volume may be back.
     TryAgain,
     /// Choose the folder where it is now; it replaces the entry.
@@ -204,7 +204,7 @@ pub(crate) enum Fix {
 }
 
 impl Fix {
-    pub(crate) fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Fix::TryAgain => "Try again",
             Fix::Locate => "Locate…",
@@ -215,7 +215,7 @@ impl Fix {
 }
 
 impl Status {
-    pub(crate) fn unavailable(&self) -> Option<&Unavailable> {
+    pub fn unavailable(&self) -> Option<&Unavailable> {
         match self {
             Status::Unavailable(reason) => Some(reason),
             _ => None,
@@ -224,11 +224,11 @@ impl Status {
 
     /// The inline text for an unavailable vault. A read-only vault is
     /// available: its row shows a lock and «Read-only» instead.
-    pub(crate) fn reason(&self) -> Option<String> {
+    pub fn reason(&self) -> Option<String> {
         self.unavailable().map(Unavailable::reason)
     }
 
-    pub(crate) fn read_only(&self) -> bool {
+    pub fn read_only(&self) -> bool {
         matches!(self, Status::ReadOnly(_))
     }
 }
@@ -237,7 +237,7 @@ impl Status {
 /// run this off the UI thread with a deadline ([`check_all`]).
 /// `network`: the folder was on a network volume when last opened, so a
 /// volume that is gone now is named a network volume.
-pub(crate) fn check(root: &Path, network: bool) -> Status {
+pub fn check(root: &Path, network: bool) -> Status {
     match check_in(root, &mount_areas(), &fstab()) {
         Status::Unavailable(Unavailable::VolumeMissing {
             name,
@@ -253,7 +253,7 @@ pub(crate) fn check(root: &Path, network: bool) -> Status {
 /// The folder is on a network filesystem (NFS, SMB, AFP, WebDAV, …), as the
 /// kernel reports it. Recorded when a vault opens (#3208), so an unmounted
 /// share can later be named a network volume.
-pub(crate) fn on_network_volume(root: &Path) -> bool {
+pub fn on_network_volume(root: &Path) -> bool {
     #[cfg(target_os = "macos")]
     {
         const NETWORK: &[&str] = &["nfs", "smbfs", "afpfs", "webdav", "ftp", "cifs"];
@@ -293,7 +293,7 @@ pub(crate) fn on_network_volume(root: &Path) -> bool {
 
 /// A GNOME gvfs mount (`/run/user/<uid>/gvfs/smb-share:server=nas,share=notes/…`):
 /// its directory, the share's name and its `smb://server/share` spelling.
-pub(crate) fn gvfs_share(root: &Path) -> Option<(PathBuf, String, String)> {
+pub fn gvfs_share(root: &Path) -> Option<(PathBuf, String, String)> {
     let parts: Vec<&std::ffi::OsStr> = root
         .components()
         .filter_map(|part| match part {
@@ -524,7 +524,7 @@ fn network_mount(fstab: &str, mount: &Path) -> bool {
 /// Check each folder on its own thread and wait at most `patience` in all;
 /// a folder that has not answered by then is on a volume that does not
 /// respond. A thread stuck in the kernel is left behind, never joined.
-pub(crate) fn check_all(
+pub fn check_all(
     roots: &[PathBuf],
     network: &std::collections::BTreeSet<PathBuf>,
     patience: Duration,
@@ -581,7 +581,7 @@ fn check_all_with(
 /// (`OKILUM_STATE_DIR`) nor a test's explicit state directory. Only the
 /// user's own history drops folders nobody chose as a vault; QA fixtures
 /// live in temporary folders on purpose.
-pub(crate) fn users_history(directory: &Path) -> bool {
+pub fn users_history(directory: &Path) -> bool {
     super::reader_history::isolated_state_directory().is_none()
         && super::reader_history::state_directory().is_ok_and(|own| own == directory)
 }
@@ -589,7 +589,7 @@ pub(crate) fn users_history(directory: &Path) -> bool {
 /// Take folders nobody chose as a vault off the list for good (#3208):
 /// listed roots under [`Places`] become hidden. Only for the user's own
 /// history; a QA instance with its own state keeps what it opens.
-pub(crate) fn prune(directory: &Path, places: &Places) -> anyhow::Result<Vec<PathBuf>> {
+pub fn prune(directory: &Path, places: &Places) -> anyhow::Result<Vec<PathBuf>> {
     let (_, listed) = super::reader_history::ReadingHistory::startup_roots(directory)?;
     let unchosen: Vec<PathBuf> = listed
         .into_iter()

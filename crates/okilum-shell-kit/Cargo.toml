@@ -1,0 +1,49 @@
+[package]
+name = "okilum-shell-kit"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Shared shell components below the okilum app crate (#3233, epic #3241):
+# brand and themes, Help sheets, reading history, recent vaults and the
+# Projects picker widgets. Never depends on the app crate or `Reader`.
+
+[features]
+default = []
+# Mirrors okilum-shell's `brain` (Unix Brain controls in brand).
+brain = []
+# Test seams the app crate's tests rely on (per-thread applied theme,
+# TestSessionDirectory). okilum-shell enables it as a dev-dependency only;
+# `okilum --build-info` reports it and native_binary_guard.py refuses it.
+test-support = []
+
+[dependencies]
+anyhow = "1"
+gpui = { package = "okilum-gpui", path = "../okilum-gpui" }
+gpui-base = { path = "../../vendor/gpui-component/crates/base" }
+gpui-component = { workspace = true, features = ["tree-sitter-languages"] }
+gpui-kit-assets.workspace = true
+okilum-core = { workspace = true, default-features = false }
+okilum-t3 = { path = "../okilum-t3" }
+serde.workspace = true
+serde_json = "1"
+sha2 = "0.10"
+url = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+
+[dev-dependencies]
+gpui = { package = "okilum-gpui", path = "../okilum-gpui", features = ["test-support"] }
+okilum-core = { workspace = true, features = ["test-support"] }
+resvg = "=0.45.1"
+tempfile = "3"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+gpui_wgpu = { package = "gpui-pre-wgpu", version = "0.3.3" }
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+rustix = { version = "=1.1.6", features = ["fs"] }
+
+[target.'cfg(windows)'.dependencies]
+dirs = "6"

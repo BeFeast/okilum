@@ -305,7 +305,7 @@ strong { -webkit-background-clip: text; background-image: radial-gradient(#fff, 
 
 class Contract(unittest.TestCase):
     def test_writes_every_token_the_app_reads(self):
-        brand = (ROOT / "crates/okilum-shell/src/brand.rs").read_text()
+        brand = (ROOT / "crates/okilum-shell-kit/src/brand.rs").read_text()
         resolve = brand.split("fn resolve(theme: ThemeId)", 1)[1].split("\nfn tokens(", 1)[0]
         read = set(re.findall(r'color\("(\w+)"\)', resolve))
         self.assertGreater(len(read), 30)

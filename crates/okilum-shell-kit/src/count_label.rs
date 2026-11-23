@@ -1,6 +1,6 @@
 //! English labels for visible numeric counts.
 
-pub(crate) fn count_label(count: usize, singular: &str, plural: &str) -> String {
+pub fn count_label(count: usize, singular: &str, plural: &str) -> String {
     let noun = if count == 1 { singular } else { plural };
     format!("{count} {noun}")
 }

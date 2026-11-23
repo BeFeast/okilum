@@ -234,7 +234,7 @@ private application state outside the vault and disposable index.
   [managed Linux service](../crates/okilum-sync-controller/src/lifecycle.rs).
 - [Open-note updates](../crates/okilum-shell/src/reader_editor/open_note_sync.rs),
   [editor preservation and conflict-copy naming](../crates/okilum-shell/src/reader_editor.rs), and
-  [in-app Help entry](../crates/okilum-shell/src/reader_sync_help.rs).
+  [in-app Help entry](../crates/okilum-shell-kit/src/reader_sync_help.rs).
 
 The [direct-pairing engineering notes](sync-direct-pairing.md) cover the protocol,
 readiness checks and remaining lifecycle limits. The older

@@ -17,8 +17,12 @@ OUT = ROOT / 'target/file-edit-toolbar-controls'
 OUT.mkdir(parents=True, exist_ok=True)
 BASE = ['cargo', 'test', '--locked', '-p', 'okilum-shell', '--bin', 'okilum',
         '--features', 'data-view-native-harness']
+# brand moved into okilum-shell-kit (#3233): its icon control runs that crate's
+# own test binary.
+KIT = ['cargo', 'test', '--locked', '-p', 'okilum-shell-kit', '--lib']
 if '--release' in sys.argv:
     BASE.append('--release')
+    KIT.append('--release')
 if '--linux-sprint' in sys.argv:
     BASE[BASE.index('data-view-native-harness')] = 'linux-sprint,data-view-native-harness'
 if '--shell-no-opt' in sys.argv:
@@ -28,8 +32,8 @@ original = {}
 patch = []
 
 
-def edit(name, old, new, count=1):
-    path = ROOT / ('crates/okilum-shell/src/' + name)
+def edit(name, old, new, count=1, crate='okilum-shell'):
+    path = ROOT / f'crates/{crate}/src/{name}'
     data = path.read_bytes()
     source = data.decode()
     assert source.count(old) == count, (name, old, source.count(old))
@@ -107,7 +111,14 @@ try:
          '    fn same_native_geometry(a: &LineLayout, b: &LineLayout) -> bool {',
          '    fn same_native_geometry(a: &LineLayout, b: &LineLayout) -> bool {\n        if crate::file2811_control("geometry-partition") { return native_ascii::exact_geometry(a, b); }')
     edit('brand.rs', '        if let Some((_, bytes)) = IMAGES.iter().find(|(name, _)| *name == path) {',
-         '        if crate::file2811_control("missing-file-icons") && matches!(path, "icons/indent.svg" | "icons/wrench.svg") { return Ok(None); }\n        if let Some((_, bytes)) = IMAGES.iter().find(|(name, _)| *name == path) {')
+         '        if crate::file2811_control("missing-file-icons") && matches!(path, "icons/indent.svg" | "icons/wrench.svg") { return Ok(None); }\n        if let Some((_, bytes)) = IMAGES.iter().find(|(name, _)| *name == path) {',
+         crate='okilum-shell-kit')
+    # Not cfg(test): the app's test binary compiles the kit as a plain dependency.
+    edit('lib.rs', 'pub mod brand;', '''#[allow(dead_code)]
+fn file2811_control(name: &str) -> bool {
+    std::env::var("OKILUM_FILE2811_CONTROL").is_ok_and(|v|v==name)
+}
+pub mod brand;''', crate='okilum-shell-kit')
     edit('reader_toast.rs', '.filter(|notice| !self.file_conflict_in_status(notice))',
          '.filter(|notice| !self.file_conflict_in_status(notice) || crate::file2811_control("conflict-toast"))')
     edit('main.rs', 'fn main() {', '''#[cfg(test)]
@@ -184,11 +195,17 @@ reader.editing.as_ref().map(|e| if crate::file2811_control("source-header") {for
         artifacts = [json.loads(s) for s in build.stdout.splitlines() if s.startswith('{')]
         binary = next(x['executable'] for x in artifacts if x.get('reason') == 'compiler-artifact'
                       and x.get('executable') and x.get('profile', {}).get('test') and x['target']['name'] == 'okilum')
+        kit_build = run('compile-kit-controls', KIT + ['--no-run', '--message-format=json-render-diagnostics'])
+        assert kit_build.returncode == 0, 'compiled kit controls must compile before any negative can count'
+        kit_binary = next(x['executable'] for x in (json.loads(s) for s in kit_build.stdout.splitlines() if s.startswith('{'))
+                          if x.get('reason') == 'compiler-artifact' and x.get('executable')
+                          and x.get('profile', {}).get('test') and x['target']['name'] == 'okilum_shell_kit')
         positive(binary, 'platform::shaped_line_cache::tests::edit2803_native_geometry_', expected=3)
-        positive(binary, 'brand::tests::every_local_functional_icon_is_embedded')
+        positive(kit_binary, 'brand::tests::every_local_functional_icon_is_embedded')
         positive(binary, 'file2811_')
         for control, test in CONTROLS:
-            result = run('negative-' + control, [binary, test, '--nocapture', '--test-threads=1'], control)
+            owner = kit_binary if test.startswith('brand::') else binary
+            result = run('negative-' + control, [owner, test, '--nocapture', '--test-threads=1'], control)
             assert result.returncode != 0 and 'running 1 test' in result.stdout, (control, 'did not execute exactly one failing control')
             assert 'test result: FAILED' in result.stdout and 'panicked at' in result.stdout and test in result.stdout, control
             if control == 'geometry-partition':

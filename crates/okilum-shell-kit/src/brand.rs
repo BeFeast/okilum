@@ -5,6 +5,7 @@
 //! system-appearance sync. Both Reader and AI Brain then share the same typography.
 use std::{borrow::Cow, sync::OnceLock};
 
+use crate::projects_picker;
 #[cfg(all(unix, feature = "brain"))]
 use gpui::ElementId;
 use gpui::{px, rgb, svg, App, AssetSource, Hsla, SharedString, Styled, Svg};
@@ -12,7 +13,6 @@ use gpui::{px, rgb, svg, App, AssetSource, Hsla, SharedString, Styled, Svg};
 use gpui_component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 use gpui_component::input::projection::TaskCheckAnimation;
 use gpui_component::{highlighter::HighlightTheme, Colorize as _, Theme};
-use okilum_shell::projects_picker;
 
 pub const SANS_FONT: &str = "Noto Sans";
 pub const MONO_FONT: &str = "Cascadia Code";
@@ -52,186 +52,204 @@ pub const CODE_VIEW_TREE_ICON: &str = "icons/view-tree.svg";
 const IMAGES: [(&str, &[u8]); 50] = [
     (
         CODE_VIEW_TABLE_ICON,
-        include_bytes!("../assets/icons/view-table.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/view-table.svg"),
     ),
     (
         CODE_VIEW_TREE_ICON,
-        include_bytes!("../assets/icons/view-tree.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/view-tree.svg"),
     ),
     (
         READER_FILTER_ICON,
-        include_bytes!("../assets/icons/list-filter.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/list-filter.svg"),
     ),
-    (READER_LOCK_ICON, include_bytes!("../assets/icons/lock.svg")),
+    (
+        READER_LOCK_ICON,
+        include_bytes!("../../okilum-shell/assets/icons/lock.svg"),
+    ),
     (
         READER_DOWNLOAD_ICON,
-        include_bytes!("../assets/icons/download.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/download.svg"),
     ),
     (
         "icons/providers/openai.svg",
-        include_bytes!("../assets/icons/providers/openai.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/providers/openai.svg"),
     ),
     (
         "icons/providers/claude.svg",
-        include_bytes!("../assets/icons/providers/claude.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/providers/claude.svg"),
     ),
     (
         "icons/providers/grok.svg",
-        include_bytes!("../assets/icons/providers/grok.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/providers/grok.svg"),
     ),
     (
         "icons/providers/cursor.svg",
-        include_bytes!("../assets/icons/providers/cursor.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/providers/cursor.svg"),
     ),
     (
         "icons/providers/opencode.svg",
-        include_bytes!("../assets/icons/providers/opencode.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/providers/opencode.svg"),
     ),
     (
         "icons/providers/antigravity.svg",
-        include_bytes!("../assets/icons/providers/antigravity.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/providers/antigravity.svg"),
     ),
     (
         "icons/providers/antigravity.png",
-        include_bytes!("../assets/icons/providers/antigravity.png"),
+        include_bytes!("../../okilum-shell/assets/icons/providers/antigravity.png"),
     ),
     (
         "icons/square.svg",
-        include_bytes!("../assets/icons/square.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/square.svg"),
     ),
     (
         NOTE_WIDTH_NORMAL_ICON,
-        include_bytes!("../assets/icons/fold-horizontal.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/fold-horizontal.svg"),
     ),
     (
         NOTE_WIDTH_FULL_ICON,
-        include_bytes!("../assets/icons/unfold-horizontal.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/unfold-horizontal.svg"),
     ),
     (
         "icons/code-xml.svg",
-        include_bytes!("../assets/icons/code-xml.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/code-xml.svg"),
     ),
     (
         "icons/square-pen.svg",
-        include_bytes!("../assets/icons/square-pen.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/square-pen.svg"),
     ),
     (
         "icons/text-search.svg",
-        include_bytes!("../assets/icons/text-search.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/text-search.svg"),
     ),
     (
         "icons/pencil.svg",
-        include_bytes!("../assets/icons/pencil.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/pencil.svg"),
     ),
     (
         "icons/message-square.svg",
-        include_bytes!("../assets/icons/message-square.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/message-square.svg"),
     ),
     (
         SYSTEM_APPEARANCE_ICON,
-        include_bytes!("../assets/icons/monitor.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/monitor.svg"),
     ),
     (
         "icons/arrow-down-circle.svg",
-        include_bytes!("../assets/icons/arrow-down-circle.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/arrow-down-circle.svg"),
     ),
     (
         "icons/trash.svg",
-        include_bytes!("../assets/icons/trash.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/trash.svg"),
     ),
-    ("icons/save.svg", include_bytes!("../assets/icons/save.svg")),
+    (
+        "icons/save.svg",
+        include_bytes!("../../okilum-shell/assets/icons/save.svg"),
+    ),
     (
         "icons/indent.svg",
-        include_bytes!("../assets/icons/indent.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/indent.svg"),
     ),
     (
         "icons/wrench.svg",
-        include_bytes!("../assets/icons/wrench.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/wrench.svg"),
     ),
     (
         "icons/channel-stable.svg",
-        include_bytes!("../assets/icons/channel-stable.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/channel-stable.svg"),
     ),
     (
         "icons/channel-beta.svg",
-        include_bytes!("../assets/icons/channel-beta.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/channel-beta.svg"),
     ),
     (
         READER_OPEN_ICON,
-        include_bytes!("../assets/icons/arrow-up-right.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/arrow-up-right.svg"),
     ),
     (
         READER_COLLAPSE_ICON,
-        include_bytes!("../assets/icons/chevrons-down-up.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/chevrons-down-up.svg"),
     ),
     (
         READER_EXPAND_ICON,
-        include_bytes!("../assets/icons/chevrons-up-down.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/chevrons-up-down.svg"),
     ),
     (
         READER_FOCUS_ICON,
-        include_bytes!("../assets/icons/locate-fixed.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/locate-fixed.svg"),
     ),
     (
         "icons/sliders.svg",
-        include_bytes!("../assets/icons/sliders.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/sliders.svg"),
     ),
     (
         "icons/file-plus.svg",
-        include_bytes!("../assets/icons/file-plus.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/file-plus.svg"),
     ),
     (
         "icons/folder-plus.svg",
-        include_bytes!("../assets/icons/folder-plus.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/folder-plus.svg"),
     ),
-    (READER_PIN_ICON, include_bytes!("../assets/icons/pin.svg")),
+    (
+        READER_PIN_ICON,
+        include_bytes!("../../okilum-shell/assets/icons/pin.svg"),
+    ),
     (
         READER_CLOCK_ICON,
-        include_bytes!("../assets/icons/clock.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/clock.svg"),
     ),
     (
         "icons/project-active.svg",
-        include_bytes!("../assets/icons/project-active.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/project-active.svg"),
     ),
     (
         "icons/project-planned.svg",
-        include_bytes!("../assets/icons/project-planned.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/project-planned.svg"),
     ),
     // The projects switcher and list (#1519, #1520).
     (
         projects_picker::PROJECTS_ICON,
-        include_bytes!("../assets/icons/projects.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/projects.svg"),
     ),
     (
         projects_picker::CODE_ICON,
-        include_bytes!("../assets/icons/project-code.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/project-code.svg"),
     ),
     (
         projects_picker::KNOWLEDGE_ICON,
-        include_bytes!("../assets/icons/project-knowledge.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/project-knowledge.svg"),
     ),
     (
         projects_picker::HYBRID_ICON,
-        include_bytes!("../assets/icons/project-hybrid.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/project-hybrid.svg"),
     ),
     (
         projects_picker::ACTIVITY_ICON,
-        include_bytes!("../assets/icons/activity.svg"),
+        include_bytes!("../../okilum-shell/assets/icons/activity.svg"),
     ),
-    (READER_LIST_ICON, include_bytes!("../assets/icons/list.svg")),
-    (READER_LINK_ICON, include_bytes!("../assets/icons/link.svg")),
-    (SYMBOL, include_bytes!("../assets/brand/symbol-primary.svg")),
+    (
+        READER_LIST_ICON,
+        include_bytes!("../../okilum-shell/assets/icons/list.svg"),
+    ),
+    (
+        READER_LINK_ICON,
+        include_bytes!("../../okilum-shell/assets/icons/link.svg"),
+    ),
+    (
+        SYMBOL,
+        include_bytes!("../../okilum-shell/assets/brand/symbol-primary.svg"),
+    ),
     (
         REVERSED_SYMBOL,
-        include_bytes!("../assets/brand/symbol-reversed.svg"),
+        include_bytes!("../../okilum-shell/assets/brand/symbol-reversed.svg"),
     ),
     (
         ICON_LIGHT,
-        include_bytes!("../assets/brand/app-icon-light.svg"),
+        include_bytes!("../../okilum-shell/assets/brand/app-icon-light.svg"),
     ),
     (
         ICON_DARK,
-        include_bytes!("../assets/brand/app-icon-dark.svg"),
+        include_bytes!("../../okilum-shell/assets/brand/app-icon-dark.svg"),
     ),
 ];
 
@@ -268,10 +286,18 @@ impl AssetSource for Assets {
 /// Sans ships its italic: no platform synthesizes one for an app font (#1009).
 pub fn load_fonts(cx: &App) -> anyhow::Result<()> {
     cx.text_system().add_fonts(vec![
-        Cow::Borrowed(include_bytes!("../assets/brand/fonts/noto-sans-400.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/brand/fonts/noto-sans-500.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/brand/fonts/noto-sans-600.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/brand/fonts/noto-sans-700.ttf")),
+        Cow::Borrowed(include_bytes!(
+            "../../okilum-shell/assets/brand/fonts/noto-sans-400.ttf"
+        )),
+        Cow::Borrowed(include_bytes!(
+            "../../okilum-shell/assets/brand/fonts/noto-sans-500.ttf"
+        )),
+        Cow::Borrowed(include_bytes!(
+            "../../okilum-shell/assets/brand/fonts/noto-sans-600.ttf"
+        )),
+        Cow::Borrowed(include_bytes!(
+            "../../okilum-shell/assets/brand/fonts/noto-sans-700.ttf"
+        )),
         Cow::Borrowed(include_bytes!(
             "../assets/brand/fonts/noto-sans-italic-400.ttf"
         )),
@@ -355,11 +381,17 @@ impl ThemeId {
     fn tokens(self) -> Option<&'static str> {
         match self {
             Self::Okilum => None,
-            Self::Graphite => Some(include_str!("../assets/themes/graphite.json")),
-            Self::Paper => Some(include_str!("../assets/themes/paper.json")),
-            Self::HighContrast => Some(include_str!("../assets/themes/high-contrast.json")),
-            Self::Nord => Some(include_str!("../assets/themes/nord.json")),
-            Self::Obsidianite => Some(include_str!("../assets/themes/obsidianite.json")),
+            Self::Graphite => Some(include_str!(
+                "../../okilum-shell/assets/themes/graphite.json"
+            )),
+            Self::Paper => Some(include_str!("../../okilum-shell/assets/themes/paper.json")),
+            Self::HighContrast => Some(include_str!(
+                "../../okilum-shell/assets/themes/high-contrast.json"
+            )),
+            Self::Nord => Some(include_str!("../../okilum-shell/assets/themes/nord.json")),
+            Self::Obsidianite => Some(include_str!(
+                "../../okilum-shell/assets/themes/obsidianite.json"
+            )),
         }
     }
 
@@ -478,12 +510,18 @@ fn resolve(theme: ThemeId) -> ThemeTokens {
     let parse = |json: &str| -> serde_json::Value {
         serde_json::from_str(json).expect("validated token file")
     };
-    let brand = parse(include_str!("../assets/brand/brand-tokens.json"));
+    let brand = parse(include_str!(
+        "../../okilum-shell/assets/brand/brand-tokens.json"
+    ));
     let (layers, own): (Vec<serde_json::Value>, &str) = match theme.tokens() {
         None => (
             vec![
-                parse(include_str!("../assets/brand/interface-tokens.json")),
-                parse(include_str!("../assets/reader/reader-tokens.json")),
+                parse(include_str!(
+                    "../../okilum-shell/assets/brand/interface-tokens.json"
+                )),
+                parse(include_str!(
+                    "../../okilum-shell/assets/reader/reader-tokens.json"
+                )),
             ],
             "themes",
         ),
@@ -649,7 +687,7 @@ pub fn reader_palette(cx: &App) -> ReaderPalette {
 /// `App` per thread in the same process: a process-wide value let one test's
 /// `apply_theme` repaint another test's Reader text in its theme. Test builds
 /// keep it per thread.
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 mod applied {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     static DARK: AtomicBool = AtomicBool::new(false);
@@ -662,7 +700,7 @@ mod applied {
         (DARK.load(Ordering::Relaxed), THEME.load(Ordering::Relaxed))
     }
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 mod applied {
     use std::cell::Cell;
     thread_local! {
@@ -1174,9 +1212,10 @@ pub fn button(
 fn brand_mark(dark: bool) -> Hsla {
     static MARK: OnceLock<[Hsla; 2]> = OnceLock::new();
     MARK.get_or_init(|| {
-        let brand: serde_json::Value =
-            serde_json::from_str(include_str!("../assets/brand/brand-tokens.json"))
-                .expect("validated brand tokens");
+        let brand: serde_json::Value = serde_json::from_str(include_str!(
+            "../../okilum-shell/assets/brand/brand-tokens.json"
+        ))
+        .expect("validated brand tokens");
         // Primary symbol in brand blue; reversed symbol in the dark text color.
         [("light", "accent"), ("dark", "text")].map(|(mode, key)| {
             parse_color(brand["themes"][mode][key].as_str().expect("brand color"))
@@ -1267,7 +1306,8 @@ mod tests {
     #[test]
     fn noto_sans_embeds_italic_faces_beside_upright_ones() {
         // #1009: *emphasis* needs a real italic face; nothing synthesizes one.
-        let fonts = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/brand/fonts");
+        let fonts = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../okilum-shell/assets/brand/fonts");
         for weight in [400, 500, 600, 700] {
             let italic =
                 std::fs::read(fonts.join(format!("noto-sans-italic-{weight}.ttf"))).unwrap();
@@ -1289,7 +1329,8 @@ mod tests {
 
     #[test]
     fn every_local_functional_icon_is_embedded() {
-        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/icons");
+        let directory =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../okilum-shell/assets/icons");
         let mut checked = 0;
         for entry in std::fs::read_dir(directory).unwrap() {
             let entry = entry.unwrap();
@@ -1980,37 +2021,6 @@ mod tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
-    #[gpui::test]
-    fn issue3156_theme_switch_swaps_the_live_syntax_palette(cx: &mut gpui::TestAppContext) {
-        cx.update(crate::test_init);
-        cx.update(|cx| {
-            for mode in [ThemeMode::Dark, ThemeMode::Light] {
-                Theme::change(mode, None, cx);
-                let dark = mode == ThemeMode::Dark;
-                // The picker sets the choice and re-applies, without
-                // `Theme::change`, so the palette must also reset on the way back.
-                for theme in [
-                    ThemeId::Obsidianite,
-                    ThemeId::Graphite,
-                    ThemeId::Obsidianite,
-                ] {
-                    cx.set_global(ThemeChoice(theme));
-                    apply_theme(cx);
-                    let live = Theme::global(cx).highlight_theme.clone();
-                    assert!(
-                        std::sync::Arc::ptr_eq(&live, &syntax_theme(theme, dark)),
-                        "{} {mode:?}",
-                        theme.key()
-                    );
-                    assert!(std::sync::Arc::ptr_eq(
-                        &crate::reader_text_style(Theme::global(cx)).highlight_theme,
-                        &live
-                    ));
-                }
-            }
-        });
-    }
-
     #[test]
     fn issue3154_decoration_slots_parse_strictly_and_obsidianite_fills_all_five() {
         let obsidianite = ThemeId::from_key("obsidianite").expect("built-in theme");
@@ -2172,43 +2182,6 @@ mod tests {
             rgb(0x202226).into()
         );
         assert_eq!(css_color(reader.highlight), "#ffd00066");
-    }
-
-    #[gpui::test]
-    fn selected_theme_drives_palette_and_native_tokens(cx: &mut gpui::TestAppContext) {
-        cx.update(crate::test_init);
-        cx.update(|cx| {
-            for theme in [
-                ThemeId::Nord,
-                ThemeId::HighContrast,
-                ThemeId::Okilum,
-                ThemeId::Obsidianite,
-            ] {
-                for mode in [ThemeMode::Light, ThemeMode::Dark] {
-                    cx.set_global(ThemeChoice(theme));
-                    Theme::change(mode, None, cx);
-                    apply_theme(cx);
-                    let expected = theme_palette(theme, mode == ThemeMode::Dark);
-                    let p = palette(cx);
-                    assert_eq!(p.surface, expected.surface);
-                    let t = Theme::global(cx);
-                    assert_eq!(t.background, expected.canvas);
-                    assert_eq!(t.tokens.button_primary.color, expected.accent);
-                    assert_eq!(t.danger_foreground, expected.on_status);
-                    // #3147: Reader headings follow the theme's heading colour.
-                    let heading = tokens(theme, mode == ThemeMode::Dark).1.heading;
-                    assert_ne!(heading, expected.text);
-                    // #3153: per level, with `heading` as the fallback.
-                    let levels = tokens(theme, mode == ThemeMode::Dark).1.headings;
-                    assert_eq!(crate::reader_text_style(t).heading_colors, levels.map(Some));
-                    // #3154: the Reader draws the theme's decoration slots.
-                    assert_eq!(
-                        crate::reader_text_style(t).decorations,
-                        tokens(theme, mode == ThemeMode::Dark).1.decorations
-                    );
-                }
-            }
-        });
     }
 
     #[gpui::test]
