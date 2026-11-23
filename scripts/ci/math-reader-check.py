@@ -18,7 +18,7 @@ def run(name, *args):
 
 
 def main():
-    path = ROOT / 'crates/okilum-shell/src/main.rs'
+    path = ROOT / 'crates/okilum-shell/src/reader_markdown.rs'
     original = path.read_bytes()
     try:
         text = original.decode()

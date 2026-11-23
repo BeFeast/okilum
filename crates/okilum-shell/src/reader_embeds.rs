@@ -1,5 +1,6 @@
 //! Quiet block embeds; source identity stays in the click target, not the label.
 use super::*;
+use crate::reader_markdown::Embed;
 use okilum_core::render::block_embed::Status;
 
 pub(super) fn explanation(status: Status) -> &'static str {
