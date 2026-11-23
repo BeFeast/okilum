@@ -1,0 +1,5 @@
+version: 1
+workflow: [epic, knowledge, test, runbook, legacy]
+domains:
+  Dev: [dev, rust]
+  Health: [health, sleep]

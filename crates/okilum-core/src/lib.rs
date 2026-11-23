@@ -62,6 +62,7 @@ pub mod projects;
 pub mod properties;
 pub mod prose;
 pub mod quick_open;
+pub mod records;
 pub mod reminder_append;
 pub mod reminder_context;
 pub mod reminder_dates;

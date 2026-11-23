@@ -1,0 +1,130 @@
+# @Schema/frontmatter-schema.yaml
+#
+# Authoritative MACHINE contract for note frontmatter across the whole vault.
+# The human explanation lives in /@Conventions.md ("Frontmatter Minimum").
+# EDIT HERE FIRST, then mirror prose in @Conventions.md.
+#
+# Consumed by @Schema/validate-frontmatter.py (report-only by default).
+#
+# Agent-native rationale (BuilderIO/agent-native, "Actions"): one definition is
+# BOTH the contract an agent reads AND the check a validator enforces, so the
+# rule and the check can never drift apart. This file is that single definition
+# for note metadata.
+version: 1
+
+# Severity model:
+#   ERROR = the note is malformed for tooling/agents -> gates the fleet nightly
+#           when run with --strict (no/garbled frontmatter, no type, bad date).
+#   WARN  = drift / cleanup backlog -> tracked and visible, never blocks.
+# A note with no `type:` is unusable to the type registry, so it is the one
+# missing field that is an ERROR. `updated`/`tags` are a large legacy backlog
+# and are WARN; fix them over time without ever failing the gate.
+required_error: [type]
+required_warn: [updated, tags]
+
+# These checks are calibrated to WARN (real but non-blocking drift):
+per_type_requires_severity: warn   # e.g. project missing `status`, digest-topic missing `sources`
+area_off_list_severity: warn       # finer-grained sub-area values (AI-Agents, Tools, Providers, ...)
+unknown_type_severity: warn        # owned by the per-domain type registry (P1-G)
+
+# `title:` is intentionally NOT required: the first H1 is the display title
+# (see AGENTS.md). A present `title:` is legacy-tolerated and never flagged.
+
+# These fields, WHEN PRESENT, must be ISO dates (YYYY-MM-DD). `verified:` is
+# introduced by P1-D; declaring it here keeps both validators honest.
+date_fields: [created, updated, verified]
+
+# Optional project routing metadata on a domain/area/project index or target note:
+# project_mode: code | knowledge | hybrid (workflow hint, independent of type)
+# aliases: YAML list of alternative selector names
+# related_to: quoted wikilink or YAML list of quoted wikilinks; relationships
+# do not auto-load another context or authorize work there. State read conditions
+# in the note body. These fields are optional, not validator-enforced enums.
+
+# Optional, RECOMMENDED for runbook / digest-topic / area-inventory: a <40-word
+# `when:` trigger ("what this covers AND when to read it"), surfaced in @index.md
+# tables (progressive disclosure). Not required, not flagged when absent.
+recommended_when_types: [runbook, digest-topic, area-inventory]
+
+# Canonical domain values for `area:`. `area:` is optional, but if present and
+# off this list it is an ERROR.
+areas: [AI, Business, Dev, Finance, Health, HomeLab, Life, Music, SAP, Video]
+
+# Known note types and the EXTRA fields each requires (beyond required_always).
+# An UNKNOWN type is a WARNING here, not an error: the closed per-domain enum is
+# owned by the domain type registry (e.g. HomeLab/_meta/type-registry.yaml, P1-G).
+# This file only guarantees the cross-vault minimum + per-type required fields.
+types:
+  # Canonical lifecycle types (per @Conventions.md):
+  project:        { requires: [area, status] }
+  area-inventory: { requires: [area] }
+  runbook:        { requires: [area] }
+  digest-topic:   { requires: [area, sources] }
+  incident:       { requires: [area] }
+  archive:        { requires: [] }
+  meta:           { requires: [] }
+  # Established cross-vault types (so the `unknown type` WARN flags only true
+  # one-offs; per-domain registries like HomeLab/_meta/type-registry.yaml may
+  # narrow these further):
+  note:           { requires: [] }
+  stack:          { requires: [] }
+  handover:       { requires: [] }
+  reference:      { requires: [] }
+  research:       { requires: [] }
+  guide:          { requires: [] }
+  comparison:     { requires: [] }
+  spec:           { requires: [] }
+  prd:            { requires: [] }
+  idea:           { requires: [area, status] }
+  hardware-spec:  { requires: [] }
+  summary:        { requires: [] }
+  transcript:     { requires: [] }
+  weekly-synthesis: { requires: [] }
+  project-digest: { requires: [] }
+  moc:            { requires: [] }
+
+# In Archive, a missing `type:` is downgraded to WARN (legacy material),
+# never an ERROR.
+archive_glob: "**/Archive/**"
+
+# Paths that are NOT knowledge notes -> skipped entirely. gitignore-style:
+#   PREFIX/**   matches PREFIX and everything under it
+#   **/NAME     matches NAME in any directory
+#   **/X/**     matches any path passing through a directory named X
+ignore_globs:
+  - "@Assets/**"
+  - "_Assets/**"  # legacy-underscore: pre-2026-11 name
+  - "Daily/**"  # moved out of the old assets folder in 2026-11: same validator scope as before
+  - "@Assets/Clippings/**"
+  - "AI/Archive/email-triage/**"
+  - ".obsidian/**"
+  - "**/.claude/**"
+  - "**/.agents/**"
+  - ".git/**"
+  - ".trash/**"
+  - "@Schema/**"
+  - "_Schema/**"  # legacy-underscore
+  - "**/attachments/**"
+  - "**/Attachments/**"
+  - "**/node_modules/**"
+  - "**/buildout/**"
+  - "**/AGENTS.md"
+  - "**/CLAUDE.md"
+  - "**/GEMINI.md"
+  - "**/ANTIGRAVITY.md"
+  - "**/CONTEXT.md"
+  - "**/.codex/**"
+  - "**/.cursor/**"
+  - "**/.windsurf/**"
+  - "**/.xref/**"
+  - "**/@index.md"
+  - "**/@Index.md"
+  - "**/@Conventions.md"
+  - "**/@AgentContract.md"
+  - "**/_index.md"  # legacy-underscore
+  - "**/_Index.md"  # legacy-underscore
+  - "**/_Conventions.md"  # legacy-underscore
+  - "**/_AgentContract.md"  # legacy-underscore
+  - "**/README.md"
+  - "**/Kanban Board.md"
+  - "**/Tasks Dashboard.md"

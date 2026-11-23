@@ -1,0 +1,187 @@
+# @Schema/layout.yaml
+#
+# Placement contract: where every vault file belongs in the lifecycle layout.
+# Read by the `brain-layout` crate (BeFeast/brain-gardener), which serves the
+# `brain` write CLI and the gardener. One definition, two consumers: the CLI
+# computes the path of a new note from it, the gardener computes the target of
+# an existing note from it (observation mode logs the difference).
+#
+# Decisions: AI/Projects/2026-11-second-brain-v3/@index.md, «24.11 ~00:40»;
+# design «Gardener design A (Fable 5.2)», section A.
+version: 1
+
+# The `brain` CLI writes notes only when this is true. The vault still uses the
+# PARA layout, so writing the target layout now would mix two trees.
+rollout:
+  cli_writes: false
+
+# Target lifecycle tree. Placeholders: {channel} {yyyy} {mm} {dd} {practice}
+# {domain} {context} {kind} {date} {slug}; {rest} is the path kept below the
+# placement point (file name, or sub-folders + file name).
+layers:
+  inbox:     "inbox/{rest}"                                   # flat dump until triage
+  sources:   "sources/{channel}/{yyyy}/{mm}/{dd}/{rest}"      # body immutable
+  knowledge: "knowledge/{practice}.md"                        # flat practice pages, edits via proposals
+  state:     "state/{domain}/{context}/{rest}"                # current truth, no dated names
+  log:       "log/{domain}/{context}/{kind}/{date}-{slug}.md" # dated entries; `final` keeps names
+  views:     "@views/{rest}"                                  # generated, rendered by Okilum
+  schema:    "@Schema/{rest}"                                 # contracts and validators
+
+# ---- Closed lists -----------------------------------------------------------
+
+channels: [video, web, telegram, files]
+
+kinds: [decisions, handovers, reports, incidents, specs, research, daily, final]
+
+# Domains = `areas` in frontmatter-schema.yaml, same order. The loader fails
+# when the two lists drift. `dir` is the path segment under state/ and log/.
+domains:
+  - { area: AI,       dir: ai }
+  - { area: Business, dir: business }
+  - { area: Dev,      dir: dev }
+  - { area: Finance,  dir: finance }
+  - { area: Health,   dir: health }
+  - { area: HomeLab,  dir: homelab }
+  - { area: Life,     dir: life }
+  - { area: Music,    dir: music }
+  - { area: SAP,      dir: sap }
+  - { area: Video,    dir: video }
+
+# Off-list `area:` values seen in notes -> domain (case-insensitive match).
+area_aliases:
+  AI-Agents: AI
+  Providers: AI
+  Tools: AI
+  Omarchy: HomeLab
+  Services: HomeLab
+  Hardware: HomeLab
+  Network: HomeLab
+  Storage: HomeLab
+  Security: HomeLab
+  scribe-service: Dev
+  Performance-Management: Life
+  Work: SAP
+  stock trading: Finance
+  Music/Studio: Music
+
+# Context for domain-wide notes that belong to no project or area.
+default_context: common
+
+# A dated entry whose kind comes from neither its folder nor its type.
+default_kind: reports
+
+# ---- Placement by `type` ------------------------------------------------------
+# Order of decision (brain-layout `place`):
+#   1. type -> sources / knowledge / views: that layer.
+#   2. kind `final` (archive) -> log/<d>/<c>/final/, file name kept.
+#   3. date in file name (leading YYYY-MM-DD, or trailing -YYYY-MM-DD which is
+#      moved to the front) -> log; kind from folder, then type, then default_kind.
+#      A dated folder (YYYY-MM-DD-...) is one entry (bundle): all its files go
+#      together; kind from folders, then a kind word in the bundle name, then
+#      default_kind (never the member's own type).
+#   4. type with a log kind but no date in the name -> log, named
+#      <facts.date>-<name>; no known date -> unplaceable.
+#   5. otherwise -> state/<domain>/<context>/.
+#   No domain at all -> inbox/.
+# Types are matched case-insensitively after `type_aliases`. An unknown type is
+# placed like `note` (rule `unknown-type`); the frontmatter validator warns.
+type_aliases:
+  handoff: handover
+  planning: plan
+  decision-log: decision
+  ops-note: ops
+  project-note: note
+  project-log: report
+
+types:
+  # state: current truth
+  project: state
+  project-state: state
+  state: state
+  idea: state
+  area-inventory: state
+  inventory: state
+  runbook: state
+  playbook: state
+  guide: state
+  stack: state
+  reference: state
+  hardware-spec: state
+  infrastructure: state
+  tool: state
+  convention: state
+  ops: state
+  note: state
+  meta: state
+  moc: state
+  pointer: state
+  redirect: state
+  template: state
+  prompt: state
+  agent-prompt: state
+  explanation: state
+  vision: state
+  strategy: state
+  roadmap: state
+  venture: state
+  # log: dated entries
+  decision:   { layer: log, kind: decisions }
+  handover:   { layer: log, kind: handovers }
+  incident:   { layer: log, kind: incidents }
+  report:     { layer: log, kind: reports }
+  status:     { layer: log, kind: reports }
+  snapshot:   { layer: log, kind: reports }
+  verification: { layer: log, kind: reports }
+  signoff:    { layer: log, kind: reports }
+  weekly-synthesis: { layer: log, kind: reports }
+  project-digest: state           # living `Overview.md` pages, not dated entries
+  spec:       { layer: log, kind: specs }
+  prd:        { layer: log, kind: specs }
+  plan:       { layer: log, kind: specs }
+  design:     { layer: log, kind: specs }
+  design-note:  { layer: log, kind: specs }
+  design-brief: { layer: log, kind: specs }
+  design-contract: { layer: log, kind: specs }
+  design-implementation-diff: { layer: log, kind: specs }
+  research:   { layer: log, kind: research }
+  analysis:   { layer: log, kind: research }
+  benchmark:  { layer: log, kind: research }
+  comparison: { layer: log, kind: research }
+  screening:  { layer: log, kind: research }
+  evidence:   { layer: log, kind: research }
+  discussion: { layer: log, kind: research }
+  product-intake: { layer: log, kind: research }
+  daily:      { layer: log, kind: daily }
+  # archive is a transition, not a folder (decision 24.11); digest rollups are
+  # archived and replaced by practice pages (decision 23.11 #1).
+  archive:      { layer: log, kind: final }
+  digest-topic: { layer: log, kind: final }
+  # sources: immutable captures; channel from the legacy path or facts
+  summary:      { layer: sources, channel: video }
+  transcript:   { layer: sources, channel: video }
+  daily-digest: { layer: sources, channel: video }
+  clipping:     { layer: sources, channel: web }
+  # knowledge and views (new types, introduced with the re-layout)
+  practice: knowledge
+  view: views
+
+# Folder names inside a context that name a log kind (case-insensitive).
+kind_folders:
+  decisions: decisions
+  handovers: handovers
+  handoffs: handovers
+  sessions: handovers
+  reports: reports
+  snapshots: reports
+  audits: reports
+  incidents: incidents
+  specs: specs
+  planning: specs
+  plans: specs
+  design: specs
+  design-artifacts: specs
+  research: research
+  comparisons: research
+  benchmarks: research
+  daily: daily
+  archive: final

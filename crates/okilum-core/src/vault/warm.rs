@@ -864,12 +864,14 @@ impl Snapshot {
             .collect()
     }
 
+    /// Decode one canonical source, preserving its bytes for revision-aware projections.
+    pub fn source_bytes(&self, path: &str) -> Option<Vec<u8>> {
+        STANDARD.decode(&self.sources.get(path)?.bytes).ok()
+    }
+
     /// Decode only the selected primary note for the first usable Reader frame.
     pub fn source(&self, path: &str) -> Option<String> {
-        Some(
-            String::from_utf8_lossy(&STANDARD.decode(&self.sources.get(path)?.bytes).ok()?)
-                .into_owned(),
-        )
+        Some(String::from_utf8_lossy(&self.source_bytes(path)?).into_owned())
     }
 
     pub fn save(&self, base: &Path) -> Result<()> {

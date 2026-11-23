@@ -3,6 +3,9 @@ use comrak::{nodes::NodeValue, parse_document, Arena};
 use std::{cmp::Ordering, collections::BTreeMap, sync::Arc};
 use time::{Date, Duration};
 
+mod metadata;
+pub use metadata::{Issue as MetadataIssue, IssueKind as MetadataIssueKind, Metadata};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Task {
     pub path: String,
@@ -18,6 +21,7 @@ pub struct Task {
     pub start: Option<Date>,
     pub done: Option<Date>,
     pub priority: u8,
+    pub metadata: Metadata,
 }
 
 fn date(s: &str) -> Option<Date> {
@@ -27,11 +31,6 @@ fn date(s: &str) -> Option<Date> {
     )
     .ok()
 }
-fn metadata(text: &str, marker: char) -> Option<Date> {
-    text.split_once(marker)
-        .and_then(|(_, tail)| date(tail.split_whitespace().next()?))
-}
-
 pub fn parse(path: &str, source: &str) -> Vec<Task> {
     if !["[ ]", "[x]", "[X]"]
         .iter()
@@ -44,9 +43,18 @@ pub fn parse(path: &str, source: &str) -> Vec<Task> {
         .bytes()
         .filter(|b| *b == b'\n')
         .count();
-    let lines: Vec<_> = body.lines().collect();
     let arena = Arena::new();
     let root = parse_document(&arena, body, &crate::render::comrak_options());
+    parse_tree(path, body, prefix_lines, root)
+}
+
+pub(crate) fn parse_tree<'a>(
+    path: &str,
+    body: &str,
+    prefix_lines: usize,
+    root: &'a comrak::nodes::AstNode<'a>,
+) -> Vec<Task> {
+    let lines: Vec<_> = body.lines().collect();
     let mut tasks = Vec::new();
     for (block, top) in root.children().enumerate() {
         for node in top.descendants() {
@@ -63,7 +71,13 @@ pub fn parse(path: &str, source: &str) -> Vec<Task> {
             let Some((_, text)) = raw.split_once(']') else {
                 continue;
             };
-            let text = text.trim().to_owned();
+            let text = text.trim();
+            let metadata = metadata::parse(
+                node,
+                text,
+                text.as_ptr() as usize - raw.as_ptr() as usize,
+                body_line,
+            );
             tasks.push(Task {
                 path: path.to_owned(),
                 line: prefix_lines + body_line,
@@ -71,15 +85,13 @@ pub fn parse(path: &str, source: &str) -> Vec<Task> {
                 body_line,
                 display: node.children().next().and_then(inline_text),
                 checked: status.is_some(),
-                due: metadata(&text, '📅'),
-                scheduled: metadata(&text, '⏳'),
-                start: metadata(&text, '🛫'),
-                done: metadata(&text, '✅'),
-                priority: [('🔺', 0), ('⏫', 1), ('🔼', 2), ('🔽', 4), ('⏬', 5)]
-                    .into_iter()
-                    .find_map(|(c, p)| text.contains(c).then_some(p))
-                    .unwrap_or(3),
-                text,
+                due: metadata.due,
+                scheduled: metadata.scheduled,
+                start: metadata.start,
+                done: metadata.done,
+                priority: metadata.priority.unwrap_or(3),
+                metadata,
+                text: text.to_owned(),
             });
         }
     }

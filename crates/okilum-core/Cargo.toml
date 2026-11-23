@@ -27,6 +27,10 @@ time = { version = "0.3", features = ["macros", "parsing", "formatting"] }
 # Sync archive stamps are local wall times (#2567). The same build okilum-shell
 # already locks; `clock` reads the system timezone database (and TZ).
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Named contract timezones must resolve identically on all index hosts.
+chrono-tz = "0.10"
+# Already used by Tantivy and the workspace; share workers across projections.
+rayon = "1"
 walkdir = "2"
 globset = "0.4.20"
 # Vault change watcher (#6). Version already in the lockfile via gpui.

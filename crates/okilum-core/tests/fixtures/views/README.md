@@ -17,7 +17,9 @@ Layout:
 - `@Schema/view.schema.json`: the Okilum view schema, draft v0.
 - `@Schema/fields.yaml`: copy of the Gardener assistant's field contract
   (version 1-draft) from the vault's `@Schema/`, with the host name and local
-  address replaced by generic placeholders.
+  address replaced by generic placeholders. The referenced layout copy omits
+  the PARA mapping. The frontmatter schema and a synthetic tag vocabulary
+  complete the fixture contract.
 - `@Schema/tests/view-invalid/`: 9 views the schema must reject. They sit under
   `@Schema/`, which view queries exclude, so they never become rows and a
   directory validation of `@views/` stays clean. `set-on-task.md` also covers

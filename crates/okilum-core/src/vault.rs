@@ -1737,6 +1737,19 @@ impl Vault {
         self.backlink_map.get(rel).cloned().unwrap_or_default()
     }
 
+    pub(crate) fn resolved_backlink_count(&self, rel: &str) -> usize {
+        let graph = self.published_graph();
+        let incoming = match &graph {
+            Some(graph) => graph.backlinks.get(rel),
+            None => self.backlink_map.get(rel),
+        };
+        incoming
+            .into_iter()
+            .flatten()
+            .filter(|link| !link.ambiguous)
+            .count()
+    }
+
     pub fn note_title(&self, rel: &str) -> String {
         Self::title_of(rel)
     }

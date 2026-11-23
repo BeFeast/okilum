@@ -48,6 +48,15 @@ pub fn frontmatter_block(source: &str) -> Option<&str> {
 /// yields `Err` with the parser's message so the caller can say so instead
 /// of showing nothing.
 pub fn parse(yaml: &str) -> Result<Vec<Property>, String> {
+    parse_with(yaml, false)
+}
+
+/// Keep the YAML scalar type and exact timestamp for contract coercion.
+pub(crate) fn parse_for_records(yaml: &str) -> Result<Vec<Property>, String> {
+    parse_with(yaml, true)
+}
+
+fn parse_with(yaml: &str, for_records: bool) -> Result<Vec<Property>, String> {
     if yaml.trim().is_empty() {
         return Ok(Vec::new());
     }
@@ -58,7 +67,7 @@ pub fn parse(yaml: &str) -> Result<Vec<Property>, String> {
     // Numbers are shown as written (`1.10`, `0x1F`), not re-serialized.
     let written: std::collections::HashMap<&str, &str> = yaml
         .lines()
-        .filter(|line| !line.starts_with([' ', '\t', '#', '-']))
+        .filter(|line| !for_records && !line.starts_with([' ', '\t', '#', '-']))
         .filter_map(|line| line.split_once(':'))
         .map(|(key, raw)| (key.trim().trim_matches(['"', '\'']), raw.trim()))
         .collect();
@@ -77,7 +86,7 @@ pub fn parse(yaml: &str) -> Result<Vec<Property>, String> {
                             .map(|raw| (*raw).to_owned())
                             .unwrap_or_else(|| n.to_string()),
                     ),
-                    other => convert(other),
+                    other => convert_with(other, for_records),
                 }
             };
             Property { key, value }
@@ -177,19 +186,27 @@ fn scalar_text(value: &Value) -> String {
     }
 }
 
-fn convert(value: Value) -> PropertyValue {
+fn convert_with(value: Value, for_records: bool) -> PropertyValue {
     match value {
         Value::Null => PropertyValue::Empty,
         Value::Bool(b) => PropertyValue::Bool(b),
         Value::Number(n) => PropertyValue::Number(n.to_string()),
-        Value::String(s) => classify(&s),
+        Value::String(s) => match classify(&s) {
+            PropertyValue::Date { .. } if for_records => PropertyValue::Text(s.trim().to_owned()),
+            value => value,
+        },
         Value::Sequence(items) => {
             if let Some(link) = unquoted_link(&items) {
                 return link;
             }
-            PropertyValue::List(items.into_iter().map(convert).collect())
+            PropertyValue::List(
+                items
+                    .into_iter()
+                    .map(|value| convert_with(value, for_records))
+                    .collect(),
+            )
         }
-        Value::Tagged(tagged) => convert(tagged.value),
+        Value::Tagged(tagged) => convert_with(tagged.value, for_records),
         mapping @ Value::Mapping(_) => PropertyValue::Text(scalar_text(&mapping)),
     }
 }
