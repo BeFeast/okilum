@@ -253,6 +253,7 @@ mod reader_typed_view;
 mod reader_ui_state;
 mod reader_untitled;
 mod reader_update_restart;
+mod reader_view_query;
 mod reader_welcome;
 mod search_label;
 #[cfg(any(unix, windows))]
@@ -787,6 +788,8 @@ struct Reader {
     )>,
     inbox: Vec<reader_sidebar::InboxItem>,
     projects: Arc<okilum_core::projects::Index>,
+    view_query_index: Option<reader_view_query::Index>,
+    view_query_generation: u64,
     workbench: Arc<okilum_core::workbench::Index>,
     workbench_ready: Option<Arc<okilum_core::workbench::Index>>,
     workbench_pending: u64,

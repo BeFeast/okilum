@@ -115,6 +115,7 @@ impl Reader {
         let hold = self.incremental_hold.take();
         let mut tasks = self.tasks_index.clone().unwrap_or_default();
         let projects = self.projects.clone();
+        let view_query = self.view_query_index.clone();
         let workbench = self.workbench.clone();
         let previous_vault = self.vault.clone();
         let previous_titles = self.backlink_titles.clone();
@@ -137,6 +138,7 @@ impl Reader {
             for path in &view_paths { projects.replace_snapshot(&state.snapshot, path); }
             projects.refresh();
             let projects = Arc::new(projects);
+            let view_query = reader_view_query::update_index(view_query, &state.vault.root, &state.snapshot, &batch, &worker_changes);
             let mut workbench = (*workbench).clone();
             reader_workbench::update_index(&mut workbench, &state.snapshot, &batch.removed, &view_paths);
             let workbench = Arc::new(workbench);
@@ -198,7 +200,7 @@ impl Reader {
             if let Some(trace) = &worker_trace {
                 trace.event("incremental_update", serde_json::json!({"directory_hints":worker_changes.directories.len(), "topology_changed":batch.topology_changed, "changed": batch.changed.len(), "removed": batch.removed.len(), "read": batch.read, "affected": batch.affected.len(), "source_graph_ms":source_ms, "duration_ms":start.elapsed().as_secs_f64()*1000.}));
             }
-            Ok::<_, anyhow::Error>((state, tasks, projects, workbench, searcher, sources, titles, batch, published, inventory,
+            Ok::<_, anyhow::Error>((state, tasks, projects, view_query, workbench, searcher, sources, titles, batch, published, inventory,
                 { #[cfg(any(unix, windows))] { candidates } #[cfg(not(any(unix, windows)))] { None::<()> } }))
         });
         cx.spawn_in(window, async move |this, cx| {
@@ -219,6 +221,7 @@ impl Reader {
                             state,
                             tasks,
                             projects,
+                            view_query,
                             workbench,
                             searcher,
                             sources,
@@ -249,6 +252,7 @@ impl Reader {
                             #[cfg(any(unix, windows))]
                             this.reminder_tick(cx);
                             this.projects = projects;
+                            this.publish_view_query(view_query, cx);
                             this.publish_workbench(workbench, cx);
                             let graph_changed = !Arc::ptr_eq(&this.vault, &published) || this.vault_publication_revision != published.publication_identity();
                             this.vault_publication_revision = published.publication_identity();

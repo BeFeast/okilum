@@ -77,6 +77,27 @@ pub struct ViewResult {
     pub(super) parts: Vec<Part>,
 }
 
+/// Presentation order, including Markdown between executable sections.
+pub enum ViewPart<'a> {
+    Markdown(&'a str),
+    Section {
+        heading: &'a str,
+        section: &'a Section,
+    },
+}
+
+impl ViewResult {
+    pub fn parts(&self) -> impl Iterator<Item = ViewPart<'_>> {
+        self.parts.iter().map(|part| match part {
+            Part::Markdown(markdown) => ViewPart::Markdown(markdown),
+            Part::Section { index, heading } => ViewPart::Section {
+                heading,
+                section: &self.sections[*index],
+            },
+        })
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct ViewIdentity {
     pub path: String,

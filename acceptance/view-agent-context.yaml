@@ -1,0 +1,18 @@
+# Launch Agent context on the shared vault. State shows the Next excerpt,
+# and a semantic section without a provider or snapshot shows Unavailable.
+vault: crates/okilum-core/tests/fixtures/views
+open: "@views/agent-context.md"
+appearance: light
+preferences:
+  note_open_mode: read
+region: [265, 90, 840, 645]
+ready_text: Read top to bottom
+steps:
+  - id: state-next
+    text: Freeze the views contract with the gardener.
+  - id: for-the-task-unavailable
+    keys: [End]
+    mods: [ctrl]
+    text: Unavailable
+  - id: near-diagnostic
+    text: near needs the search service

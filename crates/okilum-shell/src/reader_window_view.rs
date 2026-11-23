@@ -657,6 +657,8 @@ impl Reader {
 
     pub(super) fn render_main(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.pane.typed_navigation.active.set(false);
+        self.pane.query_navigation.active.borrow_mut().take();
+        self.pane.query_navigation.pending.set(false);
         if let Some(preview) = self.render_tree_quick_look() {
             return preview;
         }
@@ -1758,15 +1760,17 @@ impl Reader {
             .on_action(cx.listener(|this, _: &ListNext, window, cx| this.list_move(1, window, cx)))
             .on_action(cx.listener(|this, _: &ListPrev, window, cx| this.list_move(-1, window, cx)))
             .on_action(cx.listener(|this, _: &ScrollTop, _, cx| {
-                this.pane
-                    .content
+                this.visible_markdown()
                     .read(cx)
                     .list_state()
                     .scroll_to_reveal_item(0);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ScrollBottom, _, cx| {
-                this.pane.content.read(cx).list_state().scroll_to_end();
+                this.visible_markdown()
+                    .read(cx)
+                    .list_state()
+                    .scroll_to_end();
                 cx.notify();
             }))
             .bg(cx.theme().background)

@@ -266,6 +266,8 @@ impl Reader {
             hover_revision: None,
             inbox: Vec::new(),
             projects: Arc::default(),
+            view_query_index: None,
+            view_query_generation: 0,
             workbench: Arc::default(),
             workbench_ready: None,
             workbench_pending: 0,
@@ -781,8 +783,7 @@ impl Reader {
         } else if let Some(preview) = &self.pane.file_preview {
             preview.focus(&self.focus_handle, window, cx);
         } else {
-            self.pane
-                .content
+            self.visible_markdown()
                 .read(cx)
                 .focus_handle()
                 .clone()

@@ -9,7 +9,7 @@ pub use parse::{parse, validate, Show, ViewDoc};
 pub use render::{render_json, render_markdown};
 pub use run::{
     coverage, run, Coverage, Group, Index, NearProvider, Row, RunContext, Section, Status,
-    TreeNode, ViewIdentity, ViewResult,
+    TreeNode, ViewIdentity, ViewPart, ViewResult,
 };
 
 use serde::Serialize;

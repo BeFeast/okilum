@@ -21,8 +21,13 @@ pub const TASKS: Descriptor = Descriptor {
     version: 1,
 };
 
+pub const QUERY: Descriptor = Descriptor {
+    id: "query",
+    version: 1,
+};
+
 pub fn builtin(id: &str) -> Option<Descriptor> {
-    (id == TASKS.id).then_some(TASKS)
+    [TASKS, QUERY].into_iter().find(|view| view.id == id)
 }
 
 /// App-owned preferences, never read from special definition files in a vault.
@@ -63,8 +68,12 @@ pub fn select(source: &str, mappings: &TypeMappings) -> Selection {
         frontmatter
             .get("type")
             .and_then(Value::as_str)
-            .and_then(|kind| mappings.get(kind))
-            .map(String::as_str)
+            .and_then(|kind| {
+                mappings
+                    .get(kind)
+                    .map(String::as_str)
+                    .or_else(|| (kind == "view").then_some(QUERY.id))
+            })
     };
     match id {
         None => Selection::Markdown,
@@ -139,6 +148,21 @@ pub fn tasks_sections(source: &str, today: Date) -> Result<Vec<TasksSection>, St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn query_mapping_is_builtin_and_user_overridable() {
+        let source = "---\ntype: view\n---\n";
+        let mappings = TypeMappings::from([("view".into(), "tasks".into())]);
+        assert_eq!(
+            select(source, &TypeMappings::new()),
+            Selection::Native(QUERY)
+        );
+        assert_eq!(select(source, &mappings), Selection::Native(TASKS));
+        assert_eq!(
+            select("---\ntype: view\nview: query\n---\n", &mappings),
+            Selection::Native(QUERY)
+        );
+    }
 
     #[test]
     fn explicit_override_wins_and_invalid_overrides_never_use_mapping() {

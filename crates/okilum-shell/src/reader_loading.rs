@@ -2682,6 +2682,12 @@ impl Reader {
         self.incremental_state = None;
         self.tasks_index = None;
         self.projects = Arc::default();
+        let retired_query = self.view_query_index.take();
+        cx.background_executor()
+            .spawn(async move {
+                drop(retired_query);
+            })
+            .detach();
         self.workbench = Arc::default();
         self.workbench_ready = None;
         self.workbench_pending = self.workbench_pending.wrapping_add(1);
@@ -3088,20 +3094,22 @@ impl Reader {
                                 let index_task = cx.background_executor().spawn(async move {
                                     let tasks = reader_tasks::from_snapshot(&move_snapshot);
                                     let projects = Arc::new(okilum_core::projects::Index::from_snapshot(&move_snapshot));
+                                    let view_query = reader_view_query::load_index(&state_vault.root, &move_snapshot);
                                     let workbench = reader_workbench::from_snapshot(&move_snapshot, &state_vault.root);
                                     let state = okilum_core::vault::warm::incremental::State::new((*state_vault).clone(), *move_snapshot);
                                     #[cfg(any(unix, windows))]
                                     let candidates = state.candidates.clone();
                                     let sources = if shared_publication { reader_publication::snapshot_sources(&state) } else { Arc::default() };
-                                    (state, tasks, projects, workbench, sources, { #[cfg(any(unix, windows))] { Some(candidates) } #[cfg(not(any(unix, windows)))] { None::<()> } })
+                                    (state, tasks, projects, view_query, workbench, sources, { #[cfg(any(unix, windows))] { Some(candidates) } #[cfg(not(any(unix, windows)))] { None::<()> } })
                                 });
                                 cx.spawn(async move |this, cx| {
-                                    let (state, tasks, projects, workbench, sources, candidates) = index_task.await;
+                                    let (state, tasks, projects, view_query, workbench, sources, candidates) = index_task.await;
                                     let _ = this.update(cx, |this, cx| {
                                         if this.vault_root == index_root && this.incremental_epoch == epoch
                                             && this.loading.as_ref().map(|load| load.generation) == generation {
                                             this.tasks_index = Some(tasks);
                                             this.projects = projects;
+                                            this.publish_view_query(view_query, cx);
                                             this.publish_workbench(workbench, cx);
                                             this.incremental_state = Some(state);
                                             this.incremental_initializing = false;

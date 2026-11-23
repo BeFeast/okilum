@@ -1,0 +1,59 @@
+# Launch What's new with one recent and one old knowledge note. The recent
+# note appears under its local day, the old one is filtered, and the log shows messages.
+vault: crates/okilum-core/tests/fixtures/views
+mtime:
+  knowledge/sleep-hygiene.md: 2
+  knowledge/rust-error-handling.md: 30
+  state/dev/common/conventions.md: 30
+  state/dev/okilum/index.md: 30
+  state/dev/okilum/questions.md: 30
+  state/dev/okilum/roadmap.md: 30
+  state/dev/tasker/index.md: 30
+  state/dev/tasker/questions.md: 30
+  state/dev/tasker/roadmap.md: 30
+  state/finance/budget/index.md: 30
+  state/health/sleep-tracking/index.md: 30
+  state/homelab/backups/index.md: 30
+  state/homelab/backups/runbook.md: 30
+jsonl_latest_days_ago:
+  "@views/changes.jsonl": 1
+open: "@views/whats-new.md"
+appearance: light
+preferences:
+  note_open_mode: read
+region: [265, 90, 840, 645]
+ready_text: Notes in state and knowledge
+steps:
+  - id: recent-note
+    text: Sleep hygiene
+    text_absent: Rust error handling
+  - id: recent-day
+    text: "{mtime_day:knowledge/sleep-hygiene.md}"
+  - id: gardener-log
+    text: filled updated from git
+  - id: note-refresh
+    vault_replace:
+      path: knowledge/sleep-hygiene.md
+      before: Sleep hygiene
+      after: Sleep routine
+    text: Sleep routine
+  - id: log-refresh
+    vault_replace:
+      path: "@views/changes.jsonl"
+      before: filled updated from git
+      after: refreshed after an external change
+    text: refreshed after an external change
+  - id: display-fallback
+    vault_replace:
+      path: "@views/whats-new.md"
+      before: "show: list"
+      after: "show: cards"
+    text: Cards shown as table
+  - id: invalid-section
+    vault_replace:
+      path: "@views/whats-new.md"
+      before: "show: cards"
+      after: "show: unknown"
+    text: Section error
+  - id: log-survives-invalid-section
+    text: refreshed after an external change

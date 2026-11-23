@@ -92,6 +92,7 @@ pub(super) fn outline(reader: &Reader, cx: &mut Context<Reader>) -> Option<AnyEl
 enum View {
     Markdown,
     Tasks(Arc<layout::Dashboard>),
+    Query,
     Fallback(String),
 }
 
@@ -125,6 +126,7 @@ impl Cached {
         let view = match typed_view::select(&source, &preferences.mappings) {
             Selection::Markdown => View::Markdown,
             Selection::Fallback(reason) => View::Fallback(reason),
+            Selection::Native(typed_view::QUERY) => View::Query,
             Selection::Native(_) => match layout::parse(&source, today, preferences.tasks) {
                 Ok(dashboard) => View::Tasks(Arc::new(dashboard)),
                 Err(reason) => View::Fallback(reason),
@@ -180,7 +182,7 @@ pub(super) fn render(
     );
     let (view, changed, initial) = cache.update(cx, |cached, _| {
         let initial = cached.source.is_empty();
-        let changed = cached.refresh(source, preferences, today);
+        let changed = cached.refresh(source.clone(), preferences, today);
         (cached.view.clone(), changed, initial)
     });
     if initial && on_overdue {
@@ -188,6 +190,7 @@ pub(super) fn render(
     }
     let dashboard = match view {
         View::Markdown => return None,
+        View::Query => return reader_view_query::render(reader, source, window, cx),
         View::Fallback(reason) => {
             if changed {
                 reader_toast::transient(reason, window, cx);

@@ -139,8 +139,7 @@ impl Reader {
     ) {
         let Some(editing) = &self.pane.editing else {
             self.scroll_to_block(heading.target.block, cx);
-            self.pane
-                .content
+            self.visible_markdown()
                 .read(cx)
                 .focus_handle()
                 .clone()

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Small data-driven Linux acceptance runner, using the existing Wayland rig."""
 import argparse
+from datetime import datetime, timedelta
 import hashlib
 import json
 import os
@@ -12,6 +13,7 @@ import sys
 import tempfile
 import time
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -176,10 +178,35 @@ def apply_mtimes(vault, specs, result):
         os.utime(target, (stamp, stamp))
         actual = target.stat().st_mtime
         require(abs(actual - stamp) < 2, f'mtime not applied to {name}: {actual} != {stamp}')
-        applied[name] = {'days_ago': days, 'age_days_observed': round((now - actual) / 86400, 3)}
+        day = datetime.fromtimestamp(actual, ZoneInfo('Asia/Jerusalem')).date().isoformat()
+        applied[name] = {'days_ago': days, 'age_days_observed': round((now - actual) / 86400, 3),
+                         'jerusalem_day': day}
         print(f'verify: mtime {name} = {days} days ago (observed {applied[name]["age_days_observed"]})', flush=True)
     if applied:
         result['vault_mtimes'] = applied
+
+
+def rebase_jsonl_dates(vault, specs):
+    """Move fixture timestamps together so their latest row is the given age."""
+    for name, days in specs.items():
+        target = (vault / name).resolve()
+        require(target.is_relative_to(vault), f'JSONL path must stay inside the vault: {name}')
+        rows = [json.loads(line) for line in target.read_text().splitlines() if line.strip()]
+        stamps = [datetime.fromisoformat(row['ts']) for row in rows]
+        latest = max(stamps)
+        shift = datetime.now(latest.tzinfo) - timedelta(days=days) - latest
+        for row, stamp in zip(rows, stamps):
+            row['ts'] = (stamp + shift).isoformat(timespec='seconds')
+        target.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+
+
+def replace_vault_text(vault, spec):
+    target = (vault / spec['path']).resolve()
+    require(target.is_relative_to(vault), f'Path must stay inside the vault: {spec["path"]}')
+    source = target.read_text()
+    before = spec['before']
+    require(before and source.count(before) == 1, f'Expected one match in {spec["path"]}: {before!r}')
+    target.write_text(source.replace(before, spec['after'], 1))
 
 
 def condition(path, rule, default_region):
@@ -343,7 +370,12 @@ def run(args, scenario, output, result):
             (vault / 'scenario.md').write_text(scenario['note'])
         copy_vault_fixture(vault, scenario.get('vault'))
         write_fixtures(vault, scenario.get('generate', ()))
+        rebase_jsonl_dates(vault, scenario.get('jsonl_latest_days_ago', {}))
         apply_mtimes(vault, scenario.get('mtime', {}), result)
+        for step in scenario['steps']:
+            if 'text' in step:
+                for name, mtime in result.get('vault_mtimes', {}).items():
+                    step['text'] = step['text'].replace('{mtime_day:' + name + '}', mtime['jerusalem_day'])
         frames_dir = root / 'frames'
         frames_dir.mkdir()
         outside_file = root / 'outside' / 'External note.md'
@@ -407,11 +439,21 @@ def run(args, scenario, output, result):
                             rig.keys(*step['keys'], mods=step.get('mods', ()))
                         if 'click' in step:
                             rig.click(*step['click'])
+                        if 'vault_replace' in step:
+                            replace_vault_text(vault, step['vault_replace'])
                         time.sleep(step.get('wait', .4))
                         rig.shot(shot)
-                    if 'max_ms' not in step and 'text' in step:
+                        if 'vault_replace' in step:
+                            deadline = time.monotonic() + 10
+                            while time.monotonic() < deadline and not condition(shot, step, scenario['region'])[0]:
+                                time.sleep(.2)
+                                rig.shot(shot)
+                    if ('max_ms' not in step and 'text' in step) or 'text_absent' in step:
                         check['text'] = text(shot, step.get('region', scenario['region']))
-                        require(step['text'] in check['text'], check)
+                        if 'max_ms' not in step and 'text' in step:
+                            require(step['text'] in check['text'], check)
+                        if 'text_absent' in step:
+                            require(step['text_absent'] not in check['text'], check)
                     if 'max_ms' not in step and 'pixels' in step:
                         rule = step['pixels']
                         check['pixels'] = pixels(shot, rule['region'], rule['expression'])

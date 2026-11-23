@@ -208,7 +208,11 @@ impl Reader {
         }
         // Focus inside the table overlay returns to the document when a link
         // in the overlay navigates (#368).
-        let content_had_focus = self.pane.content.read(cx).focus_handle().is_focused(window)
+        let content_had_focus = self
+            .visible_markdown()
+            .read(cx)
+            .focus_handle()
+            .is_focused(window)
             || self.pane.table_overlay.as_ref().is_some_and(|overlay| {
                 overlay.read(cx).focus_handle().contains_focused(window, cx)
             });
@@ -285,6 +289,7 @@ impl Reader {
             .map(okilum_core::properties::parse)
             .unwrap_or_else(|| Ok(Vec::new()));
         self.pane.typed_navigation = Default::default();
+        self.pane.query_navigation = Default::default();
         self.pane.note_source = source;
         self.pane.note_canonical_source = canonical_source;
         self.note_encoding_damaged = encoding_damaged;
@@ -420,8 +425,7 @@ impl Reader {
 
     pub(super) fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.pane.find_open = false;
-        self.pane
-            .content
+        self.visible_markdown()
             .update(cx, |s, cx| s.set_search_query("", cx));
         window.focus(&self.focus_handle, cx);
         cx.notify();
@@ -439,7 +443,7 @@ impl Reader {
         }
         let term = self.pane.find_input.read(cx).value().trim().to_string();
         let sensitive = reader_ui_state::find_case_sensitive(cx);
-        self.pane.content.update(cx, |s, cx| {
+        self.visible_markdown().update(cx, |s, cx| {
             s.set_search_case_sensitive(sensitive, cx);
             s.set_search_query(term, cx);
         });
@@ -451,8 +455,7 @@ impl Reader {
             cx.notify();
             return;
         }
-        self.pane
-            .content
+        self.visible_markdown()
             .update(cx, |s, cx| s.step_search_match(delta, cx));
         cx.notify();
     }
@@ -523,11 +526,28 @@ impl Reader {
                             cx.notify();
                             return true;
                         }
+                        if this.pane.query_navigation.pending.get() {
+                            return false;
+                        }
+                        let query = this.pane.query_navigation.active.borrow().clone();
+                        let (visible, position) = if let Some(query) = &query {
+                            match query.landing(&this.pane.outline, position) {
+                                Ok(position) => (query.text.clone(), position),
+                                Err(reason) => {
+                                    this.pane.navigation.pending_landing = None;
+                                    this.link_notice = Some(reason.into());
+                                    cx.notify();
+                                    return true;
+                                }
+                            }
+                        } else {
+                            (this.pane.content.clone(), position)
+                        };
                         // Parsing owns readiness. A hidden Reader (Source/Live
                         // session restoration) never renders its list, so waiting
                         // for item_count to grow can never finish. Publish the
                         // prepared list's position before its first layout instead.
-                        match this.pane.content.read(cx).preparation_status() {
+                        match visible.read(cx).preparation_status() {
                             None => false,
                             Some(Err(reason)) => {
                                 this.pane.navigation.pending_landing = None;
@@ -543,13 +563,14 @@ impl Reader {
                                 true
                             }
                             Some(Ok(())) => {
-                                this.pane.content.update(cx, |s, cx| {
+                                visible.update(cx, |s, cx| {
                                     s.scroll_to_prepared_position(position, cx);
                                 });
                                 this.pane.navigation.pending_landing = None;
-                                if this.pane.navigation.flash_pending.take()
-                                    == Some(position.item_ix)
-                                {
+                                let flash = this.pane.navigation.flash_pending.take();
+                                if query.is_some() {
+                                    cx.notify();
+                                } else if flash == Some(position.item_ix) {
                                     this.flash_block(position.item_ix, cx);
                                 }
                                 true
@@ -588,12 +609,17 @@ impl Reader {
         }
         if self.pane.editing.is_some()
             || self.pane.file_preview.is_some()
-            || !self.pane.content.read(cx).focus_handle().is_focused(window)
+            || !self
+                .visible_markdown()
+                .read(cx)
+                .focus_handle()
+                .is_focused(window)
         {
             cx.propagate();
             return;
         }
-        let content = self.pane.content.read(cx);
+        let visible = self.visible_markdown();
+        let content = visible.read(cx);
         let distance = if page {
             (f32::from(content.list_state().viewport_bounds().size.height) * 0.9).max(40.)
         } else {
@@ -687,7 +713,7 @@ impl Reader {
 
     pub(super) fn render_find_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         let native = self.pane.typed_navigation.active.get();
-        let (current, total) = self.pane.content.read(cx).search_status();
+        let (current, total) = self.visible_markdown().read(cx).search_status();
         let count = if native {
             "Filter tasks".to_owned()
         } else if total == 0 {

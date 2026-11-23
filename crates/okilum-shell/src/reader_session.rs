@@ -11,6 +11,7 @@ struct Published {
     vault: Arc<Vault>,
     searcher: Arc<Searcher>,
     tasks: Arc<okilum_core::tasks::Index>,
+    view_query: Option<reader_view_query::Index>,
     workbench: Arc<okilum_core::workbench::Index>,
     #[cfg(any(unix, windows))]
     candidates: Option<Arc<okilum_core::link_rewrite::CandidateIndex>>,
@@ -88,6 +89,7 @@ impl Reader {
                 vault: self.vault.clone(),
                 searcher,
                 tasks: self.tasks_index.clone().unwrap_or_default(),
+                view_query: self.view_query_index.clone(),
                 workbench: self.workbench.clone(),
                 #[cfg(any(unix, windows))]
                 candidates: self.move_index.clone(),
@@ -204,6 +206,9 @@ impl Reader {
         self.vault = published.vault;
         self.searcher = Some(published.searcher);
         self.tasks_index = Some(published.tasks);
+        if let Some(view_query) = published.view_query {
+            self.publish_view_query(view_query, cx);
+        }
         self.publish_workbench(published.workbench, cx);
         #[cfg(any(unix, windows))]
         {
@@ -264,6 +269,7 @@ impl Reader {
             vault: self.vault.clone(),
             searcher,
             tasks: self.tasks_index.clone().unwrap_or_default(),
+            view_query: self.view_query_index.clone(),
             workbench: self.workbench.clone(),
             #[cfg(any(unix, windows))]
             candidates: self.move_index.clone(),
@@ -417,6 +423,13 @@ fn update(
     let mut note_changes = changes.clone();
     note_changes.metadata.clear();
     let batch = state.apply(&note_changes, &mut |_, _| Ok(()))?;
+    published.view_query = Some(reader_view_query::update_index(
+        published.view_query.take(),
+        &state.vault.root,
+        &state.snapshot,
+        &batch,
+        &note_changes,
+    ));
     published.reconciled = false;
     let mut tasks = (*published.tasks).clone();
     for path in &batch.removed {

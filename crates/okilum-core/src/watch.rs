@@ -19,7 +19,8 @@
 //!   full rescan. A vault scan is 0.8–1.6 s on ~4000 notes, and only
 //!   the caller knows whether it is worth paying.
 //! - **Notes and directory topology matter.** Service directories and non-note
-//!   file writes are excluded; ordinary dot/underscore folders remain searchable.
+//!   file writes are excluded unless they feed a view; ordinary dot/underscore
+//!   folders remain searchable.
 //!   Creating or removing a non-note file reports its folder as a hint, because
 //!   the tree lists attachments too (#8). Directory events report scope hints: a populated tree can arrive before
 //!   recursive watches observe its individual files. Only lost events force rescan. The legacy in-vault
@@ -378,6 +379,19 @@ impl VaultWatcher {
                         relevant = true;
                     }
                     continue;
+                }
+                // View schemas and JSONL sources are attachments. Reconcile
+                // their parent without adding them to the Markdown source bank.
+                if (relative.starts_with("@Schema")
+                    && crate::records::FieldSchema::FILES
+                        .contains(&crate::vault::note_path(relative).as_str()))
+                    || relative.extension().is_some_and(|ext| ext == "jsonl")
+                {
+                    let parent = relative.parent().unwrap_or(Path::new(""));
+                    self.pending
+                        .directories
+                        .insert(crate::vault::note_path(parent));
+                    relevant = true;
                 }
                 // Newly created/moved trees may arrive as a directory event only,
                 // before recursive watches can observe their individual files.

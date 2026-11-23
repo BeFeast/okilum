@@ -96,6 +96,7 @@ pub(super) struct Surface {
     pub timeline: Option<reader_timeline::Timeline>,
     pub file_preview: Option<reader_files::FilePreview>,
     pub typed_navigation: reader_typed_view::Navigation,
+    pub query_navigation: reader_view_query::Navigation,
     pub hover_preview: reader_hover::HoverPreview,
 
     // Editor and recovery for this document. The handle is pane-owned; which
@@ -179,6 +180,7 @@ impl Surface {
             timeline: None,
             file_preview: None,
             typed_navigation: Default::default(),
+            query_navigation: Default::default(),
             hover_preview: Default::default(),
             editing: None,
             recovery_offer: false,
