@@ -306,6 +306,8 @@ use okilum_core::{Backlink, Searcher, Vault, VaultWatcher};
 // Former app modules, now in okilum-shell-kit (#3233); `crate::brand::…`
 // paths keep working through these imports.
 use okilum_shell_kit::appearance::{appearance_settings_path, AppearancePreference};
+#[cfg(test)]
+use okilum_shell_kit::reader_layout::READER_MAX_WIDTH;
 use okilum_shell_kit::{
     brand, contextual_help, count_label, reader_history, reader_projects_help,
     reader_recent_vaults, reader_sidebar, reader_sync_help,

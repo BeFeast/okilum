@@ -6,8 +6,11 @@ use super::*;
 pub(crate) use okilum_shell_kit::reader_ui_state::*;
 // Names the root also defines: the kit's store functions win here, as they
 // did when this module defined them.
-pub(crate) use okilum_shell_kit::reader_ui_state::{set_appearance, set_theme, Position};
-use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
+use okilum_shell_kit::reader_ui_state::Position;
+pub(crate) use okilum_shell_kit::reader_ui_state::{set_appearance, set_theme};
+#[cfg(test)]
+use std::collections::BTreeSet;
 
 /// Open Readers and the vault each active window shows (#1338).
 #[derive(Default)]

@@ -33,7 +33,7 @@ impl Panels {
         self.active = Panel::Closed;
     }
 
-    fn restore_maximized(&mut self) -> bool {
+    pub fn restore_maximized(&mut self) -> bool {
         let Some((notes, backlinks, active)) = self.maximized_restore.take() else {
             return false;
         };
@@ -235,7 +235,7 @@ impl Widths {
         latest.set(panel, self.get(panel));
         latest.save(path)
     }
-    fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
+    pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
         let parent = path
             .parent()
             .ok_or_else(|| std::io::Error::other("missing settings directory"))?;

@@ -4,6 +4,8 @@ use gpui::{canvas, DispatchPhase, ScrollDelta, ScrollWheelEvent};
 
 gpui::actions!(ui_zoom, [ZoomIn, ZoomOut, Reset]);
 
+#[cfg(test)]
+use okilum_shell_kit::ui_zoom::DEFAULT_STEP;
 pub(crate) use okilum_shell_kit::ui_zoom::{normalize, normalize_step, STEPS};
 
 /// The next whole multiple of `step` percent in `direction`, so 103% with a
