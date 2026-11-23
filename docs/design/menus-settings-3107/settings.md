@@ -64,6 +64,7 @@ If the preferences file can't be read, a red error line appears and the switches
 | "File tree labels" ("Show file names as on disk, or note titles. Sorting follows the chosen label.") | 2 buttons: "File name" / "Title" | `tree_note_titles` | `:1622` |
 | "Show the open note in the file tree" | Switch | `tree_auto_reveal` | `:1637` |
 | "Show labels on toolbar buttons" ("Show names beside icons when there is room.") | Switch | `toolbar_labels` | `:1652` |
+| "UI zoom step" ("How much Cmd/Ctrl+Shift+wheel and Cmd/Ctrl+Shift+plus or minus change the size of the whole interface at a time.") | 3 buttons: "2%" / "5%" / "10%", default 5% | `ui_zoom_step` | `ui_zoom_step_setting` |
 | Heading "Color theme" | Clickable swatch cards: "Okilum", "Graphite", "Paper", "High contrast", "Nord" | `theme` | `:1667`, `theme_picker.rs` |
 | Heading "Document fonts" | Reset button with tooltip "Default fonts: Noto Sans and Cascadia Code" | `note_font` + `code_font` | `reader_fonts.rs:149` |
 | ↳ "Note text" ("Reader, Live Preview and tables.") | Searchable font dropdown | `note_font` | `reader_fonts.rs:172` |

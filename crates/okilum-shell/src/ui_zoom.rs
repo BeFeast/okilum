@@ -4,12 +4,38 @@ use gpui::{canvas, DispatchPhase, ScrollDelta, ScrollWheelEvent};
 
 gpui::actions!(ui_zoom, [ZoomIn, ZoomOut, Reset]);
 
+/// Step choices in percent offered in Settings → Appearance (#3228).
+pub(crate) const STEPS: [u32; 3] = [2, 5, 10];
+/// 10% per wheel notch was reported as too coarse (#3228).
+pub(crate) const DEFAULT_STEP: u32 = 5;
+
 pub(crate) fn normalize(value: f32) -> f32 {
     if value.is_finite() {
-        (value.clamp(0.5, 2.) * 10.).round() / 10.
+        (value.clamp(0.5, 2.) * 100.).round() / 100.
     } else {
         1.
     }
+}
+
+pub(crate) fn normalize_step(step: u32) -> u32 {
+    if STEPS.contains(&step) {
+        step
+    } else {
+        DEFAULT_STEP
+    }
+}
+
+/// The next whole multiple of `step` percent in `direction`, so 103% with a
+/// 5% step goes to 105% / 100%, not 108% / 98%.
+fn stepped(zoom: f32, step: u32, direction: f32) -> f32 {
+    let step = normalize_step(step) as f32;
+    let units = (zoom * 100.).round() / step;
+    let next = if direction > 0. {
+        (units + 1e-3).floor() + 1.
+    } else {
+        (units - 1e-3).ceil() - 1.
+    };
+    normalize(next * step / 100.)
 }
 
 fn modifier(m: Modifiers, mac: bool) -> bool {
@@ -31,8 +57,8 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("secondary-shift-0", Reset, None),
         KeyBinding::new("secondary-shift-)", Reset, None),
     ]);
-    cx.on_action(|_: &ZoomIn, cx| change(0.1, cx));
-    cx.on_action(|_: &ZoomOut, cx| change(-0.1, cx));
+    cx.on_action(|_: &ZoomIn, cx| change(1., cx));
+    cx.on_action(|_: &ZoomOut, cx| change(-1., cx));
     cx.on_action(|_: &Reset, cx| reader_ui_state::set_ui_zoom(1., cx));
     cx.observe_new::<Root>(|root, window, cx| {
         if let Some(window) = window {
@@ -44,8 +70,13 @@ pub(crate) fn init(cx: &mut App) {
     .detach();
 }
 
-fn change(delta: f32, cx: &mut App) {
-    reader_ui_state::set_ui_zoom(reader_ui_state::ui_zoom(cx) + delta, cx);
+fn change(direction: f32, cx: &mut App) {
+    let zoom = stepped(
+        reader_ui_state::ui_zoom(cx),
+        reader_ui_state::ui_zoom_step(cx),
+        direction,
+    );
+    reader_ui_state::set_ui_zoom(zoom, cx);
 }
 
 /// A Root overlay covers all application windows and captures the wheel even
@@ -93,7 +124,7 @@ impl Render for ZoomLayer {
                             delta
                         };
                         if !precise || accumulated.abs() >= 40. {
-                            change(delta.signum() * 0.1, cx);
+                            change(delta.signum(), cx);
                             pending.set(0.);
                         } else {
                             pending.set(accumulated);
@@ -124,8 +155,27 @@ mod tests {
         assert_eq!(normalize(0.1), 0.5);
         assert_eq!(normalize(3.), 2.);
         assert_eq!(normalize(1.299999), 1.3);
+        assert_eq!(normalize(1.0499), 1.05);
         assert_eq!(normalize(f32::NAN), 1.);
         assert_eq!(normalize(f32::INFINITY), 1.);
+    }
+
+    #[test]
+    fn steps_follow_the_chosen_size_and_land_on_its_multiples() {
+        assert_eq!(DEFAULT_STEP, 5, "default is finer than the reported 10%");
+        assert_eq!(stepped(1., 5, 1.), 1.05);
+        assert_eq!(stepped(1., 5, -1.), 0.95);
+        assert_eq!(stepped(1., 2, 1.), 1.02);
+        assert_eq!(stepped(1., 10, 1.), 1.1);
+        assert_eq!(stepped(1.03, 5, 1.), 1.05);
+        assert_eq!(stepped(1.03, 5, -1.), 1.);
+        assert_eq!(stepped(1.1, 5, 1.), 1.15);
+        assert_eq!(stepped(1.3, 10, -1.), 1.2);
+        assert_eq!(stepped(2., 5, 1.), 2.);
+        assert_eq!(stepped(0.5, 5, -1.), 0.5);
+        // Unknown step values use the default.
+        assert_eq!(normalize_step(7), DEFAULT_STEP);
+        assert_eq!(stepped(1., 7, 1.), 1.05);
     }
 
     #[test]
@@ -181,8 +231,8 @@ mod tests {
         visual.simulate_keystrokes("secondary-shift-=");
         visual.run_until_parked();
         visual.update(|window, cx| {
-            assert_eq!(reader_ui_state::ui_zoom(cx), 1.1);
-            assert_eq!(window.ui_scale(), 1.1);
+            assert_eq!(reader_ui_state::ui_zoom(cx), 1.05, "default 5% step");
+            assert_eq!(window.ui_scale(), 1.05);
             assert_eq!(reader_ui_state::text_zoom(cx), 1.4);
             reader_ui_state::set_ui_zoom(1.5, cx);
         });
@@ -200,8 +250,24 @@ mod tests {
         });
         visual.run_until_parked();
         visual.update(|window, cx| {
-            assert_eq!(window.ui_scale(), 1.6);
+            assert_eq!(window.ui_scale(), 1.55, "one wheel notch is one 5% step");
             assert_eq!(reader_ui_state::text_zoom(cx), 1.4);
+            reader_ui_state::set_ui_zoom_step(10, cx);
+        });
+        visual.simulate_event(ScrollWheelEvent {
+            position: point(px(100.), px(100.)),
+            delta: ScrollDelta::Lines(point(0., -1.)),
+            modifiers: Modifiers {
+                shift: true,
+                platform: cfg!(target_os = "macos"),
+                control: !cfg!(target_os = "macos"),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            assert_eq!(window.ui_scale(), 1.5, "the chosen 10% step applies");
             reader_ui_state::set_ui_zoom(1.5, cx);
         });
         visual.run_until_parked();
@@ -215,6 +281,7 @@ mod tests {
             reader_ui_state::flush(cx);
             reader_ui_state::install(temp.path(), cx);
             assert_eq!(reader_ui_state::ui_zoom(cx), 1.5);
+            assert_eq!(reader_ui_state::ui_zoom_step(cx), 10, "step persists");
             assert_eq!(reader_ui_state::text_zoom(cx), 1.4);
             reader_ui_state::set_ui_zoom(1., cx);
         });
