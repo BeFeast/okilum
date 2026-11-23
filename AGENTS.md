@@ -71,6 +71,19 @@ screen capture and CGEvent/Accessibility input, replacing the Wayland `Rig`
 and translating keysyms/coordinates at a fixed scale. The YAML assertion model
 can stay the same. This Linux work does not build or run on Oleg's M4.
 
+### How to add a scenario
+
+1. Before implementing a UI change, write its initial state → action → visible result.
+2. Copy the closest `acceptance/*.yaml` into a file named after the new scenario id.
+3. Give each step a stable, unique `id`; it becomes the screenshot filename.
+4. Use a synthetic `note`, explicit appearance/preferences, and a note-pane `region`.
+5. Set `ready_text` to fixture content that must be visible before actions start.
+6. Use `click: [x, y]`, `keys`/`mods` and optional `wait` at the fixed 1366×768 size.
+7. Assert visible `text`, bounded colour `pixels`, `ui_scale`, or `changed_from`.
+8. Run the new scenario before the fix and confirm a visible assertion fails, not the build.
+9. Implement the fix, run it green, and inspect the saved PNGs plus `result.json`.
+10. Run affected scenarios before pushing; during the direct-session experiment this own smoke replaces the daytime PR/CI gate.
+
 ## Merge gate
 
 Rule as of 23.11 (pilot to 28.11 15:00; project area `AGENTS.md`, Oleg 21.11 and 23.11):
