@@ -91,6 +91,20 @@ class GpuiAppleSetupTests(unittest.TestCase):
         window.write_text("unexpected mutation\n")
         self.assertIn("generated gpui-pre-macos differs", self.run_setup("--verify", success=False))
 
+    def test_setup_replaces_a_tree_generated_for_another_pin_and_verify_still_refuses(self):
+        # A persistent checkout (the M4 Sprint) keeps vendor/ across a pin
+        # change; setup must regenerate it, while --verify keeps failing.
+        self.run_setup()
+        stale = self.root / "vendor/gpui-pre-macos-0.3.3"
+        (stale / "src/window.rs").write_text("generated for an older pin\n")
+        (stale / "old-pin-only.rs").write_text("left over\n")
+        self.assertIn("generated gpui-pre-macos differs", self.run_setup("--verify", success=False))
+        self.assertTrue((stale / "old-pin-only.rs").exists(), "--verify never repairs")
+        self.run_setup()
+        self.assertEqual((stale / "src/window.rs").read_bytes(), b"patched window\n")
+        self.assertFalse((stale / "old-pin-only.rs").exists())
+        self.run_setup("--verify")
+
     def test_missing_generated_source_is_not_a_successful_verification(self):
         self.assertIn("generated gpui-pre-macos missing", self.run_setup("--verify", success=False))
 

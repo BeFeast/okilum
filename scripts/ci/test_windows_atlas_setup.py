@@ -62,6 +62,20 @@ class WindowsAtlasSetupTests(unittest.TestCase):
         source.write_text("unexpected mutation\n")
         self.assertIn("differs from pinned source+patch", self.run_setup("--verify", success=False))
 
+    def test_setup_replaces_a_tree_generated_for_another_pin_and_verify_still_refuses(self):
+        # #3227 added the drop patch: a persistent checkout (the M4 Sprint)
+        # kept the old tree and every later setup refused it.
+        self.run_setup()
+        dest = self.root / "vendor/gpui-pre-windows-0.3.3"
+        (dest / "src/directx_atlas.rs").write_text("generated for an older pin\n")
+        (dest / "old-pin-only.rs").write_text("left over\n")
+        self.assertIn("differs from pinned source+patch", self.run_setup("--verify", success=False))
+        self.assertTrue((dest / "old-pin-only.rs").exists(), "--verify never repairs")
+        self.run_setup()
+        self.assertEqual((dest / "src/directx_atlas.rs").read_bytes(), b"after\n")
+        self.assertFalse((dest / "old-pin-only.rs").exists())
+        self.run_setup("--verify")
+
     def test_missing_generated_source_is_not_a_successful_verification(self):
         self.assertIn("generated gpui-pre-windows missing", self.run_setup("--verify", success=False))
 

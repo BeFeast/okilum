@@ -48,5 +48,12 @@ gpui_wgpu = { package = "gpui-pre-wgpu", version = "0.3.3" }
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 rustix = { version = "=1.1.6", features = ["fs"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Window geometry save/restore through AppKit (window_state/macos.rs, moved
+# from okilum-shell in #3233); same pins as okilum-shell.
+objc2 = "=0.6.4"
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSString", "NSGeometry", "objc2-core-foundation"] }
+raw-window-handle = { version = "0.6", features = ["std"] }
+
 [target.'cfg(windows)'.dependencies]
 dirs = "6"
