@@ -13,7 +13,7 @@ path = "src/main.rs"
 # Dedicated Linux development distribution; guarded by build.rs, never a release feature.
 linux-sprint = []
 default = ["brain"]
-brain = ["okilum-core/brain"]
+brain = ["okilum-core/brain", "okilum-shell-kit/brain"]
 # Non-publishing Linux visual QA harness; excluded from shipping builds.
 settings-ui-harness = []
 appimage-acceptance-harness = ["okilum-appimage/acceptance-harness"]
@@ -36,6 +36,8 @@ welcome-ui-harness = []
 
 [dependencies]
 okilum-write-authority = { path = "../okilum-write-authority" }
+# Shared components below the app (epic #3241).
+okilum-shell-kit = { path = "../okilum-shell-kit" }
 tokio = { version = "1", features = ["rt", "net", "time", "fs", "io-util"] }
 tokio-util = { version = "0.7", features = ["io"] }
 futures-util = "0.3"
@@ -113,6 +115,7 @@ flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 [dev-dependencies]
 # cfg(test) is not propagated to dependencies, especially under --release.
 okilum-core = { workspace = true, features = ["test-support"] }
+okilum-shell-kit = { path = "../okilum-shell-kit", features = ["test-support"] }
 tungstenite = "0.28"
 # Builds ZIP fixtures for the archive viewer tests (#1149); okilum-core already uses it.
 zip = { version = "9.5", default-features = false, features = ["deflate-flate2-zlib-rs"] }

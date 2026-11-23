@@ -293,7 +293,7 @@ class LinuxBridgeTests(unittest.TestCase):
         workspace = importlib.util.module_from_spec(workspace_spec)
         workspace_spec.loader.exec_module(workspace)
         self.assertEqual(workspace.COMMAND, [
-            'cargo', 'test', '--locked', '-p', 'okilum-core', '-p', 'okilum-shell',
+            'cargo', 'test', '--locked', '-p', 'okilum-core', '-p', 'okilum-shell', '-p', 'okilum-shell-kit',
             '-p', 'okilum-sync', '-p', 'okilum-t3', '--no-fail-fast', '--'])
         for command in ['cargo fmt --check', 'cargo clippy --workspace --all-targets -- -D warnings',
                         'cargo check -p okilum-shell --no-default-features',

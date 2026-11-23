@@ -1,6 +1,6 @@
 # Shared Projects picker (#1520)
 
-`okilum_shell::projects_picker` is the mountable GPUI component. It depends on
+`okilum_shell_kit::projects_picker` is the mountable GPUI component. It depends on
 `okilum_t3::projects::picker::PickerModel`, which consumes the existing #1481
 `Discovery`/`Project`/`Kind` types; there is no second manifest parser or scanner.
 The component does not depend on Reader, main.rs, or manager/right-panel code.

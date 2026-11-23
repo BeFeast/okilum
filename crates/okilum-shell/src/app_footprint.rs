@@ -2139,7 +2139,7 @@ mod tests {
         // Linux editor icons (#1400): reads desktop entries, icon themes and
         // the GTK/KDE icon-theme setting; writes nothing.
         ("crates/okilum-shell/src/open_in/icons/desktop.rs", 3),
-        ("crates/okilum-shell/src/reader_history.rs", 4),
+        ("crates/okilum-shell-kit/src/reader_history.rs", 4),
         ("crates/okilum-shell/src/reader_layout.rs", 3),
         // Two more: Create a new vault suggests ~/Documents in the save
         // dialog (#1357); the user picks the folder, it is theirs.
@@ -2326,8 +2326,21 @@ mod tests {
     fn every_base_directory_in_production_code_is_in_the_uninstall_inventory() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let mut found = Vec::new();
-        for crate_dir in ["crates/okilum-shell/src", "crates/okilum-core/src"] {
-            let mut stack = vec![root.join(crate_dir)];
+        // okilum-shell is being split into okilum-shell-* crates (#3241): scan
+        // every one of them, so moving a module cannot hide a base directory.
+        let mut crate_dirs = vec![root.join("crates/okilum-core/src")];
+        for entry in std::fs::read_dir(root.join("crates")).unwrap().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == "okilum-shell" || name.starts_with("okilum-shell-") {
+                crate_dirs.push(entry.path().join("src"));
+            }
+        }
+        assert!(
+            crate_dirs.len() >= 3,
+            "okilum-shell and okilum-shell-kit are scanned"
+        );
+        for crate_dir in crate_dirs {
+            let mut stack = vec![crate_dir];
             while let Some(dir) = stack.pop() {
                 for entry in std::fs::read_dir(&dir).unwrap().flatten() {
                     let path = entry.path();

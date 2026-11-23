@@ -3,7 +3,7 @@ use super::*;
 
 pub(super) fn icon(name: &str, color: Hsla) -> gpui::Svg {
     gpui::svg()
-        .path(okilum_shell::lucide::asset_path(name))
+        .path(okilum_shell_kit::lucide::asset_path(name))
         .size(px(14.))
         .text_color(color)
 }

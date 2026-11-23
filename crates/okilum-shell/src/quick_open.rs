@@ -9,7 +9,7 @@ use super::*;
 use okilum_core::quick_open::FileFilter;
 use okilum_core::search_snippet::{plain_snippet, PlainSnippet};
 use okilum_core::SearchHit;
-use okilum_shell::projects_picker::{icon_slot, kind_icon, picker::Row as ProjectRow};
+use okilum_shell_kit::projects_picker::{icon_slot, kind_icon, picker::Row as ProjectRow};
 
 use std::collections::HashMap;
 

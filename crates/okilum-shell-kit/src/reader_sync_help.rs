@@ -1,5 +1,5 @@
 //! Contextual offline Sync Help. No controller, runtime or service dependency.
-use crate::*;
+use crate::prelude::*;
 use gpui_component::{text::TextView, WindowExt};
 
 const GUIDE: &str = include_str!("../../../docs/help/sync/setup.md");
@@ -28,14 +28,14 @@ const FILES: &[(&str, &[u8])] = &[
 
 /// The Settings owner mounts this next to the Sync introduction. Help remains
 /// usable offline and does not require enabling the Sync NetworkAccess scope.
-pub(crate) fn entry() -> Button {
+pub fn entry() -> Button {
     Button::new("sync-setup-help")
         .label("Help: connect a computer")
         .ghost()
         .on_click(|_, window, cx| show(window, cx))
 }
 
-pub(crate) fn show(window: &mut Window, cx: &mut App) {
+pub fn show(window: &mut Window, cx: &mut App) {
     let view = cx.new(|_| SyncHelp {
         busy: false,
         failed: false,

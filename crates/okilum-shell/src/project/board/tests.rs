@@ -977,7 +977,7 @@ fn card_type_origin_and_native_icons_come_from_supported_sources() {
         "circle-dot",
     ] {
         assert!(
-            okilum_shell::lucide::contains(glyph),
+            okilum_shell_kit::lucide::contains(glyph),
             "missing native glyph {glyph}"
         );
     }

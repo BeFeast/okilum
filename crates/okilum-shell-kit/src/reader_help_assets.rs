@@ -42,11 +42,7 @@ fn verify_local(root: &Path, files: &[(&str, &[u8])]) -> anyhow::Result<PathBuf>
 }
 /// Publish only immutable bundled assets outside vaults/indexes. Stage a complete
 /// generation before making it visible; never overwrite a changed existing copy.
-pub(crate) fn publish(
-    state: &Path,
-    topic: &str,
-    files: &[(&str, &[u8])],
-) -> anyhow::Result<PathBuf> {
+pub fn publish(state: &Path, topic: &str, files: &[(&str, &[u8])]) -> anyhow::Result<PathBuf> {
     fs::create_dir_all(state)?;
     real_directory(state)?;
     let help = state.join("help");

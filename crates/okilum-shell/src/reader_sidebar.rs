@@ -347,12 +347,7 @@ pub fn birth_time(root: &Path, rel: &str) -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
-pub fn now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or_default()
-}
+pub use okilum_shell_kit::clock::now;
 
 /// Compact relative age: "now", "12m", "3h", "yesterday", "4d", "3w".
 /// Used by the title-bar Recent menu (#1517).

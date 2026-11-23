@@ -23,7 +23,7 @@ SIL Open Font License.
 
 The Help button sits in the Projects section header, beside the title, so it is
 available before the first project exists. It uses the shared contextual Help
-sheet (`crates/okilum-shell/src/contextual_help.rs`, also used by Board Help);
+sheet (`crates/okilum-shell-kit/src/contextual_help.rs`, also used by Board Help);
 the video button exports the same immutable, content-addressed bundle outside
 the vault.
 

@@ -19,7 +19,8 @@ build and passed on every bin-only build of the same source (#1043).
 
 ## The guard
 
-`okilum --build-info` prints `version`, `build` and `gpui-test-support: yes|no`;
+`okilum --build-info` prints `version`, `build`, `gpui-test-support: yes|no` and
+`shell-kit-test-support: yes|no` (the `okilum-shell-kit` test seams, #3233);
 the same fact is logged as `build_info` in `reader-diagnostic.log`. Every check
 that takes the app binary calls `scripts/native_binary_guard.py` first: a binary
 built with GPUI test-support is an **INVALID run** (exit 2), never a product

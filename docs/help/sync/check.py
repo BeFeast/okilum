@@ -144,7 +144,7 @@ def main():
     for stale in ("silent", "18.4 seconds", "existing pair", "no first connection recording"):
         assert stale not in text and stale not in guide, stale
     # File export must contain every runtime HTML dependency, not just the page.
-    shell = (ROOT.parents[2] / "crates/okilum-shell/src/reader_sync_help.rs").read_text()
+    shell = (ROOT.parents[2] / "crates/okilum-shell-kit/src/reader_sync_help.rs").read_text()
     for ref in page.refs:
         path = urlsplit(ref).path
         if path:

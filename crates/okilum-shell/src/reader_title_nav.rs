@@ -136,7 +136,7 @@ pub(super) fn location(path: &str, folder: &str) -> Option<String> {
 pub(super) fn switcher_face(
     active: Option<&okilum_t3::projects::Project>,
 ) -> (SharedString, Option<Icon>, &'static str) {
-    use okilum_shell::projects_picker::PROJECTS_ICON;
+    use okilum_shell_kit::projects_picker::PROJECTS_ICON;
     match active {
         Some(project) => (project.name.clone().into(), None, "Switch or leave project"),
         None => (
@@ -379,7 +379,7 @@ impl Reader {
         let active = self.project_navigation.active.as_ref();
         let (label, icon, tip) = switcher_face(active);
         let avatar = active.map(|project| {
-            okilum_shell::project_avatar::project_avatar(project, SWITCHER_AVATAR, cx)
+            okilum_shell_kit::project_avatar::project_avatar(project, SWITCHER_AVATAR, cx)
         });
         let face = match (icon, avatar) {
             (_, Some(avatar)) => Button::new("title-switcher").ghost().child(
@@ -485,7 +485,7 @@ impl Reader {
         if self.title_nav.switcher_open {
             let picker = self.project_navigation.switcher.clone()?;
             return Some(
-                okilum_shell::projects_picker::mount(picker, self.title_nav.switcher_origin)
+                okilum_shell_kit::projects_picker::mount(picker, self.title_nav.switcher_origin)
                     .into_any_element(),
             );
         }

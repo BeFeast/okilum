@@ -125,7 +125,9 @@ fn ask_leave(
 }
 
 fn save_icon() -> Icon {
-    Icon::default().path(SharedString::from(okilum_shell::lucide::asset_path("save")))
+    Icon::default().path(SharedString::from(okilum_shell_kit::lucide::asset_path(
+        "save",
+    )))
 }
 
 /// Reuse the guarded, native create-only writer: complete synced bytes, real

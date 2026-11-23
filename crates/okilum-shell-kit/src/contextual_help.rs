@@ -1,25 +1,25 @@
 //! Contextual offline Help sheets: the written guide in the app, plus a bundled
 //! video page opened from an immutable local copy. Reading Help needs no
 //! vault, repository, Manager or network access.
-use crate::*;
+use crate::prelude::*;
 use gpui_component::{text::TextView, WindowExt};
 
 /// One bundled guide. Selectors are static so UI tests can click real controls.
-pub(crate) struct Guide {
+pub struct Guide {
     /// Help bundle directory name under the state directory.
-    pub(crate) topic: &'static str,
+    pub topic: &'static str,
     /// Sheet title, tooltip and accessible name of the entry button.
-    pub(crate) title: &'static str,
-    pub(crate) entry_id: &'static str,
-    pub(crate) content_id: &'static str,
-    pub(crate) text_id: &'static str,
-    pub(crate) copy_id: &'static str,
-    pub(crate) video_id: &'static str,
-    pub(crate) markdown: &'static str,
-    pub(crate) files: &'static [(&'static str, &'static [u8])],
+    pub title: &'static str,
+    pub entry_id: &'static str,
+    pub content_id: &'static str,
+    pub text_id: &'static str,
+    pub copy_id: &'static str,
+    pub video_id: &'static str,
+    pub markdown: &'static str,
+    pub files: &'static [(&'static str, &'static [u8])],
 }
 
-pub(crate) fn entry(guide: &'static Guide) -> Button {
+pub fn entry(guide: &'static Guide) -> Button {
     Button::new(guide.entry_id)
         .debug_selector(move || guide.entry_id.into())
         .label("Help")
