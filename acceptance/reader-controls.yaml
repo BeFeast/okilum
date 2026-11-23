@@ -1,0 +1,39 @@
+appearance: light
+note: |
+  # Reader exercise
+
+  The quick brown fox is ready to read.
+
+  > [!note] Field observation
+  > A quiet trail follows the river.
+
+  ## River crossings
+
+  The bridge is open.
+region: [300, 90, 800, 540]
+ready_text: quick brown fox
+steps:
+  - id: rendered-callout
+    text: Field observation
+  - id: focus-document
+    click: [700, 180]
+    text: quiet trail
+  - id: find-in-note
+    keys: [f]
+    mods: [ctrl]
+    region: [250, 35, 900, 160]
+    text: Find in note
+  - id: close-find
+    keys: [Escape]
+    text: quick brown fox
+  - id: close-contents
+    keys: [backslash]
+    mods: [ctrl, alt]
+    text: quick brown fox
+    changed_from: close-find
+    min_changed_pixels: 500
+  - id: open-contents
+    keys: [backslash]
+    mods: [ctrl, alt]
+    region: [1088, 46, 277, 320]
+    text: River crossings
