@@ -1650,7 +1650,17 @@ mod tests {
             1,
             "typing does not reopen unchanged notes"
         );
+        let before = MetadataRevision::read(&path).unwrap();
         std::fs::write(&path, "---\ntype: contact\n---\n").unwrap();
+        // This test exercises an observed revision change, not the host's
+        // timestamp resolution: rapid same-size writes can share one tick.
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(before.modified + std::time::Duration::from_secs(2))
+            .unwrap();
+        assert_ne!(MetadataRevision::read(&path).unwrap(), before);
         assert_eq!(
             cached_type_badge(directory.path(), "Plan.md", &cache).as_deref(),
             Some("contact")
@@ -1675,6 +1685,7 @@ mod tests {
             cached_type_badge(directory.path(), "Plan.md", &cache).as_deref(),
             Some("project")
         );
+        let before = MetadataRevision::read(&path).unwrap();
         std::fs::write(&path, "---\ntype: contact\n---\n").unwrap();
         std::fs::File::options()
             .write(true)
@@ -1682,6 +1693,26 @@ mod tests {
             .unwrap()
             .set_times(std::fs::FileTimes::new().set_modified(modified))
             .unwrap();
+        if MetadataRevision::read(&path).unwrap() == before {
+            // A coarse filesystem can hide an in-place rewrite completely.
+            // Those changes invalidate the editor cache through the vault
+            // watcher. Exercise native invalidation here with a replacement
+            // whose size and mtime still match, without waiting for a tick.
+            let replacement = directory.path().join("replacement.md");
+            std::fs::write(&replacement, "---\ntype: contact\n---\n").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&replacement)
+                .unwrap()
+                .set_modified(modified)
+                .unwrap();
+            std::fs::remove_file(&path).unwrap();
+            std::fs::rename(replacement, &path).unwrap();
+        }
+        let after = MetadataRevision::read(&path).unwrap();
+        assert_eq!(after.len, before.len, "same-size rewrite");
+        assert_eq!(after.modified, before.modified, "restored mtime");
+        assert_ne!(after, before, "positive control: native revision changed");
         assert_eq!(
             cached_type_badge(directory.path(), "Plan.md", &cache).as_deref(),
             Some("contact")
