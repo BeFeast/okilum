@@ -18,32 +18,32 @@ Keep design decisions in `docs/` or the project brain, not only in commit messag
 
 | Step | Command | Where | Time |
 |---|---|---|---|
-| Fast gate (before merge) | `H=github scripts/agent/gh-check.sh --fast` on the exact HEAD | GitHub, `agent-checks` | 5–15 min, median ~6.5 (16 green runs before 2026-11-21) |
+| Merge check | `cd ~/src/dev-pulse && python3 -m devctl gate okilum <pr>` (READY/WAIT) | maestro | seconds |
+| Fast check (optional, not a merge gate) | `H=github scripts/agent/gh-check.sh --fast` on the exact HEAD | GitHub, `agent-checks` | 5–15 min, median ~6.5 (16 green runs before 2026-11-21) |
 | Full set | `scripts/agent/gh-check.sh` (no `--fast`) + the Forgejo full gate | GitHub pool shards, Forgejo | not measured here; see `docs/agent-checks.md` |
 | Format | `cargo fmt` | any host, the only Cargo command allowed on maestro | — |
 | Local hardware checks | `okilum-slot run` (build slots) | build-slot pool | not measured |
 
 ## Merge gate
 
-- Before merge (Oleg 13.11 ~14:20, ~15:10): `H=github scripts/agent/gh-check.sh
-  --fast` on the exact HEAD: formatting, script checks and workspace clippy on
-  Linux; no Rust test suites, no Windows/macOS run. The full set (`gh-check.sh` without `--fast`
-  and the Forgejo full gate) runs once a day before Stable and gates Stable
-  only; see `docs/agent-checks.md`. Use local build slots only for
-  GitHub outages or checks requiring local hardware. Never run Cargo on maestro
-  except `cargo fmt`.
+Rule as of 23.11 (pilot to 28.11 15:00; project area `AGENTS.md`, Oleg 21.11 and 23.11):
 
-Merging (manager, 13.11):
-
-- A lane merges only PRs it authored itself. Green agent checks are not a
-  merge permission.
-- Never merge a PR whose latest review verdict is «fix first», or one with no
-  review when a review was requested.
-- PRs from manager-delegated agents (toolbar #2806–#2814, #2817, #2825/#2845,
-  #2837, #2847, updater #2855, and any PR the manager names) are merged by the
-  manager only.
-
-- Until 28.11 15:00 (pilot, project area): merge on the green fast gate after the install check on the target machine; per-PR review only for data loss, install/update, signing and security changes; updater/velopack behaviour changes need Oleg's word. Full CI and a cross-family review of the day's merges run at night.
+- By day there is no CI wait. A PR merges as soon as
+  `cd ~/src/dev-pulse && python3 -m devctl gate okilum <pr>` says READY. The
+  gate owns the logic (mergeable head, risk classes, OLEG-OK, night-red hold);
+  do not restate or second-guess it here.
+- The session that wrote the PR merges it itself, at the exact head
+  (`head_commit_id`), then confirms the install: M4 Sprint on the Mac via
+  `devctl m4tick`, and idunn. There is no merge lane and no manager-only merge.
+- Risk classes (data loss, install/update, signing, security; devctl
+  `risk_paths` / `risk_labels`) need one review PASS by another model family
+  first. Updater/velopack changes need Oleg's word (`OLEG-OK <head>` on the PR).
+- Never merge a PR whose latest review verdict is «fix first».
+- Full CI (`gh-check.sh` without `--fast` plus the Forgejo full gate) and the
+  review of the day's merges run only in the night window 03:00–05:00 Israel;
+  findings become issues. See `docs/agent-checks.md`.
+- Use local build slots only for GitHub outages or checks requiring local
+  hardware. Never run Cargo on maestro except `cargo fmt`.
 
 ## Hard rules
 

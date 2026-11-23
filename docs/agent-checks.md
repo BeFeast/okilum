@@ -80,13 +80,15 @@ another (`OKILUM_ADMISSION_PART`; default `all`). The two Rust shards use the
 same `linux-rust-tests.sh` parts as the daily hosted matrix (#3198): `rust-a`
 runs `checks`, `rust-b` runs `workspace` (`OKILUM_LINUX_RUST_PART`). `pool-dispatch.sh
 linux-single` runs every phase in one slot. Windows and
-macOS jobs are unchanged. Landing is unchanged: a reviewed PR with a green
-`agent-checks` run is merged as before (`AGENTS.md`).
+macOS jobs are unchanged. Who merges and when is the merge gate in
+`AGENTS.md` (`devctl gate`), not a green `agent-checks` run.
 
 ## When which check runs (Oleg 13.11 ~14:20, ~15:10)
 
-- **Before merge:** formatting, script checks and a Linux workspace compile,
-  about 10–15 minutes:
+- **Before merge:** nothing from this file gates a day merge; the merge gate
+  is `devctl gate` (`AGENTS.md`). The optional fast check (formatting, script
+  checks and a Linux workspace compile, about 10–15 minutes) is still
+  available:
 
   ```bash
   H=github scripts/agent/gh-check.sh --fast
@@ -141,8 +143,8 @@ release, signing or publication work. The non-required editor latency A/B
 separate run on native-scope heads: strict, so a confirmed regression is red,
 but the helper never waits for it or reads its verdict. It carries no secrets. Forgejo remains primary; its existing main
 and release-tag mirror is unchanged. Push the implementation branch to Forgejo
-and open its PR there as usual. Before merge, require `gh-check.sh --fast`
-green on this exact HEAD; who may merge which PR is in `AGENTS.md`.
+and open its PR there as usual. The merge gate (`devctl gate`, merged by the
+PR's author at the exact head) is in `AGENTS.md`.
 Forgejo CI does not run on PRs; main has no required status checks. Forgejo
 suites run nightly and on workflow_dispatch; pre-Stable certification remains
 source-pinned and on demand. Main pushes only mirror source and build the beta of
