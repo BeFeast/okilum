@@ -1,5 +1,5 @@
 diff --git a/crates/base/src/text/decorations.rs b/crates/base/src/text/decorations.rs
-index ebc05b4d..bae687c8 100644
+index ebc05b4d..d4262c09 100644
 --- a/crates/base/src/text/decorations.rs
 +++ b/crates/base/src/text/decorations.rs
 @@ -83,12 +83,15 @@ impl GradientBar {
@@ -123,7 +123,7 @@ index ebc05b4d..bae687c8 100644
 +    /// The glyph's strokes in window coordinates, centred on `center`.
 +    fn curves(&self, center: Point<Pixels>) -> [[Point<Pixels>; 4]; 4] {
 +        let (sin, cos) = self.rotate.to_radians().sin_cos();
-+        let scale = self.size.0;
++        let scale = f32::from(self.size);
 +        // y grows downwards, so this turns clockwise on screen, as CSS does.
 +        let place = |(x, y): (f32, f32)| {
 +            let (x, y) = (x * scale, y * scale);
@@ -148,7 +148,7 @@ index ebc05b4d..bae687c8 100644
          }
      }
  }
-@@ -426,6 +526,73 @@ mod tests {
+@@ -426,6 +526,76 @@ mod tests {
          assert_eq!((top, bottom), (px(110.), px(115.)));
      }
  
@@ -197,19 +197,22 @@ index ebc05b4d..bae687c8 100644
 +        let all = |c: &[[Point<Pixels>; 4]; 4]| c.iter().flatten().copied().collect::<Vec<_>>();
 +        // Point-symmetric about the centre: the § is two S curves.
 +        let pts = all(&upright);
-+        let (sx, sy) = pts.iter().fold((0., 0.), |(x, y), p| (x + p.x.0, y + p.y.0));
++        let (sx, sy) = pts.iter().fold((0., 0.), |(x, y), p| {
++            (x + f32::from(p.x), y + f32::from(p.y))
++        });
 +        assert!((sx / pts.len() as f32 - 50.).abs() < 1e-3);
 +        assert!((sy / pts.len() as f32 - 50.).abs() < 1e-3);
 +        // 90° clockwise on screen: (x, y) offset becomes (-y, x).
 +        for (u, t) in all(&upright).iter().zip(all(&turned)) {
-+            let (dx, dy) = (u.x.0 - 50., u.y.0 - 50.);
-+            assert!((t.x.0 - 50. + dy).abs() < 1e-3 && (t.y.0 - 50. - dx).abs() < 1e-3);
++            let (dx, dy) = (f32::from(u.x) - 50., f32::from(u.y) - 50.);
++            assert!((f32::from(t.x) - 50. + dy).abs() < 1e-3);
++            assert!((f32::from(t.y) - 50. - dx).abs() < 1e-3);
 +        }
 +        // The upright glyph is taller than it is wide, and `size` tall at most.
-+        let height = pts.iter().map(|p| p.y.0).fold(f32::MIN, f32::max)
-+            - pts.iter().map(|p| p.y.0).fold(f32::MAX, f32::min);
-+        let width = pts.iter().map(|p| p.x.0).fold(f32::MIN, f32::max)
-+            - pts.iter().map(|p| p.x.0).fold(f32::MAX, f32::min);
++        let height = pts.iter().map(|p| f32::from(p.y)).fold(f32::MIN, f32::max)
++            - pts.iter().map(|p| f32::from(p.y)).fold(f32::MAX, f32::min);
++        let width = pts.iter().map(|p| f32::from(p.x)).fold(f32::MIN, f32::max)
++            - pts.iter().map(|p| f32::from(p.x)).fold(f32::MAX, f32::min);
 +        assert!(height > width && height <= 16.);
 +    }
 +
