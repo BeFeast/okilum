@@ -150,6 +150,38 @@ def write_fixtures(vault, specs):
         target.write_bytes(generate_markdown(spec) if kind == 'markdown' else generate_json(spec))
 
 
+def copy_vault_fixture(vault, fixture):
+    """`vault: <repo-relative dir>`: copy that fixture tree into the isolated vault."""
+    if fixture is None:
+        return
+    relative = Path(fixture)
+    require(not relative.is_absolute() and '..' not in relative.parts,
+            f'Vault fixture must be a repo-relative path: {fixture}')
+    source = (ROOT / relative).resolve()
+    require(source.is_dir() and source.is_relative_to(ROOT), f'Vault fixture is not a repo directory: {fixture}')
+    shutil.copytree(source, vault, dirs_exist_ok=True)
+
+
+def apply_mtimes(vault, specs, result):
+    """`mtime: {vault-relative path: days_ago}`: set file mtimes after the vault is built."""
+    now = time.time()
+    applied = {}
+    for name, days in specs.items():
+        relative = Path(name)
+        require(not relative.is_absolute() and '..' not in relative.parts,
+                f'mtime path must stay inside the vault: {name}')
+        target = vault / relative
+        require(target.is_file(), f'mtime path is not a file in the vault: {name}')
+        stamp = now - float(days) * 86400
+        os.utime(target, (stamp, stamp))
+        actual = target.stat().st_mtime
+        require(abs(actual - stamp) < 2, f'mtime not applied to {name}: {actual} != {stamp}')
+        applied[name] = {'days_ago': days, 'age_days_observed': round((now - actual) / 86400, 3)}
+        print(f'verify: mtime {name} = {days} days ago (observed {applied[name]["age_days_observed"]})', flush=True)
+    if applied:
+        result['vault_mtimes'] = applied
+
+
 def condition(path, rule, default_region):
     """Does the screenshot satisfy a step's `text` and/or `pixels` rule? (ok, details)"""
     details, ok = {}, True
@@ -309,7 +341,9 @@ def run(args, scenario, output, result):
         vault.mkdir()
         if 'note' in scenario:
             (vault / 'scenario.md').write_text(scenario['note'])
+        copy_vault_fixture(vault, scenario.get('vault'))
         write_fixtures(vault, scenario.get('generate', ()))
+        apply_mtimes(vault, scenario.get('mtime', {}), result)
         frames_dir = root / 'frames'
         frames_dir.mkdir()
         outside_file = root / 'outside' / 'External note.md'

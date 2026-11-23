@@ -1,0 +1,18 @@
+# State: a vault copied from tests/fixtures/verify-vault-smoke (a root note and a nested note).
+# Action: launch on the nested note; the runner also ages the root note by 30 days.
+# Visible: the nested note's heading and body. The mtime is checked by the runner
+# (result.json `vault_mtimes`, and a `verify: mtime` line in the runner log).
+vault: tests/fixtures/verify-vault-smoke
+mtime:
+  root.md: 30
+open: projects/nested.md
+region: [0, 0, 1366, 768]
+ready_text: Nested Fixture Heading
+appearance: light
+preferences:
+  note_open_mode: read
+steps:
+  - id: nested-heading
+    text: Nested Fixture Heading
+  - id: nested-body
+    text: copied from a repository fixture directory

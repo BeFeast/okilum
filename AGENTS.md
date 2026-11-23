@@ -125,6 +125,15 @@ Large fixtures and timing (no big files in git):
   requires its visible effect within `max_ms` of the probe (`probe.ms` in the result).
   Choose a probe whose condition differs from the main one.
 
+Fixture vaults and file ages:
+
+- `vault: <repo-relative dir>` copies that directory (for example
+  `tests/fixtures/verify-vault-smoke`) into the isolated vault before launch. It combines
+  with `note:`, `generate:` and `open:` (`open:` names a vault-relative note).
+- `mtime: {<vault-relative path>: <days_ago>}` sets file mtimes after the copy and
+  generation. The runner stats each file, fails on a mismatch, prints a `verify: mtime` line
+  and records `vault_mtimes` in `result.json`.
+
 10. Run affected scenarios before pushing; during the direct-session experiment this own smoke replaces the daytime PR/CI gate.
 
 ## Merge gate
