@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Native screenshots of the theme decoration slots (#3154).
+"""Native screenshots of the theme decoration slots (#3154) and the hr
+ornament (#3252).
 
 Runs the real `okilum` binary on a synthetic note that uses all five slots
 (heading rule, hr, blockquote, link marker, bold gradient), once per theme,

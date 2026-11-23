@@ -458,7 +458,7 @@ exactly what Okilum drew before; today only Obsidianite fills them.
 | Slot | Keys | Drawn as |
 | --- | --- | --- |
 | `headingRule` | `from`, `to`, `length` (share of width), `thickness` px | 1 px line under H2–H6, `from` fading into `to` (the canvas) |
-| `hr` | `edge`, `middle`, `thickness` px | `edge → middle → edge`, two two-stop halves |
+| `hr` | `edge`, `middle`, `thickness` px; optional `ornament` {`glyph`, `color`, `rotate` (clockwise degrees), `size` px, `gap` px} | `edge → middle → edge`, two two-stop halves; with an ornament (#3252) the halves stop `gap` short of a `size` box in the middle, where the glyph is painted rotated |
 | `blockquote` | `background` {`angle`, `from`, `to`}, `border`, `topBar` / `bottomBar` {`from`, `to`, `length`, `thickness`} | angled background, left border colour, short bars along the top and bottom edges; in Live Preview one background per run of quoted lines |
 | `linkMarker` | `from`, `to`, `height`, `bottom` (shares of the line height) | a band under the lower part of each link line, never the full line height |
 | `bold` | `from`, `to` | bold text coloured letter by letter along the span |
@@ -480,6 +480,12 @@ while a colour run per letter (the control) reshapes. Every slot is
 paint-only: no text, run or layout changes, no animation, and a theme switch
 recomposes Live Preview from the existing classification without parsing.
 A unit test rejects unknown slot names and checks bold endpoints at AA.
+The `hr` ornament (#3252, vendor patch 0160) is not shaped text: the glyph is
+an SVG outline that ships with Okilum (`assets/themes/ornaments/`, today only
+`§`, from Noto Sans), painted as a one-colour sprite with a rotation
+transform, so it adds no shaping and no layout. In the Reader it overflows the
+rule's 2 px box; in Live Preview it is painted in the rule row with the halves.
+A theme naming a glyph without an outline fails the theme test.
 
 **Motion slots** (#3151): a theme file may set optional animations in a
 top-level `motion` object, apart from colours and the per-mode `decorations`;

@@ -1399,13 +1399,23 @@ def find_decorations(sheet: Sheet, variables: Variables, mode: str,
                     colors = [c for c, _ in stops]
                     middle = max(colors, key=lambda c: c[3])
                     edge = colors[0]
-                    deco["hr"] = {"edge": to_hex(edge if edge[3] < 1 else opaque(edge)),
-                                  "middle": to_hex(opaque(middle))}
+                    deco.setdefault("hr", {}).update({
+                        "edge": to_hex(edge if edge[3] < 1 else opaque(edge)),
+                        "middle": to_hex(opaque(middle))})
                     for p in ("border-image-source", "border-image", "border-image-slice",
                               "border-bottom", "border-width", "border", "height"):
                         used.add((idx, p))
                 except Unresolved as err:
                     notes.append(f"hr (L{rule.line}): {err}")
+            # hr ornament (#3252): a glyph centred on the rule from `hr::after`.
+            if _selector_has(selector, r"(?:^|[\s>])hr::?after\s*$") and "content" in props:
+                try:
+                    deco.setdefault("hr", {})["ornament"] = hr_ornament(props, resolver, opaque)
+                    for p in ("content", "color", "transform", "transform-origin", "padding",
+                              "display", "position", "left", "background-color"):
+                        used.add((idx, p))
+                except Unresolved as err:
+                    notes.append(f"hr ornament (L{rule.line}): {err}")
             # Blockquote: gradient background, bars from ::before/::after, left border.
             if _selector_has(selector, r"blockquote|HyperMD-quote(?![\w-])"):
                 pseudo = re.search(r"::?(before|after)\s*$", selector)
@@ -1486,7 +1496,42 @@ def find_decorations(sheet: Sheet, variables: Variables, mode: str,
                                 used.add((idx, "color"))
                             except Unresolved as err:
                                 notes.append(f"syntax {slot} (L{rule.line}): {err}")
+    if "hr" in deco and "ornament" not in deco["hr"]:
+        notes.append("hr: the theme has no `hr::after` ornament; the rule is drawn without one")
     return deco, syntax, used, notes
+
+
+# Glyphs the app ships an outline for (brand.rs `ornament_svg`).
+ORNAMENT_GLYPHS = {"\u00a7"}
+
+
+def hr_ornament(props: dict, resolver: "Resolver", opaque) -> dict:
+    """The `hr.ornament` slot from an `hr::after` rule: glyph, colour,
+    rotation (clockwise degrees), size and gap (px; 1rem = 16px)."""
+    content = props["content"].strip()
+    m = re.fullmatch(r"([\"'])(.*)\1", content)
+    if not m:
+        raise Unresolved(f"content {content} is not a string")
+    glyph = re.sub(r"\\([0-9a-fA-F]{1,6})\s?", lambda h: chr(int(h[1], 16)), m[2])
+    if glyph not in ORNAMENT_GLYPHS:
+        raise Unresolved(f"glyph {glyph!r} has no outline in the app "
+                         f"(known: {', '.join(sorted(ORNAMENT_GLYPHS))})")
+    if "color" not in props:
+        raise Unresolved("no color")
+    slot = {"glyph": glyph, "color": to_hex(opaque(resolver.color(props["color"])))}
+    rotate = re.search(r"rotate\(\s*(-?[\d.]+(?:deg|turn|rad)?)\s*\)", props.get("transform", ""))
+    slot["rotate"] = round(_hue(rotate[1]), 3) if rotate else 0
+    slot["size"] = 12
+
+    def length(value: str):
+        v = re.fullmatch(r"(-?[\d.]+)(px|rem|em)?", value.strip().split()[0]) if value.strip() else None
+        if not v:
+            return None
+        return float(v[1]) * (16 if v[2] in ("rem", "em") else 1)
+
+    gap = length(props.get("padding", ""))
+    slot["gap"] = gap if gap is not None else 8
+    return slot
 
 
 def app_syntax(syntax: dict) -> dict:

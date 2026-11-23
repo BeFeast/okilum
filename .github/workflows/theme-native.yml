@@ -1,7 +1,8 @@
 # Native visual evidence for the theme decoration slots (#3154): builds the
 # real binary and captures Reader and Live Preview of a synthetic note under
-# Obsidianite dark/light and the default theme (no slots) on hosted macOS and
-# Windows runners. Synthetic note only; no secrets.
+# Obsidianite dark/light and the default theme (no slots) on hosted Linux
+# (Xvfb, software Vulkan), macOS and Windows runners. Synthetic note only; no
+# secrets.
 name: theme-native
 on:
   push:
@@ -17,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, windows-2022]
+        os: [ubuntu-24.04, macos-15, windows-2022]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     env:
@@ -37,6 +38,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+      - name: Install Linux libraries and software display
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        run: |
+          sudo bash scripts/ci/hosted-ubuntu-apt.sh \
+            build-essential cmake pkg-config mold \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev \
+            libvulkan1 mesa-vulkan-drivers xvfb imagemagick dbus
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: native-theme-v1
@@ -74,7 +84,14 @@ jobs:
           python -m pip install --quiet Pillow==11.0.0
           binary=target/debug/okilum
           if [[ "$RUNNER_OS" = Windows ]]; then binary="$binary.exe"; fi
-          python scripts/ci/theme-native-screens.py "$binary" "$RUNNER_TEMP/theme-screens"
+          if [[ "$RUNNER_OS" = Linux ]]; then
+            Xvfb :99 -screen 0 1440x960x24 >/dev/null 2>&1 &
+            sleep 2
+            export DISPLAY=:99
+            dbus-run-session -- python scripts/ci/theme-native-screens.py "$binary" "$RUNNER_TEMP/theme-screens"
+          else
+            python scripts/ci/theme-native-screens.py "$binary" "$RUNNER_TEMP/theme-screens"
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:

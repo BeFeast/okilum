@@ -51,6 +51,18 @@ h1, h2 { font-family: 'Rubik'; font-weight: 600; }
 .markdown-preview-view hr {
   border-image-source: linear-gradient(to right, transparent, var(--text-accent), transparent);
 }
+.cm-line hr::after,
+.markdown-preview-view hr::after {
+  content: '§';
+  display: inline-block;
+  position: absolute;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(60deg);
+  transform-origin: 50% 50%;
+  padding: 0.5rem;
+  color: var(--text-sub-accent);
+  background-color: var(--background-primary);
+}
 .markdown-preview-view blockquote {
   border-left: 3px rgba(14, 210, 247, 0.5) solid;
   background: linear-gradient(135deg, rgba(32, 28, 41, 0.45), #100e17);
@@ -197,7 +209,11 @@ class Conversion(unittest.TestCase):
         deco = dark["decorations"]
         self.assertEqual(deco["headingRule"], {"levels": [2, 3], "from": "#f4569d",
                                                "to": "#100e17", "toAt": 0.5})
-        self.assertEqual(deco["hr"], {"edge": "#00000000", "middle": "#0fb6d6"})
+        self.assertEqual(deco["hr"], {"edge": "#00000000", "middle": "#0fb6d6",
+                                      "ornament": {"glyph": "§", "color": "#f4569d",
+                                                   "rotate": 60.0, "size": 12, "gap": 8.0}})
+        # The derived light mode keeps the ornament, recoloured with its token.
+        self.assertEqual(light["decorations"]["hr"]["ornament"]["glyph"], "§")
         self.assertEqual(deco["boldGradient"], {"angle": 62.0, "from": "#87c2fd", "to": "#dcb9fc"})
         self.assertEqual(deco["blockquote"]["angle"], 135.0)
         self.assertEqual(deco["blockquote"]["bars"]["top"]["width"], 0.6)
@@ -274,6 +290,21 @@ class AppSyntaxSchema(unittest.TestCase):
 
 
 class ReviewFixes(unittest.TestCase):
+    def test_hr_ornament_is_reported_when_missing_or_unknown(self):
+        # #3252: no `hr::after` is reported; a glyph without an outline too.
+        plain = PRE_1_0_DARK.split(".cm-line hr::after")[0] + """
+blockquote { border-left: 3px #0ed2f7 solid; }
+"""
+        theme, report = conv.convert(plain, theme_id="p", name="P")
+        self.assertNotIn("ornament", theme["modes"]["dark"]["decorations"]["hr"])
+        self.assertIn("no `hr::after` ornament", conv.render_report(report, theme, "p.css"))
+        odd = PRE_1_0_DARK.replace("content: '§'", r"content: '\2766'")
+        theme, report = conv.convert(odd, theme_id="o", name="O")
+        rendered = conv.render_report(report, theme, "o.css")
+        self.assertNotIn("ornament", theme["modes"]["dark"]["decorations"]["hr"])
+        self.assertIn("glyph '❦' has no outline", rendered)
+        self.assertIn("hr::after { content }", rendered)
+
     def test_non_linear_or_stopless_gradients_are_reported_not_fatal(self):
         css = PRE_1_0_DARK + """
 .markdown-preview-view h4 { border-image-source: radial-gradient(circle, red, blue); }

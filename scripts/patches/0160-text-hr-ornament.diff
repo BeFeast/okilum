@@ -1,0 +1,204 @@
+diff --git a/crates/base/src/input/base/marker_paint.rs b/crates/base/src/input/base/marker_paint.rs
+index bf2ee115..d19d76e7 100644
+--- a/crates/base/src/input/base/marker_paint.rs
++++ b/crates/base/src/input/base/marker_paint.rs
+@@ -533,11 +533,13 @@ impl RowPaint {
+                 );
+                 window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+                     match rule {
+-                        // Theme slot (#3154): edge -> middle -> edge.
++                        // Theme slot (#3154): edge -> middle -> edge, and
++                        // the optional centre ornament (#3252).
+                         Some(rule) => rule.paint(
+                             origin + point(shape.x, (height - rule.thickness) / 2.),
+                             bounds.size.width,
+                             window,
++                            cx,
+                         ),
+                         None => window.paint_quad(fill(
+                             Bounds::new(
+diff --git a/crates/base/src/text/decorations.rs b/crates/base/src/text/decorations.rs
+index ebc05b4d..4f6d3257 100644
+--- a/crates/base/src/text/decorations.rs
++++ b/crates/base/src/text/decorations.rs
+@@ -83,12 +83,64 @@ impl GradientBar {
+     }
+ }
+ 
+-/// `hr`: `edge → middle → edge`, drawn as two two-stop halves.
++/// `hr`: `edge → middle → edge`, drawn as two two-stop halves, with an
++/// optional ornament between them.
+ #[derive(Clone, Copy, Debug, PartialEq)]
+ pub struct HorizontalRule {
+     pub edge: Hsla,
+     pub middle: Hsla,
+     pub thickness: Pixels,
++    pub ornament: Option<RuleOrnament>,
++}
++
++/// A mark centred on an `hr` (CSS `hr::after`), such as a rotated `§`. The
++/// rule's halves stop `gap` short of the mark's box on each side. The mark is
++/// an SVG painted as a one-colour mask, so it needs no text shaping; its
++/// rotation is a sprite transform, so it changes no layout.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct RuleOrnament {
++    /// An SVG document; its alpha is painted in `color`. Also the sprite
++    /// atlas key, so equal marks share one rasterisation.
++    pub svg: &'static str,
++    pub color: Hsla,
++    /// Clockwise degrees, as CSS `rotate()`.
++    pub rotate: f32,
++    /// Side of the square box the SVG is drawn in.
++    pub size: Pixels,
++    /// Clear space between each half of the rule and the box.
++    pub gap: Pixels,
++}
++
++impl RuleOrnament {
++    /// Width the ornament takes out of the middle of the rule.
++    pub fn span(&self) -> Pixels {
++        (self.size + self.gap * 2.).max(px(0.))
++    }
++
++    /// Paints the mark centred on `center`.
++    pub fn paint(&self, center: Point<Pixels>, window: &mut Window, cx: &gpui::App) {
++        if self.size <= px(0.) {
++            return;
++        }
++        let half = self.size / 2.;
++        let bounds = Bounds::new(center - point(half, half), gpui::size(self.size, self.size));
++        let scale = window.scale_factor();
++        // As `gpui::Transformation::rotate` does for `svg()`: about the centre.
++        let transformation = gpui::TransformationMatrix::unit()
++            .translate(center.scale(scale))
++            .rotate(gpui::radians(self.rotate.to_radians()))
++            .translate(center.scale(-scale));
++        window
++            .paint_svg(
++                bounds,
++                gpui::SharedString::new_static(self.svg),
++                Some(self.svg.as_bytes()),
++                transformation,
++                self.color,
++                cx,
++            )
++            .ok();
++    }
+ }
+ 
+ impl HorizontalRule {
+@@ -100,20 +152,32 @@ impl HorizontalRule {
+         ]
+     }
+ 
++    /// The width of each half in a rule `width` wide: half of what the
++    /// ornament leaves, or exactly half without one.
++    pub fn half_width(&self, width: Pixels) -> Pixels {
++        let span = self.ornament.map_or(px(0.), |o| o.span());
++        ((width - span) / 2.).max(px(0.))
++    }
++
+     /// Paints the rule with its top-left corner at `origin`.
+-    pub fn paint(&self, origin: Point<Pixels>, width: Pixels, window: &mut Window) {
+-        if width <= px(0.) || self.thickness <= px(0.) {
++    pub fn paint(&self, origin: Point<Pixels>, width: Pixels, window: &mut Window, cx: &gpui::App) {
++        if width <= px(0.) {
+             return;
+         }
+-        let half = width / 2.;
+-        for (ix, gradient) in self.halves().into_iter().enumerate() {
+-            window.paint_quad(gpui::fill(
+-                Bounds::new(
+-                    origin + point(half * ix as f32, px(0.)),
+-                    gpui::size(half, self.thickness),
+-                ),
+-                gradient.background(),
+-            ));
++        if self.thickness > px(0.) {
++            let half = self.half_width(width);
++            for (ix, gradient) in self.halves().into_iter().enumerate() {
++                window.paint_quad(gpui::fill(
++                    Bounds::new(
++                        origin + point((width - half) * ix as f32, px(0.)),
++                        gpui::size(half, self.thickness),
++                    ),
++                    gradient.background(),
++                ));
++            }
++        }
++        if let Some(ornament) = self.ornament {
++            ornament.paint(origin + point(width / 2., self.thickness / 2.), window, cx);
+         }
+     }
+ }
+@@ -355,6 +419,30 @@ pub fn merge_touching(ranges: impl IntoIterator<Item = Range<usize>>) -> Vec<Ran
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn rule_halves_stop_at_the_ornament_gap() {
++        let cyan: Hsla = gpui::rgb(0x0fb6d6).into();
++        let mut rule = HorizontalRule {
++            edge: cyan.opacity(0.),
++            middle: cyan,
++            thickness: px(1.),
++            ornament: None,
++        };
++        // No ornament: two exact halves, as before #3252.
++        assert_eq!(rule.half_width(px(400.)), px(200.));
++        rule.ornament = Some(RuleOrnament {
++            svg: "<svg/>",
++            color: cyan,
++            rotate: 60.,
++            size: px(12.),
++            gap: px(8.),
++        });
++        assert_eq!(rule.ornament.unwrap().span(), px(28.));
++        assert_eq!(rule.half_width(px(400.)), px(186.));
++        // A rule narrower than the ornament draws no line, never a negative one.
++        assert_eq!(rule.half_width(px(20.)), px(0.));
++    }
++
+     #[test]
+     fn gradient_interpolates_from_end_to_end() {
+         let from: Hsla = gpui::rgb(0x87c2fd).into();
+diff --git a/crates/base/src/text/node.rs b/crates/base/src/text/node.rs
+index 51595287..212c5281 100644
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -3116,6 +3116,8 @@ impl BlockNode {
+                     // Theme slot: edge -> middle -> edge, two two-stop halves.
+                     // The rule keeps the default rule's 2 px box; the halves
+                     // are centred in it, so no block height changes.
++                    // The ornament (#3252) sits in a gap between the halves;
++                    // it overflows the 2 px box, so it adds no height either.
+                     Some(rule) => {
+                         let [left, right] = rule.halves();
+                         h_flex()
+@@ -3123,6 +3125,26 @@ impl BlockNode {
+                             .h(px(2.))
+                             .items_center()
+                             .child(div().flex_1().h(rule.thickness).bg(left.background()))
++                            .when_some(rule.ornament, |this, ornament| {
++                                this.child(
++                                    h_flex()
++                                        .flex_none()
++                                        .w(ornament.span())
++                                        .h(px(2.))
++                                        .justify_center()
++                                        .items_center()
++                                        .child(
++                                            gpui::svg()
++                                                .flex_none()
++                                                .size(ornament.size)
++                                                .data(ornament.svg.as_bytes())
++                                                .text_color(ornament.color)
++                                                .with_transformation(gpui::Transformation::rotate(
++                                                    gpui::radians(ornament.rotate.to_radians()),
++                                                )),
++                                        ),
++                                )
++                            })
+                             .child(div().flex_1().h(rule.thickness).bg(right.background()))
+                             .into_any_element()
+                     }

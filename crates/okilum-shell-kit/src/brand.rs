@@ -609,7 +609,8 @@ const DECORATION_SLOTS: [&str; 5] = ["headingRule", "hr", "blockquote", "linkMar
 /// or line; thicknesses are pixels; angles are CSS degrees.
 fn parse_decorations(json: Option<&serde_json::Value>) -> gpui_base::text::TextDecorations {
     use gpui_base::text::{
-        BlockquoteDecoration, Gradient, GradientBar, HorizontalRule, LinkMarker, TextDecorations,
+        BlockquoteDecoration, Gradient, GradientBar, HorizontalRule, LinkMarker, RuleOrnament,
+        TextDecorations,
     };
     let Some(json) = json else {
         return TextDecorations::default();
@@ -644,6 +645,15 @@ fn parse_decorations(json: Option<&serde_json::Value>) -> gpui_base::text::TextD
                 edge: color(v, "edge")?,
                 middle: color(v, "middle")?,
                 thickness: px(number(v, "thickness", 1.)),
+                ornament: v.get("ornament").and_then(|o| {
+                    Some(RuleOrnament {
+                        svg: ornament_svg(o.get("glyph")?.as_str()?),
+                        color: color(o, "color")?,
+                        rotate: number(o, "rotate", 0.),
+                        size: px(number(o, "size", 12.)),
+                        gap: px(number(o, "gap", 8.)),
+                    })
+                }),
             })
         }),
         blockquote: json.get("blockquote").map(|v| BlockquoteDecoration {
@@ -660,6 +670,16 @@ fn parse_decorations(json: Option<&serde_json::Value>) -> gpui_base::text::TextD
             })
         }),
         bold: json.get("bold").and_then(|v| gradient(v, 90.)),
+    }
+}
+
+/// The vector outline for an `hr` ornament glyph (#3252). The ornament is
+/// painted as an SVG mask, never shaped as text, so a theme can name only a
+/// glyph Okilum ships an outline for.
+fn ornament_svg(glyph: &str) -> &'static str {
+    match glyph {
+        "\u{a7}" => include_str!("../../okilum-shell/assets/themes/ornaments/section-sign.svg"),
+        other => panic!("hr ornament glyph {other:?} has no outline; known: \u{a7}"),
     }
 }
 
@@ -2088,6 +2108,29 @@ mod tests {
                 marker.height > 0. && marker.height < 0.5,
                 "lower part, not the full line"
             );
+        }
+        // The hr ornament (#3252): Obsidianite's `hr::after`, a pink `§`
+        // turned 60°, in --text-sub-accent per mode. No other theme has one.
+        for (dark, pink) in [(false, 0xc2306f), (true, 0xf4569d)] {
+            let rule = tokens(obsidianite, dark)
+                .1
+                .decorations
+                .horizontal_rule
+                .unwrap();
+            let ornament = rule.ornament.expect("Obsidianite hr ornament");
+            assert_eq!(ornament.color, rgb(pink).into());
+            assert_eq!(ornament.rotate, 60.);
+            assert!(ornament.svg.contains("<path"), "an outline, not text");
+            assert!(
+                rule.half_width(px(400.)) < px(200.),
+                "halves stop at the gap"
+            );
+        }
+        for theme in ThemeId::ALL.into_iter().filter(|t| *t != obsidianite) {
+            for dark in [false, true] {
+                let rule = tokens(theme, dark).1.decorations.horizontal_rule;
+                assert!(rule.is_none_or(|r| r.ornament.is_none()), "{}", theme.key());
+            }
         }
         // The Obsidianite strong gradient, #87c2fd -> #dcb9fc.
         let bold = tokens(obsidianite, true).1.decorations.bold.unwrap();

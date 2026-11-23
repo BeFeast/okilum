@@ -107,7 +107,7 @@ the last distinct colour (`toAt` keeps where the last colour starts).
 | Slot | Recognised CSS |
 | --- | --- |
 | `headingRule` `{levels, from, to, toAt?}` | `border-image(-source): linear-gradient(...)` on `h2`…`h6`, `.HyperMD-header-N`, `.cm-header-N` |
-| `hr` `{edge, middle}` | gradient `border-image` on `hr` |
+| `hr` `{edge, middle, ornament?}` | gradient `border-image` on `hr`; `ornament` `{glyph, color, rotate, size, gap}` from `hr::after` (`content`, `color`, `transform: rotate()`, `padding` as the gap). A glyph the app has no outline for, or a theme with no `hr::after`, is reported |
 | `blockquote` `{angle, from, to, border, bars: {top, bottom}}` | gradient `background` on `blockquote` / `.HyperMD-quote`, its `::before`/`::after` bars (with `width`), `border-left` colour |
 | `linkMarker` `{internal, external, heightPx}` | gradient `background-image` on `.internal-link` / `.external-link` / `.cm-link`, `background-size` height |
 | `boldGradient` `{angle, from, to}` | `background-clip: text` with a gradient on `strong` / `.cm-strong`; both ends kept at reading contrast |
