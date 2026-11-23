@@ -262,6 +262,7 @@ mod source_presentation;
 mod text_ranges;
 mod theme_picker;
 mod ui_zoom;
+mod ui_zoom_diagnostics;
 mod updater;
 // Search labels reuse the editor's glyph-cluster selection geometry. Keep this
 // adapter unchanged here; #780 owns editor layout and geometry refinements.

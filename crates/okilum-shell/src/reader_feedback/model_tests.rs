@@ -17,6 +17,12 @@ pub(super) fn meta() -> Metadata {
         window_width: 1200.,
         window_height: 800.,
         decorations: "CSD".into(),
+        render: crate::ui_zoom_diagnostics::Snapshot {
+            render_scale: 2.25,
+            ui_zoom: 1.5,
+            viewport: "800×533.3333".into(),
+            ..Default::default()
+        },
     }
 }
 fn report() -> Report {
@@ -278,8 +284,25 @@ fn payload_character_limits_and_metadata_are_explicit() {
         "window_width",
         "window_height",
         "decorations",
+        "render_scale",
+        "ui_zoom",
+        "viewport",
     ] {
         assert!(!meta[key].is_null(), "{key}");
+    }
+    // #3244: native readings are flat keys too, null where the platform has none.
+    for key in [
+        "display",
+        "screen_backing_scale",
+        "window_backing_scale",
+        "window_on_screen",
+        "window_frame",
+        "layer_contents_scale",
+        "layer_size",
+        "drawable_size",
+        "drawable_matches_layer",
+    ] {
+        assert!(meta.get(key).is_some(), "{key}");
     }
     assert!(report
         .meta

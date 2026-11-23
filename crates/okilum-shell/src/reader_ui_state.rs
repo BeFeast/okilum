@@ -2369,7 +2369,10 @@ pub(crate) fn set_ui_zoom(zoom: f32, cx: &mut App) {
     // after dispatch, before their next frame, including auxiliary windows.
     cx.defer(move |cx| {
         for handle in cx.windows() {
-            let _ = handle.update(cx, |_, window, _| window.set_ui_scale(zoom));
+            let _ = handle.update(cx, |_, window, cx| {
+                window.set_ui_scale(zoom);
+                crate::ui_zoom_diagnostics::note("zoom", window, cx);
+            });
         }
     });
     cx.refresh_windows();
