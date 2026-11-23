@@ -1,0 +1,40 @@
+# #3244: the app starts with a persisted 200% UI zoom; Ctrl+Shift+0 must give
+# the same sharp 100% rendering as the live zoom path, not a soft one.
+note: |
+  # Zoom acceptance
+
+  The quick brown fox stays readable while the interface grows.
+preferences:
+  ui_zoom: 2.0
+# Full width: at 200% the note text starts near the left edge.
+region: [0, 90, 1366, 600]
+ready_text: quick brown fox
+steps:
+  - id: restored
+    text: quick brown fox
+    ui_scale: 2.0
+  - id: reset
+    # wtype needs the shifted keysym; "0" would synthesize Ctrl+0 (text zoom).
+    keys: [parenright]
+    mods: [ctrl, shift]
+    text: quick brown fox
+    ui_scale: 1.0
+    changed_from: restored
+    min_changed_pixels: 500
+  - id: zoom-in
+    keys: [plus]
+    mods: [ctrl, shift]
+    text: quick brown fox
+    ui_scale: 1.05
+    changed_from: reset
+    min_changed_pixels: 500
+  # Control: a reset reached by live zoom in this same run. A restored reset
+  # that renders softer or at a stale scale differs from it.
+  - id: reset-live
+    keys: [parenright]
+    mods: [ctrl, shift]
+    text: quick brown fox
+    ui_scale: 1.0
+    changed_from: reset
+    min_changed_pixels: 0
+    max_changed_pixels: 100
