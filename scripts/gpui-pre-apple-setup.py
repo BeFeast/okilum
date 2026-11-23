@@ -54,10 +54,13 @@ def prepare(repo, name, archive_override, verify):
         patches.append(patch)
     dest = repo / manifest["generated_path"]
     if dest.exists():
-        if tree_digest(dest) != manifest["tree_sha256"]:
+        if tree_digest(dest) == manifest["tree_sha256"]:
+            return manifest
+        if verify:
             raise ValueError(f"generated {package} differs from pinned source+patches; inspect mismatch")
-        return manifest
-    if verify:
+        # Stale generated tree (gitignored vendor/): rebuilt below, removed only
+        # after the new tree verified.
+    elif verify:
         raise ValueError(f"generated {package} missing; run scripts/gpui-pre-apple-setup.py")
     crate = f"{package}-{manifest['version']}"
     # Registry cache is a read-only archive source, never an extraction target.
@@ -97,6 +100,9 @@ def prepare(repo, name, archive_override, verify):
             raise ValueError(f"{package} patches change {changed}, not the approved {manifest['changed_files']}")
         if tree_digest(staged) != manifest["tree_sha256"]:
             raise ValueError(f"{package} generated source/manifest mismatch")
+        if dest.exists():
+            print(f"{package}: replacing stale generated {dest}")
+            shutil.rmtree(dest)
         shutil.move(str(staged), str(dest))
     return manifest
 

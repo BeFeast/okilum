@@ -62,6 +62,19 @@ class WindowsAtlasSetupTests(unittest.TestCase):
         source.write_text("unexpected mutation\n")
         self.assertIn("differs from pinned source+patch", self.run_setup("--verify", success=False))
 
+    def test_stale_generated_tree_is_regenerated_but_verify_stays_strict(self):
+        # A persistent worktree keeps vendor/ generated before a patch landed.
+        self.run_setup()
+        dest = self.root / "vendor/gpui-pre-windows-0.3.3"
+        (dest / "src/directx_atlas.rs").write_text("stale pre-patch tree\n")
+        (dest / "src/leftover.rs").write_text("removed upstream\n")
+        self.assertIn("differs from pinned source+patch", self.run_setup("--verify", success=False))
+        self.assertIn("replacing stale generated", self.run_setup())
+        self.assertEqual((dest / "src/directx_atlas.rs").read_bytes(), b"after\n")
+        self.assertFalse((dest / "src/leftover.rs").exists())
+        self.assertEqual(setup.tree_digest(dest), self.manifest["tree_sha256"])
+        self.run_setup("--verify")
+
     def test_missing_generated_source_is_not_a_successful_verification(self):
         self.assertIn("generated gpui-pre-windows missing", self.run_setup("--verify", success=False))
 
