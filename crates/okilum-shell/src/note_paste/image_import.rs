@@ -2,7 +2,6 @@
 //! executor; an embed is returned only after every requested file is durable.
 use super::{attachments, files};
 use image::ImageDecoder;
-use serde::{Deserialize, Serialize};
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 

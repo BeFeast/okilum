@@ -318,7 +318,6 @@ fn reader_bottom_space(viewport_height: Pixels) -> Pixels {
     px(120.).max(viewport_height * 0.30)
 }
 
-use reader_layout::READER_MAX_WIDTH;
 const READER_SIDE_PADDING: f32 = 40.;
 
 /// Left gutter of the note text, the same in Reader, Source and Live Preview

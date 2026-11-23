@@ -4,7 +4,7 @@ use gpui::{canvas, DispatchPhase, ScrollDelta, ScrollWheelEvent};
 
 gpui::actions!(ui_zoom, [ZoomIn, ZoomOut, Reset]);
 
-pub(crate) use okilum_shell_kit::ui_zoom::{normalize, normalize_step, DEFAULT_STEP, STEPS};
+pub(crate) use okilum_shell_kit::ui_zoom::{normalize, normalize_step, STEPS};
 
 /// The next whole multiple of `step` percent in `direction`, so 103% with a
 /// 5% step goes to 105% / 100%, not 108% / 98%.

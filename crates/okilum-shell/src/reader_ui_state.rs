@@ -4,6 +4,10 @@
 //! `okilum_shell_kit::reader_ui_state`, re-exported here under the same path.
 use super::*;
 pub(crate) use okilum_shell_kit::reader_ui_state::*;
+// Names the root also defines: the kit's store functions win here, as they
+// did when this module defined them.
+pub(crate) use okilum_shell_kit::reader_ui_state::{set_appearance, set_theme, Position};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Open Readers and the vault each active window shows (#1338).
 #[derive(Default)]
@@ -310,11 +314,13 @@ impl Reader {
         // A background sibling must not replace the active window's viewport
         // when both show the same vault (including during quit).
         if !active && {
-            let store = cx.default_global::<Readers>();
-            store.readers.iter().any(|other| {
-                other.entity_id() != cx.entity_id()
-                    && other.upgrade().is_some()
-                    && store.active_roots.get(&other.entity_id()) == Some(&self.vault_root)
+            let me = cx.entity_id();
+            cx.try_global::<Readers>().is_some_and(|store| {
+                store.readers.iter().any(|other| {
+                    other.entity_id() != me
+                        && other.upgrade().is_some()
+                        && store.active_roots.get(&other.entity_id()) == Some(&self.vault_root)
+                })
             })
         } {
             self.set_ui_active(false, cx);
