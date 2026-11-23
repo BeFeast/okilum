@@ -8,7 +8,7 @@
 #   okilum-slot run --label shell-split-baseline-<sha8> --mem 9 \
 #     --env BUILD_SLOT_SCCACHE=off --require-host okilum-build-nas \
 #     --source-git "$PWD" --receipt "$qa/receipt.json" \
-#     -- bash scripts/ci/shell-split-baseline.sh "$qa"
+#     -- bash scripts/ci/shell-split-baseline.sh "$qa/out"
 #
 # Writes into OUT (default target/shell-split-baseline):
 #   tests.txt     every test name of the okilum-shell lib and `okilum` bin
