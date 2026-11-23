@@ -45,6 +45,19 @@ scripts/verify hr-ornament
 scripts/verify ui-zoom-step
 ```
 
+`scripts/verify` builds incrementally: it passes `--env CARGO_INCREMENTAL=1
+--env BUILD_SLOT_SCCACHE=off` to `okilum-slot run` (sccache refuses
+incremental, so it is off for these runs only). Measured 2026-11-23/24 in the
+pool: a warm one-line `okilum-shell` rebuild takes ~72 s non-incremental and
+~17 s incremental (verify on okilum-dev, same slot, one-line change: build step 30 s including vendor setup and the Cargo no-op checks). The first incremental build in a slot is slower (cold,
+166–220 s on okilum-dev; the first slot ended at 19.96 GB, over the 16 GiB cap) and adds about 4.5–5 GiB to that slot's target (cap
+16 GiB on okilum-dev, 20 GiB elsewhere); a target over the cap is emptied, so
+the next run there is cold. Slots are assigned by the pool, so consecutive runs
+can land on different slots and each pays the cold build once. Only verify
+runs are affected: CI, full checks and release/beta builds stay
+non-incremental, and pool config/`BASE_ENV` are untouched. Opt out with
+`OKILUM_VERIFY_INCREMENTAL=0`.
+
 Each command streams the working tree (including an uncommitted acceptance
 file) into `okilum-slot`, builds the app alone in its shared target, starts an
 isolated 1366×768 Wayland rig, and returns 0/1 with PNGs, `result.json`, source

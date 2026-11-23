@@ -431,6 +431,17 @@ def run(args, scenario, output, result):
             rig.close()
 
 
+def incremental_env():
+    """Dev-loop builds are incremental (warm one-line rebuild ~17 s vs ~72 s).
+
+    sccache refuses incremental, so it is turned off for these runs only.
+    OKILUM_VERIFY_INCREMENTAL=0 restores the pool's non-incremental default.
+    """
+    if os.environ.get('OKILUM_VERIFY_INCREMENTAL', '1') == '0':
+        return []
+    return ['--env', 'CARGO_INCREMENTAL=1', '--env', 'BUILD_SLOT_SCCACHE=off']
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('scenario', help='acceptance/<scenario>.yaml')
@@ -463,6 +474,7 @@ def main():
                                '--label', f'verify-{args.scenario}', '--require-host',
                                os.environ.get('OKILUM_VERIFY_HOST', 'okilum-dev'),
                                '--env', f'OKILUM_SOURCE_COMMIT={revision}',
+                               *incremental_env(),
                                '--source-dir', str(ROOT), '--receipt', str(args.output / 'slot.json'),
                                '--', 'python3', 'scripts/verify.py', args.scenario,
                                '--in-slot', '--output', str(args.output),
