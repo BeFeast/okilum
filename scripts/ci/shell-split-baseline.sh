@@ -5,6 +5,7 @@
 # cargo and its peak RSS is counted:
 #
 #   mkdir -p "$qa/out"   # build-slot ships back only directories that exist
+#   OKILUM_SOURCE_COMMIT=$(git rev-parse HEAD) \
 #   okilum-slot run --label shell-split-baseline-<sha8> --mem 9 \
 #     --env BUILD_SLOT_SCCACHE=off --require-host okilum-build-nas \
 #     --source-git "$PWD" --receipt "$qa/receipt.json" \
@@ -22,7 +23,9 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 OUT=$(realpath -m "${1:-target/shell-split-baseline}")
 mkdir -p "$OUT"
-export OKILUM_SOURCE_COMMIT="${OKILUM_SOURCE_COMMIT:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}"
+# A queue slot's own git HEAD is not the streamed source: name the commit
+# through OKILUM_SOURCE_COMMIT (build-slot forwards it) or record "unknown".
+export OKILUM_SOURCE_COMMIT="${OKILUM_SOURCE_COMMIT:-unknown}"
 export CARGO_INCREMENTAL=0
 export CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-0}"
 export CARGO_PROFILE_TEST_DEBUG="${CARGO_PROFILE_TEST_DEBUG:-0}"

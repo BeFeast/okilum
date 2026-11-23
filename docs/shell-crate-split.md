@@ -36,6 +36,7 @@ shared compile cache off:
 
 ```bash
 mkdir -p "$qa/out"   # build-slot ships back only directories that exist
+OKILUM_SOURCE_COMMIT=$(git rev-parse HEAD) \
 okilum-slot run --label shell-split-baseline-<sha8> --mem 9 \
   --env BUILD_SLOT_SCCACHE=off --require-host okilum-build-nas \
   --source-git "$PWD" --receipt "$qa/receipt.json" \
@@ -61,3 +62,27 @@ base and on its head, checks that the head lists every test and action of the
 base (module paths do not change in a move), and commits the head's lists.
 
 ## Results
+
+### 2026-11-23, PR0 (#3232)
+
+Source `58e0d2082` (main e81e9ba60 plus this PR's test-only action dump),
+streamed with `--source-git`; build-queue run `issue-3232-baseline-58e0d208`
+on `okilum-build-nas` (12 CPU, 16 GiB cgroup), `CARGO_BUILD_JOBS=4`, rustc
+1.100.0, mold, `CARGO_PROFILE_{DEV,TEST}_DEBUG=line-tables-only` (the slot's
+setting), `CARGO_INCREMENTAL=0`, sccache off, no OOM kill. 441 056 lines in
+`crates/okilum-shell/src`.
+
+| Measured | Peak RSS | Wall | Largest unit |
+|---|---:|---:|---|
+| `cargo test -p okilum-shell --bin okilum --no-run` | 8.77 GiB (9 197 032 KiB) | 177 s | `okilum` bin test harness 174.1 s |
+| `cargo build -p okilum-shell` | 4.64 GiB (4 865 860 KiB) | 237 s | gpui-pre 106.8 s, `okilum` bin 73.0 s |
+
+- The test-harness command compiled only the harness (dependencies and the lib
+  harness were built before), so its 8.77 GiB is that single `rustc`. It sits
+  above the 8 GiB slot cap and within ±5 % of the design model (8.5 GiB for
+  441k lines) and of the 9.08 GiB peak seen on 23.11.
+- The build command also compiled the non-test dependency graph (245 units);
+  its peak is the larger of those and the `okilum` bin `rustc`.
+- Golden lists: 3 499 test names (3 498 unique;
+  `diagnostic_io::tests::closed_pipe_output_is_best_effort` is in both the lib
+  and the bin harness) and 295 registered action names.
