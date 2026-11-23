@@ -91,6 +91,17 @@ class GpuiAppleSetupTests(unittest.TestCase):
         window.write_text("unexpected mutation\n")
         self.assertIn("generated gpui-pre-macos differs", self.run_setup("--verify", success=False))
 
+    def test_stale_generated_tree_is_regenerated_but_verify_stays_strict(self):
+        self.run_setup()
+        dest = self.root / "vendor/gpui-pre-macos-0.3.3"
+        (dest / "src/window.rs").write_text("stale pre-patch tree\n")
+        (dest / "src/leftover.rs").write_text("removed upstream\n")
+        self.assertIn("generated gpui-pre-macos differs", self.run_setup("--verify", success=False))
+        self.assertIn("gpui-pre-macos: replacing stale generated", self.run_setup())
+        self.assertEqual((dest / "src/window.rs").read_bytes(), b"patched window\n")
+        self.assertFalse((dest / "src/leftover.rs").exists())
+        self.run_setup("--verify")
+
     def test_missing_generated_source_is_not_a_successful_verification(self):
         self.assertIn("generated gpui-pre-macos missing", self.run_setup("--verify", success=False))
 

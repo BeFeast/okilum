@@ -48,12 +48,14 @@ def main():
     if drop_patch and digest(drop_patch.read_bytes()) != drop["sha256"]:
         raise ValueError("gpui-pre-windows external drop patch/manifest mismatch")
     dest = repo / manifest["generated_path"]
-    if dest.exists():
-        if tree_digest(dest) != manifest["tree_sha256"]:
-            raise ValueError("generated gpui-pre-windows differs from pinned source+patch; inspect mismatch")
-    elif args.verify:
+    current = dest.exists() and tree_digest(dest) == manifest["tree_sha256"]
+    if dest.exists() and not current and args.verify:
+        raise ValueError("generated gpui-pre-windows differs from pinned source+patch; inspect mismatch")
+    elif not dest.exists() and args.verify:
         raise ValueError("generated gpui-pre-windows missing; run scripts/gpui-pre-windows-setup.py")
-    else:
+    elif not current:
+        # A stale generated tree (gitignored vendor/, e.g. from before a patch
+        # was added) is rebuilt; it is removed only after the new tree verified.
         # Registry cache is a read-only archive source, never an extraction target.
         cached = sorted((Path.home() / ".cargo/registry/cache").glob("*/gpui-pre-windows-0.3.3.crate"))
         archive = args.archive or (cached[0] if cached else None)
@@ -95,6 +97,9 @@ def main():
                 raise ValueError("Windows backend patch exceeds the DirectX atlas-upload exception")
             if tree_digest(staged) != manifest["tree_sha256"]:
                 raise ValueError("gpui-pre-windows generated source/manifest mismatch")
+            if dest.exists():
+                print("gpui-pre-windows: replacing stale generated " + str(dest))
+                shutil.rmtree(dest)
             shutil.move(str(staged), str(dest))
     print("gpui-pre-windows ready: " + manifest["version"] + " checksum-pinned source + DirectX staging atlas upload + external data drops verified")
 

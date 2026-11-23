@@ -39,12 +39,14 @@ def main():
     if digest(patch.read_bytes()) != manifest["patch_sha256"]:
         raise ValueError("comrak patch/manifest mismatch")
     dest = repo / manifest["generated_path"]
-    if dest.exists():
-        if tree_digest(dest) != manifest["tree_sha256"]:
-            raise ValueError("generated comrak differs from pinned source+patch; inspect mismatch")
-    elif args.verify:
+    current = dest.exists() and tree_digest(dest) == manifest["tree_sha256"]
+    if dest.exists() and not current and args.verify:
+        raise ValueError("generated comrak differs from pinned source+patch; inspect mismatch")
+    elif not dest.exists() and args.verify:
         raise ValueError("generated comrak missing; run scripts/comrak-setup.py")
-    else:
+    elif not current:
+        # A stale generated tree (gitignored vendor/) is rebuilt; it is removed
+        # only after the new tree verified.
         # Registry cache is a read-only archive source, never an extraction target.
         cached = sorted((Path.home() / ".cargo/registry/cache").glob("*/comrak-0.47.0.crate"))
         archive = args.archive or (cached[0] if cached else None)
@@ -76,6 +78,9 @@ def main():
             subprocess.run(["git", "apply", "--unidiff-zero", "--unsafe-paths", "--directory=" + str(staged), str(patch)], check=True)
             if tree_digest(staged) != manifest["tree_sha256"]:
                 raise ValueError("comrak generated source/manifest mismatch")
+            if dest.exists():
+                print("comrak: replacing stale generated " + str(dest))
+                shutil.rmtree(dest)
             shutil.move(str(staged), str(dest))
     print("comrak ready: " + manifest["version"] + " checksum-pinned source + reference-audit API verified")
 
