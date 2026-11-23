@@ -338,6 +338,7 @@ fn set_marker(folder: &mut Element, marker: &str) {
     element.children.push(XMLNode::Text(marker.into()));
     folder.children.push(XMLNode::Element(element));
 }
+#[cfg(target_os = "linux")]
 fn read_ids(r: &Reference, name: &str) -> Result<Vec<String>> {
     let path = r.directory.join(name);
     if !path.try_exists()? {
@@ -851,10 +852,14 @@ struct FencedFolders {
     closed: Vec<String>,
     paused_at_start: Vec<String>,
     /// Admitted while their root was absent (with their original marker);
-    /// checked again after readiness.
+    /// checked again after readiness. Linux only: other platforms fail a
+    /// missing root closed, so nothing returns during their startup.
+    #[cfg(target_os = "linux")]
     returning: Vec<(String, Folder, Fence)>,
     /// Present but closed (held) folders that keep their fence marker: their
     /// records must survive readiness so supervision can unfence them later.
+    /// Linux only: fence records are read only there.
+    #[cfg(target_os = "linux")]
     held_fenced: BTreeMap<String, Fence>,
 }
 fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
@@ -877,7 +882,9 @@ fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
     let mut leases: Vec<WriterLease> = Vec::new();
     let mut closed = Vec::new();
     let mut paused_at_start = Vec::new();
+    #[cfg(target_os = "linux")]
     let mut returning = Vec::new();
+    #[cfg(target_os = "linux")]
     let mut held_fenced = BTreeMap::new();
     for e in xml
         .children
@@ -929,6 +936,7 @@ fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
             });
             set_marker(e, &format!("{FENCE_PREFIX}{}", Uuid::new_v4()));
             persist.insert(id.clone(), original.clone());
+            #[cfg(target_os = "linux")]
             returning.push((id, saved.unwrap().clone(), original));
             continue;
         }
@@ -985,6 +993,7 @@ fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
                 leases.push(lease);
             }
             Err(_) => {
+                #[cfg(target_os = "linux")]
                 if still_fenced && !scoped {
                     if let Some(fence) = &fence {
                         held_fenced.insert(id.clone(), fence.clone());
@@ -1016,7 +1025,9 @@ fn fence_folders(r: &Reference, b: &Binding) -> Result<FencedFolders> {
         leases,
         closed,
         paused_at_start,
+        #[cfg(target_os = "linux")]
         returning,
+        #[cfg(target_os = "linux")]
         held_fenced,
     })
 }
