@@ -1,0 +1,22 @@
+# #3151: Obsidianite colours plain italic text purple (its `em`, #bb9af7).
+appearance: dark
+preferences: {theme: obsidianite}
+note: |
+  # Italic acceptance
+
+  Plain words before *soft purple emphasis words written in italics* and after.
+
+  Closing line of plain text
+region: [300, 90, 800, 540]
+ready_text: Plain words
+steps:
+  - id: italic-colour
+    text: Closing line
+    pixels:
+      # Purple italic glyphs: blue-dominant with red well above green.
+      # Body text (#bebebe), cyan H1, periwinkle links and the bold gradient
+      # (green above 0.7) stay out.
+      region: [300, 90, 800, 540]
+      expression: 'b>0.8 && r>0.55 && g<0.68 && b>g*1.3 && r>g ? 1 : 0'
+      min: 40
+      max: 20000

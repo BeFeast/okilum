@@ -1533,6 +1533,14 @@ def find_decorations(sheet: Sheet, variables: Variables, mode: str,
                             used.add((idx, p))
                     except Unresolved as err:
                         notes.append(f"boldGradient (L{rule.line}): {err}")
+            # Italic text colour (#3151): a plain `color` on `em` / `.cm-em`.
+            if (_selector_has(selector, r"(?:^|[\s>,])em(?![\w-])|cm-em(?![\w-])")
+                    and "color" in props and not re.search(r"::?selection|:hover|formatting", selector)):
+                try:
+                    deco["italic"] = {"color": to_hex(opaque(resolver.color(props["color"])))}
+                    used.add((idx, "color"))
+                except Unresolved as err:
+                    notes.append(f"italic (L{rule.line}): {err}")
             # Syntax palette.
             if "color" in props:
                 for slot, classes in SYNTAX_CLASSES.items():
@@ -1675,6 +1683,19 @@ def convert(css: str, *, theme_id: str, name: str, credit: str = "",
                 report.adjustments.append((mode, f"boldGradient.{end}", bold[end], fixed,
                                            f"bold text on canvas below {reading}:1"))
                 bold[end] = fixed
+
+    # Italic text is reading text too.
+    for mode in MODES:
+        italic = deco_by_mode.get(mode, {}).get("italic")
+        if not italic:
+            continue
+        canvas = quantize(modes[mode]["canvas"])
+        c = parse_color(italic["color"])
+        if contrast(c, canvas) < reading + 0.01:
+            fixed = to_hex(_nudge(c, [canvas], reading))
+            report.adjustments.append((mode, "italic.color", italic["color"], fixed,
+                                       f"italic text on canvas below {reading}:1"))
+            italic["color"] = fixed
 
     # Everything not carried over.
     mapped_vars = set()

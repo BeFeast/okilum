@@ -196,6 +196,9 @@
       "bold": {
         "from": "#245fa6",
         "to": "#7140b8"
+      },
+      "italic": {
+        "color": "#7836ef"
       }
     },
     "dark": {
@@ -246,6 +249,9 @@
       "bold": {
         "from": "#87c2fd",
         "to": "#dcb9fc"
+      },
+      "italic": {
+        "color": "#bb9af7"
       }
     }
   }

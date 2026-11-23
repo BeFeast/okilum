@@ -76,6 +76,9 @@ strong {
   -webkit-text-fill-color: transparent;
   background-image: linear-gradient(62deg, #87c2fd 0%, #dcb9fc 100%) !important;
 }
+.cm-em,
+em { color: #bb9af7 !important; font-family: OperatorMonoSSmLig-Book, Rubik !important; }
+.cm-em.cm-formatting-em { font-size: 0.6rem; }
 .theme-dark .cm-s-obsidian span.cm-keyword { color: #66d9ef; }
 .token.string { color: #50fa7b; }
 @keyframes bounce { from { transform: scale(1); } to { transform: scale(1.2); } }
@@ -221,6 +224,9 @@ class Conversion(unittest.TestCase):
         self.assertEqual(deco["blockquote"]["bars"]["top"]["width"], 0.6)
         self.assertEqual(deco["linkMarker"], {"internal": "#0ed2f78c", "heightPx": 5.0})
         self.assertEqual(dark["syntax"], {"keyword": "#66d9ef", "string": "#50fa7b"})
+        # #3151: Obsidianite's purple `em`; the derived light italic stays readable.
+        self.assertEqual(deco["italic"], {"color": "#bb9af7"})
+        self.assertGreaterEqual(ratio(light["decorations"]["italic"]["color"], light["canvas"]), 4.5)
         light_bold = light["decorations"]["boldGradient"]
         for end in ("from", "to"):
             self.assertGreaterEqual(ratio(light_bold[end], light["canvas"]), 4.5)

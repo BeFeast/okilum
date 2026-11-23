@@ -601,7 +601,14 @@ fn resolve(theme: ThemeId) -> ThemeTokens {
 /// The slot names a theme's `decorations.<mode>` may fill (#3154); the
 /// theme test rejects any other.
 #[cfg(test)]
-const DECORATION_SLOTS: [&str; 5] = ["headingRule", "hr", "blockquote", "linkMarker", "bold"];
+const DECORATION_SLOTS: [&str; 6] = [
+    "headingRule",
+    "hr",
+    "blockquote",
+    "linkMarker",
+    "bold",
+    "italic",
+];
 
 /// Theme decoration slots from a theme file's `decorations.<mode>` (#3154).
 /// A missing slot stays empty, and the renderer then draws as it did before
@@ -671,6 +678,8 @@ fn parse_decorations(json: Option<&serde_json::Value>) -> gpui_base::text::TextD
             })
         }),
         bold: json.get("bold").and_then(|v| gradient(v, 90.)),
+        // #3151: a theme's `em` colour, e.g. Obsidianite's purple italics.
+        italic: json.get("italic").and_then(|v| color(v, "color")),
     }
 }
 
@@ -2033,7 +2042,7 @@ mod tests {
     }
 
     #[test]
-    fn issue3154_decoration_slots_parse_strictly_and_obsidianite_fills_all_five() {
+    fn issue3154_decoration_slots_parse_strictly_and_obsidianite_fills_all_six() {
         let obsidianite = ThemeId::from_key("obsidianite").expect("built-in theme");
         for theme in ThemeId::ALL {
             let file: Option<serde_json::Value> = theme
@@ -2063,6 +2072,7 @@ mod tests {
                     d.blockquote.is_some(),
                     d.link_marker.is_some(),
                     d.bold.is_some(),
+                    d.italic.is_some(),
                 ]
                 .into_iter()
                 .filter(|filled| *filled)
@@ -2083,11 +2093,16 @@ mod tests {
                     d.horizontal_rule.is_some(),
                     d.blockquote.is_some(),
                     d.link_marker.is_some(),
-                    d.bold.is_some()
+                    d.bold.is_some(),
+                    d.italic.is_some()
                 ),
-                (true, true, true, true, true),
-                "Obsidianite fills all five slots"
+                (true, true, true, true, true, true),
+                "Obsidianite fills all six slots"
             );
+            // #3151: italic text keeps reading contrast.
+            let italic = d.italic.unwrap();
+            assert!(contrast(italic, p.canvas) >= 4.5, "italic on canvas");
+            assert!(contrast(italic, p.surface) >= 4.5, "italic on surface");
             // Bold text stays readable letter by letter, ends and middle.
             let bold = d.bold.unwrap();
             for c in [bold.from, bold.to, bold.color_at(0.5)] {

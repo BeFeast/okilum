@@ -448,7 +448,7 @@ Obsidian community themes are ported offline with
 file that already passes these gates, plus a report of every adjustment and
 every rule it could not carry over.
 
-**Decoration slots** (#3154). Besides colours, a theme may fill up to five
+**Decoration slots** (#3154). Besides colours, a theme may fill up to six
 decoration slots under `decorations.light` / `decorations.dark`. Each slot is
 drawn by one renderer path in the Reader (vendor patch 0155, `TextDecorations`
 on the TextView style) and the same values in Live Preview (the projection's
@@ -462,6 +462,7 @@ exactly what Okilum drew before; today only Obsidianite fills them.
 | `blockquote` | `background` {`angle`, `from`, `to`}, `border`, `topBar` / `bottomBar` {`from`, `to`, `length`, `thickness`} | angled background, left border colour, short bars along the top and bottom edges; in Live Preview one background per run of quoted lines |
 | `linkMarker` | `from`, `to`, `height`, `bottom` (shares of the line height) | a band under the lower part of each link line, never the full line height |
 | `bold` | `from`, `to` | bold text coloured letter by letter along the span |
+| `italic` | `color` | plain italic text in one colour (#3151, vendor patch 0161); bold italic, italic code and italic links keep theirs. An italic span is its own font run, so the colour adds no font-run split |
 
 Gradients are GPUI's two-stop `linear_gradient` (angles in CSS degrees);
 colours interpolate in sRGB with alpha. The bold gradient needs no GPUI patch:

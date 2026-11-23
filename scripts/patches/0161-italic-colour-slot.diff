@@ -1,0 +1,59 @@
+diff --git a/crates/base/src/text/decorations.rs b/crates/base/src/text/decorations.rs
+index d4262c09..86eca7c7 100644
+--- a/crates/base/src/text/decorations.rs
++++ b/crates/base/src/text/decorations.rs
+@@ -298,6 +298,10 @@ pub struct TextDecorations {
+     pub link_marker: Option<LinkMarker>,
+     /// Bold text coloured letter by letter along the span.
+     pub bold: Option<Gradient>,
++    /// The colour of italic text that is neither bold, code nor a link
++    /// (Obsidianite's `em`). An italic span is its own font run, so one run
++    /// colour adds no font-run split and no reshaping.
++    pub italic: Option<Hsla>,
+ }
+ 
+ impl TextDecorations {
+diff --git a/crates/base/src/text/node.rs b/crates/base/src/text/node.rs
+index 348b08bf..2fd1fc6d 100644
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -1763,6 +1763,12 @@ fn mark_highlight(mark: &TextMark, node_cx: &NodeContext) -> InlineHighlight {
+     }
+     if mark.italic {
+         highlight.font_style = Some(FontStyle::Italic);
++        // Italic colour slot: bold italic keeps the bold look (and the bold
++        // gradient), code keeps its own colour, and a link's colour is set
++        // over this one by the caller.
++        if !mark.bold && !mark.code {
++            highlight.color = node_cx.style.decorations().italic;
++        }
+     }
+     if mark.strikethrough {
+         highlight.strikethrough = Some(gpui::StrikethroughStyle {
+@@ -3173,6 +3179,26 @@ impl BlockNode {
+ mod tests {
+     use super::*;
+ 
++    /// Italic colour slot: plain italic takes the theme colour; bold italic,
++    /// italic code and text without the slot keep theirs.
++    #[test]
++    fn italic_slot_colours_plain_italic_only() {
++        let purple: Hsla = gpui::rgb(0xbb9af7).into();
++        let themed = NodeContext {
++            style: TextViewStyle::default().with_decorations(crate::text::TextDecorations {
++                italic: Some(purple),
++                ..Default::default()
++            }),
++            ..Default::default()
++        };
++        let color = |mark: TextMark, node_cx: &NodeContext| mark_highlight(&mark, node_cx).style.color;
++        assert_eq!(color(TextMark::default().italic(), &themed), Some(purple));
++        assert_eq!(color(TextMark::default().italic(), &NodeContext::default()), None);
++        assert_eq!(color(TextMark::default(), &themed), None);
++        assert_eq!(color(TextMark::default().italic().bold(), &themed), None);
++        assert_ne!(color(TextMark::default().italic().code(), &themed), Some(purple));
++    }
++
+     /// Table columns are sized from shaped text, so a column of inline code
+     /// has to be measured in the code family. Measured in the body font, the
+     /// wide-mono test font makes `col_w` come out at half the rendered width.

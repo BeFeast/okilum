@@ -1497,6 +1497,16 @@ fn projected_styles(
                         // bold throughout: a colour there would split their
                         // run, so bold inside a heading stays solid.
                         Some(gpui_base::text::gradient_run_color())
+                    } else if let Some(italic) = colors
+                        .decorations
+                        .italic
+                        .filter(|_| counts[1] > 0 && counts[0] == 0 && counts[3] == 0)
+                    {
+                        // Italic colour slot (#3151), as the Reader: plain
+                        // italic only; bold italic and italic code keep
+                        // theirs. Italic is its own font run, so the colour
+                        // adds no font-run split.
+                        Some(italic)
                     } else if counts[4] > 0 {
                         Some(colors.heading(heading_level))
                     } else if counts[6] > 0 {
@@ -2533,6 +2543,58 @@ mod tests {
         // A link inside a heading keeps the link colour.
         assert_eq!(style_at("link").unwrap().color, Some(colors.link));
         assert!(style_at("body").is_none_or(|style| style.color.is_none()));
+    }
+
+    #[test]
+    fn issue3151_italic_slot_colours_plain_italic_in_live_preview() {
+        use gpui_base::text::TextDecorations;
+        let text = "plain *soft* and ***both*** and *`code`* and *[link](https://x.test)*\n";
+        let source = self::source(text);
+        let provider = Arc::new(CachedProvider::classify(source.clone()));
+        let purple: gpui::Hsla = gpui::rgb(0xbb9af7).into();
+        let base = ProjectionColors {
+            headings: [gpui::rgb(0x18202a).into(); 6],
+            link: gpui::rgb(0x005ca8).into(),
+            muted: gpui::rgb(0x6b7280).into(),
+            decorations: Default::default(),
+        };
+        let themed = ProjectionColors {
+            decorations: TextDecorations {
+                italic: Some(purple),
+                ..Default::default()
+            },
+            ..base
+        };
+        let compose = |colors| {
+            provider
+                .clone()
+                .with_colors(colors)
+                .compose(&source, &inactive(&source))
+                .unwrap()
+        };
+        let (plain, themed) = (compose(base), compose(themed));
+        let color_at = |p: &dyn SourceProjection, label: &str| {
+            let offset = p.text().find(label).unwrap();
+            p.styles()
+                .iter()
+                .find(|s| s.range.start.0 <= offset && offset < s.range.end.0)
+                .and_then(|s| s.color)
+        };
+        // Control: without the slot plain italic has no colour of its own.
+        assert_eq!(color_at(plain.as_ref(), "soft"), None);
+        assert_eq!(color_at(themed.as_ref(), "soft"), Some(purple));
+        assert_ne!(color_at(themed.as_ref(), "both"), Some(purple));
+        assert_ne!(color_at(themed.as_ref(), "code"), Some(purple));
+        assert_eq!(color_at(themed.as_ref(), "link"), Some(base.link));
+        // Paint-only: same text and font runs.
+        assert_eq!(plain.text(), themed.text());
+        let runs = |p: &dyn SourceProjection| {
+            p.styles()
+                .iter()
+                .map(|s| (s.range.clone(), s.font_family.clone(), s.bold, s.italic))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(runs(plain.as_ref()), runs(themed.as_ref()));
     }
 
     #[test]
