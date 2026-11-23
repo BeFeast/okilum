@@ -3,6 +3,7 @@ type: view
 view: query
 title: Areas
 sidebar: true
+params: {context: context, layer: layer}
 ---
 ```view
 from: notes

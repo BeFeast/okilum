@@ -96,10 +96,22 @@ fn every_fixture_file_loads() {
     let fields: Yaml =
         serde_yaml::from_str(&std::fs::read_to_string(root().join("@Schema/fields.yaml")).unwrap())
             .expect("fields.yaml parses");
-    assert!(fields
+    let note_fields = fields
         .get("fields")
         .and_then(Yaml::as_mapping)
-        .is_some_and(|m| m.len() > 10));
+        .expect("note field definitions");
+    assert!(note_fields.len() > 10);
+    let writable_fields: BTreeSet<_> = note_fields
+        .iter()
+        .filter_map(|(name, field)| {
+            let flag = field.get("writable_by_actions")?;
+            let name = name.as_str().expect("note field name");
+            flag.as_bool()
+                .unwrap_or_else(|| panic!("{name}: writable_by_actions must be a boolean"))
+                .then_some(name)
+        })
+        .collect();
+    assert_eq!(writable_fields, BTreeSet::from(["due", "owner", "status"]));
 
     let mut all = Vec::new();
     files(&root(), &mut all);

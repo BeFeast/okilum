@@ -1,7 +1,7 @@
 ---
 type: decision
 area: Health
-status: accepted
+decision_status: accepted
 date: 2026-11-18
 updated: 2026-11-18
 ---

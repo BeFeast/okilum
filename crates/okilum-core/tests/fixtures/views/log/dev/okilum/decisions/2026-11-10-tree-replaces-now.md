@@ -1,7 +1,7 @@
 ---
 type: decision
 area: Dev
-status: superseded
+decision_status: superseded
 date: 2026-11-10
 updated: 2026-11-24
 ---

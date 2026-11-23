@@ -2,7 +2,7 @@
 type: view
 view: query
 title: Domain
-params: {domain: area}
+params: {domain: area, context: context, layer: layer}
 materialize: true
 ---
 # $domain

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://okilum.local/schema/view/v0",
   "title": "Okilum view — DRAFT v0, NOT FINAL",
-  "$comment": "DRAFT v0. Okilum owns this file; it lands in @Schema/view.schema.json at the T1 freeze, after the Gardener assistant's coverage run. The field contract is @Schema/fields.yaml (Gardener). Spec: Dev/Areas/okilum/specs/2026-11-24-views.md. Validates (a) the frontmatter of a view file and (b) each top-level fenced `view` block (YAML parsed to JSON). Root = one block; frontmatter = #/$defs/frontmatter. Semantic checks (where parses, fields exist in fields.yaml, literal types, $params declared, set only on writable fields) are done by okilum-core view::validate, not by this schema.",
+  "$comment": "Draft v0. Okilum owns this schema. Root validates one YAML view block; #/$defs/frontmatter validates view frontmatter. Semantic validation also checks query syntax, declared params, literal types and boolean writable_by_actions permissions from @Schema/fields.yaml.",
   "$ref": "#/$defs/block",
   "$defs": {
     "name": {
@@ -68,7 +68,7 @@
       "oneOf": [
         {
           "const": "check",
-          "$comment": "Tick/untick a task checkbox. Only for from: tasks. Revision-bound task_edit::write + Undo."
+          "$comment": "Toggle the checkbox and its inline done date. Only for from: tasks. Revision-bound task_edit::write + Undo."
         },
         {
           "type": "object",
@@ -91,7 +91,7 @@
           ],
           "properties": {
             "set": {
-              "$comment": "One scalar frontmatter field whose writable_by_actions in @Schema/fields.yaml includes set: status, owner, due. Values come from its enum, a slug editor (owner) or a date picker. Only for from: notes; not for from: jsonl.",
+              "$comment": "Only for from: notes. Change one scalar frontmatter field with writable_by_actions: true in @Schema/fields.yaml. Values come from the field enum, a slug editor (owner), or a date picker.",
               "enum": [
                 "status",
                 "owner",
@@ -128,7 +128,18 @@
           "additionalProperties": {
             "$ref": "#/$defs/param"
           },
-          "maxProperties": 8
+          "maxProperties": 8,
+          "examples": [
+            {
+              "domain": "area",
+              "context": "context",
+              "layer": "layer"
+            },
+            {
+              "context": "context",
+              "layer": "layer"
+            }
+          ]
         },
         "extends": {
           "$ref": "#/$defs/wikilink",
@@ -336,7 +347,7 @@
         },
         "node_view": {
           "$ref": "#/$defs/wikilink",
-          "$comment": "tree: clicking a node opens this template with the node's level field bound to the template param of the same type."
+          "$comment": "For a tree, open this template with the selected node's level and its ancestor levels bound to template params of the matching types (area, context, layer in the sidebar example)."
         },
         "actions": {
           "type": "array",
@@ -413,6 +424,30 @@
         },
         {
           "if": {
+            "required": [
+              "actions"
+            ],
+            "properties": {
+              "actions": {
+                "contains": {
+                  "type": "object",
+                  "required": [
+                    "set"
+                  ]
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "from": {
+                "const": "notes"
+              }
+            }
+          }
+        },
+        {
+          "if": {
             "properties": {
               "from": {
                 "not": {
@@ -442,21 +477,6 @@
                   "required": [
                     "links"
                   ]
-                },
-                {
-                  "required": [
-                    "actions"
-                  ],
-                  "properties": {
-                    "actions": {
-                      "contains": {
-                        "type": "object",
-                        "required": [
-                          "set"
-                        ]
-                      }
-                    }
-                  }
                 }
               ]
             }

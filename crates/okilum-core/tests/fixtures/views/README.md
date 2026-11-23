@@ -16,12 +16,12 @@ Layout:
 - `@views/`: the 7 example views and `changes.jsonl` (gardener change log rows).
 - `@Schema/view.schema.json`: the Okilum view schema, draft v0.
 - `@Schema/fields.yaml`: copy of the Gardener assistant's field contract
-  (version 1-draft), with two comment lines changed to drop a host name and a
-  local address. TODO: resync this copy when the contract is frozen in the
-  vault `@Schema/`.
+  (version 1-draft) from the vault's `@Schema/`, with the host name and local
+  address replaced by generic placeholders.
 - `@Schema/tests/view-invalid/`: 9 views the schema must reject. They sit under
   `@Schema/`, which view queries exclude, so they never become rows and a
-  directory validation of `@views/` stays clean.
+  directory validation of `@views/` stays clean. `set-on-task.md` also covers
+  section and JSONL rows in separate blocks.
 
 Deliberate edge cases:
 

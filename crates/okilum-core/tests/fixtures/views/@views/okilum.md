@@ -16,7 +16,7 @@ show: sections
 ```view
 from: notes
 where: context = okilum and kind = decisions
-cols: [title, date, status]
+cols: [title, date, decision_status]
 sort: -date
 limit: 10
 show: table

@@ -1,7 +1,7 @@
 ---
 type: decision
 area: Dev
-status: accepted
+decision_status: accepted
 date: 2026-11-20
 updated: 2026-11-20
 ---
