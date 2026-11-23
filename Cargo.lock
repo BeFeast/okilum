@@ -6359,6 +6359,7 @@ dependencies = [
  "okilum-gpui",
  "okilum-t3",
  "resvg 0.45.1",
+ "rust-embed",
  "rustix",
  "serde",
  "serde_json",
