@@ -1922,7 +1922,7 @@ pub fn set_ui_zoom(zoom: f32, cx: &mut App) {
         for handle in cx.windows() {
             let _ = handle.update(cx, |_, window, cx| {
                 window.set_ui_scale(zoom);
-                crate::ui_zoom_diagnostics::note("zoom", window, cx);
+                crate::ui_zoom::scale_changed("zoom", window, cx);
             });
         }
     });
@@ -2433,7 +2433,6 @@ mod tests {
         );
     }
     use ::core::prelude::v1::test;
-    use gpui_component::WindowExt;
 
     #[gpui::test]
     fn tree_label_preference_defaults_to_file_names_and_survives_relaunch(cx: &mut TestAppContext) {

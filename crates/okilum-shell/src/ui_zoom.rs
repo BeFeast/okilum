@@ -30,6 +30,7 @@ fn modifier(m: Modifiers, mac: bool) -> bool {
 }
 
 pub(crate) fn init(cx: &mut App) {
+    okilum_shell_kit::ui_zoom::observe_scale(crate::ui_zoom_diagnostics::note, cx);
     cx.bind_keys([
         // Linux (xkb) reports Ctrl+Shift+= as `ctrl-+`: Shift is dropped for
         // symbol keys, so the shifted forms below never match there (#3229).
