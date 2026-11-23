@@ -6,7 +6,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/test-nofile.sh"
 # Retain admission's package feature union in later default-feature filters.
 # Switching back to single-package roots otherwise recompiles the same GUI
 # and core dependencies inside short operation groups after cold admission.
-packages=(-p okilum-write-authority -p okilum-core -p okilum-shell -p okilum-shell-kit -p okilum-t3)
+packages=(-p okilum-write-authority -p okilum-core -p okilum-shell -p okilum-t3)
 # The daily hosted gate runs the workspace census in its own parallel job (#3198)
 # and the pool gate runs it on its own shard: `all` (default) runs every suite,
 # `checks` all but workspace-full, `workspace` only workspace-full. The part is
