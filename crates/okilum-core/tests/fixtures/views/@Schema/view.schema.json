@@ -1,0 +1,468 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://okilum.local/schema/view/v0",
+  "title": "Okilum view — DRAFT v0, NOT FINAL",
+  "$comment": "DRAFT v0. Okilum owns this file; it lands in @Schema/view.schema.json at the T1 freeze, after the Gardener assistant's coverage run. The field contract is @Schema/fields.yaml (Gardener). Spec: Dev/Areas/okilum/specs/2026-11-24-views.md. Validates (a) the frontmatter of a view file and (b) each top-level fenced `view` block (YAML parsed to JSON). Root = one block; frontmatter = #/$defs/frontmatter. Semantic checks (where parses, fields exist in fields.yaml, literal types, $params declared, set only on writable fields) are done by okilum-core view::validate, not by this schema.",
+  "$ref": "#/$defs/block",
+  "$defs": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z_][a-z0-9_]*$"
+    },
+    "field": {
+      "$comment": "A field as in fields.yaml, a builtin, a let name, or note.<field> on tasks/sections rows. JSONL rows: any dotted key.",
+      "type": "string",
+      "pattern": "^[A-Za-z_@][A-Za-z0-9_.-]*$"
+    },
+    "sort_key": {
+      "$comment": "Leading '-' = descending. Missing values sort last in both directions; ties break by path, then line.",
+      "type": "string",
+      "pattern": "^-?[A-Za-z_@][A-Za-z0-9_.-]*$"
+    },
+    "wikilink": {
+      "type": "string",
+      "pattern": "^\\[\\[[^\\]|#]+(\\|[^\\]]*)?\\]\\]$"
+    },
+    "param_type": {
+      "enum": [
+        "area",
+        "context",
+        "kind",
+        "layer",
+        "status",
+        "text",
+        "date",
+        "number"
+      ]
+    },
+    "param": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/param_type"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "$ref": "#/$defs/param_type"
+            },
+            "default": {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            "label": {
+              "type": "string",
+              "maxLength": 80
+            }
+          }
+        }
+      ]
+    },
+    "action": {
+      "oneOf": [
+        {
+          "const": "check",
+          "$comment": "Tick/untick a task checkbox. Only for from: tasks. Revision-bound task_edit::write + Undo."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "open"
+          ],
+          "properties": {
+            "open": {
+              "const": "thread",
+              "$comment": "Open the row's `thread` field (t3code://threads/…), else note.thread. Navigation only."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "set"
+          ],
+          "properties": {
+            "set": {
+              "$comment": "One scalar frontmatter field whose writable_by_actions in @Schema/fields.yaml includes set: status, owner, due. Values come from its enum, a slug editor (owner) or a date picker. Only for from: notes; not for from: jsonl.",
+              "enum": [
+                "status",
+                "owner",
+                "due"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "frontmatter": {
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "additionalProperties": true,
+      "$comment": "Other keys (updated, tags, area, …) follow frontmatter-schema.yaml.",
+      "properties": {
+        "type": {
+          "const": "view"
+        },
+        "view": {
+          "const": "query",
+          "$comment": "Optional: type: view maps to the query descriptor by default."
+        },
+        "title": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/param"
+          },
+          "maxProperties": 8
+        },
+        "extends": {
+          "$ref": "#/$defs/wikilink",
+          "$comment": "Instance of a template view; one level only; the instance has no view blocks."
+        },
+        "args": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/name"
+          },
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number"
+            ]
+          }
+        },
+        "materialize": {
+          "type": "boolean",
+          "$comment": "The gardener alone writes @views/out/<name>.md and .json. @views/out/** is excluded from every view query, so snapshots never feed back."
+        },
+        "budget": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,3}kb$",
+          "$comment": "Cap on the serialized rows of the whole run; sections fill in document order, then truncated: true."
+        },
+        "sidebar": {
+          "type": "boolean",
+          "$comment": "Offer this view as the third sidebar tab after Tree | Now (Areas); Tree stays the default. The file must have exactly one block with show: tree."
+        }
+      },
+      "dependentSchemas": {
+        "extends": {
+          "required": [
+            "args"
+          ]
+        }
+      }
+    },
+    "block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "show"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/name",
+          "$comment": "Stable section id in JSON output; default = slug of the heading above the block, then s<N>."
+        },
+        "from": {
+          "oneOf": [
+            {
+              "enum": [
+                "notes",
+                "tasks",
+                "sections"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))[^\\\\:]+\\.jsonl$",
+              "$comment": "Vault-relative JSONL file. No absolute paths, no '..', no symlink escape (checked at run time)."
+            }
+          ]
+        },
+        "where": {
+          "type": "string",
+          "maxLength": 4000,
+          "$comment": "LogView query grammar (okilum-core log/query.rs), view dialect, plus $param and today/now[±Nd|Nh|Nw] literals bound after parsing."
+        },
+        "match": {
+          "type": "string",
+          "maxLength": 500,
+          "$comment": "Full text, Okilum search syntax."
+        },
+        "near": {
+          "type": "string",
+          "maxLength": 500,
+          "$comment": "Semantic. Executed only by the search service. Elsewhere the section shows the last @views/out/<name>.json snapshot with its time (source: snapshot), else status: degraded («unavailable»). Never a full-text fallback."
+        },
+        "links": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "to": {
+              "type": "string"
+            },
+            "from": {
+              "type": "string"
+            },
+            "depth": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2
+            }
+          }
+        },
+        "let": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/name"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^(days|day|week|month|coalesce|if|len|lower)\\(.*\\)$",
+            "$comment": "Closed function list, no user code: days(a,b) day(d) week(d) month(d) coalesce(a,…) if(cond,a,b) len(list) lower(text)."
+          },
+          "maxProperties": 8
+        },
+        "agg": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/name"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^(count\\(\\)|(sum|min|max|avg)\\([A-Za-z_][A-Za-z0-9_.]*\\))$"
+          },
+          "maxProperties": 6
+        },
+        "group": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sort_key"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/sort_key"
+              },
+              "minItems": 1,
+              "maxItems": 4
+            }
+          ],
+          "$comment": "Group levels; leading '-' orders that level's keys descending. `order` overrides."
+        },
+        "sort": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sort_key"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/sort_key"
+              },
+              "minItems": 1,
+              "maxItems": 4
+            }
+          ]
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000
+        },
+        "show": {
+          "enum": [
+            "table",
+            "list",
+            "cards",
+            "board",
+            "timeline",
+            "graph",
+            "sections",
+            "log",
+            "tree"
+          ]
+        },
+        "cols": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/field"
+          },
+          "minItems": 1,
+          "maxItems": 12
+        },
+        "at": {
+          "$ref": "#/$defs/field",
+          "$comment": "Date/datetime field placing rows on a timeline."
+        },
+        "levels": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/field"
+          },
+          "minItems": 1,
+          "maxItems": 5
+        },
+        "order": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/field"
+          },
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "$comment": "Explicit value order for group/tree levels; unlisted values follow, sorted."
+        },
+        "node_view": {
+          "$ref": "#/$defs/wikilink",
+          "$comment": "tree: clicking a node opens this template with the node's level field bound to the template param of the same type."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/action"
+          },
+          "minItems": 1,
+          "maxItems": 3
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "show": {
+                "const": "timeline"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "at"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "show": {
+                "const": "tree"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "levels"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "show": {
+                "const": "board"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "group"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "actions": {
+                "contains": {
+                  "const": "check"
+                }
+              }
+            },
+            "required": [
+              "actions"
+            ]
+          },
+          "then": {
+            "properties": {
+              "from": {
+                "const": "tasks"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "from": {
+                "not": {
+                  "enum": [
+                    "notes",
+                    "tasks",
+                    "sections"
+                  ]
+                }
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "match"
+                  ]
+                },
+                {
+                  "required": [
+                    "near"
+                  ]
+                },
+                {
+                  "required": [
+                    "links"
+                  ]
+                },
+                {
+                  "required": [
+                    "actions"
+                  ],
+                  "properties": {
+                    "actions": {
+                      "contains": {
+                        "type": "object",
+                        "required": [
+                          "set"
+                        ]
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

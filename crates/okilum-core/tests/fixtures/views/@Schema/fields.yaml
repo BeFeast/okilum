@@ -1,0 +1,565 @@
+# @Schema/fields.yaml
+#
+# Shared field contract between the gardener (BeFeast/brain-gardener) and the
+# Okilum `view` module (okilum-core). Every index over the vault (Okilum's local
+# typed projection, the gardener's view snapshots, the search service on the
+# ok-gobot engine) reads note metadata through this file, and a view in
+# `@views/` may only rely on what it promises.
+#
+# Owners: the Gardener assistant owns this file. The Okilum assistant owns
+# `@Schema/view.schema.json` (the grammar of ```view blocks) and pushes field
+# additions here. A change to this file needs both assistants.
+#
+# Decisions: AI/Projects/2026-11-second-brain-v3/@index.md, «24.11 ~00:40» and
+# «24.11 ~01:30». Alignment source: Dev/Areas/okilum/specs/views-contract-draft/
+# (Okilum draft v0). Open integration questions are listed at the end.
+#
+# Other contracts stay authoritative for their part, and this file references
+# their lists instead of copying them:
+#   frontmatter-schema.yaml  areas, note types, per-type required fields, ERROR/WARN
+#   layout.yaml              layers, domains, kinds, channels, aliases, placement
+#   tags.yaml                tag vocabulary
+# References resolve within @Schema. A missing reference or unequal area/domain
+# lists fail loading. For a referenced mapping used as an enum, use its keys.
+#
+# Not validated by validate-frontmatter.py; first readers: the gardener field
+# check (phase 1b) and okilum-core `view`. For the vault coverage census,
+# see README.md, section «fields.yaml».
+version: 1-draft
+
+# Relative dates in views (`today`, `today-7d`) and date-only values resolve in
+# this zone for every consumer, so Okilum on a laptop and the gardener on its server
+# return the same rows.
+timezone: Asia/Jerusalem
+
+# ---- Value types ---------------------------------------------------------------
+# string     UTF-8 text, compared by bytes. `format: slug` = lowercase alphanumeric segments joined by hyphens;
+#            `pattern:` = a regex the value must match.
+# number     JSON number.
+# bool       true | false.
+# date       A valid calendar date in YYYY-MM-DD. Legacy datetime values in
+#            frontmatter project to their date in the contract timezone, with a
+#            normalisation finding. Inline dates use YYYY-MM-DD only.
+# datetime   RFC 3339, or YYYY-MM-DD[ T]HH:MM (the timezone above when no offset).
+# enum       string from a list. `closed: true` = an off-list value is invalid;
+#            `closed: false` = an off-list value is kept, shown and reported (WARN).
+#            Matching is case-insensitive after `aliases_from`; the index returns
+#            the canonical spelling. Legacy status conversion applies to
+#            stored values. View literals for status use the canonical enum.
+# link       "[[target]]", "[[target|label]]" or "[[target#heading]]" (quoted in
+#            YAML), resolved to a vault path by the okilum-core resolver.
+#            Unresolved or ambiguous links stay visible as text, never guessed.
+#            An unquoted [[x]] parses as a nested YAML list: the index reads it as
+#            the link and the gardener quotes it (mechanical fix).
+# list<T>    YAML list of T. A scalar is read as a one-element list. A bad item
+#            makes the field invalid unless a field-specific rule repairs it.
+types: [string, number, bool, date, datetime, enum, link, list]
+
+# ---- Absent, empty, invalid -----------------------------------------------------
+# All fields inherit these rules after applying their declared fallback/default.
+absent:
+  # A key that is missing, `null`, "" or [] is ABSENT. Nothing distinguishes them.
+  same_as_absent: [missing, "null", empty_string, empty_list]
+  # A present value that fails its type is INVALID. Views see it as ABSENT (it is
+  # never coerced or guessed); the index keeps the raw text for diagnostics and
+  # the gardener raises `fields/invalid`.
+  invalid: absent
+  # How a view sees ABSENT (the LogView rule): every comparison is false,
+  # including `!=` and `not in`; only `field?` / `exists(field)` and `not field?`
+  # see it. Sorts last in both directions. Groups and tree levels put it under
+  # the `(none)` key. Aggregates skip it; count() counts the row.
+  in_where: false
+  in_sort: last
+  in_group: "(none)"
+
+# ---- Index scope ---------------------------------------------------------------
+# Rows of `from: notes`: Markdown notes, including legacy PARA notes and
+# context @index.md pages. Validator ignore_globs apply to validator checks.
+# Match lifecycle path templates before applying legacy keep/ignored rules.
+# Other path exclusions apply to notes and their tasks and sections.
+scope:
+  include: "**/*.md"
+  exclude_layers: [ignored, keep]          # layout.yaml#legacy rules
+  exclude: ["@views/out/**", "@Schema/**", "**/.git/**", "**/.obsidian/**",
+            "**/.trash/**", "**/.stversions/**", "**/node_modules/**",
+            "**/.agents/**", "**/.claude/**", "**/.codex/**", "**/.cursor/**",
+            "**/.windsurf/**", "**/attachments/**", "**/Attachments/**"]
+
+# Both indexes derive layer/context/log kind/channel from the current vault
+# path using these templates. Legacy notes project those fields as absent,
+# except for authored state kind.
+# Gardener previews mirrors from the planned target and mirrors only when that
+# path is in effect. A stale mirror never supplies a missing path value.
+path_projection:
+  templates_from: layout.yaml#layers
+  legacy_views: absent
+  legacy_writeback_plan: brain-layout::place_existing
+
+# ---- Per-field keys -------------------------------------------------------------
+# type:       value type (see above).
+# origin:     stored  = authored in frontmatter (people, agents, gardener);
+#             derived = computed from the path, the file or the body.
+# rule:       how a derived value is computed, or how the gardener fills a stored
+#             value that is missing.
+# writeback:  mirror = the gardener writes the derived value into frontmatter
+#                      (phase 1b); a stored value that disagrees is a finding and
+#                      the path wins;
+#             fill   = stored field; the gardener fills it only when it is absent
+#                      and the rule gives a value; it never overwrites;
+#             normalize = the gardener rewrites legacy spellings to the canonical
+#                      value (mechanical);
+#             index  = never written, exists only in the index;
+#             none   = the gardener does not write it.
+#             fill, mirror and normalize are phase 1b operations.
+#             normalize: true also enables canonical spelling on a fill field.
+# writers:    who may write the stored value.
+# required:   Layer and type selectors are ORed. `layers: [all]` matches every
+#             note in scope, including legacy paths. `types_requiring_from`
+#             imports each type whose 'requires' list names the field.
+#             Exceptions remove matching rows. {} = optional.
+#             A required field absent from the projection is `fields/missing`.
+# index:      indexed = both indexes store it; facet = usable in group/board/tree
+#             and as a filter chip; sort = usable in `sort`.
+# writable_by_actions: which view actions may change it from Okilum:
+#             set   = `{set: <field>}` on a `from: notes` row (canonical scalar frontmatter);
+#             check = the task checkbox on a `from: tasks` row.
+#             [] = no view action writes it.
+# legacy_keys: older frontmatter keys read as this field while the field itself is
+#             absent; the gardener converts them when `legacy_convert` says how.
+#
+# Gardener rule for every write: a mechanical change by the gardener does not
+# bump `updated` (otherwise every batch floods «what's new»).
+
+fields:
+  type:
+    type: enum
+    closed: false
+    values_from: [frontmatter-schema.yaml#types, layout.yaml#types]
+    aliases_from: layout.yaml#type_aliases
+    origin: stored
+    rule: >-
+      Missing, filled only where the path decides it: log -> the type of its kind
+      (decisions decision, handovers handover, incidents incident, reports report,
+      specs spec, research research, daily daily, final archive); sources in a
+      `transcripts/` folder -> transcript; sources/web -> clipping; state -> note.
+      Other sources (summary or transcript, a drawing) and inbox stay a finding.
+    writeback: fill
+    normalize: true            # case and aliases (Note -> note)
+    writers: [people, agents, gardener]
+    required: {layers: [all]}
+    index: {indexed: true, facet: true, sort: true}
+    writable_by_actions: []
+    notes: >-
+      Unknown type = WARN, the value is kept (frontmatter-schema.yaml
+      unknown_type_severity). Placement reads it (layout.yaml#types).
+
+  area:
+    type: enum
+    closed: true
+    single: true               # one domain per note; cross-domain -> related_to
+    values_from: frontmatter-schema.yaml#areas
+    same_values_as: layout.yaml#domains[].area
+    aliases_from: layout.yaml#area_aliases
+    origin: stored
+    rule: >-
+      Missing: the domain of the path (state/<dir>/…, log/<dir>/…, or the legacy
+      top folder <Area>/…). Sources and knowledge have no domain in their path,
+      so there the value must be authored or routed (tags.yaml#routes).
+    writeback: fill
+    normalize: true            # case and aliases
+    writers: [people, agents, gardener]
+    required: {layers: [state, log], types_requiring_from: frontmatter-schema.yaml#types}
+    index: {indexed: true, facet: true, sort: true}
+    writable_by_actions: []    # changing it moves the note; that is the gardener's job
+    notes: >-
+      A stored area that disagrees with the path domain is `fields/conflict`;
+      the gardener proposes either the move or the field fix (semantic).
+      Multi-domain membership is not supported.
+
+  context:
+    type: string
+    format: slug
+    single: true
+    origin: derived
+    rule: >-
+      The <context> segment of a state or log path. Domain-root state files have
+      no context. When placing a domain-wide log entry, brain-layout puts
+      layout.yaml#default_context in the path.
+    writeback: mirror
+    writers: [gardener]
+    required: {layers: [state, log], except_domain_root_state: true}
+    index: {indexed: true, facet: true, sort: true}
+    writable_by_actions: []
+    notes: >-
+      Single-valued. A note that belongs to several projects would get a separate
+      `project_ids` list of strings with slug format field; it is not defined yet. The existing
+      `project_id` key (T3 project UUIDs) is unrelated and is not read as context.
+
+  layer:
+    type: enum
+    closed: true
+    values: [inbox, sources, knowledge, state, log, views, schema]
+    origin: derived
+    rule: the current path prefix from layout.yaml#layers, including @views and @Schema
+    writeback: mirror
+    writers: [gardener]        # agents and people must not write it
+    required: {layers: [all]}
+    index: {indexed: true, facet: true, sort: true}
+    writable_by_actions: []
+
+  kind:
+    type: enum
+    closed: true
+    values_by_layer:
+      log: layout.yaml#kinds   # decisions handovers reports incidents specs research daily final
+      state: [project, area]
+      legacy: [project, area]
+    origin: derived
+    rule: the <kind> segment of the current log path
+    writeback: mirror
+    writers: [gardener]
+    by_layer:
+      state:
+        origin: stored
+        rule: >-
+          Read on state/<domain>/<context>/@index.md or a standalone project or
+          area note at that depth. During migration fill it from the legacy
+          Projects or Areas bucket for the context index or a flat context note.
+        writeback: fill
+        writers: [people, agents, gardener]
+      legacy:
+        origin: stored
+        writeback: none
+        writers: [people, agents]
+        rule: read an authored project or area value while the note is still in PARA
+    required: {layers: [log]}
+    index: {indexed: true, facet: true, sort: true}
+    writable_by_actions: []
+
+  status:
+    type: enum
+    closed: true
+    values: [active, parked, done]
+    origin: stored
+    rule: canonical lifecycle value or a match in the legacy table
+    writeback: normalize
+    writers: [people, agents, gardener]
+    required: {types_requiring_from: frontmatter-schema.yaml#types}
+    index: {indexed: true, facet: true, sort: true}
+    writable_by_actions: [set]
+    # Legacy values (case-insensitive) -> canonical. Lookup: the whole value
+    # first; then the text before the first " (", " —", ";" or "," (an annotated
+    # value such as "done (v0.1.1 installed…)"). A value with no match is not
+    # guessed: the gardener raises `fields/invalid` and proposes a value to the
+    # project assistant. When it rewrites a value that is not a case variant of
+    # the canonical one, it keeps the old text in `status_legacy`.
+    legacy:
+      active: [active, live, in-progress, in progress, in-flight, working, current,
+               open, exploring, exploration, research, discussion, draft,
+               draft-for-approval, proposed, proposal, planned, planning, plan,
+               bootstrap-planned, ready, ready-to-run, ready-to-execute, prepared,
+               design, prototyping, candidate, idea, captured, discovered,
+               observed, preliminary, review-pending, awaiting-approval,
+               active-specification, replies-received, "🎯 активно"]
+      parked: [parked, paused, deferred, dormant, on-hold, someday, blocked,
+               waiting, waiting-arrival]
+      done: [done, closed, resolved, resolved-by-reboot, complete, completed,
+             finished, accepted, approved, decided, direction-decided,
+             architecture-accepted, merged, shipped, released, deployed,
+             implemented, implemented-local-fork, executed, applied, passed,
+             smoke-passed, signed, mitigated, confirmed, documented, reviewed,
+             research done, promoted, superseded, archived, archive, retired,
+             destroyed, dropped, cancelled, outdated]
+    notes: >-
+      Not lifecycle values, raised as `fields/invalid` with a proposal to drop
+      the key: redirect, pointer, canonical, reference, handover, locked.
+      Decision notes (kind decisions) may later need proposed|accepted|superseded;
+      that would be a separate field, not more values here.
+
+  updated:
+    type: date
+    origin: stored
+    rule: missing -> the file mtime (Syncthing keeps mtime across devices)
+    writeback: fill
+    writers: [people, agents, gardener]
+    required: {layers: [inbox, knowledge, state, log, views]}
+    index: {indexed: true, facet: false, sort: true}
+    writable_by_actions: []
+    notes: >-
+      frontmatter-schema.yaml lists it as required_warn for every note; sources
+      are captures and use `created` instead. A mechanical gardener edit never
+      bumps it.
+
+  created:
+    type: date
+    origin: stored
+    rule: >-
+      missing -> the date in the brain-layout target path (sources/<ch>/yyyy/mm/dd)
+      or the leading YYYY-MM-DD of the file name; otherwise stays absent (the
+      snapshot repo only starts 2026-11-23, so git has no creation dates).
+    writeback: fill
+    writers: [people, agents, gardener]
+    required: {layers: [sources]}
+    index: {indexed: true, facet: false, sort: true}
+    writable_by_actions: []
+
+  date:
+    type: date
+    origin: stored
+    rule: >-
+      missing -> the leading YYYY-MM-DD of the log file name, else of its dated
+      bundle folder (YYYY-MM-DD-… or YYYY-MM-DD/, layout.yaml «bundle»)
+    writeback: fill
+    writers: [people, agents, gardener]
+    required: {layers: [log], except_kinds: [final]}   # archived material keeps its name
+    index: {indexed: true, facet: false, sort: true}
+    writable_by_actions: []
+    notes: The entry date of a log note; layout.yaml names log files by it.
+
+  channel:
+    type: enum
+    closed: true
+    values_from: layout.yaml#channels
+    origin: derived
+    rule: the <channel> segment of the current sources path
+    writeback: mirror
+    writers: [gardener]
+    required: {layers: [sources]}
+    index: {indexed: true, facet: true, sort: true}
+    writable_by_actions: []
+
+  tags:
+    type: list<string>
+    values_from: tags.yaml     # unknown tag = WARN (validate-tags.py), kept
+    origin: stored
+    rule: >-
+      Read frontmatter lists, single tags or comma-separated strings. Return
+      their union with prose tags per facets.rs, lowercased and deduplicated.
+    writeback: normalize       # a number item (429, 5.1) becomes a string
+    writers: [people, agents, gardener]
+    required: {}
+    index: {indexed: true, facet: true, sort: false}
+    writable_by_actions: []
+    notes: Inline tags contribute even when frontmatter tags are absent or invalid.
+
+  related_to:
+    type: list<link>
+    origin: stored
+    rule: read wikilinks as navigation edges
+    writeback: normalize       # quote unquoted [[x]]; split "[[a]], [[b]]" into a list
+    writers: [people, agents, gardener]
+    required: {}
+    index: {indexed: true, facet: false, sort: false}
+    writable_by_actions: []
+    notes: >-
+      Navigation edges. They never load another context or authorise work there
+      (frontmatter-schema.yaml). Link health is link-lint.py's job.
+
+  sources:
+    type: list<link>
+    allow_http_urls: true      # external provenance links need no vault resolution
+    origin: stored
+    rule: read provenance links from sources, falling back to source
+    legacy_keys: [source]      # summaries: `source: "[[transcript]]"`
+    legacy_convert: read-only fallback when `sources` is absent
+    writeback: normalize       # quote unquoted [[x]] only
+    writers: [people, agents, gardener]
+    required: {types_requiring_from: frontmatter-schema.yaml#types}
+    index: {indexed: true, facet: false, sort: false}
+    writable_by_actions: []
+
+  verified:
+    type: date
+    origin: stored
+    rule: read the date of the latest evidence check
+    writeback: none
+    writers: [people, agents]
+    required: {}
+    index: {indexed: true, facet: false, sort: true}
+    writable_by_actions: [set]  # "verified today"
+    notes: >-
+      The date the note's claims were last checked against live state
+      (check-inventory-freshness.py).
+
+  stale_after:
+    type: date
+    origin: stored
+    rule: read the absolute date after which the note needs another check
+    writeback: none
+    writers: [people, agents]
+    required: {}
+    index: {indexed: true, facet: false, sort: true}
+    writable_by_actions: []
+    notes: >-
+      Absolute date, as OKF v0.2: after it the note's subject needs a new check.
+      Index-only boolean `stale` = stale_after < today (absent when stale_after is
+      absent). No duration form.
+
+  aliases:
+    type: list<string>
+    origin: stored
+    rule: read alternative names from frontmatter
+    writeback: none
+    writers: [people, agents]
+    required: {}
+    index: {indexed: true, facet: false, sort: false}
+    writable_by_actions: []
+    notes: >-
+      Trim names and strip a legacy outer wikilink wrapper. Names containing
+      brackets, vertical bars, #, ^ or line breaks are invalid.
+
+  title:
+    type: string
+    origin: derived
+    rule: first nonempty Markdown H1, else a valid legacy frontmatter title, else file stem
+    writeback: index           # the gardener never writes `title:`
+    writers: [people, agents]  # a stored `title:` is legacy-tolerated
+    required: {}
+    index: {indexed: true, facet: false, sort: true}
+    writable_by_actions: []
+    notes: Never absent.
+
+  owner:
+    type: string
+    format: slug
+    origin: stored
+    rule: identifies the person or assistant expected to act
+    writeback: none
+    writers: [people, agents]
+    required: {}
+    index: {indexed: true, facet: true, sort: true}
+    writable_by_actions: [set]
+
+  due:
+    type: date
+    origin: stored
+    rule: note-level deadline
+    writeback: none
+    writers: [people, agents]
+    required: {}
+    index: {indexed: true, facet: false, sort: true}
+    writable_by_actions: [set]
+
+  thread:
+    type: string
+    pattern: "^t3code://threads/[^/?#\\s]+/[^/?#\\s]+$"
+    origin: stored
+    rule: read a T3 desktop link, with the declared executor_thread fallback
+    legacy_keys: [executor_thread]
+    legacy_convert: >-
+      http://<t3-host>/<envId>/<threadId>… -> t3code://threads/<envId>/<threadId>
+      (mechanical). `mcp:<threadId>` and thread titles need a T3 lookup for the
+      environment id: finding, not converted in phase 1b.
+    writeback: normalize
+    writers: [agents, gardener]
+    required: {}
+    index: {indexed: true, facet: false, sort: false}
+    writable_by_actions: []
+    notes: >-
+      The T3 thread where the note's work runs. The `open: thread` action reads
+      the task row's [thread:: …] first, then this field. manager_thread,
+      manager_thread_id and source_thread are other roles and are not read here.
+
+  issue:
+    type: list<string>
+    pattern: "^https?://\\S+/issues/\\d+$"
+    origin: stored
+    rule: read issue URLs from frontmatter or the declared legacy key
+    legacy_keys: [gh_issue]
+    legacy_repo_keys: [repo_url, repository_url, repo, repository]
+    legacy_convert: valid issue URLs pass through; positive integers expand using the first HTTP(S) repo URL key
+    writeback: normalize
+    writers: [people, agents]
+    required: {}
+    index: {indexed: true, facet: false, sort: false}
+    writable_by_actions: []
+    notes: Forgejo or GitHub issue URLs. Rendered as links; a view never fetches them.
+
+  pr:
+    type: list<string>
+    pattern: "^https?://\\S+/(pulls?)/\\d+$"
+    origin: stored
+    rule: read pull request URLs from frontmatter or the declared legacy keys
+    legacy_keys: [gh_pr, pull_request]
+    legacy_repo_keys: [repo_url, repository_url, repo, repository]
+    legacy_convert: valid PR URLs pass through; positive integers expand using the first HTTP(S) repo URL key
+    writeback: normalize
+    writers: [people, agents]
+    required: {}
+    index: {indexed: true, facet: false, sort: false}
+    writable_by_actions: []
+
+# Built-ins are derived and index-only. The default index flags apply unless
+# overridden on a field. They use the same absent rules.
+builtin_defaults:
+  origin: derived
+  writeback: index
+  required: {}
+  index: {indexed: true, facet: false, sort: true}
+  writable_by_actions: []
+builtins:
+  path:       {type: string, rule: "vault-relative, forward slashes"}
+  rev:        {type: string, rule: "sha256:<hex> of the exact source bytes"}
+  mtime:      {type: datetime, rule: "file modification time"}
+  stale:      {type: bool, rule: "stale_after < today; absent when stale_after is absent", index: {indexed: true, facet: true, sort: true}}
+  tasks_open: {type: number, rule: "unchecked tasks in the note"}
+  backlinks:  {type: number, rule: "resolved incoming links"}
+
+# One row per Markdown task item. Parent note fields are under note.*. Metadata
+# is read from the checkbox line, outside inline code and links, left to right.
+# Dates with a Tasks emoji use the next whitespace-delimited token. Dataview-style
+# [key:: value] and (key:: value) are accepted, with case-insensitive keys and
+# trimmed values. The first marker for a field wins, even if invalid. Later
+# markers emit fields/duplicate. An invalid field projects as absent.
+# Unknown inline keys project as strings, with the usual unknown-field warning
+# when used in a view. They carry no write permission.
+# check changes the checkbox marker. Completion dates can be authored separately.
+# pattern_from reads the regex from the named note field.
+# Example: - [ ] Review 📅 2026-11-27 [owner:: oleg] ⏫
+task_field_defaults:
+  origin: stored
+  storage: markdown_task_line
+  writeback: none
+  writers: [people, agents]
+  required: {}
+  index: {indexed: true, facet: false, sort: true}
+  writable_by_actions: []
+task_fields:
+  checked:   {type: bool, rule: "Markdown checkbox, false for [ ], true for [x] or [X]", required: {rows: [tasks]}, index: {indexed: true, facet: true, sort: true}, writable_by_actions: [check]}
+  text:      {type: string, origin: derived, writeback: index, rule: "item text with recognised task metadata stripped"}
+  line:      {type: number, origin: derived, writeback: index, rule: "one-based source line, including frontmatter"}
+  due:       {type: date, syntax: "📅 YYYY-MM-DD", inline_keys: [due]}
+  scheduled: {type: date, syntax: "⏳ YYYY-MM-DD", inline_keys: [scheduled]}
+  start:     {type: date, syntax: "🛫 YYYY-MM-DD", inline_keys: [start]}
+  done:      {type: date, syntax: "✅ YYYY-MM-DD", inline_keys: [completion, done], writable_by_actions: []}
+  created:   {type: date, syntax: "➕ YYYY-MM-DD", inline_keys: [created]}
+  priority:
+    type: number
+    syntax: "🔺 0, ⏫ 1, 🔼 2, 🔽 4, ⏬ 5"
+    inline_keys: [priority]
+    values: [0, 1, 2, 3, 4, 5]
+    default_on_missing: 3
+    index: {indexed: true, facet: true, sort: true}
+  owner:     {type: string, format: slug, syntax: "[owner:: oleg]", inline_keys: [owner], index: {indexed: true, facet: true, sort: true}}
+  default:   {type: string, syntax: "[default:: keep]", inline_keys: [default], rule: proposal default action}
+  thread:    {type: string, pattern_from: thread, syntax: "[thread:: t3code://threads/<envId>/<threadId>]", inline_keys: [thread], index: {indexed: true, facet: false, sort: false}}
+
+# ---- Gardener checks this file drives (phase 1b) ----------------------------------
+findings:
+  fields/missing:  a field in `required` is absent for the note's layer or type
+  fields/invalid:  a present value fails its type, enum or pattern
+  fields/duplicate: more than one inline marker supplies the same task field
+  fields/unknown-value: an off-list value of an open enum (`closed` false)
+  fields/conflict: a stored value disagrees with the derived one (path wins for mirror fields)
+  fields/legacy:   a legacy key or spelling the gardener can convert
+  view/drop:       a note in a view's population (its `where` without the field test) that
+                   the view drops because the field is absent or invalid
+
+# Open integration questions for the Okilum assistant.
+open:
+  - Confirm that sources and knowledge may omit area unless required by their type.
+  - Confirm that both live views and snapshots use current paths during PARA migration.
+  - Confirm the scalar editor for owner and support for the set allowlist in view.schema.json.
+  - Confirm whether log decisions need a separate decision_status and update the spec example using accepted.
+  - Confirm whether check should also add or remove the done date in a future version.
+  - Align existing Tasks parsing with first-marker precedence and inline code and link exclusions.

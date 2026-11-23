@@ -1,0 +1,5 @@
+{"ts": "2026-11-23T04:10:00+02:00", "level": "info", "op": "fill", "path": "state/dev/okilum/index.md", "field": "updated", "msg": "filled updated from git"}
+{"ts": "2026-11-23T04:11:00+02:00", "level": "info", "op": "normalize", "path": "knowledge/sleep-hygiene.md", "field": "area", "msg": "area health -> Health"}
+{"ts": "2026-11-22T04:10:00+02:00", "level": "warn", "op": "conflict", "path": "state/homelab/backups/runbook.md", "field": "layer", "msg": "stored layer knowledge disagrees with path state"}
+{"ts": "2026-11-21T04:10:00+02:00", "level": "info", "op": "report", "path": "Projects/Okilum Legacy/Notes.md", "field": "layer", "msg": "old-layout note: no derived fields"}
+{"ts": "2026-11-10T04:10:00+02:00", "level": "info", "op": "snapshot", "path": "@views/out/domain.json", "msg": "materialized domain"}
