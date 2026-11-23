@@ -1,4 +1,4 @@
-"""Offline controls for the checksum-pinned, DirectX-only vendor exception."""
+"""Offline controls for the checksum-pinned Windows vendor patches."""
 import difflib
 import hashlib
 import importlib.util
@@ -78,6 +78,22 @@ class WindowsAtlasSetupTests(unittest.TestCase):
         self.manifest["patch_sha256"] = setup.digest(self.patch.read_bytes())
         self.write_manifest()
         self.assertIn("exceeds the DirectX atlas-upload exception", self.run_setup(success=False))
+
+    def test_external_drop_patch_is_pinned_and_regenerates_exactly(self):
+        names = ["src/external_drop.rs", "src/gpui_windows.rs", "src/window.rs"]
+        patch = self.root / "scripts/patches/gpui-pre-windows/0002.diff"
+        patch.write_text("".join("".join(difflib.unified_diff([], ["drop support\n"], fromfile="/dev/null", tofile="b/" + name)) for name in names))
+        expected = self.root / "expected"
+        for name in names:
+            (expected / name).write_text("drop support\n")
+        self.manifest["external_data_drop"] = {"patch": "../patches/gpui-pre-windows/0002.diff", "sha256": setup.digest(patch.read_bytes())}
+        self.manifest["changed_files"] = sorted(["src/directx_atlas.rs", *names])
+        self.manifest["tree_sha256"] = setup.tree_digest(expected)
+        self.write_manifest()
+        self.run_setup()
+        self.run_setup("--verify")
+        patch.write_text(patch.read_text() + "\n")
+        self.assertIn("external drop patch/manifest mismatch", self.run_setup("--verify", success=False))
 
 
 if __name__ == "__main__":

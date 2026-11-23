@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Recreate/verify the checksum-pinned Windows backend plus the DirectX atlas-upload patch."""
+"""Recreate/verify the checksum-pinned Windows backend plus the DirectX atlas-upload and external-data-drop patches."""
 import argparse
 import hashlib
 import io
@@ -35,11 +35,18 @@ def main():
     repo = Path(__file__).resolve().parent.parent
     spec = repo / "scripts/gpui-pre-windows"
     manifest = json.loads((spec / "manifest.json").read_text())
-    if manifest.get("changed_files") != ["src/directx_atlas.rs"]:
+    drop = manifest.get("external_data_drop")
+    approved = ["src/directx_atlas.rs"]
+    if drop:
+        approved = ["src/directx_atlas.rs", "src/external_drop.rs", "src/gpui_windows.rs", "src/window.rs"]
+    if manifest.get("changed_files") != approved:
         raise ValueError("the approved exception is limited to src/directx_atlas.rs")
     patch = spec / manifest["patch"]
     if digest(patch.read_bytes()) != manifest["patch_sha256"]:
         raise ValueError("gpui-pre-windows patch/manifest mismatch")
+    drop_patch = spec / drop["patch"] if drop else None
+    if drop_patch and digest(drop_patch.read_bytes()) != drop["sha256"]:
+        raise ValueError("gpui-pre-windows external drop patch/manifest mismatch")
     dest = repo / manifest["generated_path"]
     if dest.exists():
         if tree_digest(dest) != manifest["tree_sha256"]:
@@ -78,6 +85,8 @@ def main():
                       for p in staged.rglob("*") if p.is_file()}
             # Zero-context patch is safe only against the exact verified archive.
             subprocess.run(["git", "apply", "--unidiff-zero", "--unsafe-paths", "--directory=" + str(staged), str(patch)], check=True)
+            if drop_patch:
+                subprocess.run(["git", "apply", "--unsafe-paths", "--directory=" + str(staged), str(drop_patch)], check=True)
             after = {p.relative_to(staged).as_posix(): digest(p.read_bytes())
                      for p in staged.rglob("*") if p.is_file()}
             changed = sorted(name for name in before.keys() | after.keys()
@@ -87,7 +96,7 @@ def main():
             if tree_digest(staged) != manifest["tree_sha256"]:
                 raise ValueError("gpui-pre-windows generated source/manifest mismatch")
             shutil.move(str(staged), str(dest))
-    print("gpui-pre-windows ready: " + manifest["version"] + " checksum-pinned source + DirectX staging atlas upload verified")
+    print("gpui-pre-windows ready: " + manifest["version"] + " checksum-pinned source + DirectX staging atlas upload + external data drops verified")
 
 
 if __name__ == "__main__":

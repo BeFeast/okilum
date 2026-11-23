@@ -2106,6 +2106,113 @@ mod tests {
     }
 
     #[test]
+    fn windows_dropped_formats_route_through_the_paste_router() {
+        let note = Note::new();
+        let cx = note.cx(Mode::Smart, "", 0..0);
+        let wide: Vec<u8> = "שלום 🧠\0padding"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        assert_eq!(
+            route(&dropped(&[("CF_UNICODETEXT", &wide)]), &cx)
+                .unwrap()
+                .insert
+                .as_deref(),
+            Some("שלום 🧠")
+        );
+        for kind in ["UTF8_STRING", "text/plain;charset=utf-8"] {
+            for bytes in ["Привет\0".as_bytes(), "Привет\0padding".as_bytes()] {
+                assert_eq!(
+                    route(&dropped(&[(kind, bytes)]), &cx)
+                        .unwrap()
+                        .insert
+                        .as_deref(),
+                    Some("Привет")
+                );
+            }
+        }
+        for (kind, bytes) in [
+            ("UniformResourceLocator", b"https://example.org/\0".to_vec()),
+            (
+                "UniformResourceLocatorW",
+                "https://example.org/\0"
+                    .encode_utf16()
+                    .flat_map(u16::to_le_bytes)
+                    .collect(),
+            ),
+        ] {
+            assert!(route(&dropped(&[(kind, &bytes)]), &cx)
+                .unwrap()
+                .insert
+                .unwrap()
+                .contains("https://example.org/"));
+        }
+        for kind in ["PNG", "image/png"] {
+            assert_eq!(
+                route(&dropped(&[(kind, PNG)]), &cx).unwrap().route,
+                Route::Image
+            );
+        }
+        use crate::note_paste::offer::Pasteboard as _;
+        for (native, canonical) in [
+            ("PNG", "public.png"),
+            ("JFIF", "public.jpeg"),
+            ("JPEG", "public.jpeg"),
+            ("GIF", "com.compuserve.gif"),
+            ("WebP", "org.webmproject.webp"),
+            ("TIFF", "public.tiff"),
+            ("CF_TIFF", "public.tiff"),
+            ("com.microsoft.bmp", "com.microsoft.bmp"),
+        ] {
+            let board = dropped(&[(native, b"representation")]);
+            assert_eq!(board.types(), [canonical]);
+            assert_eq!(
+                board.data(canonical).as_deref(),
+                Some(&b"representation"[..])
+            );
+        }
+        let html = "<b>Bold</b> <a href='/page'>link</a>";
+        let header = "Version:1.0\r\nStartHTML:-1\r\nEndHTML:-1\r\nStartFragment:0000000000\r\nEndFragment:0000000000\r\nSourceURL:https://example.org/base\r\n";
+        let raw = format!(
+            "{}{}",
+            header
+                .replace(
+                    "StartFragment:0000000000",
+                    &format!("StartFragment:{:010}", header.len())
+                )
+                .replace(
+                    "EndFragment:0000000000",
+                    &format!("EndFragment:{:010}", header.len() + html.len())
+                ),
+            html
+        );
+        let result = route(&dropped(&[("HTML Format", raw.as_bytes())]), &cx).unwrap();
+        assert_eq!(result.route, Route::RichText);
+        let inserted = result.insert.unwrap();
+        assert!(
+            inserted.contains("**Bold**") && inserted.contains("[link](https://example.org/page)"),
+            "{inserted}"
+        );
+        let invalid = dropped(&[
+            (
+                "HTML Format",
+                b"Version:1.0\r\nStartFragment:0\r\nEndFragment:9999",
+            ),
+            ("CF_UNICODETEXT", &wide),
+        ]);
+        assert_eq!(
+            route(&invalid, &cx).unwrap().insert.as_deref(),
+            Some("שלום 🧠")
+        );
+        assert_eq!(
+            route(&dropped(&[("FileContents", b"private")]), &cx)
+                .unwrap()
+                .route,
+            Route::Nothing
+        );
+    }
+
+    #[test]
     fn linux_dropped_mime_data_routes_through_the_paste_router() {
         let note = Note::new();
         let cx = note.cx(Mode::Smart, "", 0..0);

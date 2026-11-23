@@ -97,6 +97,9 @@ jobs:
         run: |
           bash scripts/vendor-setup.sh
           bash scripts/vendor-setup.sh --verify
+      - name: Run Windows external drop controls
+        shell: pwsh
+        run: ./scripts/ci/windows-external-drops.ps1
       - name: Run native Windows recovery controls
         shell: pwsh
         run: |

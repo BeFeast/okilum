@@ -8,6 +8,7 @@
 pub mod anchor;
 pub mod attachments;
 pub mod block_drop;
+pub(crate) mod cf_html;
 pub mod context;
 pub mod download;
 pub mod fetch;
@@ -213,7 +214,14 @@ fn drop_flavor(kind: &str) -> &str {
         "text/plain;charset=utf-16"
         | "text/plain;charset=utf-16le"
         | "text/plain;charset=utf-16be" => "public.utf16-plain-text",
-        "text/html" => "public.html",
+        "CF_UNICODETEXT" => "public.utf16-plain-text",
+        "HTML Format" | "text/html" => "public.html",
+        "UniformResourceLocatorW" | "UniformResourceLocator" => offer::URL,
+        "PNG" => "public.png",
+        "JFIF" | "JPEG" => "public.jpeg",
+        "GIF" => "com.compuserve.gif",
+        "WebP" => "org.webmproject.webp",
+        "TIFF" | "CF_TIFF" => "public.tiff",
         "text/uri-list" => offer::URL,
         "image/png" => "public.png",
         "image/jpeg" => "public.jpeg",
@@ -225,6 +233,12 @@ fn drop_flavor(kind: &str) -> &str {
 }
 
 impl DroppedData {
+    fn windows_html(&self) -> Option<(String, Option<String>)> {
+        let raw = self.0.contents("HTML Format")?;
+        let raw = std::str::from_utf8(raw.split(|b| *b == 0).next()?).ok()?;
+        cf_html::fragment(raw)
+    }
+
     fn native_flavor(&self, kind: &str) -> Option<&str> {
         self.0
             .types()
@@ -241,19 +255,40 @@ impl offer::Pasteboard for DroppedData {
     /// Only the types GPUI read: a skipped representation (over its size
     /// limit, a second image, a private type) is not offered to the router.
     fn types(&self) -> Vec<String> {
-        self.0
+        let mut types: Vec<String> = self
+            .0
             .types()
             .iter()
             .filter(|kind| self.0.contents(kind).is_some())
             .map(|native| drop_flavor(native).to_owned())
-            .collect()
+            .collect();
+        if self.windows_html().is_some_and(|(_, base)| base.is_some()) {
+            types.push(offer::CHROMIUM_SOURCE_URL.to_owned());
+        }
+        types
     }
     fn data(&self, kind: &str) -> Option<Vec<u8>> {
+        if kind == offer::CHROMIUM_SOURCE_URL && self.0.contents("HTML Format").is_some() {
+            return self.windows_html()?.1.map(String::into_bytes);
+        }
         let native = self.native_flavor(kind)?;
-        self.0.contents(native).map(<[u8]>::to_vec)
+        if native == "HTML Format" {
+            return self.windows_html().map(|(html, _)| html.into_bytes());
+        }
+        let bytes = self.0.contents(native)?;
+        if kind == offer::UTF8_TEXT {
+            return Some(bytes.split(|byte| *byte == 0).next()?.to_vec());
+        }
+        Some(bytes.to_vec())
     }
     fn string(&self, kind: &str) -> Option<String> {
+        if kind == offer::CHROMIUM_SOURCE_URL && self.0.contents("HTML Format").is_some() {
+            return self.windows_html()?.1;
+        }
         let native = self.native_flavor(kind)?;
+        if native == "HTML Format" {
+            return self.windows_html().map(|(html, _)| html);
+        }
         let text = dropped_text(native, self.0.contents(native)?)?;
         if native == "text/uri-list" {
             Some(
@@ -296,7 +331,9 @@ impl offer::Pasteboard for DroppedData {
 /// mark wins, little-endian without one), every other type as UTF-8. A
 /// trailing NUL some writers add is not text.
 fn dropped_text(kind: &str, bytes: &[u8]) -> Option<String> {
-    let text = if kind.contains("utf16")
+    let text = if kind == "CF_UNICODETEXT"
+        || kind == "UniformResourceLocatorW"
+        || kind.contains("utf16")
         || kind.contains("utf-16")
         || bytes.starts_with(&[0xFE, 0xFF])
         || bytes.starts_with(&[0xFF, 0xFE])
@@ -325,7 +362,7 @@ fn dropped_text(kind: &str, bytes: &[u8]) -> Option<String> {
     } else {
         String::from_utf8(bytes.to_vec()).ok()?
     };
-    Some(text.trim_end_matches('\0').to_owned())
+    Some(text.split('\0').next()?.to_owned())
 }
 
 /// Settings → Editor: ask before copying a file larger than this many MB

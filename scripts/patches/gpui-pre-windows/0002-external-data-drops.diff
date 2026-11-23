@@ -1,0 +1,594 @@
+--- /dev/null
++++ b/src/external_drop.rs
+@@ -0,0 +1,407 @@
++//! OLE drag representations. Never read private formats or promised files.
++use gpui::{ExternalData, ExternalPaths, SharedString};
++use std::sync::Arc;
++use windows::{
++    Win32::{
++        System::{
++            Com::*,
++            DataExchange::RegisterClipboardFormatW,
++            Memory::{GlobalLock, GlobalSize, GlobalUnlock},
++            Ole::*,
++        },
++        UI::Shell::HDROP,
++    },
++    core::PCWSTR,
++};
++
++const TEXT: usize = 32 << 20;
++const IMAGE: usize = 64 << 20;
++const TOTAL: usize = 128 << 20;
++
++struct Medium(STGMEDIUM);
++impl Drop for Medium {
++    fn drop(&mut self) {
++        unsafe { ReleaseStgMedium(&mut self.0) };
++    }
++}
++fn format(id: u16) -> FORMATETC {
++    FORMATETC {
++        cfFormat: id,
++        ptd: std::ptr::null_mut(),
++        dwAspect: DVASPECT_CONTENT.0,
++        lindex: -1,
++        tymed: TYMED_HGLOBAL.0 as u32,
++    }
++}
++fn medium(object: &IDataObject, id: u16) -> Option<Medium> {
++    let result = Medium(unsafe { object.GetData(&format(id)) }.ok()?);
++    (result.0.tymed == TYMED_HGLOBAL.0 as u32 && !unsafe { result.0.u.hGlobal }.is_invalid())
++        .then_some(result)
++}
++
++pub(crate) fn paths(object: &IDataObject) -> Option<ExternalPaths> {
++    let data = medium(object, CF_HDROP.0)?;
++    let mut paths = smallvec::SmallVec::new();
++    crate::clipboard::with_file_names(HDROP(unsafe { data.0.u.hGlobal }.0), |name| {
++        if !name.is_empty() {
++            paths.push(std::path::PathBuf::from(name));
++        }
++    });
++    (!paths.is_empty()).then_some(ExternalPaths(paths))
++}
++
++#[derive(Clone)]
++struct Flavor {
++    id: u16,
++    kind: &'static str,
++    image: bool,
++    dib: bool,
++}
++fn flavors() -> Vec<Flavor> {
++    let mut flavors = vec![Flavor {
++        id: CF_UNICODETEXT.0,
++        kind: "CF_UNICODETEXT",
++        image: false,
++        dib: false,
++    }];
++    for (name, kind, image) in [
++        ("UTF8_STRING", "UTF8_STRING", false),
++        (
++            "text/plain;charset=utf-8",
++            "text/plain;charset=utf-8",
++            false,
++        ),
++        ("HTML Format", "HTML Format", false),
++        ("UniformResourceLocatorW", "UniformResourceLocatorW", false),
++        ("UniformResourceLocator", "UniformResourceLocator", false),
++        ("PNG", "PNG", true),
++        ("image/png", "image/png", true),
++        ("JFIF", "JFIF", true),
++        ("JPEG", "JPEG", true),
++        ("GIF", "GIF", true),
++        ("WebP", "WebP", true),
++        ("TIFF", "TIFF", true),
++    ] {
++        let name: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
++        let id = unsafe { RegisterClipboardFormatW(PCWSTR(name.as_ptr())) };
++        if id != 0 {
++            flavors.push(Flavor {
++                id: id as u16,
++                kind,
++                image,
++                dib: false,
++            });
++        }
++    }
++    flavors.push(Flavor {
++        id: CF_TIFF.0,
++        kind: "CF_TIFF",
++        image: true,
++        dib: false,
++    });
++    for id in [CF_DIBV5.0, CF_DIB.0] {
++        flavors.push(Flavor {
++            id,
++            kind: "com.microsoft.bmp",
++            image: true,
++            dib: true,
++        });
++    }
++    flavors
++}
++fn offered(object: &IDataObject) -> Vec<Flavor> {
++    flavors()
++        .into_iter()
++        .filter(|f| unsafe { object.QueryGetData(&format(f.id)) }.is_ok())
++        .collect()
++}
++pub(crate) fn types(object: &IDataObject) -> Vec<SharedString> {
++    offered(object).iter().map(|f| f.kind.into()).collect()
++}
++
++// Check the allocation before locking/copying it. The owner retains the medium
++// until the lock is released, including every early-return path.
++fn read(object: &IDataObject, flavor: &Flavor, limit: usize) -> Option<Vec<u8>> {
++    let data = medium(object, flavor.id)?;
++    let global = unsafe { data.0.u.hGlobal };
++    let length = unsafe { GlobalSize(global) };
++    if length == 0 || length > limit {
++        return None;
++    }
++    let ptr = unsafe { GlobalLock(global) };
++    if ptr.is_null() {
++        return None;
++    }
++    let bytes = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), length) }.to_vec();
++    let _ = unsafe { GlobalUnlock(global) };
++    Some(bytes)
++}
++fn collect(
++    flavors: &[Flavor],
++    text_limit: usize,
++    image_limit: usize,
++    budget: usize,
++    mut read: impl FnMut(&Flavor, usize) -> Option<Vec<u8>>,
++) -> ExternalData {
++    let mut remaining = budget;
++    let mut image_read = false;
++    let mut contents = Vec::new();
++    for flavor in flavors {
++        if image_read && flavor.image {
++            continue;
++        }
++        let limit = remaining.min(if flavor.image {
++            image_limit
++        } else {
++            text_limit
++        });
++        // Reserve header space for a DIB -> BMP conversion.
++        let allowance = if flavor.dib {
++            limit.saturating_sub(14)
++        } else {
++            limit
++        };
++        let Some(mut bytes) = read(flavor, allowance) else {
++            continue;
++        };
++        if bytes.len() > allowance {
++            continue;
++        }
++        // Account for the complete allocation, even if decoding fails.
++        remaining -= bytes.len();
++        if flavor.dib {
++            let Some(bmp) = dib_to_bmp(&bytes) else {
++                continue;
++            };
++            bytes = bmp;
++            remaining -= 14;
++        }
++        if bytes.is_empty() {
++            continue;
++        }
++        image_read |= flavor.image;
++        contents.push((SharedString::from(flavor.kind), Arc::<[u8]>::from(bytes)));
++    }
++    ExternalData::with_contents(flavors.iter().map(|f| SharedString::from(f.kind)), contents)
++}
++pub(crate) fn data(object: &IDataObject) -> ExternalData {
++    collect(&offered(object), TEXT, IMAGE, TOTAL, |flavor, limit| {
++        read(object, flavor, limit)
++    })
++}
++
++fn dib_to_bmp(dib: &[u8]) -> Option<Vec<u8>> {
++    if dib.len() > IMAGE - 14 {
++        return None;
++    }
++    let u32_at = |at: usize| -> Option<u32> {
++        Some(u32::from_le_bytes(dib.get(at..at + 4)?.try_into().unwrap()))
++    };
++    let header = u32_at(0)? as usize;
++    if ![40, 52, 56, 108, 124].contains(&header) || header > dib.len() {
++        return None;
++    }
++    let bits = u16::from_le_bytes(dib.get(14..16)?.try_into().unwrap());
++    if ![1, 4, 8, 16, 24, 32].contains(&bits) {
++        return None;
++    }
++    let compression = u32_at(16)?;
++    // JPEG/PNG-compressed DIB and RLE are outside the packed RGB clipboard path.
++    if ![0, 3, 6].contains(&compression) {
++        return None;
++    }
++    let colors = u32_at(32)? as usize;
++    let colors = if colors == 0 && bits <= 8 {
++        1usize << bits
++    } else {
++        colors
++    };
++    if colors > 256 {
++        return None;
++    }
++    let masks = if header == 40 {
++        match compression {
++            3 => 12,
++            6 => 16,
++            _ => 0,
++        }
++    } else {
++        0
++    };
++    let offset = header
++        .checked_add(masks)
++        .and_then(|v| v.checked_add(colors * 4))?;
++    let width = i32::from_le_bytes(dib[4..8].try_into().unwrap());
++    let height = i32::from_le_bytes(dib[8..12].try_into().unwrap());
++    let planes = u16::from_le_bytes(dib[12..14].try_into().unwrap());
++    if width <= 0 || height == 0 || height == i32::MIN || planes != 1 {
++        return None;
++    }
++    let stride = (width as usize)
++        .checked_mul(bits as usize)
++        .and_then(|v| v.checked_add(31))
++        .map(|v| v / 32 * 4)?;
++    let end = stride
++        .checked_mul(height.unsigned_abs() as usize)
++        .and_then(|v| offset.checked_add(v))?;
++    if end > dib.len() {
++        return None;
++    }
++    let mut bmp = Vec::with_capacity(dib.len() + 14);
++    bmp.extend_from_slice(b"BM");
++    bmp.extend_from_slice(&((dib.len() + 14) as u32).to_le_bytes());
++    bmp.extend_from_slice(&[0; 4]);
++    bmp.extend_from_slice(&((offset + 14) as u32).to_le_bytes());
++    bmp.extend_from_slice(dib);
++    Some(bmp)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use windows::Win32::{
++        Foundation::*,
++        System::Memory::{GMEM_MOVEABLE, GlobalAlloc},
++        UI::Shell::SHCreateDataObject,
++    };
++
++    fn put(object: &IDataObject, id: u16, bytes: &[u8]) {
++        unsafe {
++            let global = GlobalAlloc(GMEM_MOVEABLE, bytes.len()).unwrap();
++            let ptr = GlobalLock(global);
++            assert!(!ptr.is_null());
++            std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr.cast(), bytes.len());
++            let _ = GlobalUnlock(global);
++            let medium = STGMEDIUM {
++                tymed: TYMED_HGLOBAL.0 as u32,
++                u: STGMEDIUM_0 { hGlobal: global },
++                ..Default::default()
++            };
++            object.SetData(&format(id), &medium, true).unwrap();
++        }
++    }
++
++    #[test]
++    fn external_drop_real_ole_object_empty_hdrop_and_bounded_reads() {
++        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }
++            .ok()
++            .unwrap();
++        {
++            let object: IDataObject = unsafe { SHCreateDataObject(None, None, None) }.unwrap();
++            let formats = flavors();
++            let text = formats.iter().find(|f| f.kind == "CF_UNICODETEXT").unwrap();
++            let png = formats.iter().find(|f| f.kind == "PNG").unwrap();
++            let jpeg = formats.iter().find(|f| f.kind == "JFIF").unwrap();
++            put(&object, text.id, &[65, 0, 0, 0]);
++            put(&object, png.id, &[0; 128]);
++            put(&object, jpeg.id, b"jpeg");
++            // A valid DROPFILES structure with an empty, double-NUL file list.
++            let mut empty = vec![0u8; 24];
++            empty[..4].copy_from_slice(&20u32.to_le_bytes());
++            empty[16..20].copy_from_slice(&1u32.to_le_bytes());
++            put(&object, CF_HDROP.0, &empty);
++            assert!(
++                paths(&object).is_none(),
++                "empty CF_HDROP must permit a data drag"
++            );
++            let offered = offered(&object);
++            assert!(offered.iter().any(|f| f.id == text.id));
++            assert!(read(&object, text, 128).unwrap().starts_with(&[65, 0]));
++            assert!(
++                read(&object, png, 32).is_none(),
++                "oversize HGLOBAL rejected before copy"
++            );
++            let data = collect(&offered, 32, 32, 128, |f, limit| read(&object, f, limit));
++            assert!(
++                data.contents("CF_UNICODETEXT")
++                    .unwrap()
++                    .starts_with(&[65, 0])
++            );
++            assert!(data.contents("PNG").is_none());
++            assert!(data.contents("JFIF").unwrap().starts_with(b"jpeg"));
++            // A real nonempty CF_HDROP keeps the file route even with text.
++            let names: Vec<u8> = "C:\\drop.txt\0\0"
++                .encode_utf16()
++                .flat_map(u16::to_le_bytes)
++                .collect();
++            empty.truncate(20);
++            empty.extend(names);
++            put(&object, CF_HDROP.0, &empty);
++            assert_eq!(
++                paths(&object).unwrap().0[0],
++                std::path::PathBuf::from("C:\\drop.txt")
++            );
++        }
++        unsafe { CoUninitialize() };
++    }
++
++    #[test]
++    fn external_drop_selection_budget_and_single_image() {
++        let fs = flavors();
++        let selected: Vec<_> = ["CF_UNICODETEXT", "HTML Format", "PNG", "JFIF"]
++            .iter()
++            .map(|name| fs.iter().find(|f| f.kind == *name).unwrap().clone())
++            .collect();
++        let mut reads = Vec::new();
++        let result = collect(&selected, 8, 8, 12, |f, limit| {
++            reads.push((f.kind, limit));
++            let size = if f.kind == "HTML Format" { 9 } else { 4 };
++            (size <= limit).then(|| vec![1; size])
++        });
++        assert_eq!(
++            reads,
++            [("CF_UNICODETEXT", 8), ("HTML Format", 8), ("PNG", 8)]
++        );
++        assert!(result.contents("HTML Format").is_none());
++        assert!(result.contents("PNG").is_some());
++        assert!(result.contents("JFIF").is_none());
++        let result = collect(&selected, 8, 8, 5, |_, limit| {
++            (limit >= 4).then(|| vec![1; 4])
++        });
++        assert!(result.contents("CF_UNICODETEXT").is_some());
++        assert!(
++            result.contents("PNG").is_none(),
++            "aggregate budget applies before read"
++        );
++        assert!(
++            fs.iter()
++                .all(|f| f.kind != "FileContents" && f.kind != "private")
++        );
++    }
++
++    #[test]
++    fn external_drop_dib_validates_layout_and_header_budget() {
++        let mut dib = vec![0u8; 44];
++        dib[..4].copy_from_slice(&40u32.to_le_bytes());
++        dib[4..8].copy_from_slice(&1i32.to_le_bytes());
++        dib[8..12].copy_from_slice(&1i32.to_le_bytes());
++        dib[12..14].copy_from_slice(&1u16.to_le_bytes());
++        dib[14..16].copy_from_slice(&24u16.to_le_bytes());
++        let bmp = dib_to_bmp(&dib).unwrap();
++        assert_eq!(&bmp[..2], b"BM");
++        assert_eq!(u32::from_le_bytes(bmp[10..14].try_into().unwrap()), 54);
++        let f = Flavor {
++            id: CF_DIB.0,
++            kind: "com.microsoft.bmp",
++            image: true,
++            dib: true,
++        };
++        assert!(
++            collect(std::slice::from_ref(&f), 100, 57, 100, |_, limit| (dib
++                .len()
++                <= limit)
++                .then(|| dib.clone()))
++            .contents(f.kind)
++            .is_none()
++        );
++        assert_eq!(
++            collect(&[f], 100, 58, 58, |_, _| Some(dib.clone()))
++                .contents("com.microsoft.bmp")
++                .unwrap()
++                .len(),
++            58
++        );
++        dib[32..36].copy_from_slice(&u32::MAX.to_le_bytes());
++        assert!(dib_to_bmp(&dib).is_none());
++    }
++}
+--- a/src/gpui_windows.rs
++++ b/src/gpui_windows.rs
+@@ -10,6 +10,7 @@
+ mod dispatcher;
+ mod display;
+ mod events;
++mod external_drop;
+ mod keyboard;
+ mod platform;
+ mod system_notifications;
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -5,7 +5,6 @@
+     num::NonZeroIsize,
+     path::PathBuf,
+     rc::{Rc, Weak},
+-    str::FromStr,
+     sync::{Arc, Once, atomic::AtomicBool},
+     time::{Duration, Instant},
+ };
+@@ -14,7 +13,6 @@
+ use futures::channel::oneshot::{self, Receiver};
+ use gpui_util::ResultExt;
+ use raw_window_handle as rwh;
+-use smallvec::SmallVec;
+ use windows::{
+     Win32::{
+         Foundation::*,
+@@ -1092,7 +1090,7 @@
+ }
+ 
+ #[implement(IDropTarget)]
+-struct WindowsDragDropHandler(pub Rc<WindowsWindowInner>);
++struct WindowsDragDropHandler(pub Rc<WindowsWindowInner>, Cell<u8>);
+ 
+ impl WindowsDragDropHandler {
+     fn handle_drag_drop(&self, input: PlatformInput) {
+@@ -1114,46 +1112,37 @@
+     ) -> windows::core::Result<()> {
+         unsafe {
+             let idata_obj = pdataobj.ok()?;
+-            let config = FORMATETC {
+-                cfFormat: CF_HDROP.0,
+-                ptd: std::ptr::null_mut() as _,
+-                dwAspect: DVASPECT_CONTENT.0,
+-                lindex: -1,
+-                tymed: TYMED_HGLOBAL.0 as _,
++            let cursor_position = POINT { x: pt.x, y: pt.y };
++            let mut local = cursor_position;
++            ScreenToClient(self.0.hwnd, &mut local).ok().log_err();
++            let position = logical_point(
++                local.x as f32,
++                local.y as f32,
++                self.0.state.scale_factor.get(),
++            );
++            let event = if let Some(paths) = crate::external_drop::paths(idata_obj) {
++                self.1.set(1);
++                Some(FileDropEvent::Entered { position, paths })
++            } else {
++                let types = crate::external_drop::types(idata_obj);
++                if types.is_empty() {
++                    self.1.set(0);
++                    None
++                } else {
++                    self.1.set(2);
++                    Some(FileDropEvent::DataEntered {
++                        position,
++                        data: ExternalData::new(types),
++                    })
++                }
+             };
+-            let cursor_position = POINT { x: pt.x, y: pt.y };
+-            if idata_obj.QueryGetData(&config as _) == S_OK {
+-                *pdweffect = DROPEFFECT_COPY;
+-                let Some(mut idata) = idata_obj.GetData(&config as _).log_err() else {
+-                    return Ok(());
+-                };
+-                if idata.u.hGlobal.is_invalid() {
+-                    return Ok(());
+-                }
+-                let hdrop = HDROP(idata.u.hGlobal.0);
+-                let mut paths = SmallVec::<[PathBuf; 2]>::new();
+-                with_file_names(hdrop, |file_name| {
+-                    if let Some(path) = PathBuf::from_str(&file_name).log_err() {
+-                        paths.push(path);
+-                    }
+-                });
+-                ReleaseStgMedium(&mut idata);
+-                let mut cursor_position = cursor_position;
+-                ScreenToClient(self.0.hwnd, &mut cursor_position)
+-                    .ok()
+-                    .log_err();
+-                let scale_factor = self.0.state.scale_factor.get();
+-                let input = PlatformInput::FileDrop(FileDropEvent::Entered {
+-                    position: logical_point(
+-                        cursor_position.x as f32,
+-                        cursor_position.y as f32,
+-                        scale_factor,
+-                    ),
+-                    paths: ExternalPaths(paths),
+-                });
+-                self.handle_drag_drop(input);
++            *pdweffect = if self.1.get() != 0 {
++                *pdweffect & DROPEFFECT_COPY
+             } else {
+-                *pdweffect = DROPEFFECT_NONE;
++                DROPEFFECT_NONE
++            };
++            if let Some(event) = event {
++                self.handle_drag_drop(PlatformInput::FileDrop(event));
+             }
+             self.0
+                 .drop_target_helper
+@@ -1171,7 +1160,11 @@
+     ) -> windows::core::Result<()> {
+         let mut cursor_position = POINT { x: pt.x, y: pt.y };
+         unsafe {
+-            *pdweffect = DROPEFFECT_COPY;
++            *pdweffect = if self.1.get() != 0 {
++                *pdweffect & DROPEFFECT_COPY
++            } else {
++                DROPEFFECT_NONE
++            };
+             self.0
+                 .drop_target_helper
+                 .DragOver(&cursor_position, *pdweffect)
+@@ -1197,6 +1190,7 @@
+         unsafe {
+             self.0.drop_target_helper.DragLeave().log_err();
+         }
++        self.1.set(0);
+         let input = PlatformInput::FileDrop(FileDropEvent::Exited);
+         self.handle_drag_drop(input);
+ 
+@@ -1213,7 +1207,11 @@
+         let idata_obj = pdataobj.ok()?;
+         let mut cursor_position = POINT { x: pt.x, y: pt.y };
+         unsafe {
+-            *pdweffect = DROPEFFECT_COPY;
++            *pdweffect = if self.1.get() != 0 {
++                *pdweffect & DROPEFFECT_COPY
++            } else {
++                DROPEFFECT_NONE
++            };
+             self.0
+                 .drop_target_helper
+                 .Drop(idata_obj, &cursor_position, *pdweffect)
+@@ -1223,13 +1221,20 @@
+                 .log_err();
+         }
+         let scale_factor = self.0.state.scale_factor.get();
+-        let input = PlatformInput::FileDrop(FileDropEvent::Submit {
+-            position: logical_point(
+-                cursor_position.x as f32,
+-                cursor_position.y as f32,
+-                scale_factor,
+-            ),
+-        });
++        let position = logical_point(
++            cursor_position.x as f32,
++            cursor_position.y as f32,
++            scale_factor,
++        );
++        let event = match self.1.replace(0) {
++            1 => FileDropEvent::Submit { position },
++            2 => FileDropEvent::DataSubmit {
++                position,
++                data: crate::external_drop::data(idata_obj),
++            },
++            _ => return Ok(()),
++        };
++        let input = PlatformInput::FileDrop(event);
+         self.handle_drag_drop(input);
+ 
+         Ok(())
+@@ -1462,7 +1467,7 @@
+ 
+ fn register_drag_drop(window: &Rc<WindowsWindowInner>) -> Result<()> {
+     let window_handle = window.hwnd;
+-    let handler = WindowsDragDropHandler(window.clone());
++    let handler = WindowsDragDropHandler(window.clone(), Cell::new(0));
+     // The lifetime of `IDropTarget` is handled by Windows, it won't release until
+     // we call `RevokeDragDrop`.
+     // So, it's safe to drop it here.
