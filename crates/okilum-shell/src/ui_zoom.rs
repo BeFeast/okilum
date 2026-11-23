@@ -50,12 +50,18 @@ fn modifier(m: Modifiers, mac: bool) -> bool {
 
 pub(crate) fn init(cx: &mut App) {
     cx.bind_keys([
+        // Linux (xkb) reports Ctrl+Shift+= as `ctrl-+`: Shift is dropped for
+        // symbol keys, so the shifted forms below never match there (#3229).
+        KeyBinding::new("secondary-+", ZoomIn, None),
+        KeyBinding::new("secondary-_", ZoomOut, None),
+        KeyBinding::new("secondary-)", Reset, None),
+        // The last binding per action is what menus show.
         KeyBinding::new("secondary-shift-+", ZoomIn, None),
         KeyBinding::new("secondary-shift-=", ZoomIn, None),
-        KeyBinding::new("secondary-shift--", ZoomOut, None),
         KeyBinding::new("secondary-shift-_", ZoomOut, None),
-        KeyBinding::new("secondary-shift-0", Reset, None),
+        KeyBinding::new("secondary-shift--", ZoomOut, None),
         KeyBinding::new("secondary-shift-)", Reset, None),
+        KeyBinding::new("secondary-shift-0", Reset, None),
     ]);
     cx.on_action(|_: &ZoomIn, cx| change(1., cx));
     cx.on_action(|_: &ZoomOut, cx| change(-1., cx));
@@ -211,6 +217,65 @@ mod tests {
             ));
         }
     }
+    /// Linux (xkb) drops Shift from symbol keystrokes: Ctrl+Shift+= arrives as
+    /// `ctrl-+`, Ctrl+Shift+- as `ctrl-_`, Ctrl+Shift+0 as `ctrl-)` (#3229).
+    #[gpui::test]
+    fn shortcuts_match_shift_stripped_linux_keystrokes(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            crate::test_init(cx);
+            reader_ui_state::install(temp.path(), cx);
+            init(cx);
+            reader_ui_state::set_text_zoom(1.4, cx);
+        });
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let content = cx.new(|_| Content);
+            Root::new(content, window, cx)
+        });
+        visual.run_until_parked();
+        // Default 5% step first, then the chosen 10% step (#3228).
+        for (step, keys, expected) in [
+            (None, "secondary-+", 1.05),
+            (None, "secondary-+", 1.1),
+            (None, "secondary-_", 1.05),
+            (None, "secondary-)", 1.),
+            (None, "secondary-shift-=", 1.05),
+            (None, "secondary-shift--", 1.),
+            (Some(10), "secondary-+", 1.1),
+            (None, "secondary-_", 1.),
+        ] {
+            if let Some(step) = step {
+                visual.update(|_, cx| reader_ui_state::set_ui_zoom_step(step, cx));
+            }
+            visual.simulate_keystrokes(keys);
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                assert_eq!(reader_ui_state::ui_zoom(cx), expected, "{keys}");
+                assert_eq!(window.ui_scale(), expected, "{keys}");
+                assert_eq!(reader_ui_state::text_zoom(cx), 1.4, "{keys}");
+            });
+        }
+        // Menus show the shifted plus/minus/0 forms.
+        visual.update(|_, cx| {
+            let keymap = cx.key_bindings();
+            let keymap = keymap.borrow();
+            let shown = |action: &dyn Action| {
+                keymap
+                    .bindings()
+                    .rfind(|binding| binding.action().partial_eq(action))
+                    .map(|binding| binding.keystrokes()[0].unparse())
+            };
+            let secondary = if cfg!(target_os = "macos") {
+                "cmd"
+            } else {
+                "ctrl"
+            };
+            assert_eq!(shown(&ZoomIn), Some(format!("{secondary}-shift-=")));
+            assert_eq!(shown(&ZoomOut), Some(format!("{secondary}-shift--")));
+            assert_eq!(shown(&Reset), Some(format!("{secondary}-shift-0")));
+        });
+    }
+
     #[gpui::test]
     fn persists_app_scale_independently_and_syncs_existing_and_new_windows(
         cx: &mut TestAppContext,
