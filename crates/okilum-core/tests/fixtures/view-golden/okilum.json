@@ -1,0 +1,263 @@
+{
+  "view_api": 0,
+  "view": {
+    "path": "@views/okilum.md",
+    "rev": "sha256:44fb3956be530c5be1373769a81597fbaca69dc055c27e74ae64092f84ed9b1e",
+    "extends": null
+  },
+  "params": {},
+  "as_of": "2026-11-24T01:30:00+02:00",
+  "index": {
+    "by": "okilum-core 0.1.0",
+    "notes": 36,
+    "generation": 0
+  },
+  "findings": [],
+  "sections": [
+    {
+      "id": "now",
+      "title": "Now",
+      "line": 9,
+      "show": "sections",
+      "cols": [
+        "heading"
+      ],
+      "status": "ok",
+      "source": "live",
+      "snapshot_at": null,
+      "diagnostics": [],
+      "total": 3,
+      "truncated": false,
+      "groups": [],
+      "rows": [
+        {
+          "path": "state/dev/okilum/index.md",
+          "line": 15,
+          "anchor": "Now",
+          "rev": "sha256:174d087b43dde0bcd99c8a26843630e956c40084bec0f00e006d6f7143b5e042",
+          "group": [],
+          "fields": {
+            "heading": "Now"
+          },
+          "actions": [
+            "open"
+          ],
+          "markdown": "Views contract v0 and the fixture vault."
+        },
+        {
+          "path": "state/dev/okilum/index.md",
+          "line": 19,
+          "anchor": "Next",
+          "rev": "sha256:174d087b43dde0bcd99c8a26843630e956c40084bec0f00e006d6f7143b5e042",
+          "group": [],
+          "fields": {
+            "heading": "Next"
+          },
+          "actions": [
+            "open"
+          ],
+          "markdown": "Freeze the views contract with the gardener."
+        },
+        {
+          "path": "state/dev/okilum/index.md",
+          "line": 23,
+          "anchor": "Blockers",
+          "rev": "sha256:174d087b43dde0bcd99c8a26843630e956c40084bec0f00e006d6f7143b5e042",
+          "group": [],
+          "fields": {
+            "heading": "Blockers"
+          },
+          "actions": [
+            "open"
+          ],
+          "markdown": "None."
+        }
+      ]
+    },
+    {
+      "id": "decisions",
+      "title": "Decisions",
+      "line": 16,
+      "show": "table",
+      "cols": [
+        "title",
+        "date",
+        "decision_status"
+      ],
+      "status": "ok",
+      "source": "live",
+      "snapshot_at": null,
+      "diagnostics": [],
+      "total": 3,
+      "truncated": false,
+      "groups": [],
+      "rows": [
+        {
+          "path": "log/dev/okilum/decisions/2026-11-24-near-snapshot-only.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:04623a39dde3ddbf56a916ce334e35458e96bcb91f7981cecc0245ce4bac3e85",
+          "group": [],
+          "fields": {
+            "date": "2026-11-24",
+            "decision_status": "accepted",
+            "title": "near without the search service shows the snapshot"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "log/dev/okilum/decisions/2026-11-20-views-in-vault.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:c92cffe420e3091b5968abf0f2875bc96799618553f0a916c4884c25e2d62da2",
+          "group": [],
+          "fields": {
+            "date": "2026-11-20",
+            "decision_status": "accepted",
+            "title": "Declarative views live in the vault"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "log/dev/okilum/decisions/2026-11-10-tree-replaces-now.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:e5ca8b4962d253dde503685c19976663a35a6318ce6d836fcc29b22e63392cc8",
+          "group": [],
+          "fields": {
+            "date": "2026-11-10",
+            "decision_status": "superseded",
+            "title": "The virtual tree replaces Now"
+          },
+          "actions": [
+            "open"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "tasks",
+      "title": "Tasks",
+      "line": 26,
+      "show": "list",
+      "cols": [
+        "text",
+        "due",
+        "owner"
+      ],
+      "status": "ok",
+      "source": "live",
+      "snapshot_at": null,
+      "diagnostics": [],
+      "total": 6,
+      "truncated": false,
+      "groups": [],
+      "rows": [
+        {
+          "path": "state/dev/okilum/index.md",
+          "line": 29,
+          "anchor": null,
+          "rev": "sha256:174d087b43dde0bcd99c8a26843630e956c40084bec0f00e006d6f7143b5e042",
+          "group": [],
+          "fields": {
+            "due": "2026-11-25",
+            "owner": "okilum-assistant",
+            "priority": 1,
+            "text": "Write view schema"
+          },
+          "actions": [
+            "open",
+            "check"
+          ]
+        },
+        {
+          "path": "state/dev/okilum/questions.md",
+          "line": 8,
+          "anchor": null,
+          "rev": "sha256:f05449400d8aab0967eb4d7d6a0953c8cbce4144d12e96eedd5079e664a84bf2",
+          "group": [],
+          "fields": {
+            "due": "2026-11-26",
+            "owner": "oleg",
+            "priority": 3,
+            "text": "Approve `@views/out/` as the only snapshot folder"
+          },
+          "actions": [
+            "open",
+            "check"
+          ]
+        },
+        {
+          "path": "state/dev/okilum/index.md",
+          "line": 31,
+          "anchor": null,
+          "rev": "sha256:174d087b43dde0bcd99c8a26843630e956c40084bec0f00e006d6f7143b5e042",
+          "group": [],
+          "fields": {
+            "due": "2026-11-27",
+            "owner": "oleg",
+            "priority": 2,
+            "text": "Review the Areas tab mockup"
+          },
+          "actions": [
+            "open",
+            "check"
+          ]
+        },
+        {
+          "path": "state/dev/okilum/index.md",
+          "line": 30,
+          "anchor": null,
+          "rev": "sha256:174d087b43dde0bcd99c8a26843630e956c40084bec0f00e006d6f7143b5e042",
+          "group": [],
+          "fields": {
+            "due": "2026-11-28",
+            "owner": "okilum-assistant",
+            "priority": 3,
+            "text": "Typed projection over the vault snapshot"
+          },
+          "actions": [
+            "open",
+            "check"
+          ]
+        },
+        {
+          "path": "state/dev/okilum/questions.md",
+          "line": 9,
+          "anchor": null,
+          "rev": "sha256:f05449400d8aab0967eb4d7d6a0953c8cbce4144d12e96eedd5079e664a84bf2",
+          "group": [],
+          "fields": {
+            "owner": "oleg",
+            "priority": 3,
+            "text": "Keep Tree as the default sidebar tab"
+          },
+          "actions": [
+            "open",
+            "check"
+          ]
+        },
+        {
+          "path": "state/dev/okilum/questions.md",
+          "line": 11,
+          "anchor": null,
+          "rev": "sha256:f05449400d8aab0967eb4d7d6a0953c8cbce4144d12e96eedd5079e664a84bf2",
+          "group": [],
+          "fields": {
+            "owner": "okilum-assistant",
+            "priority": 3,
+            "text": "Rename the Areas tab"
+          },
+          "actions": [
+            "open",
+            "check"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,857 @@
+{
+  "view_api": 0,
+  "view": {
+    "path": "@views/sidebar.md",
+    "rev": "sha256:428745c03983770adb31e5cc41bb2b5aacf012512cdb4e4aece449f1f2a90109",
+    "extends": null
+  },
+  "params": {},
+  "as_of": "2026-11-24T01:30:00+02:00",
+  "index": {
+    "by": "okilum-core 0.1.0",
+    "notes": 36,
+    "generation": 0
+  },
+  "findings": [],
+  "sections": [
+    {
+      "id": "s1",
+      "title": "",
+      "line": 8,
+      "show": "tree",
+      "cols": [
+        "title"
+      ],
+      "status": "ok",
+      "source": "live",
+      "snapshot_at": null,
+      "diagnostics": [],
+      "total": 36,
+      "truncated": false,
+      "groups": [],
+      "rows": [
+        {
+          "path": "@views/agent-context.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:a496311a61eaac4e0a4dc4d06ccca26fd6d2c0bbdd99498645f5841e95ada4f9",
+          "group": [],
+          "fields": {
+            "title": "Agent context"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "@views/domain.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:5699417a6e979638291bd2dcfb9143e24cb0c44dc5ec1998ad1f26e54eddf309",
+          "group": [],
+          "fields": {
+            "title": "Domain"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "@views/health.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:cd57cf4f14a41449db77196db8120c6c97f99b3c8c73b5953adbf04eb7d14798",
+          "group": [],
+          "fields": {
+            "title": "health"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "@views/okilum.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:44fb3956be530c5be1373769a81597fbaca69dc055c27e74ae64092f84ed9b1e",
+          "group": [],
+          "fields": {
+            "title": "Okilum"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "@views/questions.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:24ea79e7c22184a98ce9bb70a44331f9c5e8d5016f78c0effdd25c0bda3a9172",
+          "group": [],
+          "fields": {
+            "title": "Waiting for Oleg"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "@views/sidebar.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:428745c03983770adb31e5cc41bb2b5aacf012512cdb4e4aece449f1f2a90109",
+          "group": [],
+          "fields": {
+            "title": "Areas"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "@views/whats-new.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:af57ce216164c5ad9c6bebcc127fd1d60c5da4e98fbfe30aff544fadbe316c79",
+          "group": [],
+          "fields": {
+            "title": "What's new"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "Areas/HomeLab/Network.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:7459d1eb9a64bf715e5bdcc57de6f4fe5728710e26f3a65795eac513c788a6fb",
+          "group": [],
+          "fields": {
+            "title": "Network"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "Projects/Okilum Legacy/Notes.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:bce3c590329c3560548d0cd61bc045ed85df423ea32663a07352ef1bf6c833c6",
+          "group": [],
+          "fields": {
+            "title": "Okilum legacy notes"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "Resources/Guides/Git tips.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:a260d44e3751a180a46ca8f70d32ec7f2ef508ece2c5f6c42e849af31106f16e",
+          "group": [],
+          "fields": {
+            "title": "Git tips"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "inbox/2026-11-23-idea-dump.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:e3e68f95760f719bd8957235a31524ada3fd744c2bf4845fe0ff4fafc710f678",
+          "group": [],
+          "fields": {
+            "title": "Idea dump"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "knowledge/rust-error-handling.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:6343547da4bb0dd4e125bc3b6d4a1f9a627eac868376a394fe9897eb07689607",
+          "group": [],
+          "fields": {
+            "title": "Rust error handling"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "knowledge/sleep-hygiene.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:984a6b9a8eda4f2aa5cd80c2c15c57936ec5da271b0b09c1a19224e8b1ced54e",
+          "group": [],
+          "fields": {
+            "title": "Sleep hygiene"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "log/dev/okilum/daily/2026-11-23-daily.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:c2d94d0bbe345d6eea994c84868574d5e33e1ddaf8f20296c00d5784930ee20c",
+          "group": [],
+          "fields": {
+            "title": "2026-11-23"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "log/dev/okilum/decisions/2026-11-10-tree-replaces-now.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:e5ca8b4962d253dde503685c19976663a35a6318ce6d836fcc29b22e63392cc8",
+          "group": [],
+          "fields": {
+            "title": "The virtual tree replaces Now"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "log/dev/okilum/decisions/2026-11-20-views-in-vault.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:c92cffe420e3091b5968abf0f2875bc96799618553f0a916c4884c25e2d62da2",
+          "group": [],
+          "fields": {
+            "title": "Declarative views live in the vault"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "log/dev/okilum/decisions/2026-11-24-near-snapshot-only.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:04623a39dde3ddbf56a916ce334e35458e96bcb91f7981cecc0245ce4bac3e85",
+          "group": [],
+          "fields": {
+            "title": "near without the search service shows the snapshot"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "log/dev/okilum/handovers/2026-11-22-ui-zoom.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:6b6dc4de2e2c96116f504a9b23cb20d46e1a9bfd4f801dfd11dbe8a0dbda97d5",
+          "group": [],
+          "fields": {
+            "title": "UI zoom handover"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "log/dev/okilum/specs/2026-11-24-views.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:e83763429092fd3a0ac6100b82f62d8812dd763829a843a7b4a530fd8ddd1383",
+          "group": [],
+          "fields": {
+            "title": "Views build spec"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "log/dev/tasker/reports/2026-11-15-weekly.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:020806f6e77ae1dd7597c04409bdd6b5a74d04222c16c6018c8725e74cdac504",
+          "group": [],
+          "fields": {
+            "title": "Tasker weekly"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "log/health/sleep-tracking/decisions/2026-11-18-bedtime-window.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:6aec0649974d64e993cae1448a70cedd659ec14c73ef38158e93813363a7ee72",
+          "group": [],
+          "fields": {
+            "title": "Bedtime window 23:00–23:30"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "log/homelab/backups/incidents/2026-11-05-nas-full.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:779b7b81da54ff4ea1e8a6453725db0f14345ec0e973bbf14398cc0a7ecd4a1b",
+          "group": [],
+          "fields": {
+            "title": "NAS full"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "log/homelab/common/reports/2026-10-20-network-audit.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:932b0f7a7896193298234118adf47c67e9b4a7ac611eae3b7020e43bc94fdb78",
+          "group": [],
+          "fields": {
+            "title": "Network audit"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "sources/video/2026/11/21/gpui-talk.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:72312f40e12a1a63e3a47227cad2c40ce0fb43cc126727d20f193f33e17adcaf",
+          "group": [],
+          "fields": {
+            "title": "GPUI talk summary"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "sources/web/2026/11/12/circadian-light.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:d7fe156c3179d3dae385bc2133e0f6b699e13602d1bb121aafd0cfcb3642b01f",
+          "group": [],
+          "fields": {
+            "title": "Circadian light"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "state/dev/common/conventions.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:ab425ad4dd35621e102eeda9aa1f431a8ad66a15849ac22cf09c8c1fa0e01c66",
+          "group": [],
+          "fields": {
+            "title": "Conventions"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "state/dev/okilum/index.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:174d087b43dde0bcd99c8a26843630e956c40084bec0f00e006d6f7143b5e042",
+          "group": [],
+          "fields": {
+            "title": "Okilum"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "state/dev/okilum/questions.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:f05449400d8aab0967eb4d7d6a0953c8cbce4144d12e96eedd5079e664a84bf2",
+          "group": [],
+          "fields": {
+            "title": "Waiting for Oleg — Okilum"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "state/dev/okilum/roadmap.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:34f7e03c939fe97c7e3f98cdc45869a437fe96137fc40737403ad4bfe31a23bb",
+          "group": [],
+          "fields": {
+            "title": "Okilum roadmap"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "state/dev/tasker/index.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:0b827cb8b6ce386e2e45f8e355727c2b8a7bcb8fa38a1f151f60d6bac34db6f7",
+          "group": [],
+          "fields": {
+            "title": "Tasker"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "state/dev/tasker/questions.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:f36d4bdc082bd3a431b9f579c50def31dcf63c0c1c84738307bed1b438728fb0",
+          "group": [],
+          "fields": {
+            "title": "Waiting for Oleg — Tasker"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "state/dev/tasker/roadmap.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:5369162ddf9677d9203cd99fc6691b297850854d2df4bb3184e1ed82b7f7909c",
+          "group": [],
+          "fields": {
+            "title": "Tasker roadmap"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "state/finance/budget/index.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:6d8d2dfcfc3a5ed7e018e6028e8665f895920d7baedc36cd95821287096f5c6d",
+          "group": [],
+          "fields": {
+            "title": "Budget 2027"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "state/health/sleep-tracking/index.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:b8cd2f0d479f85c9bec346bb84cefabed894c956ec5b12b70af06901293b71a5",
+          "group": [],
+          "fields": {
+            "title": "Sleep tracking"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "state/homelab/backups/index.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:0ec76f2a0d73a77fc90e9c0e0aacd241cbad7a510b69663c2f7e04f839d42421",
+          "group": [],
+          "fields": {
+            "title": "Backups"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "state/homelab/backups/runbook.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:6dbb20eaa8f2e8017e3ffa13d753839e5bbe394dd42db1333c3410ac9ba25d95",
+          "group": [],
+          "fields": {
+            "title": "Backup restore runbook"
+          },
+          "actions": [
+            "open"
+          ]
+        }
+      ],
+      "nodes": [
+        {
+          "field": "area",
+          "value": "Dev",
+          "label": "Dev",
+          "count": 18,
+          "children": [
+            {
+              "field": "context",
+              "value": "common",
+              "label": "common",
+              "count": 1,
+              "children": [
+                {
+                  "field": "layer",
+                  "value": "state",
+                  "label": "state",
+                  "count": 1,
+                  "children": [],
+                  "rows": [
+                    25
+                  ]
+                }
+              ],
+              "rows": []
+            },
+            {
+              "field": "context",
+              "value": "okilum",
+              "label": "okilum",
+              "count": 9,
+              "children": [
+                {
+                  "field": "layer",
+                  "value": "state",
+                  "label": "state",
+                  "count": 3,
+                  "children": [],
+                  "rows": [
+                    26,
+                    27,
+                    28
+                  ]
+                },
+                {
+                  "field": "layer",
+                  "value": "log",
+                  "label": "log",
+                  "count": 6,
+                  "children": [],
+                  "rows": [
+                    13,
+                    14,
+                    15,
+                    16,
+                    17,
+                    18
+                  ]
+                }
+              ],
+              "rows": []
+            },
+            {
+              "field": "context",
+              "value": "tasker",
+              "label": "tasker",
+              "count": 4,
+              "children": [
+                {
+                  "field": "layer",
+                  "value": "state",
+                  "label": "state",
+                  "count": 3,
+                  "children": [],
+                  "rows": [
+                    29,
+                    30,
+                    31
+                  ]
+                },
+                {
+                  "field": "layer",
+                  "value": "log",
+                  "label": "log",
+                  "count": 1,
+                  "children": [],
+                  "rows": [
+                    19
+                  ]
+                }
+              ],
+              "rows": []
+            },
+            {
+              "field": "context",
+              "value": null,
+              "label": "(none)",
+              "count": 4,
+              "children": [
+                {
+                  "field": "layer",
+                  "value": "knowledge",
+                  "label": "knowledge",
+                  "count": 1,
+                  "children": [],
+                  "rows": [
+                    11
+                  ]
+                },
+                {
+                  "field": "layer",
+                  "value": "sources",
+                  "label": "sources",
+                  "count": 1,
+                  "children": [],
+                  "rows": [
+                    23
+                  ]
+                },
+                {
+                  "field": "layer",
+                  "value": null,
+                  "label": "(none)",
+                  "count": 2,
+                  "children": [],
+                  "rows": [
+                    8,
+                    9
+                  ]
+                }
+              ],
+              "rows": []
+            }
+          ],
+          "rows": []
+        },
+        {
+          "field": "area",
+          "value": "Finance",
+          "label": "Finance",
+          "count": 1,
+          "children": [
+            {
+              "field": "context",
+              "value": "budget",
+              "label": "budget",
+              "count": 1,
+              "children": [
+                {
+                  "field": "layer",
+                  "value": "state",
+                  "label": "state",
+                  "count": 1,
+                  "children": [],
+                  "rows": [
+                    32
+                  ]
+                }
+              ],
+              "rows": []
+            }
+          ],
+          "rows": []
+        },
+        {
+          "field": "area",
+          "value": "Health",
+          "label": "Health",
+          "count": 4,
+          "children": [
+            {
+              "field": "context",
+              "value": "sleep-tracking",
+              "label": "sleep-tracking",
+              "count": 2,
+              "children": [
+                {
+                  "field": "layer",
+                  "value": "state",
+                  "label": "state",
+                  "count": 1,
+                  "children": [],
+                  "rows": [
+                    33
+                  ]
+                },
+                {
+                  "field": "layer",
+                  "value": "log",
+                  "label": "log",
+                  "count": 1,
+                  "children": [],
+                  "rows": [
+                    20
+                  ]
+                }
+              ],
+              "rows": []
+            },
+            {
+              "field": "context",
+              "value": null,
+              "label": "(none)",
+              "count": 2,
+              "children": [
+                {
+                  "field": "layer",
+                  "value": "knowledge",
+                  "label": "knowledge",
+                  "count": 1,
+                  "children": [],
+                  "rows": [
+                    12
+                  ]
+                },
+                {
+                  "field": "layer",
+                  "value": "sources",
+                  "label": "sources",
+                  "count": 1,
+                  "children": [],
+                  "rows": [
+                    24
+                  ]
+                }
+              ],
+              "rows": []
+            }
+          ],
+          "rows": []
+        },
+        {
+          "field": "area",
+          "value": "HomeLab",
+          "label": "HomeLab",
+          "count": 5,
+          "children": [
+            {
+              "field": "context",
+              "value": "backups",
+              "label": "backups",
+              "count": 3,
+              "children": [
+                {
+                  "field": "layer",
+                  "value": "state",
+                  "label": "state",
+                  "count": 2,
+                  "children": [],
+                  "rows": [
+                    34,
+                    35
+                  ]
+                },
+                {
+                  "field": "layer",
+                  "value": "log",
+                  "label": "log",
+                  "count": 1,
+                  "children": [],
+                  "rows": [
+                    21
+                  ]
+                }
+              ],
+              "rows": []
+            },
+            {
+              "field": "context",
+              "value": "common",
+              "label": "common",
+              "count": 1,
+              "children": [
+                {
+                  "field": "layer",
+                  "value": "log",
+                  "label": "log",
+                  "count": 1,
+                  "children": [],
+                  "rows": [
+                    22
+                  ]
+                }
+              ],
+              "rows": []
+            },
+            {
+              "field": "context",
+              "value": null,
+              "label": "(none)",
+              "count": 1,
+              "children": [
+                {
+                  "field": "layer",
+                  "value": null,
+                  "label": "(none)",
+                  "count": 1,
+                  "children": [],
+                  "rows": [
+                    7
+                  ]
+                }
+              ],
+              "rows": []
+            }
+          ],
+          "rows": []
+        },
+        {
+          "field": "area",
+          "value": null,
+          "label": "(none)",
+          "count": 8,
+          "children": [
+            {
+              "field": "context",
+              "value": null,
+              "label": "(none)",
+              "count": 8,
+              "children": [
+                {
+                  "field": "layer",
+                  "value": "inbox",
+                  "label": "inbox",
+                  "count": 1,
+                  "children": [],
+                  "rows": [
+                    10
+                  ]
+                },
+                {
+                  "field": "layer",
+                  "value": "views",
+                  "label": "views",
+                  "count": 7,
+                  "children": [],
+                  "rows": [
+                    0,
+                    1,
+                    2,
+                    3,
+                    4,
+                    5,
+                    6
+                  ]
+                }
+              ],
+              "rows": []
+            }
+          ],
+          "rows": []
+        }
+      ]
+    }
+  ]
+}

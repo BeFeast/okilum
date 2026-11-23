@@ -1,8 +1,8 @@
 //! The views fixture vault (#3262, spec task T1) must stay loadable: every note
 //! has parseable frontmatter, every top-level `view` block is a YAML mapping
 //! whose keys the view schema knows, every JSONL line is a JSON object, and the
-//! contract copies under `@Schema/` parse. No view module exists yet; this test
-//! keeps the fixture from rotting until T2/T3 consume it.
+//! contract copies under `@Schema/` parse. The view conformance tests exercise
+//! execution against the same vault.
 use okilum_core::{properties, tasks};
 use serde_json::Value as Json;
 use serde_yaml::Value as Yaml;

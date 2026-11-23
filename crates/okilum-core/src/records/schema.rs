@@ -52,7 +52,7 @@ pub struct Field {
     pub(super) stored_aliases: BTreeMap<String, String>,
     pub(super) pattern: Option<Regex>,
     pub(super) slug: bool,
-    pub(super) allow_http_urls: bool,
+    pub(crate) allow_http_urls: bool,
 }
 
 impl Field {
@@ -60,7 +60,7 @@ impl Field {
         (!self.slug || is_slug(value)) && self.pattern.as_ref().is_none_or(|p| p.is_match(value))
     }
 
-    pub(super) fn enum_value(
+    pub(crate) fn enum_value(
         &self,
         value: &str,
         layer: Option<&str>,
@@ -259,7 +259,11 @@ impl FieldSchema {
     }
 
     pub fn includes(&self, path: &str) -> bool {
-        self.include.is_match(path) && !self.exclude.is_match(path)
+        self.include.is_match(path) && !self.excludes(path)
+    }
+
+    pub(crate) fn excludes(&self, path: &str) -> bool {
+        self.exclude.is_match(path)
     }
 
     pub fn note_field(&self, name: &str) -> Option<&Field> {

@@ -1,0 +1,114 @@
+{
+  "view_api": 0,
+  "view": {
+    "path": "@views/questions.md",
+    "rev": "sha256:24ea79e7c22184a98ce9bb70a44331f9c5e8d5016f78c0effdd25c0bda3a9172",
+    "extends": null
+  },
+  "params": {},
+  "as_of": "2026-11-24T01:30:00+02:00",
+  "index": {
+    "by": "okilum-core 0.1.0",
+    "notes": 36,
+    "generation": 0
+  },
+  "findings": [],
+  "sections": [
+    {
+      "id": "s1",
+      "title": "",
+      "line": 11,
+      "show": "list",
+      "cols": [
+        "text",
+        "default",
+        "due",
+        "age"
+      ],
+      "status": "ok",
+      "source": "live",
+      "snapshot_at": null,
+      "diagnostics": [],
+      "total": 3,
+      "truncated": false,
+      "groups": [
+        {
+          "key": [
+            "okilum"
+          ],
+          "count": 2,
+          "agg": {}
+        },
+        {
+          "key": [
+            "tasker"
+          ],
+          "count": 1,
+          "agg": {}
+        }
+      ],
+      "rows": [
+        {
+          "path": "state/dev/okilum/questions.md",
+          "line": 8,
+          "anchor": null,
+          "rev": "sha256:f05449400d8aab0967eb4d7d6a0953c8cbce4144d12e96eedd5079e664a84bf2",
+          "group": [
+            "okilum"
+          ],
+          "fields": {
+            "age": 14,
+            "default": "approve",
+            "due": "2026-11-26",
+            "note.context": "okilum",
+            "text": "Approve `@views/out/` as the only snapshot folder"
+          },
+          "actions": [
+            "open",
+            "check",
+            "open:thread"
+          ]
+        },
+        {
+          "path": "state/dev/okilum/questions.md",
+          "line": 9,
+          "anchor": null,
+          "rev": "sha256:f05449400d8aab0967eb4d7d6a0953c8cbce4144d12e96eedd5079e664a84bf2",
+          "group": [
+            "okilum"
+          ],
+          "fields": {
+            "age": 4,
+            "default": "keep",
+            "note.context": "okilum",
+            "text": "Keep Tree as the default sidebar tab"
+          },
+          "actions": [
+            "open",
+            "check"
+          ]
+        },
+        {
+          "path": "state/dev/tasker/questions.md",
+          "line": 8,
+          "anchor": null,
+          "rev": "sha256:f36d4bdc082bd3a431b9f579c50def31dcf63c0c1c84738307bed1b438728fb0",
+          "group": [
+            "tasker"
+          ],
+          "fields": {
+            "age": 23,
+            "default": "keep",
+            "due": "2026-12-01",
+            "note.context": "tasker",
+            "text": "Archive Tasker or keep it parked"
+          },
+          "actions": [
+            "open",
+            "check"
+          ]
+        }
+      ]
+    }
+  ]
+}

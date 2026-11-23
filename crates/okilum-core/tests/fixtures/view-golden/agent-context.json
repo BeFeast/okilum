@@ -1,0 +1,225 @@
+{
+  "view_api": 0,
+  "view": {
+    "path": "@views/agent-context.md",
+    "rev": "sha256:a496311a61eaac4e0a4dc4d06ccca26fd6d2c0bbdd99498645f5841e95ada4f9",
+    "extends": null
+  },
+  "params": {
+    "context": "okilum",
+    "task": ""
+  },
+  "as_of": "2026-11-24T01:30:00+02:00",
+  "index": {
+    "by": "okilum-core 0.1.0",
+    "notes": 36,
+    "generation": 0
+  },
+  "findings": [],
+  "sections": [
+    {
+      "id": "state",
+      "title": "State",
+      "line": 13,
+      "show": "sections",
+      "cols": [
+        "heading"
+      ],
+      "status": "ok",
+      "source": "live",
+      "snapshot_at": null,
+      "diagnostics": [],
+      "total": 7,
+      "truncated": false,
+      "groups": [],
+      "rows": [
+        {
+          "path": "state/dev/okilum/index.md",
+          "line": 11,
+          "anchor": "Okilum",
+          "rev": "sha256:174d087b43dde0bcd99c8a26843630e956c40084bec0f00e006d6f7143b5e042",
+          "group": [],
+          "fields": {
+            "heading": "Okilum"
+          },
+          "actions": [
+            "open"
+          ],
+          "markdown": "Local-first Markdown knowledge environment.\n\n## Now\n\nViews contract v0 and the fixture vault.\n\n## Next\n\nFreeze the views contract with the gardener.\n\n## Blockers\n\nNone.\n\n## Tasks\n\n- [ ] Write view schema [owner:: okilum-assistant] 📅 2026-11-25 ⏫\n- [ ] Typed projection over the vault snapshot [owner:: okilum-assistant] 📅 2026-11-28\n- [ ] Review the Areas tab mockup [owner:: oleg] 📅 2026-11-27 🔼\n- [x] Draft the field contract [owner:: okilum-assistant] ✅ 2026-11-23"
+        },
+        {
+          "path": "state/dev/okilum/index.md",
+          "line": 15,
+          "anchor": "Now",
+          "rev": "sha256:174d087b43dde0bcd99c8a26843630e956c40084bec0f00e006d6f7143b5e042",
+          "group": [],
+          "fields": {
+            "heading": "Now"
+          },
+          "actions": [
+            "open"
+          ],
+          "markdown": "Views contract v0 and the fixture vault."
+        },
+        {
+          "path": "state/dev/okilum/index.md",
+          "line": 19,
+          "anchor": "Next",
+          "rev": "sha256:174d087b43dde0bcd99c8a26843630e956c40084bec0f00e006d6f7143b5e042",
+          "group": [],
+          "fields": {
+            "heading": "Next"
+          },
+          "actions": [
+            "open"
+          ],
+          "markdown": "Freeze the views contract with the gardener."
+        },
+        {
+          "path": "state/dev/okilum/index.md",
+          "line": 23,
+          "anchor": "Blockers",
+          "rev": "sha256:174d087b43dde0bcd99c8a26843630e956c40084bec0f00e006d6f7143b5e042",
+          "group": [],
+          "fields": {
+            "heading": "Blockers"
+          },
+          "actions": [
+            "open"
+          ],
+          "markdown": "None."
+        },
+        {
+          "path": "state/dev/okilum/index.md",
+          "line": 27,
+          "anchor": "Tasks",
+          "rev": "sha256:174d087b43dde0bcd99c8a26843630e956c40084bec0f00e006d6f7143b5e042",
+          "group": [],
+          "fields": {
+            "heading": "Tasks"
+          },
+          "actions": [
+            "open"
+          ],
+          "markdown": "- [ ] Write view schema [owner:: okilum-assistant] 📅 2026-11-25 ⏫\n- [ ] Typed projection over the vault snapshot [owner:: okilum-assistant] 📅 2026-11-28\n- [ ] Review the Areas tab mockup [owner:: oleg] 📅 2026-11-27 🔼\n- [x] Draft the field contract [owner:: okilum-assistant] ✅ 2026-11-23"
+        },
+        {
+          "path": "state/dev/okilum/questions.md",
+          "line": 6,
+          "anchor": "Waiting for Oleg — Okilum",
+          "rev": "sha256:f05449400d8aab0967eb4d7d6a0953c8cbce4144d12e96eedd5079e664a84bf2",
+          "group": [],
+          "fields": {
+            "heading": "Waiting for Oleg — Okilum"
+          },
+          "actions": [
+            "open"
+          ],
+          "markdown": "- [ ] Approve `@views/out/` as the only snapshot folder [owner:: oleg] [default:: approve] [thread:: t3code://threads/env-fixture/thread-views] ➕ 2026-11-10 📅 2026-11-26\n- [ ] Keep Tree as the default sidebar tab [owner:: oleg] [default:: keep] ➕ 2026-11-20\n- [x] Path-derived fields only from the lifecycle layout [owner:: oleg] [default:: approve] ➕ 2026-11-18 ✅ 2026-11-24\n- [ ] Rename the Areas tab [owner:: okilum-assistant] ➕ 2026-11-21"
+        },
+        {
+          "path": "state/dev/okilum/roadmap.md",
+          "line": 7,
+          "anchor": "Okilum roadmap",
+          "rev": "sha256:34f7e03c939fe97c7e3f98cdc45869a437fe96137fc40737403ad4bfe31a23bb",
+          "group": [],
+          "fields": {
+            "heading": "Okilum roadmap"
+          },
+          "actions": [
+            "open"
+          ],
+          "markdown": "1. Views in the vault (T1–T13).\n2. Project records as views."
+        }
+      ]
+    },
+    {
+      "id": "decisions",
+      "title": "Decisions",
+      "line": 20,
+      "show": "sections",
+      "cols": [
+        "title"
+      ],
+      "status": "ok",
+      "source": "live",
+      "snapshot_at": null,
+      "diagnostics": [],
+      "total": 3,
+      "truncated": false,
+      "groups": [],
+      "rows": [
+        {
+          "path": "log/dev/okilum/decisions/2026-11-24-near-snapshot-only.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:04623a39dde3ddbf56a916ce334e35458e96bcb91f7981cecc0245ce4bac3e85",
+          "group": [],
+          "fields": {
+            "date": "2026-11-24",
+            "title": "near without the search service shows the snapshot"
+          },
+          "actions": [
+            "open"
+          ],
+          "markdown": "# near without the search service shows the snapshot\n\nNever a full-text fallback."
+        },
+        {
+          "path": "log/dev/okilum/decisions/2026-11-20-views-in-vault.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:c92cffe420e3091b5968abf0f2875bc96799618553f0a916c4884c25e2d62da2",
+          "group": [],
+          "fields": {
+            "date": "2026-11-20",
+            "title": "Declarative views live in the vault"
+          },
+          "actions": [
+            "open"
+          ],
+          "markdown": "# Declarative views live in the vault\n\nThe app owns the renderer; `@views/` holds queries only."
+        },
+        {
+          "path": "log/dev/okilum/decisions/2026-11-10-tree-replaces-now.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:e5ca8b4962d253dde503685c19976663a35a6318ce6d836fcc29b22e63392cc8",
+          "group": [],
+          "fields": {
+            "date": "2026-11-10",
+            "title": "The virtual tree replaces Now"
+          },
+          "actions": [
+            "open"
+          ],
+          "markdown": "# The virtual tree replaces Now\n\nSuperseded on 2026-11-24: Areas is a third tab."
+        }
+      ]
+    },
+    {
+      "id": "for-the-task",
+      "title": "For the task",
+      "line": 29,
+      "show": "list",
+      "cols": [
+        "title"
+      ],
+      "status": "degraded",
+      "source": "live",
+      "snapshot_at": null,
+      "diagnostics": [
+        {
+          "path": "@views/agent-context.md",
+          "line": 31,
+          "col": 1,
+          "severity": "warning",
+          "message": "near needs the search service"
+        }
+      ],
+      "total": 0,
+      "truncated": false,
+      "groups": [],
+      "rows": []
+    }
+  ]
+}

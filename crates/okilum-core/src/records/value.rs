@@ -19,6 +19,8 @@ pub enum Value {
     },
     Link(Link),
     List(Vec<Value>),
+    Object(std::collections::BTreeMap<String, Value>),
+    Null,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,6 +43,13 @@ impl Value {
     pub fn to_json(&self, vault: &Vault, from: &str) -> serde_json::Value {
         use serde_json::{json, Value as Json};
         match self {
+            Self::Null => Json::Null,
+            Self::Object(fields) => Json::Object(
+                fields
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.to_json(vault, from)))
+                    .collect(),
+            ),
             Self::String(value) => json!(value),
             Self::Number(value) => Json::Number(value.clone()),
             Self::Bool(value) => json!(value),
@@ -80,7 +89,7 @@ impl Link {
     }
 }
 
-pub(super) fn date(value: &str) -> Option<Date> {
+pub(crate) fn date(value: &str) -> Option<Date> {
     (value.len() == 10).then_some(())?;
     Date::parse(
         value,
@@ -89,7 +98,7 @@ pub(super) fn date(value: &str) -> Option<Date> {
     .ok()
 }
 
-pub(super) fn datetime(value: &str, zone: Tz) -> Option<DateTime<FixedOffset>> {
+pub(crate) fn datetime(value: &str, zone: Tz) -> Option<DateTime<FixedOffset>> {
     if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
         return Some(parsed);
     }
@@ -101,7 +110,7 @@ pub(super) fn datetime(value: &str, zone: Tz) -> Option<DateTime<FixedOffset>> {
         .map(|t| t.fixed_offset())
 }
 
-pub(super) fn local_day(value: DateTime<FixedOffset>, zone: Tz) -> Option<Date> {
+pub(crate) fn local_day(value: DateTime<FixedOffset>, zone: Tz) -> Option<Date> {
     let local = value.with_timezone(&zone);
     Date::from_calendar_date(
         local.year(),

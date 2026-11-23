@@ -1,0 +1,331 @@
+{
+  "view_api": 0,
+  "view": {
+    "path": "@views/whats-new.md",
+    "rev": "sha256:af57ce216164c5ad9c6bebcc127fd1d60c5da4e98fbfe30aff544fadbe316c79",
+    "extends": null
+  },
+  "params": {},
+  "as_of": "2026-11-24T01:30:00+02:00",
+  "index": {
+    "by": "okilum-core 0.1.0",
+    "notes": 36,
+    "generation": 0
+  },
+  "findings": [],
+  "sections": [
+    {
+      "id": "changed",
+      "title": "",
+      "line": 11,
+      "show": "list",
+      "cols": [
+        "title",
+        "area",
+        "layer"
+      ],
+      "status": "ok",
+      "source": "live",
+      "snapshot_at": null,
+      "diagnostics": [],
+      "total": 10,
+      "truncated": false,
+      "groups": [
+        {
+          "key": [
+            "2026-11-22"
+          ],
+          "count": 10,
+          "agg": {}
+        }
+      ],
+      "rows": [
+        {
+          "path": "knowledge/rust-error-handling.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:6343547da4bb0dd4e125bc3b6d4a1f9a627eac868376a394fe9897eb07689607",
+          "group": [
+            "2026-11-22"
+          ],
+          "fields": {
+            "area": "Dev",
+            "day": "2026-11-22",
+            "layer": "knowledge",
+            "mtime": "2026-11-22T10:00:00+02:00",
+            "title": "Rust error handling"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "knowledge/sleep-hygiene.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:984a6b9a8eda4f2aa5cd80c2c15c57936ec5da271b0b09c1a19224e8b1ced54e",
+          "group": [
+            "2026-11-22"
+          ],
+          "fields": {
+            "area": "Health",
+            "day": "2026-11-22",
+            "layer": "knowledge",
+            "mtime": "2026-11-22T10:00:00+02:00",
+            "title": "Sleep hygiene"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "state/dev/common/conventions.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:ab425ad4dd35621e102eeda9aa1f431a8ad66a15849ac22cf09c8c1fa0e01c66",
+          "group": [
+            "2026-11-22"
+          ],
+          "fields": {
+            "area": "Dev",
+            "day": "2026-11-22",
+            "layer": "state",
+            "mtime": "2026-11-22T10:00:00+02:00",
+            "title": "Conventions"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "state/dev/okilum/index.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:174d087b43dde0bcd99c8a26843630e956c40084bec0f00e006d6f7143b5e042",
+          "group": [
+            "2026-11-22"
+          ],
+          "fields": {
+            "area": "Dev",
+            "day": "2026-11-22",
+            "layer": "state",
+            "mtime": "2026-11-22T10:00:00+02:00",
+            "title": "Okilum"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "state/dev/okilum/questions.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:f05449400d8aab0967eb4d7d6a0953c8cbce4144d12e96eedd5079e664a84bf2",
+          "group": [
+            "2026-11-22"
+          ],
+          "fields": {
+            "area": "Dev",
+            "day": "2026-11-22",
+            "layer": "state",
+            "mtime": "2026-11-22T10:00:00+02:00",
+            "title": "Waiting for Oleg — Okilum"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "state/dev/okilum/roadmap.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:34f7e03c939fe97c7e3f98cdc45869a437fe96137fc40737403ad4bfe31a23bb",
+          "group": [
+            "2026-11-22"
+          ],
+          "fields": {
+            "area": "Dev",
+            "day": "2026-11-22",
+            "layer": "state",
+            "mtime": "2026-11-22T10:00:00+02:00",
+            "title": "Okilum roadmap"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "state/finance/budget/index.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:6d8d2dfcfc3a5ed7e018e6028e8665f895920d7baedc36cd95821287096f5c6d",
+          "group": [
+            "2026-11-22"
+          ],
+          "fields": {
+            "area": "Finance",
+            "day": "2026-11-22",
+            "layer": "state",
+            "mtime": "2026-11-22T10:00:00+02:00",
+            "title": "Budget 2027"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "state/health/sleep-tracking/index.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:b8cd2f0d479f85c9bec346bb84cefabed894c956ec5b12b70af06901293b71a5",
+          "group": [
+            "2026-11-22"
+          ],
+          "fields": {
+            "area": "Health",
+            "day": "2026-11-22",
+            "layer": "state",
+            "mtime": "2026-11-22T10:00:00+02:00",
+            "title": "Sleep tracking"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "state/homelab/backups/index.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:0ec76f2a0d73a77fc90e9c0e0aacd241cbad7a510b69663c2f7e04f839d42421",
+          "group": [
+            "2026-11-22"
+          ],
+          "fields": {
+            "area": "HomeLab",
+            "day": "2026-11-22",
+            "layer": "state",
+            "mtime": "2026-11-22T10:00:00+02:00",
+            "title": "Backups"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "state/homelab/backups/runbook.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:6dbb20eaa8f2e8017e3ffa13d753839e5bbe394dd42db1333c3410ac9ba25d95",
+          "group": [
+            "2026-11-22"
+          ],
+          "fields": {
+            "area": "HomeLab",
+            "day": "2026-11-22",
+            "layer": "state",
+            "mtime": "2026-11-22T10:00:00+02:00",
+            "title": "Backup restore runbook"
+          },
+          "actions": [
+            "open"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "what-the-gardener-did",
+      "title": "What the gardener did",
+      "line": 23,
+      "show": "log",
+      "cols": [
+        "field",
+        "level",
+        "msg",
+        "op",
+        "path",
+        "ts"
+      ],
+      "status": "ok",
+      "source": "live",
+      "snapshot_at": null,
+      "diagnostics": [],
+      "total": 4,
+      "truncated": false,
+      "groups": [],
+      "rows": [
+        {
+          "path": "@views/changes.jsonl",
+          "line": 2,
+          "anchor": null,
+          "rev": "sha256:a219c3280eb050e593c776de1f891a3c8fa59e736e0e696413495829ab6a15c8",
+          "group": [],
+          "fields": {
+            "field": "area",
+            "level": "info",
+            "msg": "area health -> Health",
+            "op": "normalize",
+            "path": "knowledge/sleep-hygiene.md",
+            "ts": "2026-11-23T04:11:00+02:00"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "@views/changes.jsonl",
+          "line": 1,
+          "anchor": null,
+          "rev": "sha256:a219c3280eb050e593c776de1f891a3c8fa59e736e0e696413495829ab6a15c8",
+          "group": [],
+          "fields": {
+            "field": "updated",
+            "level": "info",
+            "msg": "filled updated from git",
+            "op": "fill",
+            "path": "state/dev/okilum/index.md",
+            "ts": "2026-11-23T04:10:00+02:00"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "@views/changes.jsonl",
+          "line": 3,
+          "anchor": null,
+          "rev": "sha256:a219c3280eb050e593c776de1f891a3c8fa59e736e0e696413495829ab6a15c8",
+          "group": [],
+          "fields": {
+            "field": "layer",
+            "level": "warn",
+            "msg": "stored layer knowledge disagrees with path state",
+            "op": "conflict",
+            "path": "state/homelab/backups/runbook.md",
+            "ts": "2026-11-22T04:10:00+02:00"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "@views/changes.jsonl",
+          "line": 4,
+          "anchor": null,
+          "rev": "sha256:a219c3280eb050e593c776de1f891a3c8fa59e736e0e696413495829ab6a15c8",
+          "group": [],
+          "fields": {
+            "field": "layer",
+            "level": "info",
+            "msg": "old-layout note: no derived fields",
+            "op": "report",
+            "path": "Projects/Okilum Legacy/Notes.md",
+            "ts": "2026-11-21T04:10:00+02:00"
+          },
+          "actions": [
+            "open"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+//! Read-only execution of the vault's declarative view_api: 0 contract.
+mod bind;
+mod compute;
+mod parse;
+mod render;
+mod run;
+
+pub use parse::{parse, validate, Show, ViewDoc};
+pub use render::{render_json, render_markdown};
+pub use run::{
+    run, Group, Index, NearProvider, Row, RunContext, Section, Status, TreeNode, ViewIdentity,
+    ViewResult,
+};
+
+use serde::Serialize;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Severity {
+    Error,
+    Warning,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct Finding {
+    pub path: String,
+    /// One-based source line and character column.
+    pub line: usize,
+    pub col: usize,
+    pub severity: Severity,
+    pub message: String,
+}
+
+impl Finding {
+    pub fn is_error(&self) -> bool {
+        self.severity == Severity::Error
+    }
+}

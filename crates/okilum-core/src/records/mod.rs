@@ -2,7 +2,7 @@
 mod layout;
 mod note;
 mod schema;
-mod value;
+pub(crate) mod value;
 
 pub use schema::{Field, FieldSchema, FieldType};
 pub use value::{Link, Value};

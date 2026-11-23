@@ -158,12 +158,25 @@ impl Query {
     }
 
     pub fn parse(source: &str) -> Result<Query, QueryError> {
+        let (expr, _) = Self::parse_dialect(source, false)?;
+        Ok(Self {
+            needs_record: expr.needs_record(),
+            expr,
+        })
+    }
+
+    pub(crate) fn parse_view(source: &str) -> Result<(Expr, ViewSyntax), QueryError> {
+        Self::parse_dialect(source, true)
+    }
+
+    fn parse_dialect(source: &str, view: bool) -> Result<(Expr, ViewSyntax), QueryError> {
         let tokens = lex(source)?;
         let mut parser = Parser {
             source,
             tokens,
             pos: 0,
             depth: 0,
+            view: view.then(ViewSyntax::default),
         };
         let expr = if parser.tokens.is_empty() {
             Expr::And(Vec::new())
@@ -173,10 +186,7 @@ impl Query {
         if let Some(token) = parser.bump() {
             return Err(parser.after_condition(token));
         }
-        Ok(Query {
-            needs_record: expr.needs_record(),
-            expr,
-        })
+        Ok((expr, parser.view.unwrap_or_default()))
     }
 
     pub fn expr(&self) -> &Expr {
@@ -283,6 +293,54 @@ pub enum Test {
     Compare(Cmp, Literal),
     In(Vec<Literal>),
     NotIn(Vec<Literal>),
+    /// Index into the view dialect's predicates. Log queries never construct this.
+    #[doc(hidden)]
+    View(usize),
+}
+
+#[derive(Default)]
+pub(crate) struct ViewSyntax {
+    pub fields: Vec<(String, Range<usize>)>,
+    pub predicates: Vec<ViewPredicate>,
+}
+
+pub(crate) struct ViewPredicate {
+    pub field: String,
+    pub op: ViewOp,
+    pub operands: Vec<ViewOperand>,
+}
+
+pub(crate) struct ViewOperand {
+    pub text: String,
+    pub quoted: bool,
+    pub span: Range<usize>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ViewOp {
+    Eq,
+    Ne,
+    Contains,
+    NotContains,
+    Regex,
+    NotRegex,
+    Compare(Cmp),
+    In,
+    NotIn,
+    Typed,
+}
+
+pub(crate) trait Row {
+    fn exists(&self, field: &FieldRef) -> bool;
+    fn test(&self, field: &FieldRef, test: &Test, include_absent: bool) -> bool;
+
+    fn typed(&self, _: &FieldRef, _: &FilterValue) -> bool {
+        unreachable!("View typed predicates use bound operands")
+    }
+
+    fn level(&self, _: &LevelTest, _: bool) -> bool {
+        unreachable!("View predicates have no severity role")
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -326,68 +384,37 @@ impl PartialEq for Pattern {
 
 impl Expr {
     fn matches_row(&self, entry: &LogEntry, record: Option<&Record>, raw: &[u8]) -> bool {
-        match self {
-            Expr::And(xs) => xs.iter().all(|x| x.matches_row(entry, record, raw)),
-            Expr::Or(xs) => xs.iter().any(|x| x.matches_row(entry, record, raw)),
-            Expr::Not(x) => !x.matches_row(entry, record, raw),
-            Expr::Typed {
-                field: FieldRef::Message,
-                value,
-            } if record.is_none() => {
-                *value
-                    == FilterValue::string(&super::ansi::strip_text(String::from_utf8_lossy(raw)))
-            }
-            _ => self.matches(entry, record),
-        }
+        self.evaluate(&LogRow {
+            entry,
+            record,
+            raw: Some(raw),
+        })
     }
 
     pub fn matches(&self, entry: &LogEntry, record: Option<&Record>) -> bool {
+        self.evaluate(&LogRow {
+            entry,
+            record,
+            raw: None,
+        })
+    }
+
+    pub(crate) fn evaluate(&self, row: &impl Row) -> bool {
         match self {
-            Expr::Typed { field, value } => {
-                let Some(record) = record else {
-                    return *value == FilterValue::Missing;
-                };
-                let mut found = values(record, field).peekable();
-                if found.peek().is_none() {
-                    *value == FilterValue::Missing
-                } else {
-                    found.any(|f| match value {
-                        FilterValue::Missing => false,
-                        FilterValue::Value { kind, text } => f.kind == *kind && f.value == *text,
-                    })
-                }
-            }
-            Expr::And(items) => items.iter().all(|e| e.matches(entry, record)),
-            Expr::Or(items) => items.iter().any(|e| e.matches(entry, record)),
-            Expr::Not(inner) => !inner.matches(entry, record),
-            Expr::Exists(FieldRef::Level) => level_present(entry.level()),
-            Expr::Exists(field) => record.is_some_and(|r| values(r, field).next().is_some()),
+            Expr::Typed { field, value } => row.typed(field, value),
+            Expr::And(items) => items.iter().all(|e| e.evaluate(row)),
+            Expr::Or(items) => items.iter().any(|e| e.evaluate(row)),
+            Expr::Not(inner) => !inner.evaluate(row),
+            Expr::Exists(field) => row.exists(field),
             Expr::Level {
                 test,
                 include_absent,
-            } => {
-                let level = entry.level();
-                if level_present(level) {
-                    test.holds(level)
-                } else {
-                    *include_absent
-                }
-            }
+            } => row.level(test, *include_absent),
             Expr::Field {
                 field,
                 test,
                 include_absent,
-            } => {
-                let Some(record) = record else {
-                    return *include_absent;
-                };
-                let mut found = values(record, field).peekable();
-                if found.peek().is_none() {
-                    *include_absent
-                } else {
-                    test.holds(found)
-                }
-            }
+            } => row.test(field, test, *include_absent),
         }
     }
 
@@ -397,6 +424,63 @@ impl Expr {
             Expr::Not(inner) => inner.needs_record(),
             Expr::Exists(FieldRef::Level) | Expr::Level { .. } => false,
             Expr::Exists(_) | Expr::Field { .. } | Expr::Typed { .. } => true,
+        }
+    }
+}
+
+struct LogRow<'a> {
+    entry: &'a LogEntry,
+    record: Option<&'a Record>,
+    raw: Option<&'a [u8]>,
+}
+
+impl Row for LogRow<'_> {
+    fn exists(&self, field: &FieldRef) -> bool {
+        if *field == FieldRef::Level {
+            level_present(self.entry.level())
+        } else {
+            self.record
+                .is_some_and(|r| values(r, field).next().is_some())
+        }
+    }
+
+    fn typed(&self, field: &FieldRef, value: &FilterValue) -> bool {
+        let Some(record) = self.record else {
+            if let (FieldRef::Message, Some(raw)) = (field, self.raw) {
+                return *value
+                    == FilterValue::string(&super::ansi::strip_text(String::from_utf8_lossy(raw)));
+            }
+            return *value == FilterValue::Missing;
+        };
+        let mut found = values(record, field).peekable();
+        if found.peek().is_none() {
+            *value == FilterValue::Missing
+        } else {
+            found.any(|f| match value {
+                FilterValue::Missing => false,
+                FilterValue::Value { kind, text } => f.kind == *kind && f.value == *text,
+            })
+        }
+    }
+
+    fn level(&self, test: &LevelTest, include_absent: bool) -> bool {
+        let level = self.entry.level();
+        if level_present(level) {
+            test.holds(level)
+        } else {
+            include_absent
+        }
+    }
+
+    fn test(&self, field: &FieldRef, test: &Test, include_absent: bool) -> bool {
+        let Some(record) = self.record else {
+            return include_absent;
+        };
+        let mut found = values(record, field).peekable();
+        if found.peek().is_none() {
+            include_absent
+        } else {
+            test.holds(found)
         }
     }
 }
@@ -433,6 +517,7 @@ impl Test {
             Test::Compare(cmp, lit) => found.any(|f| lit.order(f).is_some_and(|o| cmp.holds(o))),
             Test::In(lits) => found.any(|f| lits.iter().any(|lit| lit.equals(f))),
             Test::NotIn(lits) => !found.any(|f| lits.iter().any(|lit| lit.equals(f))),
+            Test::View(_) => unreachable!("Log queries have no view predicates"),
         }
     }
 }
@@ -452,7 +537,7 @@ impl LevelTest {
 
 impl Cmp {
     /// `ordering` is the field's value relative to the literal.
-    fn holds(self, ordering: Ordering) -> bool {
+    pub(crate) fn holds(self, ordering: Ordering) -> bool {
         match self {
             Cmp::Lt => ordering.is_lt(),
             Cmp::Le => ordering.is_le(),
@@ -745,6 +830,7 @@ struct Parser<'s> {
     tokens: Vec<Token>,
     pos: usize,
     depth: usize,
+    view: Option<ViewSyntax>,
 }
 
 enum OpKind {
@@ -888,12 +974,24 @@ impl Parser<'_> {
                     .bump()
                     .ok_or_else(|| QueryError::new(self.end(), "Expected a field"))?;
                 let field = match &name.tok {
-                    Tok::Word(s) if s == "@time" => FieldRef::Time,
-                    Tok::Word(s) if s == "@source" => FieldRef::Source,
+                    Tok::Word(s) if self.view.is_none() && s == "@time" => FieldRef::Time,
+                    Tok::Word(s) if self.view.is_none() && s == "@source" => FieldRef::Source,
                     Tok::Str(s) if s.is_empty() => FieldRef::Key(String::new()),
                     _ => self.field(name)?,
                 };
                 self.expect_comma()?;
+                if self.view.is_some() {
+                    let kind = self.view_operand(&token.span)?;
+                    self.expect_comma()?;
+                    let text = self.view_operand(&token.span)?;
+                    if !matches!(self.bump().map(|token| token.tok), Some(Tok::RParen)) {
+                        return Err(QueryError::new(
+                            self.end(),
+                            "Expected closing parenthesis after typed value",
+                        ));
+                    }
+                    return Ok(self.view_predicate(field, false, ViewOp::Typed, vec![kind, text]));
+                }
                 let (kind, _) = self.value(&token.span)?;
                 self.expect_comma()?;
                 let (text, span) = self.value(&token.span)?;
@@ -953,12 +1051,13 @@ impl Parser<'_> {
         }
     }
 
-    fn field(&self, token: Token) -> Result<FieldRef, QueryError> {
-        match token.tok {
+    fn field(&mut self, token: Token) -> Result<FieldRef, QueryError> {
+        let span = token.span.clone();
+        let field = match token.tok {
             Tok::Word(word) => Ok(match word.as_str() {
-                "level" => FieldRef::Level,
-                "msg" | "message" => FieldRef::Message,
-                "logger" => FieldRef::Logger,
+                "level" if self.view.is_none() => FieldRef::Level,
+                "msg" | "message" if self.view.is_none() => FieldRef::Message,
+                "logger" if self.view.is_none() => FieldRef::Logger,
                 _ => match word.strip_prefix('.') {
                     Some("") => {
                         return Err(QueryError::new(
@@ -978,7 +1077,11 @@ impl Parser<'_> {
                 let message = format!("Expected a field name, found `{}`", self.text(&token.span));
                 Err(QueryError::new(token.span, message))
             }
+        }?;
+        if let (Some(view), FieldRef::Key(name)) = (&mut self.view, &field) {
+            view.fields.push((name.clone(), span));
         }
+        Ok(field)
     }
 
     fn test(&mut self, name: Token) -> Result<Expr, QueryError> {
@@ -993,6 +1096,15 @@ impl Parser<'_> {
         );
         if include_absent {
             self.bump();
+            if self.view.is_some()
+                && (matches!(
+                    self.peek().map(|t| &t.tok),
+                    None | Some(Tok::RParen | Tok::AndAnd | Tok::OrOr)
+                ) || is_keyword(self.peek(), "and")
+                    || is_keyword(self.peek(), "or"))
+            {
+                return Ok(Expr::Exists(field));
+            }
         }
         let missing_operator = |parser: &Self, span: Range<usize>| {
             let name = parser.text(&name_span);
@@ -1044,6 +1156,28 @@ impl Parser<'_> {
                 include_absent,
             });
         }
+        if self.view.is_some() {
+            let (op, operands) = match kind {
+                OpKind::In => (ViewOp::In, self.list(Self::view_operand)?),
+                OpKind::NotIn => (ViewOp::NotIn, self.list(Self::view_operand)?),
+                OpKind::Op(operator) => {
+                    let operator = match operator {
+                        OpTok::Eq => ViewOp::Eq,
+                        OpTok::Ne => ViewOp::Ne,
+                        OpTok::Contains => ViewOp::Contains,
+                        OpTok::NotContains => ViewOp::NotContains,
+                        OpTok::Regex => ViewOp::Regex,
+                        OpTok::NotRegex => ViewOp::NotRegex,
+                        OpTok::Lt => ViewOp::Compare(Cmp::Lt),
+                        OpTok::Le => ViewOp::Compare(Cmp::Le),
+                        OpTok::Gt => ViewOp::Compare(Cmp::Gt),
+                        OpTok::Ge => ViewOp::Compare(Cmp::Ge),
+                    };
+                    (operator, vec![self.view_operand(&op.span)?])
+                }
+            };
+            return Ok(self.view_predicate(field, include_absent, op, operands));
+        }
         let test = match kind {
             OpKind::Op(OpTok::Eq) => Test::Eq(self.value(&op.span)?.0),
             OpKind::Op(OpTok::Ne) => Test::Ne(self.value(&op.span)?.0),
@@ -1063,6 +1197,42 @@ impl Parser<'_> {
             test,
             include_absent,
         })
+    }
+
+    fn view_operand(&mut self, after: &Range<usize>) -> Result<ViewOperand, QueryError> {
+        let quoted = self
+            .peek()
+            .is_some_and(|token| matches!(token.tok, Tok::Str(_)));
+        let (literal, span) = self.value(after)?;
+        Ok(ViewOperand {
+            text: literal.text,
+            quoted,
+            span,
+        })
+    }
+
+    fn view_predicate(
+        &mut self,
+        field: FieldRef,
+        include_absent: bool,
+        op: ViewOp,
+        operands: Vec<ViewOperand>,
+    ) -> Expr {
+        let view = self.view.as_mut().expect("view dialect");
+        let FieldRef::Key(name) = &field else {
+            unreachable!("view field")
+        };
+        let index = view.predicates.len();
+        view.predicates.push(ViewPredicate {
+            field: name.clone(),
+            op,
+            operands,
+        });
+        Expr::Field {
+            field,
+            test: Test::View(index),
+            include_absent,
+        }
     }
 
     /// `after` is the token before the value, named when the query ends.
@@ -1307,6 +1477,7 @@ impl fmt::Display for Expr {
             } => {
                 write!(f, "{field}{} ", absent(*include_absent))?;
                 match test {
+                    Test::View(_) => Err(fmt::Error),
                     Test::Eq(lit) => write!(f, "= {lit}"),
                     Test::Ne(lit) => write!(f, "!= {lit}"),
                     Test::Contains(text) => {

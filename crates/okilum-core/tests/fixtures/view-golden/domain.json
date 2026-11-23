@@ -1,0 +1,146 @@
+{
+  "view_api": 0,
+  "view": {
+    "path": "@views/domain.md",
+    "rev": "sha256:5699417a6e979638291bd2dcfb9143e24cb0c44dc5ec1998ad1f26e54eddf309",
+    "extends": null
+  },
+  "params": {
+    "domain": "Health"
+  },
+  "as_of": "2026-11-24T01:30:00+02:00",
+  "index": {
+    "by": "okilum-core 0.1.0",
+    "notes": 36,
+    "generation": 0
+  },
+  "findings": [],
+  "sections": [
+    {
+      "id": "projects",
+      "title": "Projects",
+      "line": 13,
+      "show": "table",
+      "cols": [
+        "title",
+        "context",
+        "idle",
+        "tasks_open"
+      ],
+      "status": "ok",
+      "source": "live",
+      "snapshot_at": null,
+      "diagnostics": [],
+      "total": 1,
+      "truncated": false,
+      "groups": [],
+      "rows": [
+        {
+          "path": "state/health/sleep-tracking/index.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:b8cd2f0d479f85c9bec346bb84cefabed894c956ec5b12b70af06901293b71a5",
+          "group": [],
+          "fields": {
+            "context": "sleep-tracking",
+            "idle": 8,
+            "tasks_open": 1,
+            "title": "Sleep tracking"
+          },
+          "actions": [
+            "open"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "log",
+      "title": "Log",
+      "line": 23,
+      "show": "timeline",
+      "cols": [
+        "title"
+      ],
+      "status": "ok",
+      "source": "live",
+      "snapshot_at": null,
+      "diagnostics": [],
+      "total": 1,
+      "truncated": false,
+      "groups": [
+        {
+          "key": [
+            "decisions"
+          ],
+          "count": 1,
+          "agg": {}
+        }
+      ],
+      "rows": [
+        {
+          "path": "log/health/sleep-tracking/decisions/2026-11-18-bedtime-window.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:6aec0649974d64e993cae1448a70cedd659ec14c73ef38158e93813363a7ee72",
+          "group": [
+            "decisions"
+          ],
+          "fields": {
+            "date": "2026-11-18",
+            "kind": "decisions",
+            "title": "Bedtime window 23:00–23:30"
+          },
+          "actions": [
+            "open"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "knowledge-and-sources",
+      "title": "Knowledge and sources",
+      "line": 32,
+      "show": "list",
+      "cols": [
+        "title"
+      ],
+      "status": "ok",
+      "source": "live",
+      "snapshot_at": null,
+      "diagnostics": [],
+      "total": 2,
+      "truncated": false,
+      "groups": [],
+      "rows": [
+        {
+          "path": "knowledge/sleep-hygiene.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:984a6b9a8eda4f2aa5cd80c2c15c57936ec5da271b0b09c1a19224e8b1ced54e",
+          "group": [],
+          "fields": {
+            "title": "Sleep hygiene",
+            "updated": "2026-11-14"
+          },
+          "actions": [
+            "open"
+          ]
+        },
+        {
+          "path": "sources/web/2026/11/12/circadian-light.md",
+          "line": null,
+          "anchor": null,
+          "rev": "sha256:d7fe156c3179d3dae385bc2133e0f6b699e13602d1bb121aafd0cfcb3642b01f",
+          "group": [],
+          "fields": {
+            "title": "Circadian light",
+            "updated": "2026-11-12"
+          },
+          "actions": [
+            "open"
+          ]
+        }
+      ]
+    }
+  ]
+}
