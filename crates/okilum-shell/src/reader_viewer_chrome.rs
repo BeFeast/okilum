@@ -1575,11 +1575,14 @@ fn window_slot(
                         .menu("Zoom in", Box::new(reader_text_zoom::ZoomIn))
                         .menu("Zoom out", Box::new(reader_text_zoom::ZoomOut))
                         .menu("Actual size", Box::new(reader_text_zoom::Reset))
-                        .separator()
-                        .menu("Zoom In UI", Box::new(ui_zoom::ZoomIn))
-                        .menu("Zoom Out UI", Box::new(ui_zoom::ZoomOut))
-                        .menu("Actual UI Size", Box::new(ui_zoom::Reset));
+                        .separator();
                 }
+                // Interface zoom applies to every file type, PDFs and images
+                // included (#2848).
+                m = m
+                    .menu("Zoom In UI", Box::new(ui_zoom::ZoomIn))
+                    .menu("Zoom Out UI", Box::new(ui_zoom::ZoomOut))
+                    .menu("Actual UI Size", Box::new(ui_zoom::Reset));
                 // Keeps this file in the pinned row; last before Trash, as in
                 // the note menu (#2789).
                 if let Some(pin) = reader_pin_row::pin_menu_item(&weak, &rel, cx) {
