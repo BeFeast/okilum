@@ -56,7 +56,6 @@ ORIGIN = 'https://updates.befeast.com/'
 IMAGE = 'Okilum-x86_64.AppImage'
 CHANNEL = 'beta'
 MAX_IMAGE = 2 * 1024 * 1024 * 1024
-OWNER = b'Okilum managed AppImage v1\n'
 INSTANCE_LOCK = 'reader-instance.lock'
 # Same authority as crates/okilum-appimage (FINGERPRINT and scripts/arch/
 # okilum-signing-key.asc); scripts/ci/test_beta_deliver.py keeps them equal.
@@ -284,15 +283,6 @@ def download_payload(settings, release):
 
 def identity(stat_result):
     return f'{stat_result.st_size} {stat_result.st_mtime_ns // 10**9} {stat_result.st_mtime_ns % 10**9} {stat_result.st_ino}'
-
-
-def owned(image):
-    marker = image.with_name('.appimage-owner')
-    try:
-        st = os.lstat(marker)
-        return stat_regular(st) and marker.read_bytes() == OWNER
-    except OSError:
-        return False
 
 
 def stat_regular(st):
@@ -800,8 +790,10 @@ def apply(settings, release, payload):
         os.fsync(handle.fileno())
     if sha256(new) != release['sha256']:
         raise Refused('staged payload changed')
-    if owned(image):
-        write_build(image, release['build'], new)   # installation.rs note_incoming
+    # installation.rs note_incoming, but also without the owner marker: the
+    # record states the build of the verified bytes this run puts at the
+    # managed path and is bound to their identity (#3248).
+    write_build(image, release['build'], new)
     os.link(image, stage / 'previous.AppImage')
     atomic_write(stage / 'expected.json', json.dumps(release, separators=(',', ':')))
     with open(stage / 'apply.log', 'a') as log:
@@ -824,7 +816,7 @@ def roll_back(settings, release, stage, previous_build):
         return False
     os.replace(stage / 'previous.AppImage', image)
     fsync_dir(image.parent)
-    if previous_build is not None and owned(image):
+    if previous_build is not None:
         write_build(image, previous_build, image)
     with open(stage / 'apply.log', 'a') as log:
         log.write('Updated application exited before startup confirmation; previous AppImage restored\n')
