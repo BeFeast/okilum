@@ -24,6 +24,9 @@ gpui = { package = "okilum-gpui", path = "../okilum-gpui" }
 gpui-base = { path = "../../vendor/gpui-component/crates/base" }
 gpui-component = { workspace = true, features = ["tree-sitter-languages"] }
 gpui-kit-assets.workspace = true
+# Toolkit icons stay embedded with debug assertions too (Windows HLSL profile,
+# kit test builds): enables rust-embed `debug-embed` for gpui-kit-assets.
+rust-embed = { version = "8.12.0", features = ["debug-embed"] }
 okilum-core = { workspace = true, default-features = false }
 okilum-t3 = { path = "../okilum-t3" }
 serde.workspace = true
