@@ -609,7 +609,8 @@ const DECORATION_SLOTS: [&str; 5] = ["headingRule", "hr", "blockquote", "linkMar
 /// or line; thicknesses are pixels; angles are CSS degrees.
 fn parse_decorations(json: Option<&serde_json::Value>) -> gpui_base::text::TextDecorations {
     use gpui_base::text::{
-        BlockquoteDecoration, Gradient, GradientBar, HorizontalRule, LinkMarker, TextDecorations,
+        BlockquoteDecoration, Gradient, GradientBar, HorizontalRule, HrOrnament, LinkMarker,
+        OrnamentGlyph, TextDecorations,
     };
     let Some(json) = json else {
         return TextDecorations::default();
@@ -644,6 +645,16 @@ fn parse_decorations(json: Option<&serde_json::Value>) -> gpui_base::text::TextD
                 edge: color(v, "edge")?,
                 middle: color(v, "middle")?,
                 thickness: px(number(v, "thickness", 1.)),
+                // #3252: a theme's `hr::after`, e.g. Obsidianite's rotated `§`.
+                ornament: v.get("ornament").and_then(|o| {
+                    Some(HrOrnament {
+                        glyph: OrnamentGlyph::from_text(o.get("glyph")?.as_str()?)?,
+                        color: color(o, "color")?,
+                        rotate: number(o, "rotate", 0.),
+                        size: px(number(o, "size", 16.)),
+                        gap: px(number(o, "gap", 8.)),
+                    })
+                }),
             })
         }),
         blockquote: json.get("blockquote").map(|v| BlockquoteDecoration {
@@ -2094,6 +2105,61 @@ mod tests {
         assert_eq!(
             (bold.from, bold.to),
             (rgb(0x87c2fd).into(), rgb(0xdcb9fc).into())
+        );
+    }
+
+    #[test]
+    fn issue3252_obsidianite_hr_carries_the_rotated_section_ornament() {
+        use gpui_base::text::{HrOrnament, OrnamentGlyph};
+        let obsidianite = ThemeId::from_key("obsidianite").expect("built-in theme");
+        // Obsidianite `hr::after`: `§` in --text-sub-accent, rotate(60deg),
+        // 0.5rem padding each side.
+        for (dark, sub_accent) in [(false, 0xc2306f), (true, 0xf4569d)] {
+            let rule = tokens(obsidianite, dark)
+                .1
+                .decorations
+                .horizontal_rule
+                .expect("Obsidianite fills hr");
+            assert_eq!(
+                rule.ornament,
+                Some(HrOrnament {
+                    glyph: OrnamentGlyph::Section,
+                    color: rgb(sub_accent).into(),
+                    rotate: 60.,
+                    size: px(14.),
+                    gap: px(8.),
+                }),
+                "dark {dark}"
+            );
+        }
+        // Every other theme leaves `hr` (and so the ornament) out.
+        for theme in ThemeId::ALL.into_iter().filter(|t| *t != obsidianite) {
+            for dark in [false, true] {
+                assert!(tokens(theme, dark).1.decorations.horizontal_rule.is_none());
+            }
+        }
+        // An ornament key is optional; an unknown glyph draws no ornament
+        // but keeps the rule.
+        let rule = |ornament: serde_json::Value| {
+            let mut hr = serde_json::json!({"edge": "#00000000", "middle": "#0fb6d6"});
+            if !ornament.is_null() {
+                hr["ornament"] = ornament;
+            }
+            parse_decorations(Some(&serde_json::json!({ "hr": hr })))
+                .horizontal_rule
+                .expect("rule parses")
+        };
+        assert_eq!(rule(serde_json::Value::Null).ornament, None);
+        assert_eq!(
+            rule(serde_json::json!({"glyph": "*", "color": "#f4569d"})).ornament,
+            None
+        );
+        let defaults = rule(serde_json::json!({"glyph": "§", "color": "#f4569d"}))
+            .ornament
+            .expect("ornament parses");
+        assert_eq!(
+            (defaults.rotate, defaults.size, defaults.gap),
+            (0., px(16.), px(8.))
         );
     }
 

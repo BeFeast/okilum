@@ -158,7 +158,14 @@
       "hr": {
         "edge": "#087a9100",
         "middle": "#087a91",
-        "thickness": 1
+        "thickness": 1,
+        "ornament": {
+          "glyph": "§",
+          "color": "#c2306f",
+          "rotate": 60,
+          "size": 14,
+          "gap": 8
+        }
       },
       "blockquote": {
         "background": {
@@ -201,7 +208,14 @@
       "hr": {
         "edge": "#0fb6d600",
         "middle": "#0fb6d6",
-        "thickness": 1
+        "thickness": 1,
+        "ornament": {
+          "glyph": "§",
+          "color": "#f4569d",
+          "rotate": 60,
+          "size": 14,
+          "gap": 8
+        }
       },
       "blockquote": {
         "background": {
