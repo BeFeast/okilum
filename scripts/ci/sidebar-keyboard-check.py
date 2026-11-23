@@ -40,7 +40,7 @@ def negative(source, broken, case):
 
 def main():
     run(PREFIX, 2)
-    source = Path("crates/okilum-shell/src/main.rs")
+    source = Path("crates/okilum-shell/src/reader_actions.rs")
     original = source.read_bytes()
     binding = b'KeyBinding::new("enter", TreeReturn, Some("ReaderTree && !Input"))'
     assert original.count(binding) == 1
