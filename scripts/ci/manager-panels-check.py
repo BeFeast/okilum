@@ -50,7 +50,7 @@ def main():
     assert run('fixed', 'project::panel_tests::', '--nocapture', '--test-threads=1').returncode == 0
     # Restore only the real Reader reopen route; test-side direct activation
     # cannot accidentally make this control pass.
-    negative('old-reader-reopen', 'crates/okilum-shell/src/main.rs',
+    negative('old-reader-reopen', 'crates/okilum-shell/src/reader_window_view.rs',
              'project.manager_surface_visible(visible, cx)',
              'project.draft_handoff_surface_visible(visible, cx)', WARM)
     negative('unbounded-details', 'crates/okilum-shell/src/project/native.rs',
