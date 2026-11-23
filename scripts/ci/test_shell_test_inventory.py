@@ -30,6 +30,15 @@ class ShellTestInventoryTests(unittest.TestCase):
         text = "a::b: test\nc::bench: benchmark\n\nnoise\nd::e: test\n"
         self.assertEqual(INVENTORY.parse_list(text), ["a::b", "d::e"])
 
+    def test_target_flags_follow_the_package_targets(self):
+        def package(*kinds):
+            return {"targets": [{"kind": [kind]} for kind in kinds]}
+        # okilum-shell after the split has no library: --lib would be refused.
+        self.assertEqual(INVENTORY.target_flags(package("bin", "example")), ["--bins"])
+        self.assertEqual(INVENTORY.target_flags(package("lib")), ["--lib"])
+        self.assertEqual(INVENTORY.target_flags(package("lib", "bin", "test", "bench")),
+                         ["--lib", "--bins", "--tests"])
+
     def test_moved_module_keeps_its_name_and_passes(self):
         f = self.files(base="a::x\nb::y\n", head="b::y\na::x\nc::new\n")
         code, out = self.run_compare(f["base"], f["head"])

@@ -24,15 +24,30 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def shell_packages(root: Path) -> list[str]:
+def target_flags(package: dict) -> list[str]:
+    """Unit tests of every lib and bin target plus integration tests, for the
+    targets this package has (cargo refuses `--lib` without a library).
+    Examples and doctests are not part of the suites the split moves."""
+    kinds = {kind for target in package["targets"] for kind in target["kind"]}
+    flags = []
+    if kinds & {"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"}:
+        flags.append("--lib")
+    if "bin" in kinds:
+        flags.append("--bins")
+    if "test" in kinds:
+        flags.append("--tests")
+    return flags
+
+
+def shell_packages(root: Path) -> list[tuple[str, list[str]]]:
     metadata = json.loads(subprocess.run(
         ["cargo", "metadata", "--locked", "--offline", "--no-deps", "--format-version", "1"],
         cwd=root, check=True, capture_output=True, text=True).stdout)
-    names = sorted(p["name"] for p in metadata["packages"]
-                   if p["name"] == "okilum-shell" or p["name"].startswith("okilum-shell-"))
-    if "okilum-shell" not in names:
+    packages = sorted((p["name"], target_flags(p)) for p in metadata["packages"]
+                      if p["name"] == "okilum-shell" or p["name"].startswith("okilum-shell-"))
+    if "okilum-shell" not in {name for name, _ in packages}:
         raise SystemExit("okilum-shell is not a workspace package")
-    return names
+    return packages
 
 
 def parse_list(text: str) -> list[str]:
@@ -40,12 +55,10 @@ def parse_list(text: str) -> list[str]:
     return [line[:-len(": test")] for line in text.splitlines() if line.endswith(": test")]
 
 
-def list_tests(root: Path, packages: list[str], extra: list[str]) -> list[str]:
+def list_tests(root: Path, packages: list[tuple[str, list[str]]], extra: list[str]) -> list[str]:
     tests = []
-    for package in packages:
-        # --lib/--bins/--tests: unit tests of every target plus integration tests.
-        # Examples and doctests are not part of the suites the split moves.
-        command = ["cargo", "test", "--locked", "-p", package, "--lib", "--bins", "--tests",
+    for package, flags in packages:
+        command = ["cargo", "test", "--locked", "-p", package, *flags,
                    *extra, "--", "--list", "--format", "terse"]
         result = subprocess.run(command, cwd=root, capture_output=True, text=True)
         if result.returncode != 0:
