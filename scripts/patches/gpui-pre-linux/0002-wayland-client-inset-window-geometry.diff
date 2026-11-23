@@ -1,0 +1,26 @@
+--- a/src/linux/wayland/window.rs
++++ b/src/linux/wayland/window.rs
+@@ -2084,6 +2084,23 @@
+         let mut state = self.borrow_mut();
+         if Some(inset) != state.client_inset {
+             state.client_inset = Some(inset);
++            // The xdg window geometry excludes the inset. Before the first configure the
++            // configure handler sends it; afterwards nothing else would until the next resize,
++            // and the compositor would keep the outline and content offset of the old inset.
++            if state.decorations == WindowDecorations::Client
++                && self.0.frame_loop.get() != FrameLoop::Unconfigured
++            {
++                let window_geometry =
++                    inset_by_tiling(state.bounds.map_origin(|_| px(0.0)), inset, state.tiling)
++                        .map(|v| f32::from(v) as i32)
++                        .map_size(|v| if v <= 0 { 1 } else { v });
++                state.surface_state.set_geometry(
++                    window_geometry.origin.x,
++                    window_geometry.origin.y,
++                    window_geometry.size.width,
++                    window_geometry.size.height,
++                );
++            }
+             update_window(state);
+             self.0.request_redraw();
+         }

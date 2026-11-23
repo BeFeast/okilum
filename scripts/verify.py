@@ -322,7 +322,9 @@ def run(args, scenario, output, result):
             'version': 1, 'appearance': scenario.get('appearance', 'light'),
             **scenario.get('preferences', {}),
         }))
-        rig = Rig(root, 1366, input_methods=None)
+        rig_options = scenario.get('rig', {})
+        require(set(rig_options) <= {'output_scale', 'floating'}, f'Unknown rig keys: {rig_options}')
+        rig = Rig(root, 1366, input_methods=None, **rig_options)
         rig.env['OKILUM_STATE_DIR'] = str(state)
         proc = None
         try:
@@ -389,6 +391,21 @@ def run(args, scenario, output, result):
                         check['changed_pixels'] = pixels(diff, scenario['region'], 'max(r,max(g,b))>0.08?1:0')
                         require(check['changed_pixels'] >= step.get('min_changed_pixels', 100), check)
                         require(check['changed_pixels'] <= step.get('max_changed_pixels', float('inf')), check)
+                    if 'window' in step:
+                        # Compositor-side window box (logical px): `rect` is
+                        # where sway places the window, `geometry` its natural
+                        # size. Values within 1 px (fractional scale); with
+                        # `from: <step id>` they are differences to that step.
+                        rule = dict(step['window'])
+                        field = rule.pop('field', 'rect')
+                        base = rule.pop('from', None)
+                        check['window'] = rig.window()
+                        box = dict((check['window'] or {}).get(field) or {})
+                        if base is not None:
+                            earlier = next(c for c in result['checks'] if c['id'] == base)['window'][field]
+                            box = {k: v - earlier[k] for k, v in box.items()}
+                            check['window_delta'] = box
+                        require(all(abs(box.get(k, float('nan')) - v) <= 1 for k, v in rule.items()), check)
                     if 'ui_scale' in step:
                         scales = [e['details']['scale']['ui_zoom'] for e in trace_events(root)
                                   if e.get('phase') == 'ui_scale']

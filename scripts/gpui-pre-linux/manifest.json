@@ -7,15 +7,20 @@
     {
       "path": "../patches/gpui-pre-linux/0001-external-data-drops.diff",
       "sha256": "8287416e47bedbbf739a2e1165cf50d92b74e3da14965e01c9ecf017ed23aa74"
+    },
+    {
+      "path": "../patches/gpui-pre-linux/0002-wayland-client-inset-window-geometry.diff",
+      "sha256": "80da407c03bfd96eae5e53e9d0c350bbffdce77e54e8e84ed8d35131a2a853de"
     }
   ],
-  "tree_sha256": "586b2346bd1980578feee7d5a537c03c21d6055c312f84f4218fd096b013fcf0",
+  "tree_sha256": "6e835a8bb0d8bf408a26f59e363e4d2da2d09b2991be5198b5a2755939ec582a",
   "generated_path": "vendor/gpui-pre-linux-0.3.3",
   "changed_files": [
     "src/linux.rs",
     "src/linux/external_drop.rs",
     "src/linux/wayland/client.rs",
     "src/linux/wayland/clipboard.rs",
+    "src/linux/wayland/window.rs",
     "src/linux/x11.rs",
     "src/linux/x11/client.rs",
     "src/linux/x11/external_drop.rs",

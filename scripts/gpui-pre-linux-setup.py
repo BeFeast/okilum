@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Recreate/verify checksum-pinned Linux external data drops (#1615)."""
+"""Recreate/verify checksum-pinned gpui-pre-linux: external data drops (#1615) and the
+Wayland window geometry update on a client inset change (#3261)."""
 import argparse
 import importlib.util
 from pathlib import Path
@@ -14,7 +15,7 @@ def main():
     setup = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(setup)
     manifest = setup.prepare(repo, "gpui-pre-linux", None, args.verify)
-    print(f"gpui-pre-linux ready: {manifest['version']} checksum-pinned external data drops verified")
+    print(f"gpui-pre-linux ready: {manifest['version']} checksum-pinned source + {len(manifest['patches'])} approved patch(es) verified")
 
 
 if __name__ == "__main__":
