@@ -474,6 +474,7 @@ def main():
                                '--label', f'verify-{args.scenario}', '--require-host',
                                os.environ.get('OKILUM_VERIFY_HOST', 'okilum-dev'),
                                '--env', f'OKILUM_SOURCE_COMMIT={revision}',
+                               '--mem', os.environ.get('OKILUM_VERIFY_MEM_GB', '6'),
                                *incremental_env(),
                                '--source-dir', str(ROOT), '--receipt', str(args.output / 'slot.json'),
                                '--', 'python3', 'scripts/verify.py', args.scenario,

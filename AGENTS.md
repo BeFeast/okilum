@@ -58,6 +58,11 @@ runs are affected: CI, full checks and release/beta builds stay
 non-incremental, and pool config/`BASE_ENV` are untouched. Opt out with
 `OKILUM_VERIFY_INCREMENTAL=0`.
 
+`scripts/verify` reserves 6 GiB per run (`okilum-slot run --mem 6`) instead of
+the project default 9 GiB, so two verifies fit okilum-dev's 12 GiB budget and
+run concurrently. Measured: 44 verify runs over 3 days peaked at 5.2 GiB anon.
+Override with `OKILUM_VERIFY_MEM_GB=<GiB>`.
+
 Each command streams the working tree (including an uncommitted acceptance
 file) into `okilum-slot`, builds the app alone in its shared target, starts an
 isolated 1366×768 Wayland rig, and returns 0/1 with PNGs, `result.json`, source
