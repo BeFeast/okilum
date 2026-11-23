@@ -59,6 +59,12 @@ text checks OCR the screenshot, pixel checks count a stated colour/region,
 and zoom checks combine actual window scale with a screenshot difference.
 There is no app-side automation protocol or new test framework.
 
+For external deep links, `outside_note` creates `outside/External note.md`
+beside the synthetic vault. A step with `open_url: okilum://file/{outside_file}`
+launches the same binary with that URL argument in the isolated environment,
+exercising single-instance forwarding. The placeholder is percent-encoded,
+including its space; consent is handled with ordinary keyboard/click steps.
+
 Day-0 regression proof (2026-11-23): `hr-ornament` on `180ae5779` (parent of
 the #3252 fix merge) built/launched and read both paragraphs, then exited 1:
 0 pink pixels in the centre region. The same scenario on `3feba9093` exited 0

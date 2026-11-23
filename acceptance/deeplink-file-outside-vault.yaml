@@ -1,0 +1,27 @@
+# State: an open synthetic vault and a separate Markdown file outside it.
+# Action: a second OS-style invocation forwards the file URL; accept consent.
+# Visible: the outside file's heading and body in its own window.
+note: |
+  # Deep Link Control
+
+  The original vault remains open.
+outside_note: |
+  # Outside Deep Link
+
+  A standalone file arrived through an external link.
+region: [0, 0, 1366, 768]
+ready_text: original vault remains open
+appearance: light
+preferences:
+  note_open_mode: read
+steps:
+  - id: outside-folder-consent
+    open_url: okilum://file/{outside_file}
+    text: A link asks to open a file in folder
+    wait: 1
+  - id: outside-file-heading
+    keys: [Return]
+    text: Outside Deep Link
+    max_ms: 10000
+  - id: outside-file-body
+    text: standalone file arrived through an external link

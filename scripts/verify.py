@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -311,6 +312,10 @@ def run(args, scenario, output, result):
         write_fixtures(vault, scenario.get('generate', ()))
         frames_dir = root / 'frames'
         frames_dir.mkdir()
+        outside_file = root / 'outside' / 'External note.md'
+        if 'outside_note' in scenario:
+            outside_file.parent.mkdir()
+            outside_file.write_text(scenario['outside_note'])
         state = root / 'home/state/okilum'
         state.mkdir(parents=True)
         (state / 'reader-ui.json').write_text(json.dumps({
@@ -358,6 +363,10 @@ def run(args, scenario, output, result):
                     if 'max_ms' in step:
                         timed_step(rig, step, scenario, output, frames_dir, check)
                     else:
+                        if 'open_url' in step:
+                            url = step['open_url'].replace('{outside_file}', quote(str(outside_file)))
+                            require(url.startswith('okilum://'), 'open_url must be an okilum:// URL')
+                            command(binary, url, env=rig.env, stdout=log, stderr=log, timeout=15)
                         if 'keys' in step:
                             rig.keys(*step['keys'], mods=step.get('mods', ()))
                         if 'click' in step:
