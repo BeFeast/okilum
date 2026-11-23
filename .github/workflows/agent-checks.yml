@@ -198,6 +198,9 @@ jobs:
       - name: Verify bundled Sync Help and brand
         if: steps.pool.outputs.kind == 'verdict'
         run: bash scripts/ci/pool-phase.sh "Verify bundled Sync Help and brand"
+      - name: Check okilum-shell size budget
+        if: steps.pool.outputs.kind == 'verdict'
+        run: bash scripts/ci/pool-phase.sh "Check okilum-shell size budget"
       - name: Lint every workspace target offline
         if: steps.pool.outputs.kind == 'verdict'
         run: bash scripts/ci/pool-phase.sh "Lint every workspace target offline"

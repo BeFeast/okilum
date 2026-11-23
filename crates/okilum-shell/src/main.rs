@@ -185,6 +185,8 @@ mod version_info;
 use reader_link_navigation::handle_link;
 mod contextual_help;
 #[cfg(test)]
+mod action_inventory_tests;
+#[cfg(test)]
 mod input_anchor_tests;
 #[cfg(test)]
 mod input_frame_cost_tests;

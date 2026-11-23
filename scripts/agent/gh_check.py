@@ -45,6 +45,7 @@ def gh_json(*args):
 FAST_REQUIRED = {"Prepare and verify pinned vendor and comrak", "Check formatting",
                  "Verify agent helper controls", "Run CI, releases and updater Python suites",
                  "Verify bundled Sync Help and brand", "Lint every workspace target offline",
+                 "Check okilum-shell size budget",
                  "Check release binaries without test features",
                  "Verify every pre-merge phase passed"}
 

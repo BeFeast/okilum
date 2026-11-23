@@ -56,6 +56,8 @@ pool_phase "Verify bundled Sync Help and brand" bash -c '
     python3 docs/help/projects/check.py &&
     python3 scripts/rebrand/check_brand.py
 '
+# Epic #3241: the okilum-shell app crate may not grow past its line budget.
+pool_phase "Check okilum-shell size budget" python3 scripts/ci/shell-crate-budget.py
 pool_phase "Lint every workspace target offline" \
     cargo clippy --workspace --all-targets --locked -- -D warnings
 # Same packages, binaries and profile as scripts/appimage/build.sh, without
