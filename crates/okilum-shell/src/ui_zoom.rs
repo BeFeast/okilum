@@ -69,6 +69,12 @@ pub(crate) fn init(cx: &mut App) {
     cx.observe_new::<Root>(|root, window, cx| {
         if let Some(window) = window {
             window.set_ui_scale(reader_ui_state::ui_zoom(cx));
+            // #3244: a restored window is moved while it is still being built
+            // (macOS window_state restore sends setFrame). Native resize and
+            // backing-scale callbacks cannot reach a window that is not yet
+            // registered and are dropped, leaving GPUI's scale and viewport
+            // stale. Re-read them from the platform once it is registered.
+            cx.defer_in(window, |_, window, cx| window.bounds_changed(cx));
             root.add_overlay(cx.new(|_| ZoomLayer::default()));
             cx.notify();
         }
@@ -274,6 +280,63 @@ mod tests {
             assert_eq!(shown(&ZoomOut), Some(format!("{secondary}-shift--")));
             assert_eq!(shown(&Reset), Some(format!("{secondary}-shift-0")));
         });
+    }
+
+    /// #3244: native scale/size callbacks fired while a restored window is
+    /// built are dropped. The window re-reads the platform once registered;
+    /// a plain window (control) keeps the stale value, so the probe is live.
+    #[gpui::test]
+    fn restored_window_rereads_the_platform_scale_after_it_is_registered(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            crate::test_init(cx);
+            reader_ui_state::install(temp.path(), cx);
+            init(cx);
+            reader_ui_state::set_ui_zoom(2., cx);
+        });
+        cx.run_until_parked();
+        let os = cx
+            .add_window(|_, _| Content)
+            .update(cx, |_, window, _| window.scale_factor())
+            .unwrap();
+        // A stale scale left by a dropped native callback during the build.
+        const STALE: f32 = 9.;
+        let control = cx.add_window(|window, _| {
+            window.set_scale_factor(STALE);
+            Content
+        });
+        let restored = cx
+            .update(|cx| {
+                cx.open_window(WindowOptions::default(), |window, cx| {
+                    let content = cx.new(|_| Content);
+                    let root = cx.new(|cx| Root::new(content, window, cx));
+                    window.set_scale_factor(STALE);
+                    root
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+        control
+            .update(cx, |_, window, _| {
+                assert_eq!(
+                    window.scale_factor(),
+                    STALE,
+                    "control keeps the stale scale"
+                )
+            })
+            .unwrap();
+        restored
+            .update(cx, |_, window, _| {
+                assert_eq!(window.ui_scale(), 2.);
+                assert_eq!(window.scale_factor(), os * 2., "OS scale × restored zoom");
+            })
+            .unwrap();
+        // Reset after the restore lands on the plain OS scale.
+        cx.update(|cx| reader_ui_state::set_ui_zoom(1., cx));
+        cx.run_until_parked();
+        restored
+            .update(cx, |_, window, _| assert_eq!(window.scale_factor(), os))
+            .unwrap();
     }
 
     #[gpui::test]

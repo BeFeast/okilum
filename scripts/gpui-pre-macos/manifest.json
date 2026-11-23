@@ -15,9 +15,13 @@
     {
       "path": "../patches/gpui-pre-macos/0003-external-data-drops.diff",
       "sha256": "5c6adc296aaf5688d33de7b849b610d85325c373f6147164e94311ec9015e76b"
+    },
+    {
+      "path": "../patches/gpui-pre-macos/0004-window-scale-without-screen.diff",
+      "sha256": "a9ee89c0354dc9928c7122cb10da7f855cbb5c84f4ec5ef8cc495da49e238222"
     }
   ],
-  "tree_sha256": "5d3e52fb11356d5c5aaeac3220276532be3bde643c1fc7c1e63af6a0df6e232a",
+  "tree_sha256": "85d3093ebe6e10902637e66a0b3cebece16c2254ce1d8b34a3daef6c531cb6a3",
   "generated_path": "vendor/gpui-pre-macos-0.3.3",
   "changed_files": [
     "src/platform.rs",

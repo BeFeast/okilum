@@ -1,0 +1,26 @@
+gpui_macos: read the window's backing scale when it has no screen
+
+get_scale_factor returned 2.0 whenever [NSWindow screen] was nil, for
+example a window placed outside every screen before it is moved. On 1x
+displays GPUI then rendered at twice the backing scale. Use the window's
+own backingScaleFactor instead; the existing zero guard is unchanged.
+
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -2248,9 +2248,14 @@
+     let factor = unsafe {
+         let screen: id = msg_send![native_window, screen];
+         if screen.is_null() {
+-            return 2.0;
++            // A window outside every screen still has a backing store whose
++            // scale AppKit knows. Assuming 2.0 here rendered at twice the
++            // backing scale on 1x displays.
++            let backing: f64 = msg_send![native_window, backingScaleFactor];
++            backing as f32
++        } else {
++            NSScreen::backingScaleFactor(screen) as f32
+         }
+-        NSScreen::backingScaleFactor(screen) as f32
+     };
+ 
+     // We are not certain what triggers this, but it seems that sometimes
