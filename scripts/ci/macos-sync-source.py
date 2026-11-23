@@ -91,7 +91,7 @@ def main():
         ("okilum-shell", "--bin=okilum", "reader_settings_sync::tests::"),
         ("okilum-shell", "--bin=okilum", "reader_settings_sync::first_sync::tests::"),
         # #2708: compile AppKit bindings and execute normal/zoom/fullscreen controls.
-        ("okilum-shell", "--bin=okilum", "window_state::"),
+        ("okilum-shell-kit", "--lib", "window_state::"),
     ):
         command = ["cargo", "test", "--locked", "-p", package, target, selected]
         listed = subprocess.run([*command, "--", "--list"], text=True, capture_output=True, check=True)
