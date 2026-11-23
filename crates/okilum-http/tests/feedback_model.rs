@@ -9,6 +9,11 @@ mod diagnostic_io;
 #[path = "../../okilum-shell/src/reader_feedback/model.rs"]
 mod model;
 
+// The render-scale reading carried in feedback metadata (#3244).
+#[allow(dead_code)]
+#[path = "../../okilum-shell/src/ui_zoom_diagnostics/snapshot.rs"]
+mod ui_zoom_diagnostics;
+
 #[allow(dead_code)]
 #[path = "../../okilum-shell/src/reader_feedback/identity.rs"]
 mod identity;
