@@ -49,7 +49,7 @@ run_tests() {
     local package="$1" target="$2" filter="$3"
     shift 3
     local selection=(-p "$package")
-    case "$package" in okilum-core|okilum-shell) selection=("${SHARED[@]}") ;; esac
+    case "$package" in okilum-core|okilum-shell|okilum-shell-kit) selection=("${SHARED[@]}") ;; esac
     # Positive control: a renamed/removed filter must not silently run zero tests.
     if ! cargo "${cargo_args[@]}" "${selection[@]}" "$target" "$filter" -- --list "$@" \
         | tee "${RUNNER_TEMP}/macos-test-list.txt"; then
@@ -83,7 +83,8 @@ fi
 cargo "${cargo_args[@]}" --workspace --no-run
 
 # #2708: persist native Zoom separately from the normal frame.
-run_tests okilum-shell --bins window_state::
+# window_state moved into okilum-shell-kit (#3233).
+run_tests okilum-shell-kit --lib window_state::
 # #2755/#2770: integrated caption, original-press dispatch, Close and ownership.
 run_tests okilum-shell --bins reader_settings::tests::issue2755_
 run_tests okilum-shell --bins issue2770_

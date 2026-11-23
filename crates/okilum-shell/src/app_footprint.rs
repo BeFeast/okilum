@@ -2140,7 +2140,7 @@ mod tests {
         // the GTK/KDE icon-theme setting; writes nothing.
         ("crates/okilum-shell/src/open_in/icons/desktop.rs", 3),
         ("crates/okilum-shell-kit/src/reader_history.rs", 4),
-        ("crates/okilum-shell/src/reader_layout.rs", 3),
+        ("crates/okilum-shell-kit/src/reader_layout.rs", 3),
         // Two more: Create a new vault suggests ~/Documents in the save
         // dialog (#1357); the user picks the folder, it is theirs.
         ("crates/okilum-shell/src/reader_open.rs", 6),

@@ -162,7 +162,6 @@ mod reader_settings_sync;
 mod reader_settings_vaults;
 mod reader_shortcuts;
 mod reader_side_panel;
-mod reader_sidebar;
 mod reader_split;
 mod reader_stignore;
 #[cfg(target_os = "linux")]
@@ -306,9 +305,12 @@ use okilum_core::{Backlink, Searcher, Vault, VaultWatcher};
 
 // Former app modules, now in okilum-shell-kit (#3233); `crate::brand::…`
 // paths keep working through these imports.
+use okilum_shell_kit::appearance::{appearance_settings_path, AppearancePreference};
+#[cfg(test)]
+use okilum_shell_kit::reader_layout::READER_MAX_WIDTH;
 use okilum_shell_kit::{
     brand, contextual_help, count_label, reader_history, reader_projects_help,
-    reader_recent_vaults, reader_sync_help,
+    reader_recent_vaults, reader_sidebar, reader_sync_help,
 };
 
 /// Body size for the reader; the heading scale and the sidebar derive from it.
@@ -318,10 +320,6 @@ fn reader_bottom_space(viewport_height: Pixels) -> Pixels {
     px(120.).max(viewport_height * 0.30)
 }
 
-/// Reader measure (docs/design/reader.md): a 740px column with 40px side
-/// padding keeps lines near 75 characters. It is a maximum: narrower panes
-/// still use their full width.
-const READER_MAX_WIDTH: f32 = 740.;
 const READER_SIDE_PADDING: f32 = 40.;
 
 /// Left gutter of the note text, the same in Reader, Source and Live Preview
@@ -932,10 +930,6 @@ fn bind_keys(cx: &mut App) {
     ]);
 }
 
-/// Application-only preference. Never changes the desktop's appearance setting.
-#[derive(Default, Clone, Copy)]
-struct AppearancePreference(Option<gpui_component::ThemeMode>);
-impl Global for AppearancePreference {}
 fn appearance_label(cx: &App) -> &'static str {
     match cx.try_global::<AppearancePreference>().and_then(|p| p.0) {
         None => "System",
@@ -1022,9 +1016,6 @@ fn save_appearance(vault: Option<&Path>, cx: &App) {
 }
 fn appearance_settings_json(appearance: &str, theme: brand::ThemeId) -> serde_json::Value {
     serde_json::json!({ "appearance": appearance, "theme": theme.key() })
-}
-fn appearance_settings_path() -> Option<PathBuf> {
-    reader_layout::config_base().map(|base| base.join("okilum/appearance.json"))
 }
 /// Unknown or missing values fall back to System and the default theme; a file
 /// written before #349 has no `theme` key.

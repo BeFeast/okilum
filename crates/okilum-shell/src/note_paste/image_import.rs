@@ -2,43 +2,10 @@
 //! executor; an embed is returned only after every requested file is durable.
 use super::{attachments, files};
 use image::ImageDecoder;
-use serde::{Deserialize, Serialize};
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Options {
-    pub enabled: bool,
-    pub quality: u32,
-    pub keep_original: bool,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            quality: 85,
-            keep_original: false,
-        }
-    }
-}
-
-impl Options {
-    pub fn normalized(self) -> Self {
-        Self {
-            quality: self.quality.clamp(1, 100),
-            ..self
-        }
-    }
-
-    pub fn disabled() -> Self {
-        Self {
-            enabled: false,
-            ..Self::default()
-        }
-    }
-}
+pub use okilum_shell_kit::note_paste_settings::Options;
 
 #[derive(Debug)]
 pub struct Imported {

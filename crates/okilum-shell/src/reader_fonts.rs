@@ -5,25 +5,7 @@ use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectItem, Sel
 #[cfg(test)]
 mod list_layout_tests;
 
-#[derive(Clone, Copy)]
-pub(crate) enum Role {
-    Note,
-    Code,
-}
-impl Role {
-    pub(crate) fn index(self) -> usize {
-        match self {
-            Self::Note => 0,
-            Self::Code => 1,
-        }
-    }
-    pub(crate) fn default_family(self) -> &'static str {
-        match self {
-            Self::Note => brand::SANS_FONT,
-            Self::Code => brand::MONO_FONT,
-        }
-    }
-}
+pub(crate) use okilum_shell_kit::font_role::Role;
 
 struct Catalog(Vec<SharedString>);
 impl Global for Catalog {}

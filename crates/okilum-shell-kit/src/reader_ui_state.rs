@@ -1,0 +1,3323 @@
+//! Durable presentation state. Never stored in the vault or a derived cache.
+//! The Reader side (per-window `Session`, restore and record) is the app's
+//! `reader_ui_state`, which re-exports this module (#3233).
+use crate::appearance::AppearancePreference;
+use crate::prelude::*;
+use anyhow::Context as _;
+use gpui_component::ThemeMode;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write as _;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+const VERSION: u32 = 1;
+const MAX_BYTES: u64 = 16 * 1024 * 1024;
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Position {
+    pub item: usize,
+    pub offset: f32,
+}
+impl From<ListOffset> for Position {
+    fn from(value: ListOffset) -> Self {
+        Self {
+            item: value.item_ix,
+            offset: value.offset_in_item.into(),
+        }
+    }
+}
+impl Position {
+    pub fn list(&self) -> ListOffset {
+        ListOffset {
+            item_ix: self.item,
+            offset_in_item: px(if self.offset.is_finite() {
+                self.offset
+            } else {
+                0.
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Visit {
+    pub note: String,
+    pub position: Position,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Layout {
+    /// Vault-relative project identity; None is an explicit World choice.
+    pub project: Option<PathBuf>,
+    pub panels: reader_layout::Panels,
+    pub widths: reader_layout::Widths,
+    /// Legacy panels/widths stay the Tree layout; absent means first Project entry.
+    pub project_layout: Option<reader_layout::ViewLayout>,
+    pub collapsed: BTreeSet<reader_sidebar::Section>,
+    pub properties_collapsed: bool,
+    pub show_hidden: bool,
+    pub folders: BTreeSet<String>,
+    pub tree_cursor: Option<String>,
+    pub tree_scroll: f32,
+    pub recent_expanded: bool,
+    pub properties_open: bool,
+    pub hidden_properties: bool,
+    pub note: String,
+    pub history: Vec<Visit>,
+    pub history_index: usize,
+    pub position: Position,
+    pub source: bool,
+    pub live_preview: bool,
+    pub source_scroll: [f32; 2],
+}
+impl Default for Layout {
+    fn default() -> Self {
+        Self {
+            project: None,
+            panels: reader_layout::Panels {
+                notes: true,
+                backlinks: true,
+                active: reader_layout::Panel::Notes,
+                ..Default::default()
+            },
+            widths: Default::default(),
+            project_layout: None,
+            collapsed: Default::default(),
+            properties_collapsed: false,
+            show_hidden: false,
+            folders: Default::default(),
+            tree_cursor: None,
+            tree_scroll: 0.,
+            recent_expanded: false,
+            properties_open: false,
+            hidden_properties: false,
+            note: String::new(),
+            history: vec![],
+            history_index: 0,
+            position: Default::default(),
+            source: false,
+            live_preview: false,
+            source_scroll: [0.; 2],
+        }
+    }
+}
+impl Layout {
+    /// An unseen vault inherits presentation, never another vault's paths.
+    fn inherited(&self) -> Self {
+        Self {
+            project: None,
+            folders: Default::default(),
+            tree_cursor: None,
+            tree_scroll: 0.,
+            note: String::new(),
+            history: vec![],
+            history_index: 0,
+            position: Default::default(),
+            source_scroll: [0.; 2],
+            ..self.clone()
+        }
+    }
+}
+
+/// A string field that falls back to empty for any other JSON type.
+fn lenient_string<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    Ok(match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::String(value) => value,
+        _ => String::new(),
+    })
+}
+
+/// The UI zoom step; a value of another type or range keeps the default
+/// for this field only, never rejecting the whole state.
+fn lenient_zoom_step<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
+    Ok(serde_json::Value::deserialize(deserializer)?
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .map_or(crate::ui_zoom::DEFAULT_STEP, crate::ui_zoom::normalize_step))
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+struct Saved {
+    version: u32,
+    appearance: String,
+    theme: String,
+    font_size: f32,
+    note_font: String,
+    code_font: String,
+    text_zoom: f32,
+    ui_zoom: f32,
+    /// Whole-UI zoom change per wheel notch or key press, in percent
+    /// (#3228); see `ui_zoom::STEPS`.
+    #[serde(deserialize_with = "lenient_zoom_step")]
+    ui_zoom_step: u32,
+    reading_width: f32,
+    /// The note column spans the whole note pane instead of the reading
+    /// width; one app-wide toggle, kept with the reading width.
+    full_note_width: bool,
+    find_case_sensitive: bool,
+    typed_views: okilum_core::typed_view::Preferences,
+    toolbar_labels: bool,
+    /// File tree only: false shows Markdown stems, true shows note titles (#1834).
+    tree_note_titles: bool,
+    /// Opening a note expands its folders and selects it in the file tree
+    /// (#1762); off by default, Reveal beside the breadcrumb does it on
+    /// request.
+    tree_auto_reveal: bool,
+    /// How a note opens in a new window (#2817): "edit" opens notes in the
+    /// editor; anything else, including the absent key of older state and
+    /// unknown values from a newer build, keeps Read. A value of another
+    /// type falls back for this field only, never rejecting the whole state.
+    #[serde(deserialize_with = "lenient_string")]
+    note_open_mode: String,
+    /// Soft wrap in code files (#998); off means horizontal scroll.
+    code_soft_wrap: bool,
+    /// The «Open in» default code editor (#1400): the id of the editor last
+    /// used to open a note. Empty, or an editor that is no longer installed,
+    /// falls back to the first installed one.
+    #[serde(deserialize_with = "lenient_string")]
+    open_in_editor: String,
+    /// Focus mode in the note editor (#1643): every block but the caret's
+    /// is dimmed. One app-wide toggle, off by default.
+    focus_mode: bool,
+    /// Typewriter mode in the note editor (#1643): the caret line stays at
+    /// the middle of the view. One app-wide toggle, off by default.
+    typewriter_mode: bool,
+    vault_open: String,
+    settings_section: String,
+    /// Brackets and quotes close themselves as they are typed in a note
+    /// (#1636); on by default.
+    auto_pair_brackets: bool,
+    /// `*`, `_` and `` ` `` close themselves too (#1636); off by default,
+    /// as in Typora.
+    auto_pair_markdown: bool,
+    /// Fenced code closes independently of inline Markdown pairing (#1893).
+    close_code_fences: bool,
+    /// Colon-triggered emoji completion in note editors (#1638).
+    emoji_completion: bool,
+    /// Pasting or dropping a file larger than this many MB asks before
+    /// copying it into the vault (#1611); 0 never asks.
+    paste_ask_above_mb: u32,
+    /// Upload pasted and dropped files to the upload provider after they
+    /// are saved, and link the uploaded copy (#1073). Off by default.
+    upload_pasted_files: bool,
+    image_import: crate::note_paste_settings::Options,
+    /// Explicit read-mode choices, independently remembered for each file type.
+    code_views: BTreeMap<String, crate::code_view::View>,
+    #[serde(default, skip_serializing)]
+    json_raw: Option<bool>,
+    /// Where log source locations open (#1165): vscode, cursor, zed,
+    /// jetbrains or custom, and the custom command line.
+    log_editor: String,
+    log_editor_command: String,
+    /// Per-vault path mappings for log source links (#1165), keyed like
+    /// `vaults` by the canonical root.
+    source_maps: BTreeMap<PathBuf, Vec<okilum_core::log::source_link::PathMap>>,
+    /// Pane sizes of list/detail splits (#1156), by split key.
+    split_sizes: BTreeMap<String, f32>,
+    /// Recent log queries per log file, newest first (#1158).
+    log_queries: BTreeMap<String, Vec<String>>,
+    /// Field columns per log file (#1167).
+    log_columns: BTreeMap<String, Vec<String>>,
+    log_fields: BTreeMap<String, okilum_core::log::saved_query::FieldChoices>,
+    /// Widths the user dragged, per log file and column (#1167).
+    log_column_widths: BTreeMap<String, BTreeMap<String, f32>>,
+    /// Saved log filters, for every log (#1169).
+    log_saved: okilum_core::log::saved_query::SavedQueries,
+    #[serde(default)]
+    log_regex: BTreeMap<String, okilum_core::log::regex_text::Definition>,
+    delimited_no_header: BTreeSet<PathBuf>,
+    vaults: BTreeMap<PathBuf, Layout>,
+    /// Per-vault accent (#774), keyed like `vaults` by the canonical root:
+    /// a preset key, or a custom colour as lowercase `#rrggbb` (#1399).
+    /// Unknown keys from a newer build are kept, not shown.
+    vault_colors: BTreeMap<PathBuf, String>,
+    /// Vaults whose colour does not tint the title bar (#1050); tinting is
+    /// on by default whenever a colour is set.
+    untinted_vaults: BTreeSet<PathBuf>,
+    /// Vaults the user agreed to open from an external `okilum:` link
+    /// (#1049): only the first link to a vault asks.
+    link_trusted_vaults: BTreeSet<PathBuf>,
+    last_layout: Option<Layout>,
+    frames: BTreeMap<String, window_state::Frame>,
+    last_frame: Option<window_state::Frame>,
+}
+impl Default for Saved {
+    fn default() -> Self {
+        Self {
+            version: VERSION,
+            appearance: "system".into(),
+            theme: brand::ThemeId::default().key().into(),
+            font_size: brand::READING_FONT_SIZE,
+            note_font: brand::SANS_FONT.into(),
+            code_font: brand::MONO_FONT.into(),
+            text_zoom: 1.,
+            ui_zoom: 1.,
+            ui_zoom_step: crate::ui_zoom::DEFAULT_STEP,
+            reading_width: reader_layout::READER_MAX_WIDTH,
+            full_note_width: false,
+            find_case_sensitive: false,
+            typed_views: Default::default(),
+            toolbar_labels: false,
+            tree_note_titles: false,
+            tree_auto_reveal: false,
+            note_open_mode: String::new(),
+            code_soft_wrap: false,
+            open_in_editor: String::new(),
+            focus_mode: false,
+            typewriter_mode: false,
+            vault_open: String::new(),
+            settings_section: String::new(),
+            auto_pair_brackets: true,
+            auto_pair_markdown: false,
+            close_code_fences: true,
+            emoji_completion: true,
+            paste_ask_above_mb: crate::note_paste_settings::DEFAULT_ASK_ABOVE_MB,
+            upload_pasted_files: false,
+            image_import: Default::default(),
+            code_views: BTreeMap::new(),
+            json_raw: None,
+            log_editor: "vscode".into(),
+            log_editor_command: String::new(),
+            source_maps: Default::default(),
+            split_sizes: Default::default(),
+            log_queries: Default::default(),
+            log_columns: Default::default(),
+            log_fields: Default::default(),
+            log_column_widths: Default::default(),
+            log_saved: Default::default(),
+            log_regex: Default::default(),
+            delimited_no_header: Default::default(),
+            vaults: Default::default(),
+            vault_colors: Default::default(),
+            untinted_vaults: Default::default(),
+            link_trusted_vaults: Default::default(),
+            last_layout: None,
+            frames: Default::default(),
+            last_frame: None,
+        }
+    }
+}
+struct Store {
+    path: PathBuf,
+    saved: Saved,
+    changed: BTreeSet<PathBuf>,
+    appearance_changed: bool,
+    theme_changed: bool,
+    font_changed: bool,
+    font_families_changed: [bool; 2],
+    zoom_changed: bool,
+    ui_zoom_changed: bool,
+    ui_zoom_step_changed: bool,
+    width_changed: bool,
+    find_changed: bool,
+    typed_views_changed: bool,
+    toolbar_labels_changed: bool,
+    tree_note_titles_changed: bool,
+    tree_auto_reveal_changed: bool,
+    note_open_mode_changed: bool,
+    code_soft_wrap_changed: bool,
+    open_in_editor_changed: bool,
+    writing_modes_changed: bool,
+    vault_open_changed: bool,
+    settings_section_changed: bool,
+    auto_pair_changed: bool,
+    close_code_fences_changed: bool,
+    emoji_completion_changed: bool,
+    paste_ask_changed: bool,
+    upload_pasted_changed: bool,
+    image_import_changed: bool,
+    code_views_changed: BTreeSet<String>,
+    log_editor_changed: bool,
+    source_maps_changed: BTreeSet<PathBuf>,
+    splits_changed: BTreeSet<String>,
+    log_queries_changed: BTreeSet<String>,
+    log_columns_changed: BTreeSet<String>,
+    log_saved_changed: BTreeSet<String>,
+    log_regex_changed: BTreeSet<String>,
+    colors_changed: BTreeSet<PathBuf>,
+    trust_changed: BTreeSet<PathBuf>,
+    delimited_changed: BTreeSet<PathBuf>,
+    frames_changed: BTreeSet<String>,
+    last_changed: bool,
+    last_frame_changed: bool,
+    blocked: bool,
+    serial: Arc<AtomicU64>,
+    pending: Option<Task<()>>,
+}
+
+/// The app records every open Reader window into the store before quit and
+/// before an update restart; the kit knows no Reader, so the app installs it.
+struct RecordOpenWindows(fn(&mut App));
+impl Global for RecordOpenWindows {}
+
+/// Install the app's hook that records every open window's layout.
+pub fn set_record_open_windows(record: fn(&mut App), cx: &mut App) {
+    cx.set_global(RecordOpenWindows(record));
+}
+
+fn record_open_windows(cx: &mut App) {
+    if let Some(record) = cx.try_global::<RecordOpenWindows>().map(|hook| hook.0) {
+        record(cx);
+    }
+}
+
+pub fn state_directory(cx: &App) -> anyhow::Result<PathBuf> {
+    cx.try_global::<Store>()
+        .and_then(|state| state.path.parent())
+        .map(Path::to_path_buf)
+        .ok_or_else(|| anyhow::anyhow!("Application state is unavailable; sources were not saved"))
+}
+impl Global for Store {}
+
+fn read(path: &Path) -> anyhow::Result<Saved> {
+    if !path.exists() {
+        return Ok(Saved::default());
+    }
+    anyhow::ensure!(
+        std::fs::symlink_metadata(path)?.is_file(),
+        "UI state is not a regular file"
+    );
+    anyhow::ensure!(
+        std::fs::metadata(path)?.len() <= MAX_BYTES,
+        "UI state exceeds size limit"
+    );
+    let mut saved: Saved = serde_json::from_slice(&std::fs::read(path)?)?;
+    anyhow::ensure!(saved.version == VERSION, "Unsupported UI state version");
+    if let Some(raw) = saved.json_raw.take() {
+        saved.code_views.entry("json".into()).or_insert(if raw {
+            crate::code_view::View::Raw
+        } else {
+            crate::code_view::View::Formatted
+        });
+    }
+    // #2572: both old panes now open the unified Vaults pane. Normalize on
+    // every read so merging another process's state cannot resurrect the key.
+    saved.settings_section = migrated_settings_section(&saved.settings_section).into();
+    Ok(saved)
+}
+
+pub fn install(directory: &Path, cx: &mut App) {
+    let path = directory.join("reader-ui.json");
+    let saved = match read(&path) {
+        Ok(mut saved) => {
+            if !path.exists() {
+                // Legacy appearance is migration input only.
+                if let Some(json) = crate::appearance::appearance_settings_path()
+                    .and_then(|path| std::fs::read(path).ok())
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                {
+                    if let Some(mode) = json["appearance"].as_str() {
+                        saved.appearance = mode.into();
+                    }
+                    saved.theme = json["theme"]
+                        .as_str()
+                        .and_then(brand::ThemeId::from_key)
+                        .unwrap_or_default()
+                        .key()
+                        .into();
+                }
+            }
+            saved
+        }
+        Err(error) => {
+            diagnostic_error!("Cannot restore UI state: {error:#}");
+            // Preserve unreadable/future data; do not overwrite it with defaults.
+            return;
+        }
+    };
+    cx.set_global(Store {
+        path: path.clone(),
+        saved,
+        changed: Default::default(),
+        appearance_changed: !path.exists(),
+        theme_changed: !path.exists(),
+        font_changed: !path.exists(),
+        font_families_changed: [false; 2],
+        zoom_changed: !path.exists(),
+        ui_zoom_changed: !path.exists(),
+        ui_zoom_step_changed: false,
+        width_changed: !path.exists(),
+        find_changed: false,
+        // No migration input: opening a new window must not overwrite a
+        // different process's newly saved mappings with our startup defaults.
+        typed_views_changed: false,
+        toolbar_labels_changed: false,
+        tree_note_titles_changed: false,
+        tree_auto_reveal_changed: false,
+        note_open_mode_changed: false,
+        code_soft_wrap_changed: false,
+        open_in_editor_changed: false,
+        writing_modes_changed: false,
+        vault_open_changed: false,
+        settings_section_changed: false,
+        auto_pair_changed: false,
+        close_code_fences_changed: false,
+        emoji_completion_changed: false,
+        paste_ask_changed: false,
+        upload_pasted_changed: false,
+        image_import_changed: false,
+        code_views_changed: BTreeSet::new(),
+        log_editor_changed: false,
+        source_maps_changed: Default::default(),
+        splits_changed: Default::default(),
+        log_queries_changed: Default::default(),
+        log_columns_changed: Default::default(),
+        log_saved_changed: Default::default(),
+        log_regex_changed: Default::default(),
+        colors_changed: Default::default(),
+        trust_changed: Default::default(),
+        delimited_changed: Default::default(),
+        frames_changed: Default::default(),
+        last_changed: false,
+        last_frame_changed: false,
+        blocked: false,
+        serial: Arc::default(),
+        pending: None,
+    });
+    cx.on_app_quit(|cx| {
+        record_open_windows(cx);
+        flush(cx);
+        async {}
+    })
+    .detach();
+}
+
+pub fn layout(root: &Path, cx: &App) -> Option<(Layout, bool)> {
+    let state = cx.try_global::<Store>()?;
+    if let Some(layout) = state.saved.vaults.get(root) {
+        return Some((layout.clone(), true));
+    }
+    state
+        .saved
+        .last_layout
+        .as_ref()
+        .map(|layout| (layout.inherited(), false))
+}
+
+/// Snapshot on the UI thread so a new window sees even a pending debounced
+/// selection. File existence is checked by the opening worker.
+pub fn notes(cx: &App) -> BTreeMap<PathBuf, String> {
+    cx.try_global::<Store>()
+        .map(|store| {
+            store
+                .saved
+                .vaults
+                .iter()
+                .filter(|(_, layout)| valid_note(&layout.note))
+                .map(|(root, layout)| (root.clone(), layout.note.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub fn appearance(cx: &App) -> Option<AppearancePreference> {
+    let state = cx.try_global::<Store>()?;
+    Some(AppearancePreference(
+        match state.saved.appearance.as_str() {
+            "light" => Some(ThemeMode::Light),
+            "dark" => Some(ThemeMode::Dark),
+            _ => None,
+        },
+    ))
+}
+pub fn theme(cx: &App) -> Option<brand::ThemeId> {
+    let state = cx.try_global::<Store>()?;
+    Some(brand::ThemeId::from_key(&state.saved.theme).unwrap_or_default())
+}
+pub fn set_theme(theme: brand::ThemeId, cx: &mut App) -> bool {
+    if cx.try_global::<Store>().is_none() {
+        return false;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.theme = theme.key().into();
+    state.theme_changed = true;
+    schedule(cx);
+    true
+}
+
+pub fn set_appearance(mode: Option<ThemeMode>, cx: &mut App) -> bool {
+    if cx.try_global::<Store>().is_none() {
+        return false;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.appearance = match mode {
+        Some(ThemeMode::Light) => "light",
+        Some(ThemeMode::Dark) => "dark",
+        None => "system",
+    }
+    .into();
+    state.appearance_changed = true;
+    schedule(cx);
+    true
+}
+
+/// The vault's accent colour (#774); `None` means no line and no dot.
+pub fn vault_color(root: &Path, cx: &App) -> Option<brand::VaultColor> {
+    cx.try_global::<Store>()?
+        .saved
+        .vault_colors
+        .get(root)
+        .and_then(|key| brand::VaultColor::from_key(key))
+}
+
+/// The title bar tint colour for this vault, if a colour is set and the
+/// vault did not turn tinting off (#1050).
+pub fn title_tint(root: &Path, cx: &App) -> Option<brand::VaultColor> {
+    let state = cx.try_global::<Store>()?;
+    if state.saved.untinted_vaults.contains(root) {
+        return None;
+    }
+    vault_color(root, cx)
+}
+
+pub fn set_title_tint(root: &Path, enabled: bool, cx: &mut App) {
+    let Some(state) = cx.try_global::<Store>() else {
+        return;
+    };
+    if state.saved.untinted_vaults.contains(root) != enabled {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    if enabled {
+        state.saved.untinted_vaults.remove(root);
+    } else {
+        state.saved.untinted_vaults.insert(root.to_owned());
+    }
+    state.colors_changed.insert(root.to_owned());
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+/// The user agreed to open this vault from an external link (#1049).
+pub fn link_trusted(root: &Path, cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.link_trusted_vaults.contains(root))
+}
+
+/// Remember that links may open this vault without asking again.
+pub fn trust_for_links(root: &Path, cx: &mut App) {
+    let Some(state) = cx.try_global::<Store>() else {
+        return;
+    };
+    if state.saved.link_trusted_vaults.contains(root) {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.link_trusted_vaults.insert(root.to_owned());
+    state.trust_changed.insert(root.to_owned());
+    schedule(cx);
+}
+
+/// Every window of this vault repaints with the new colour at once.
+pub fn set_vault_color(root: &Path, color: Option<brand::VaultColor>, cx: &mut App) {
+    // Compare stored keys: «None» must also clear a preset this build
+    // does not know (written by a newer one), which reads back as `None`.
+    let Some(state) = cx.try_global::<Store>() else {
+        return;
+    };
+    if state.saved.vault_colors.get(root).map(String::as_str)
+        == color.map(brand::VaultColor::key).as_deref()
+    {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    match color {
+        Some(color) => {
+            state
+                .saved
+                .vault_colors
+                .insert(root.to_owned(), color.key().into_owned());
+        }
+        None => {
+            state.saved.vault_colors.remove(root);
+            // A new colour later starts tinted again (#1050).
+            state.saved.untinted_vaults.remove(root);
+        }
+    }
+    state.colors_changed.insert(root.to_owned());
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+pub fn record(root: &Path, layout: Layout, active: bool, cx: &mut App) {
+    if cx.try_global::<Store>().is_none() {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    if state.saved.vaults.get(root) == Some(&layout)
+        && (!active || state.saved.last_layout.as_ref() == Some(&layout))
+    {
+        return;
+    }
+    state.changed.insert(root.to_owned());
+    state.saved.vaults.insert(root.to_owned(), layout.clone());
+    if active {
+        state.last_changed = true;
+        state.saved.last_layout = Some(layout);
+    }
+    schedule(cx);
+}
+
+#[derive(Clone)]
+struct WriteJob {
+    frames_changed: BTreeSet<String>,
+    last_changed: bool,
+    last_frame_changed: bool,
+    path: PathBuf,
+    saved: Saved,
+    changed: BTreeSet<PathBuf>,
+    appearance_changed: bool,
+    theme_changed: bool,
+    font_changed: bool,
+    font_families_changed: [bool; 2],
+    zoom_changed: bool,
+    ui_zoom_changed: bool,
+    ui_zoom_step_changed: bool,
+    width_changed: bool,
+    find_changed: bool,
+    typed_views_changed: bool,
+    toolbar_labels_changed: bool,
+    tree_note_titles_changed: bool,
+    tree_auto_reveal_changed: bool,
+    note_open_mode_changed: bool,
+    code_soft_wrap_changed: bool,
+    open_in_editor_changed: bool,
+    writing_modes_changed: bool,
+    vault_open_changed: bool,
+    settings_section_changed: bool,
+    auto_pair_changed: bool,
+    close_code_fences_changed: bool,
+    emoji_completion_changed: bool,
+    paste_ask_changed: bool,
+    upload_pasted_changed: bool,
+    image_import_changed: bool,
+    code_views_changed: BTreeSet<String>,
+    log_editor_changed: bool,
+    source_maps_changed: BTreeSet<PathBuf>,
+    splits_changed: BTreeSet<String>,
+    log_queries_changed: BTreeSet<String>,
+    log_columns_changed: BTreeSet<String>,
+    log_saved_changed: BTreeSet<String>,
+    log_regex_changed: BTreeSet<String>,
+    colors_changed: BTreeSet<PathBuf>,
+    trust_changed: BTreeSet<PathBuf>,
+    delimited_changed: BTreeSet<PathBuf>,
+    serial: Arc<AtomicU64>,
+    generation: u64,
+}
+impl WriteJob {
+    fn run(&self) -> anyhow::Result<()> {
+        let directory = self.path.parent().context("Missing UI state directory")?;
+        // Match the existing outside-vault guard, including symlink ancestors.
+        for root in self
+            .saved
+            .vaults
+            .keys()
+            .chain(self.saved.vault_colors.keys())
+            .chain(self.saved.untinted_vaults.iter())
+            .chain(self.saved.link_trusted_vaults.iter())
+            .chain(self.saved.source_maps.keys())
+        {
+            anyhow::ensure!(
+                outside_vault(root, &self.path),
+                "Refusing UI state inside a vault"
+            );
+        }
+        std::fs::create_dir_all(directory)?;
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(directory.join("reader-ui.lock"))?;
+        lock.lock()?;
+        if self.serial.load(Ordering::SeqCst) != self.generation {
+            return Ok(());
+        }
+        // Merge only this process's changed vaults; another process may have
+        // recorded a different vault since this window was opened.
+        let mut latest = read(&self.path)?;
+        for root in &self.changed {
+            if let Some(layout) = self.saved.vaults.get(root) {
+                latest.vaults.insert(root.clone(), layout.clone());
+            }
+        }
+        if self.appearance_changed {
+            latest.appearance = self.saved.appearance.clone();
+        }
+        if self.theme_changed {
+            latest.theme = self.saved.theme.clone();
+        }
+        if self.ui_zoom_changed {
+            latest.ui_zoom = self.saved.ui_zoom;
+        }
+        if self.ui_zoom_step_changed {
+            latest.ui_zoom_step = self.saved.ui_zoom_step;
+        }
+        if self.zoom_changed {
+            latest.text_zoom = self.saved.text_zoom;
+        }
+        if self.font_changed {
+            latest.font_size = self.saved.font_size;
+        }
+        if self.font_families_changed[0] {
+            latest.note_font = self.saved.note_font.clone();
+        }
+        if self.font_families_changed[1] {
+            latest.code_font = self.saved.code_font.clone();
+        }
+        if self.typed_views_changed {
+            latest.typed_views = self.saved.typed_views.clone();
+        }
+        if self.width_changed {
+            latest.reading_width = self.saved.reading_width;
+            latest.full_note_width = self.saved.full_note_width;
+        }
+        if self.find_changed {
+            latest.find_case_sensitive = self.saved.find_case_sensitive;
+        }
+        for path in &self.delimited_changed {
+            if self.saved.delimited_no_header.contains(path) {
+                latest.delimited_no_header.insert(path.clone());
+            } else {
+                latest.delimited_no_header.remove(path);
+            }
+        }
+        if self.toolbar_labels_changed {
+            latest.toolbar_labels = self.saved.toolbar_labels;
+        }
+        if self.tree_note_titles_changed {
+            latest.tree_note_titles = self.saved.tree_note_titles;
+        }
+        if self.tree_auto_reveal_changed {
+            latest.tree_auto_reveal = self.saved.tree_auto_reveal;
+        }
+        if self.note_open_mode_changed {
+            latest.note_open_mode = self.saved.note_open_mode.clone();
+        }
+        if self.vault_open_changed {
+            latest.vault_open = self.saved.vault_open.clone();
+        }
+        if self.settings_section_changed {
+            latest.settings_section = self.saved.settings_section.clone();
+        }
+        if self.code_soft_wrap_changed {
+            latest.code_soft_wrap = self.saved.code_soft_wrap;
+        }
+        if self.open_in_editor_changed {
+            latest.open_in_editor = self.saved.open_in_editor.clone();
+        }
+        if self.writing_modes_changed {
+            latest.focus_mode = self.saved.focus_mode;
+            latest.typewriter_mode = self.saved.typewriter_mode;
+        }
+        if self.auto_pair_changed {
+            latest.auto_pair_brackets = self.saved.auto_pair_brackets;
+            latest.auto_pair_markdown = self.saved.auto_pair_markdown;
+        }
+        if self.image_import_changed {
+            latest.image_import = self.saved.image_import;
+        }
+        if self.close_code_fences_changed {
+            latest.close_code_fences = self.saved.close_code_fences;
+        }
+        if self.emoji_completion_changed {
+            latest.emoji_completion = self.saved.emoji_completion;
+        }
+        if self.paste_ask_changed {
+            latest.paste_ask_above_mb = self.saved.paste_ask_above_mb;
+        }
+        if self.upload_pasted_changed {
+            latest.upload_pasted_files = self.saved.upload_pasted_files;
+        }
+        for key in &self.code_views_changed {
+            if let Some(view) = self.saved.code_views.get(key) {
+                latest.code_views.insert(key.clone(), *view);
+            }
+        }
+        for root in &self.source_maps_changed {
+            match self.saved.source_maps.get(root) {
+                Some(maps) => latest.source_maps.insert(root.clone(), maps.clone()),
+                None => latest.source_maps.remove(root),
+            };
+        }
+        if self.log_editor_changed {
+            latest.log_editor = self.saved.log_editor.clone();
+            latest.log_editor_command = self.saved.log_editor_command.clone();
+        }
+        for key in &self.splits_changed {
+            if let Some(size) = self.saved.split_sizes.get(key) {
+                latest.split_sizes.insert(key.clone(), *size);
+            }
+        }
+        for key in &self.log_columns_changed {
+            match self.saved.log_fields.get(key) {
+                Some(fields) => {
+                    latest.log_fields.insert(key.clone(), fields.clone());
+                }
+                None => {
+                    latest.log_fields.remove(key);
+                }
+            }
+            match self.saved.log_columns.get(key) {
+                Some(columns) => latest.log_columns.insert(key.clone(), columns.clone()),
+                None => latest.log_columns.remove(key),
+            };
+            match self.saved.log_column_widths.get(key) {
+                Some(widths) => latest.log_column_widths.insert(key.clone(), widths.clone()),
+                None => latest.log_column_widths.remove(key),
+            };
+        }
+        // By name: a filter saved in another window stays, one deleted here
+        // is deleted there.
+        for name in &self.log_regex_changed {
+            match self.saved.log_regex.get(name) {
+                Some(definition) => {
+                    latest.log_regex.insert(name.clone(), definition.clone());
+                }
+                None => {
+                    latest.log_regex.remove(name);
+                }
+            }
+        }
+        for name in &self.log_saved_changed {
+            match self.saved.log_saved.get(name) {
+                Some(query) => {
+                    latest.log_saved.upsert(query.clone());
+                }
+                None => {
+                    latest.log_saved.remove(name);
+                }
+            }
+        }
+        for key in &self.log_queries_changed {
+            match self.saved.log_queries.get(key) {
+                Some(queries) => latest.log_queries.insert(key.clone(), queries.clone()),
+                None => latest.log_queries.remove(key),
+            };
+        }
+        // Per root, like layouts: a colour removed here is removed there.
+        for root in &self.colors_changed {
+            match self.saved.vault_colors.get(root) {
+                Some(color) => {
+                    latest.vault_colors.insert(root.clone(), color.clone());
+                }
+                None => {
+                    latest.vault_colors.remove(root);
+                }
+            }
+            if self.saved.untinted_vaults.contains(root) {
+                latest.untinted_vaults.insert(root.clone());
+            } else {
+                latest.untinted_vaults.remove(root);
+            }
+        }
+        for root in &self.trust_changed {
+            if self.saved.link_trusted_vaults.contains(root) {
+                latest.link_trusted_vaults.insert(root.clone());
+            } else {
+                latest.link_trusted_vaults.remove(root);
+            }
+        }
+        if self.last_changed {
+            latest.last_layout = self.saved.last_layout.clone();
+        }
+        for key in &self.frames_changed {
+            if let Some(frame) = self.saved.frames.get(key) {
+                latest.frames.insert(key.clone(), frame.clone());
+            }
+        }
+        if self.last_frame_changed {
+            latest.last_frame = self.saved.last_frame.clone();
+        }
+        let bytes = serde_json::to_vec(&latest)?;
+        anyhow::ensure!(
+            bytes.len() as u64 <= MAX_BYTES,
+            "UI state exceeds size limit"
+        );
+        let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+        temporary.write_all(&bytes)?;
+        temporary.as_file().sync_all()?;
+        temporary.persist(&self.path)?;
+        #[cfg(unix)]
+        std::fs::File::open(directory)?.sync_all()?;
+        Ok(())
+    }
+}
+fn job(cx: &App) -> Option<WriteJob> {
+    let state = cx.try_global::<Store>()?;
+    if state.blocked
+        || (state.changed.is_empty()
+            && state.frames_changed.is_empty()
+            && !state.appearance_changed
+            && !state.theme_changed
+            && !state.ui_zoom_changed
+            && !state.ui_zoom_step_changed
+            && !state.zoom_changed
+            && !state.font_changed
+            && !state.font_families_changed.iter().any(|changed| *changed)
+            && !state.width_changed
+            && !state.find_changed
+            && !state.typed_views_changed
+            && !state.toolbar_labels_changed
+            && !state.tree_note_titles_changed
+            && !state.tree_auto_reveal_changed
+            && !state.note_open_mode_changed
+            && !state.vault_open_changed
+            && !state.settings_section_changed
+            && !state.code_soft_wrap_changed
+            && !state.open_in_editor_changed
+            && !state.writing_modes_changed
+            && !state.auto_pair_changed
+            && !state.image_import_changed
+            && !state.close_code_fences_changed
+            && !state.emoji_completion_changed
+            && !state.paste_ask_changed
+            && !state.upload_pasted_changed
+            && state.code_views_changed.is_empty()
+            && !state.log_editor_changed
+            && state.source_maps_changed.is_empty()
+            && state.splits_changed.is_empty()
+            && state.log_queries_changed.is_empty()
+            && state.log_columns_changed.is_empty()
+            && state.log_regex_changed.is_empty()
+            && state.log_saved_changed.is_empty()
+            && state.colors_changed.is_empty()
+            && state.trust_changed.is_empty()
+            && state.delimited_changed.is_empty()
+            && !state.last_changed
+            && !state.last_frame_changed)
+    {
+        return None;
+    }
+    Some(WriteJob {
+        frames_changed: state.frames_changed.clone(),
+        last_changed: state.last_changed,
+        last_frame_changed: state.last_frame_changed,
+        path: state.path.clone(),
+        saved: state.saved.clone(),
+        changed: state.changed.clone(),
+        appearance_changed: state.appearance_changed,
+        theme_changed: state.theme_changed,
+        font_changed: state.font_changed,
+        font_families_changed: state.font_families_changed,
+        zoom_changed: state.zoom_changed,
+        ui_zoom_changed: state.ui_zoom_changed,
+        ui_zoom_step_changed: state.ui_zoom_step_changed,
+        width_changed: state.width_changed,
+        find_changed: state.find_changed,
+        typed_views_changed: state.typed_views_changed,
+        toolbar_labels_changed: state.toolbar_labels_changed,
+        tree_note_titles_changed: state.tree_note_titles_changed,
+        tree_auto_reveal_changed: state.tree_auto_reveal_changed,
+        note_open_mode_changed: state.note_open_mode_changed,
+        code_soft_wrap_changed: state.code_soft_wrap_changed,
+        open_in_editor_changed: state.open_in_editor_changed,
+        writing_modes_changed: state.writing_modes_changed,
+        vault_open_changed: state.vault_open_changed,
+        settings_section_changed: state.settings_section_changed,
+        auto_pair_changed: state.auto_pair_changed,
+        close_code_fences_changed: state.close_code_fences_changed,
+        emoji_completion_changed: state.emoji_completion_changed,
+        paste_ask_changed: state.paste_ask_changed,
+        upload_pasted_changed: state.upload_pasted_changed,
+        image_import_changed: state.image_import_changed,
+        code_views_changed: state.code_views_changed.clone(),
+        log_editor_changed: state.log_editor_changed,
+        source_maps_changed: state.source_maps_changed.clone(),
+        splits_changed: state.splits_changed.clone(),
+        log_queries_changed: state.log_queries_changed.clone(),
+        log_columns_changed: state.log_columns_changed.clone(),
+        log_saved_changed: state.log_saved_changed.clone(),
+        log_regex_changed: state.log_regex_changed.clone(),
+        colors_changed: state.colors_changed.clone(),
+        trust_changed: state.trust_changed.clone(),
+        delimited_changed: state.delimited_changed.clone(),
+        serial: state.serial.clone(),
+        generation: state.serial.load(Ordering::SeqCst),
+    })
+}
+fn schedule(cx: &mut App) {
+    let state = cx.global_mut::<Store>();
+    state.serial.fetch_add(1, Ordering::SeqCst);
+    state.pending.take();
+    let task = cx.spawn(async move |cx| {
+        cx.background_executor()
+            .timer(Duration::from_millis(250))
+            .await;
+        let job = cx.update(|cx| job(cx));
+        if let Some(job) = job {
+            let generation = job.generation;
+            let result = cx
+                .background_executor()
+                .spawn(async move { job.run() })
+                .await;
+            match result {
+                Ok(()) => cx.update(|cx| mark_saved(generation, cx)),
+                Err(error) => diagnostic_error!("Cannot save UI state: {error:#}"),
+            }
+        }
+    });
+    cx.global_mut::<Store>().pending = Some(task);
+}
+#[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
+pub fn prepare_for_restart(cx: &mut App) -> anyhow::Result<()> {
+    let Some(store) = cx.try_global::<Store>() else {
+        return Ok(());
+    };
+    anyhow::ensure!(!store.blocked, "Reader state storage is unavailable");
+    record_open_windows(cx);
+    cx.global_mut::<Store>().pending.take();
+    if let Some(job) = job(cx).filter(|job| job.generation > 0) {
+        job.run()?;
+        mark_saved(job.generation, cx);
+    }
+    Ok(())
+}
+
+pub fn flush(cx: &mut App) {
+    if cx.try_global::<Store>().is_some() {
+        cx.global_mut::<Store>().pending.take();
+    }
+    if let Some(job) = job(cx).filter(|job| job.generation > 0) {
+        match job.run() {
+            Ok(()) => mark_saved(job.generation, cx),
+            Err(error) => diagnostic_error!("Cannot flush UI state: {error:#}"),
+        }
+    }
+}
+
+pub fn valid_note(note: &str) -> bool {
+    note.is_empty()
+        || Path::new(note)
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)))
+}
+
+fn frame_key(key: &str) -> &str {
+    if key.starts_with("reader:") {
+        key.rsplit_once('#').map_or(key, |(root, _)| root)
+    } else {
+        key
+    }
+}
+pub fn window_frame(key: &str, cx: &App) -> Option<window_state::Frame> {
+    cx.try_global::<Store>()?
+        .saved
+        .frames
+        .get(frame_key(key))
+        .cloned()
+}
+pub fn inherited_window_frame(key: &str, cx: &App) -> Option<window_state::Frame> {
+    key.starts_with("reader:")
+        .then(|| cx.try_global::<Store>()?.saved.last_frame.clone())
+        .flatten()
+}
+pub fn record_frame(key: &str, frame: window_state::Frame, active: bool, cx: &mut App) -> bool {
+    if cx.try_global::<Store>().is_none() {
+        return false;
+    }
+    let key = frame_key(key);
+    let state = cx.global_mut::<Store>();
+    if state.saved.frames.get(key) == Some(&frame)
+        && (!active || state.saved.last_frame.as_ref() == Some(&frame))
+    {
+        return true;
+    }
+    state.frames_changed.insert(key.into());
+    state.saved.frames.insert(key.into(), frame.clone());
+    if active && key.starts_with("reader:") {
+        state.last_frame_changed = true;
+        state.saved.last_frame = Some(frame);
+    }
+    schedule(cx);
+    true
+}
+pub fn installed(cx: &App) -> bool {
+    cx.try_global::<Store>().is_some()
+}
+
+// Resolve existing ancestors as well as removed vaults, without allowing a
+// symlinked state directory to bypass the outside-vault boundary.
+fn resolved_destination(path: &Path) -> Option<PathBuf> {
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    let ancestor = path.ancestors().find(|part| part.exists())?;
+    Some(
+        ancestor
+            .canonicalize()
+            .ok()?
+            .join(path.strip_prefix(ancestor).ok()?),
+    )
+}
+fn outside_vault(root: &Path, path: &Path) -> bool {
+    match (resolved_destination(root), resolved_destination(path)) {
+        (Some(root), Some(path)) => !path.starts_with(root),
+        _ => false,
+    }
+}
+
+/// Called before creating a Reader window, so geometry cannot write into a
+/// newly selected vault while its background preparation is still pending.
+pub fn guard_window_root(key: &str, cx: &mut App) {
+    let Some(root) = key.strip_prefix("reader:") else {
+        return;
+    };
+    let Some(state) = cx.try_global::<Store>() else {
+        return;
+    };
+    if !outside_vault(Path::new(root), &state.path) {
+        cx.global_mut::<Store>().blocked = true;
+        diagnostic_error!("UI state is unavailable: its directory is inside the selected vault");
+    }
+}
+
+pub fn find_case_sensitive(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.find_case_sensitive)
+}
+
+pub fn set_find_case_sensitive(value: bool, cx: &mut App) {
+    if remember_find_case_sensitive(value, cx) {
+        cx.refresh_windows();
+    }
+}
+
+/// The shared file field owns its own rendering. Persist its preference without
+/// invalidating cached headers or unrelated windows on a Match case click.
+pub fn remember_find_case_sensitive(value: bool, cx: &mut App) -> bool {
+    if !installed(cx) || find_case_sensitive(cx) == value {
+        return false;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.find_case_sensitive = value;
+    state.find_changed = true;
+    schedule(cx);
+    true
+}
+
+pub fn toolbar_labels(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.toolbar_labels)
+}
+
+pub fn set_toolbar_labels(value: bool, cx: &mut App) {
+    if !installed(cx) || toolbar_labels(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.toolbar_labels = value;
+    state.toolbar_labels_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+pub fn tree_note_titles(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.tree_note_titles)
+}
+
+pub fn set_tree_note_titles(value: bool, cx: &mut App) {
+    if !installed(cx) || tree_note_titles(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.tree_note_titles = value;
+    state.tree_note_titles_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+pub fn tree_auto_reveal(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.tree_auto_reveal)
+}
+
+pub fn set_tree_auto_reveal(value: bool, cx: &mut App) {
+    if !installed(cx) || tree_auto_reveal(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.tree_auto_reveal = value;
+    state.tree_auto_reveal_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+/// How a note opens in a new Reader window (#2817). Read is today's
+/// behaviour and the default; Edit opens Markdown notes in the editor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoteOpenMode {
+    Read,
+    Edit,
+}
+impl NoteOpenMode {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Edit => "edit",
+        }
+    }
+    fn from_key(key: &str) -> Self {
+        match key {
+            "edit" => Self::Edit,
+            // Absent (older state), "read" and unknown future values.
+            _ => Self::Read,
+        }
+    }
+}
+
+pub fn note_open_mode(cx: &App) -> NoteOpenMode {
+    cx.try_global::<Store>()
+        .map_or(NoteOpenMode::Read, |state| {
+            NoteOpenMode::from_key(&state.saved.note_open_mode)
+        })
+}
+
+pub fn set_note_open_mode(value: NoteOpenMode, cx: &mut App) {
+    if !installed(cx) || note_open_mode(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.note_open_mode = value.key().into();
+    state.note_open_mode_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+pub fn code_soft_wrap(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.code_soft_wrap)
+}
+
+/// The id of the «Open in» default code editor (#1400); empty when none
+/// was chosen yet.
+pub fn open_in_editor(cx: &App) -> &str {
+    cx.try_global::<Store>()
+        .map_or("", |state| state.saved.open_in_editor.as_str())
+}
+
+/// Remember `id` as the «Open in» default editor, across restarts.
+pub fn set_open_in_editor(id: &str, cx: &mut App) {
+    if !installed(cx) || open_in_editor(cx) == id {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.open_in_editor = id.to_owned();
+    state.open_in_editor_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+pub fn set_code_soft_wrap(value: bool, cx: &mut App) {
+    if !installed(cx) || code_soft_wrap(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.code_soft_wrap = value;
+    state.code_soft_wrap_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+/// Focus mode in the note editor (#1643).
+pub fn focus_mode(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.focus_mode)
+}
+
+/// Typewriter mode in the note editor (#1643).
+pub fn typewriter_mode(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.typewriter_mode)
+}
+
+pub fn set_focus_mode(value: bool, cx: &mut App) {
+    if !installed(cx) || focus_mode(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.focus_mode = value;
+    state.writing_modes_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+pub fn set_typewriter_mode(value: bool, cx: &mut App) {
+    if !installed(cx) || typewriter_mode(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.typewriter_mode = value;
+    state.writing_modes_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+/// Enabled independently of inline Markdown pairing; legacy settings default on.
+pub fn close_code_fences(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_none_or(|state| state.saved.close_code_fences)
+}
+pub fn set_close_code_fences(value: bool, cx: &mut App) {
+    if !installed(cx) || close_code_fences(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.close_code_fences = value;
+    state.close_code_fences_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+pub fn emoji_completion(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_none_or(|state| state.saved.emoji_completion)
+}
+#[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
+pub fn set_emoji_completion(value: bool, cx: &mut App) {
+    if !installed(cx) || emoji_completion(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.emoji_completion = value;
+    state.emoji_completion_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+/// Settings → Editor (#1636): whether brackets and quotes, and `*` `_` `` ` ``,
+/// close themselves as they are typed in a note. Without the store (tests,
+/// a failed install) the defaults hold.
+pub fn auto_pair(cx: &App) -> (bool, bool) {
+    cx.try_global::<Store>().map_or((true, false), |state| {
+        (
+            state.saved.auto_pair_brackets,
+            state.saved.auto_pair_markdown,
+        )
+    })
+}
+
+pub fn set_auto_pair(brackets: bool, markdown: bool, cx: &mut App) {
+    if !installed(cx) || auto_pair(cx) == (brackets, markdown) {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.auto_pair_brackets = brackets;
+    state.saved.auto_pair_markdown = markdown;
+    state.auto_pair_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+/// Settings → Editor (#1611): ask before copying a pasted or dropped file
+/// larger than this many MB into the vault; 0 never asks.
+pub fn paste_ask_above_mb(cx: &App) -> u32 {
+    cx.try_global::<Store>()
+        .map_or(crate::note_paste_settings::DEFAULT_ASK_ABOVE_MB, |state| {
+            state.saved.paste_ask_above_mb
+        })
+}
+
+pub fn set_paste_ask_above_mb(value: u32, cx: &mut App) {
+    if !installed(cx) || paste_ask_above_mb(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.paste_ask_above_mb = value;
+    state.paste_ask_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+/// Settings → Editor (#1073): upload pasted and dropped files and link the
+/// uploaded copy. Off by default and when the state is not installed.
+pub fn upload_pasted_files(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.upload_pasted_files)
+}
+
+/// Bumped on every change of [`upload_pasted_files`] this session. An upload
+/// job runs only while the generation it started with is current, so turning
+/// the setting off cancels it even if it is turned on again meanwhile.
+#[derive(Default)]
+struct UploadPastedGeneration(u64);
+impl Global for UploadPastedGeneration {}
+
+pub fn upload_pasted_generation(cx: &App) -> u64 {
+    cx.try_global::<UploadPastedGeneration>()
+        .map_or(0, |generation| generation.0)
+}
+
+/// Whether a paste uploads, decided once when the paste happens (#1073) and
+/// carried with its background work: a conversion, copy or download that
+/// finishes later never reads the setting afresh.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UploadDecision {
+    generation: u64,
+}
+
+/// The decision for a paste happening now: `None` while the setting is off.
+pub fn upload_decision(cx: &App) -> Option<UploadDecision> {
+    upload_pasted_files(cx).then(|| UploadDecision {
+        generation: upload_pasted_generation(cx),
+    })
+}
+
+/// A paste's decision still holds: it was on at the paste, it is on now, and
+/// it was never turned off in between (any change bumps the generation).
+pub fn upload_decision_holds(decision: Option<UploadDecision>, cx: &App) -> bool {
+    decision.is_some_and(|decision| {
+        upload_pasted_files(cx) && upload_pasted_generation(cx) == decision.generation
+    })
+}
+
+pub fn set_upload_pasted_files(value: bool, cx: &mut App) {
+    if !installed(cx) || upload_pasted_files(cx) == value {
+        return;
+    }
+    cx.default_global::<UploadPastedGeneration>().0 += 1;
+    let state = cx.global_mut::<Store>();
+    state.saved.upload_pasted_files = value;
+    state.upload_pasted_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+/// Application-wide, independent of the current vault. Snapshot at paste start.
+pub fn image_import_options(cx: &App) -> crate::note_paste_settings::Options {
+    cx.try_global::<Store>()
+        .map_or_else(Default::default, |s| s.saved.image_import.normalized())
+}
+
+pub fn set_image_import_options(value: crate::note_paste_settings::Options, cx: &mut App) {
+    let value = value.normalized();
+    if !installed(cx) || image_import_options(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.image_import = value;
+    state.image_import_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+pub fn code_view(kind: &str, cx: &App) -> Option<crate::code_view::View> {
+    cx.try_global::<Store>()
+        .and_then(|state| state.saved.code_views.get(kind).copied())
+}
+
+/// The remembered pane size of a list/detail split (#1156).
+pub fn split_size(key: &str, cx: &App) -> Option<f32> {
+    cx.try_global::<Store>()
+        .and_then(|state| state.saved.split_sizes.get(key).copied())
+        .filter(|size| size.is_finite() && *size > 0.)
+}
+
+pub fn set_split_size(key: &str, size: f32, cx: &mut App) {
+    if !installed(cx) || !size.is_finite() || split_size(key, cx) == Some(size) {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.split_sizes.insert(key.into(), size);
+    state.splits_changed.insert(key.into());
+    schedule(cx);
+}
+
+pub fn log_fields(path: &str, cx: &App) -> okilum_core::log::saved_query::FieldChoices {
+    cx.try_global::<Store>()
+        .and_then(|state| state.saved.log_fields.get(path).cloned())
+        .unwrap_or_default()
+}
+
+pub fn set_log_fields(
+    path: &str,
+    fields: okilum_core::log::saved_query::FieldChoices,
+    cx: &mut App,
+) {
+    if !installed(cx) || log_fields(path, cx) == fields {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.log_fields.insert(path.into(), fields);
+    state.log_columns_changed.insert(path.into());
+    while state.saved.log_fields.len() > LOG_QUERY_FILES {
+        let Some(other) = state
+            .saved
+            .log_fields
+            .keys()
+            .find(|key| *key != path)
+            .cloned()
+        else {
+            break;
+        };
+        state.saved.log_fields.remove(&other);
+        state.log_columns_changed.insert(other);
+    }
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+/// Field columns of the log at `path` (#1167).
+pub fn log_columns(path: &str, cx: &App) -> Vec<String> {
+    cx.try_global::<Store>()
+        .and_then(|state| state.saved.log_columns.get(path).cloned())
+        .unwrap_or_default()
+}
+
+pub fn set_log_columns(path: &str, columns: Vec<String>, cx: &mut App) {
+    if !installed(cx) || log_columns(path, cx) == columns {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    if columns.is_empty() {
+        state.saved.log_columns.remove(path);
+    } else {
+        state.saved.log_columns.insert(path.into(), columns);
+    }
+    state.log_columns_changed.insert(path.into());
+    // Small and local, like the query history: past the cap, drop others.
+    while state.saved.log_columns.len() > LOG_QUERY_FILES {
+        let Some(other) = state
+            .saved
+            .log_columns
+            .keys()
+            .find(|key| *key != path)
+            .cloned()
+        else {
+            break;
+        };
+        state.saved.log_columns.remove(&other);
+        state.saved.log_column_widths.remove(&other);
+        state.log_columns_changed.insert(other);
+    }
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+/// The width the user gave column `column` of the log at `path` (#1167).
+pub fn log_column_width(path: &str, column: &str, cx: &App) -> Option<f32> {
+    cx.try_global::<Store>()
+        .and_then(|state| {
+            state
+                .saved
+                .log_column_widths
+                .get(path)?
+                .get(column)
+                .copied()
+        })
+        .filter(|width| width.is_finite() && *width > 0.)
+}
+
+pub fn set_log_column_width(path: &str, column: &str, width: f32, cx: &mut App) {
+    if !installed(cx) || !width.is_finite() || log_column_width(path, column, cx) == Some(width) {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state
+        .saved
+        .log_column_widths
+        .entry(path.into())
+        .or_default()
+        .insert(column.into(), width);
+    state.log_columns_changed.insert(path.into());
+    schedule(cx);
+}
+
+/// Queries kept per log file and log files with a history (#1158).
+const LOG_QUERIES_PER_FILE: usize = 10;
+const LOG_QUERY_FILES: usize = 64;
+
+/// Recent queries for the log at `path`, newest first.
+pub fn log_queries(path: &str, cx: &App) -> Vec<String> {
+    cx.try_global::<Store>()
+        .and_then(|state| state.saved.log_queries.get(path).cloned())
+        .unwrap_or_default()
+}
+
+pub fn remember_log_query(path: &str, query: &str, cx: &mut App) {
+    let query = query.trim();
+    if !installed(cx)
+        || query.is_empty()
+        || log_queries(path, cx).first().map(String::as_str) == Some(query)
+    {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    let queries = state.saved.log_queries.entry(path.into()).or_default();
+    queries.retain(|known| known != query);
+    queries.insert(0, query.into());
+    queries.truncate(LOG_QUERIES_PER_FILE);
+    state.log_queries_changed.insert(path.into());
+    // Small and local: past the cap, drop other files' histories.
+    while state.saved.log_queries.len() > LOG_QUERY_FILES {
+        let Some(other) = state
+            .saved
+            .log_queries
+            .keys()
+            .find(|key| *key != path)
+            .cloned()
+        else {
+            break;
+        };
+        state.saved.log_queries.remove(&other);
+        state.log_queries_changed.insert(other);
+    }
+    schedule(cx);
+}
+
+/// The saved log filters (#1169), empty before the state is installed.
+/// Regex definitions share the durable reader settings file with saved filters.
+pub fn log_regex_definitions(cx: &App) -> Vec<okilum_core::log::regex_text::Definition> {
+    cx.try_global::<Store>()
+        .map(|state| state.saved.log_regex.values().cloned().collect())
+        .unwrap_or_default()
+}
+
+pub fn save_log_regex(definition: okilum_core::log::regex_text::Definition, cx: &mut App) -> bool {
+    if !installed(cx) || definition.name.trim().is_empty() || definition.compile().is_err() {
+        return false;
+    }
+    let state = cx.global_mut::<Store>();
+    let name = definition.name.clone();
+    state.saved.log_regex.insert(name.clone(), definition);
+    state.log_regex_changed.insert(name);
+    schedule(cx);
+    true
+}
+
+pub fn delete_log_regex(name: &str, cx: &mut App) {
+    if !installed(cx) {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.log_regex.remove(name);
+    state.log_regex_changed.insert(name.into());
+    schedule(cx);
+}
+
+pub fn saved_log_filters(cx: &App) -> okilum_core::log::saved_query::SavedQueries {
+    cx.try_global::<Store>()
+        .map(|state| state.saved.log_saved.clone())
+        .unwrap_or_default()
+}
+
+/// Saves `query` under its name, replacing one of the same name. `false` when
+/// nothing was saved: no state to keep it in, an unusable name, or a full list.
+pub fn save_log_filter(query: okilum_core::log::saved_query::SavedQuery, cx: &mut App) -> bool {
+    if !installed(cx) {
+        return false;
+    }
+    let name = query.name.clone();
+    let state = cx.global_mut::<Store>();
+    if !state.saved.log_saved.upsert(query) {
+        return false;
+    }
+    state.log_saved_changed.insert(name);
+    schedule(cx);
+    true
+}
+
+pub fn delete_log_filter(name: &str, cx: &mut App) {
+    if !installed(cx) {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    if state.saved.log_saved.remove(name).is_some() {
+        state.log_saved_changed.insert(name.to_owned());
+        schedule(cx);
+    }
+}
+
+/// The editor log source locations open in (#1165).
+pub fn log_editor(cx: &App) -> okilum_core::log::source_link::Editor {
+    use okilum_core::log::source_link::Editor;
+    let Some(state) = cx.try_global::<Store>() else {
+        return Editor::default();
+    };
+    match state.saved.log_editor.as_str() {
+        "cursor" => Editor::Cursor,
+        "zed" => Editor::Zed,
+        "jetbrains" => Editor::JetBrains,
+        "custom" => Editor::Custom(state.saved.log_editor_command.clone()),
+        _ => Editor::VsCode,
+    }
+}
+
+pub fn set_log_editor(editor: &okilum_core::log::source_link::Editor, cx: &mut App) {
+    use okilum_core::log::source_link::Editor;
+    if !installed(cx) || log_editor(cx) == *editor {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.log_editor = match editor {
+        Editor::VsCode => "vscode",
+        Editor::Cursor => "cursor",
+        Editor::Zed => "zed",
+        Editor::JetBrains => "jetbrains",
+        Editor::Custom(_) => "custom",
+    }
+    .into();
+    if let Editor::Custom(command) = editor {
+        state.saved.log_editor_command = command.clone();
+    }
+    state.log_editor_changed = true;
+    schedule(cx);
+}
+
+/// Path mappings of the vault at `root` (#1165).
+pub fn source_maps(root: &Path, cx: &App) -> Vec<okilum_core::log::source_link::PathMap> {
+    cx.try_global::<Store>()
+        .and_then(|state| state.saved.source_maps.get(root).cloned())
+        .unwrap_or_default()
+}
+
+/// Path mappings for a log at `path`: those of the innermost vault that
+/// holds it.
+pub fn source_maps_for(path: &Path, cx: &App) -> Vec<okilum_core::log::source_link::PathMap> {
+    cx.try_global::<Store>()
+        .and_then(|state| {
+            state
+                .saved
+                .source_maps
+                .iter()
+                .filter(|(root, _)| path.starts_with(root))
+                .max_by_key(|(root, _)| root.components().count())
+                .map(|(_, maps)| maps.clone())
+        })
+        .unwrap_or_default()
+}
+
+pub fn set_source_maps(
+    root: &Path,
+    maps: Vec<okilum_core::log::source_link::PathMap>,
+    cx: &mut App,
+) {
+    if !installed(cx) || source_maps(root, cx) == maps {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    if maps.is_empty() {
+        state.saved.source_maps.remove(root);
+    } else {
+        state.saved.source_maps.insert(root.to_owned(), maps);
+    }
+    state.source_maps_changed.insert(root.to_owned());
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+pub fn set_code_view(kind: &str, view: crate::code_view::View, cx: &mut App) {
+    if !installed(cx) || code_view(kind, cx) == Some(view) {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.code_views.insert(kind.into(), view);
+    state.code_views_changed.insert(kind.into());
+    schedule(cx);
+}
+
+pub fn delimited_header(path: &Path, cx: &App) -> bool {
+    !cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.delimited_no_header.contains(path))
+}
+
+pub fn set_delimited_header(path: PathBuf, header: bool, cx: &mut App) {
+    if !installed(cx) || delimited_header(&path, cx) == header {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    if header {
+        state.saved.delimited_no_header.remove(&path);
+    } else {
+        state.saved.delimited_no_header.insert(path.clone());
+    }
+    state.delimited_changed.insert(path);
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+/// Keep the requested name even when this machine cannot provide it: another
+/// OS may have that font. Resolution is presentation-only, never a disk rewrite.
+pub fn selected_font(role: crate::font_role::Role, cx: &App) -> &str {
+    cx.try_global::<Store>()
+        .map_or(role.default_family(), |state| match role {
+            crate::font_role::Role::Note => state.saved.note_font.as_str(),
+            crate::font_role::Role::Code => state.saved.code_font.as_str(),
+        })
+}
+pub fn set_selected_font(role: crate::font_role::Role, name: &str, cx: &mut App) {
+    if !installed(cx) || selected_font(role, cx) == name {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    match role {
+        crate::font_role::Role::Note => state.saved.note_font = name.into(),
+        crate::font_role::Role::Code => state.saved.code_font = name.into(),
+    }
+    state.font_families_changed[role.index()] = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+pub fn font_size(cx: &App) -> f32 {
+    base_font_size(cx) * text_zoom(cx)
+}
+pub fn base_font_size(cx: &App) -> f32 {
+    cx.try_global::<Store>()
+        .map_or(brand::READING_FONT_SIZE, |state| {
+            state.saved.font_size.clamp(12., 24.)
+        })
+}
+pub fn ui_zoom(cx: &App) -> f32 {
+    crate::ui_zoom::normalize(cx.try_global::<Store>().map_or(1., |s| s.saved.ui_zoom))
+}
+
+/// The whole-UI zoom step in percent (#3228); unknown saved values fall
+/// back to the default.
+pub fn ui_zoom_step(cx: &App) -> u32 {
+    crate::ui_zoom::normalize_step(
+        cx.try_global::<Store>()
+            .map_or(crate::ui_zoom::DEFAULT_STEP, |s| s.saved.ui_zoom_step),
+    )
+}
+
+pub fn set_ui_zoom_step(step: u32, cx: &mut App) {
+    if !installed(cx) || !crate::ui_zoom::STEPS.contains(&step) {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    if state.saved.ui_zoom_step == step {
+        return;
+    }
+    state.saved.ui_zoom_step = step;
+    state.ui_zoom_step_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+pub fn set_ui_zoom(zoom: f32, cx: &mut App) {
+    if !zoom.is_finite() || !installed(cx) {
+        return;
+    }
+    let zoom = crate::ui_zoom::normalize(zoom);
+    let state = cx.global_mut::<Store>();
+    if state.saved.ui_zoom == zoom {
+        return;
+    }
+    state.saved.ui_zoom = zoom;
+    state.ui_zoom_changed = true;
+    schedule(cx);
+    // The dispatching window is borrowed during an action. Update all windows
+    // after dispatch, before their next frame, including auxiliary windows.
+    cx.defer(move |cx| {
+        for handle in cx.windows() {
+            let _ = handle.update(cx, |_, window, cx| {
+                window.set_ui_scale(zoom);
+                crate::ui_zoom::scale_changed("zoom", window, cx);
+            });
+        }
+    });
+    cx.refresh_windows();
+}
+
+pub fn text_zoom(cx: &App) -> f32 {
+    cx.try_global::<Store>().map_or(1., |state| {
+        let zoom = state.saved.text_zoom;
+        if zoom.is_finite() {
+            zoom.clamp(0.5, 3.)
+        } else {
+            1.
+        }
+    })
+}
+pub fn set_text_zoom(zoom: f32, cx: &mut App) {
+    if !zoom.is_finite() || !installed(cx) {
+        return;
+    }
+    let zoom = zoom.clamp(0.5, 3.);
+    let state = cx.global_mut::<Store>();
+    if state.saved.text_zoom == zoom {
+        return;
+    }
+    state.saved.text_zoom = zoom;
+    state.zoom_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+pub fn reading_width(cx: &App) -> f32 {
+    cx.try_global::<Store>()
+        .map_or(reader_layout::READER_MAX_WIDTH, |state| {
+            state.saved.reading_width.clamp(560., 1200.)
+        })
+}
+pub fn full_note_width(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_some_and(|state| state.saved.full_note_width)
+}
+/// Maximum width of the note column: the reading width scaled by the note
+/// text zoom (#1652), or the whole pane when full note width is on (side
+/// padding stays inside the column). Callers lay the column out with
+/// `w_full().max_w(..)`, so a zoomed column never grows past its pane.
+pub fn note_column_width(cx: &App) -> f32 {
+    if full_note_width(cx) {
+        100_000.
+    } else {
+        reading_width(cx) * text_zoom(cx)
+    }
+}
+/// The note column for surfaces whose text does not follow the note zoom.
+pub fn unzoomed_note_column_width(cx: &App) -> f32 {
+    if full_note_width(cx) {
+        100_000.
+    } else {
+        reading_width(cx)
+    }
+}
+pub fn set_full_note_width(value: bool, cx: &mut App) {
+    if !installed(cx) || full_note_width(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.full_note_width = value;
+    state.width_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+pub fn set_reading_width(width: f32, cx: &mut App) {
+    set_reading(base_font_size(cx), width, cx);
+}
+pub fn set_reading(font: f32, width: f32, cx: &mut App) {
+    if !font.is_finite() || !width.is_finite() || !installed(cx) {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    let font = font.clamp(12., 24.);
+    let width = width.clamp(560., 1200.);
+    state.font_changed |= state.saved.font_size != font;
+    state.width_changed |= state.saved.reading_width != width;
+    state.saved.font_size = font;
+    state.saved.reading_width = width;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+fn mark_saved(generation: u64, cx: &mut App) {
+    if cx.try_global::<Store>().is_none() {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    if state.serial.load(Ordering::SeqCst) == generation {
+        state.changed.clear();
+        state.frames_changed.clear();
+        state.appearance_changed = false;
+        state.theme_changed = false;
+        state.font_changed = false;
+        state.font_families_changed = [false; 2];
+        state.zoom_changed = false;
+        state.ui_zoom_changed = false;
+        state.ui_zoom_step_changed = false;
+        state.width_changed = false;
+        state.find_changed = false;
+        state.typed_views_changed = false;
+        state.toolbar_labels_changed = false;
+        state.tree_note_titles_changed = false;
+        state.tree_auto_reveal_changed = false;
+        state.note_open_mode_changed = false;
+        state.code_soft_wrap_changed = false;
+        state.open_in_editor_changed = false;
+        state.writing_modes_changed = false;
+        state.vault_open_changed = false;
+        state.settings_section_changed = false;
+        state.auto_pair_changed = false;
+        state.close_code_fences_changed = false;
+        state.emoji_completion_changed = false;
+        state.paste_ask_changed = false;
+        state.upload_pasted_changed = false;
+        state.image_import_changed = false;
+        state.code_views_changed.clear();
+        state.log_editor_changed = false;
+        state.source_maps_changed.clear();
+        state.splits_changed.clear();
+        state.log_queries_changed.clear();
+        state.log_columns_changed.clear();
+        state.log_saved_changed.clear();
+        state.log_regex_changed.clear();
+        state.colors_changed.clear();
+        state.trust_changed.clear();
+        state.delimited_changed.clear();
+        state.last_changed = false;
+        state.last_frame_changed = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[gpui::test]
+    fn code2809_view_memory_survives_restart_and_merges_independent_types(cx: &mut TestAppContext) {
+        use crate::code_view::View;
+        let directory = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            install(directory.path(), cx);
+            set_code_view("json", View::Raw, cx);
+            let mut other = job(cx).unwrap();
+            other.saved.code_views = BTreeMap::from([("json-array".into(), View::Tree)]);
+            other.code_views_changed = BTreeSet::from(["json-array".into()]);
+            other.serial = Arc::new(AtomicU64::new(other.generation));
+            flush(cx);
+            other.run().unwrap();
+            install(directory.path(), cx);
+            assert_eq!(code_view("json", cx), Some(View::Raw));
+            assert_eq!(code_view("json-array", cx), Some(View::Tree));
+            assert_eq!(code_view("yaml", cx), None);
+        });
+    }
+
+    #[gpui::test]
+    fn code2809_legacy_json_raw_migrates_without_overwriting_per_type_choice(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::code_view::View;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("reader-ui.json");
+        for (legacy, entry, expected) in [
+            (true, None, View::Raw),
+            (false, None, View::Formatted),
+            (true, Some(View::Tree), View::Tree),
+        ] {
+            let mut data =
+                serde_json::json!({"version": VERSION, "json_raw": legacy, "appearance": "dark"});
+            if let Some(view) = entry {
+                data["code_views"] = serde_json::json!({"json": view});
+            }
+            std::fs::write(&path, serde_json::to_vec(&data).unwrap()).unwrap();
+            cx.update(|cx| {
+                install(directory.path(), cx);
+                assert_eq!(code_view("json", cx), Some(expected));
+                assert_eq!(code_view("json-array", cx), None);
+                set_code_view("xml", View::Raw, cx);
+                flush(cx);
+                install(directory.path(), cx);
+                assert_eq!(code_view("json", cx), Some(expected));
+            });
+            let saved: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert!(
+                saved.get("json_raw").is_none(),
+                "legacy field is deleted on save"
+            );
+            assert_eq!(saved["appearance"], "dark");
+        }
+    }
+
+    #[test]
+    fn legacy_layout_preserves_tree_preferences_without_inventing_project_state() {
+        let legacy: Layout = serde_json::from_value(serde_json::json!({
+            "panels": { "notes": true, "backlinks": false, "active": "Notes" },
+            "widths": { "notes": 370., "backlinks": 255. }
+        }))
+        .unwrap();
+        assert!(legacy.project_layout.is_none());
+        assert!(legacy.panels.notes && !legacy.panels.backlinks);
+        assert_eq!(legacy.widths.notes, 370.);
+        assert_eq!(legacy.widths.backlinks, 255.);
+        let mut saved = legacy.clone();
+        saved.project_layout = Some(reader_layout::ViewLayout::capture(
+            &reader_layout::Panels {
+                notes: false,
+                backlinks: true,
+                active: reader_layout::Panel::Backlinks,
+                ..Default::default()
+            },
+            &reader_layout::Widths {
+                notes: 280.,
+                backlinks: 830.,
+            },
+        ));
+        let restored: Layout =
+            serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        assert_eq!(restored.panels, legacy.panels);
+        assert_eq!(restored.widths, legacy.widths);
+        assert_eq!(restored.project_layout, saved.project_layout);
+    }
+
+    /// #1073, review of #3114: whether a paste uploads is decided at the
+    /// paste. Off then means never, even if the setting is turned on before
+    /// a background conversion finishes; an off→on cycle in between cancels.
+    #[gpui::test]
+    fn an_upload_decision_is_taken_at_the_paste(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("state");
+        cx.update(|cx| {
+            install(&directory, cx);
+            // Off at the paste: no decision, whatever happens later.
+            let off_at_paste = upload_decision(cx);
+            assert_eq!(off_at_paste, None);
+            set_upload_pasted_files(true, cx);
+            assert!(!upload_decision_holds(off_at_paste, cx));
+            // On at the paste: holds while nothing changes.
+            let on_at_paste = upload_decision(cx);
+            assert!(on_at_paste.is_some());
+            assert!(upload_decision_holds(on_at_paste, cx));
+            // Off, then on again before the work finishes: cancelled.
+            set_upload_pasted_files(false, cx);
+            assert!(!upload_decision_holds(on_at_paste, cx));
+            set_upload_pasted_files(true, cx);
+            assert!(!upload_decision_holds(on_at_paste, cx));
+            // A new paste decides afresh.
+            assert!(upload_decision_holds(upload_decision(cx), cx));
+        });
+    }
+
+    /// #1073: upload of pasted files is off unless the user turns it on,
+    /// including for state saved by builds that had no such setting.
+    #[test]
+    fn upload_of_pasted_files_is_off_by_default_and_round_trips() {
+        assert!(!Saved::default().upload_pasted_files);
+        let older: Saved = serde_json::from_str("{}").unwrap();
+        assert!(!older.upload_pasted_files);
+        let on = Saved {
+            upload_pasted_files: true,
+            ..Default::default()
+        };
+        let restored: Saved = serde_json::from_slice(&serde_json::to_vec(&on).unwrap()).unwrap();
+        assert!(restored.upload_pasted_files);
+    }
+
+    #[test]
+    fn workspace_identity_is_optional_and_never_inherited() {
+        let legacy: Layout = serde_json::from_str(r#"{"note":"home.md"}"#).unwrap();
+        assert!(legacy.project.is_none());
+        let missing: Saved = serde_json::from_str("{}").unwrap();
+        assert!(missing.vaults.is_empty());
+        for relative in ["Work/App", "Music/Studio", ""] {
+            let layout = Layout {
+                project: Some(PathBuf::from(relative)),
+                ..Default::default()
+            };
+            let restored: Layout =
+                serde_json::from_slice(&serde_json::to_vec(&layout).unwrap()).unwrap();
+            assert_eq!(restored.project, layout.project);
+            assert!(restored.inherited().project.is_none());
+        }
+    }
+
+    #[gpui::test]
+    fn image_import_preferences_are_global_persisted_and_merged(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("state");
+        cx.update(|cx| {
+            install(&directory, cx);
+            assert_eq!(
+                image_import_options(cx),
+                crate::note_paste_settings::Options::default()
+            );
+            let mut options = image_import_options(cx);
+            options.quality = 999;
+            options.keep_original = true;
+            set_image_import_options(options, cx);
+            flush(cx);
+            install(&directory, cx);
+            assert_eq!(image_import_options(cx).quality, 100);
+            assert!(image_import_options(cx).keep_original);
+            // A layout write from a process with old defaults must merge the
+            // latest app-wide image policy, not reset it for another vault.
+            let path = directory.join("reader-ui.json");
+            let mut other = read(&path).unwrap();
+            other.image_import.quality = 40;
+            std::fs::write(&path, serde_json::to_vec(&other).unwrap()).unwrap();
+            record(
+                &temp.path().join("another-vault"),
+                Layout::default(),
+                true,
+                cx,
+            );
+            flush(cx);
+            assert_eq!(read(&path).unwrap().image_import.quality, 40);
+        });
+    }
+    use super::*;
+
+    #[test]
+    fn legacy_preferences_without_font_keys_preserve_other_preferences() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("reader-ui.json");
+        std::fs::write(
+            &path,
+            r#"{
+            "version": 1, "appearance": "dark", "font_size": 19.0,
+            "text_zoom": 1.25, "reading_width": 960.0, "toolbar_labels": true
+        }"#,
+        )
+        .unwrap();
+        let mut saved = read(&path).expect("old settings without font keys remain readable");
+        assert_eq!(saved.note_font, brand::SANS_FONT);
+        assert_eq!(saved.code_font, brand::MONO_FONT);
+        saved.note_font = brand::MONO_FONT.into();
+        std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        let upgraded = read(&path).unwrap();
+        assert_eq!(upgraded.note_font, brand::MONO_FONT);
+        assert_eq!(upgraded.code_font, brand::MONO_FONT);
+        assert_eq!(upgraded.appearance, "dark");
+        assert_eq!(upgraded.font_size, 19.);
+        assert_eq!(upgraded.text_zoom, 1.25);
+        assert_eq!(upgraded.reading_width, 960.);
+        assert!(upgraded.toolbar_labels);
+    }
+
+    #[gpui::test]
+    fn issue2572_settings_section_migrates_legacy_vault_keys(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("reader-ui.json");
+        for (old, expected) in [
+            ("vault", "vaults"),
+            ("vaults", "vaults"),
+            ("logs", "logs"),
+            ("future-pane", "future-pane"),
+        ] {
+            std::fs::write(
+                &path,
+                serde_json::to_vec(&serde_json::json!({
+                    "version": VERSION, "settings_section": old, "appearance": "dark"
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            cx.update(|cx| {
+                install(directory.path(), cx);
+                assert_eq!(settings_section(cx), Some(expected));
+                // A normal unrelated preference save persists the migration and
+                // preserves the user's other settings.
+                set_emoji_completion(false, cx);
+                flush(cx);
+                install(directory.path(), cx);
+                assert_eq!(settings_section(cx), Some(expected));
+            });
+            let saved: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(saved["settings_section"], expected);
+            assert_eq!(saved["appearance"], "dark");
+        }
+        cx.update(|cx| {
+            set_settings_section("vault", cx);
+            assert_eq!(settings_section(cx), Some("vaults"));
+        });
+    }
+
+    #[gpui::test]
+    fn emoji_completion_defaults_on_and_persists_independently(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("reader-ui.json"), br#"{"version":1}"#).unwrap();
+        cx.update(|cx| {
+            install(directory.path(), cx);
+            assert!(emoji_completion(cx));
+            set_emoji_completion(false, cx);
+            flush(cx);
+            install(directory.path(), cx);
+            assert!(!emoji_completion(cx));
+            set_close_code_fences(false, cx);
+            flush(cx);
+            install(directory.path(), cx);
+            assert!(
+                !emoji_completion(cx),
+                "another editor preference preserves the choice"
+            );
+            set_emoji_completion(true, cx);
+            flush(cx);
+            install(directory.path(), cx);
+            assert!(emoji_completion(cx));
+            assert!(!close_code_fences(cx));
+        });
+    }
+
+    #[gpui::test]
+    fn code_fence_setting_defaults_on_and_persists_independently(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("reader-ui.json");
+        std::fs::write(&path, br#"{"version":1,"auto_pair_markdown":false}"#).unwrap();
+        cx.update(|cx| {
+            install(directory.path(), cx);
+            assert!(
+                close_code_fences(cx),
+                "legacy profiles default to closed code fences"
+            );
+            set_close_code_fences(false, cx);
+            flush(cx);
+            install(directory.path(), cx);
+            assert!(!close_code_fences(cx));
+            set_auto_pair(false, true, cx);
+            flush(cx);
+            install(directory.path(), cx);
+            assert_eq!(auto_pair(cx), (false, true));
+            assert!(
+                !close_code_fences(cx),
+                "inline pairing cannot reset the fence preference"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn independent_font_changes_merge_without_resetting_other_role(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            install(directory.path(), cx);
+            set_selected_font(crate::font_role::Role::Note, "Example Text", cx);
+            let mut other = job(cx).unwrap();
+            other.saved.note_font = "Stale Text".into();
+            other.saved.code_font = "Example Code".into();
+            other.font_families_changed = [false, true];
+            other.serial = Arc::new(AtomicU64::new(other.generation));
+            flush(cx);
+            other.run().unwrap();
+            install(directory.path(), cx);
+            assert_eq!(
+                selected_font(crate::font_role::Role::Note, cx),
+                "Example Text"
+            );
+            assert_eq!(
+                selected_font(crate::font_role::Role::Code, cx),
+                "Example Code"
+            );
+            set_toolbar_labels(true, cx);
+            flush(cx);
+            let saved = read(&directory.path().join("reader-ui.json")).unwrap();
+            assert_eq!(saved.note_font, "Example Text");
+            assert_eq!(saved.code_font, "Example Code");
+        });
+    }
+
+    #[gpui::test]
+    fn delimited_header_preferences_survive_restart_and_merge_per_file(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let directory = fixture.path().join("state");
+        let first = fixture.path().join("one.csv");
+        let second = fixture.path().join("two.tsv");
+        cx.update(|cx| {
+            install(&directory, cx);
+            assert!(delimited_header(&first, cx) && delimited_header(&second, cx));
+            set_delimited_header(first.clone(), false, cx);
+            let mut independent = job(cx).unwrap();
+            // A second process's stale snapshot changes only its own file.
+            independent.serial = Arc::new(AtomicU64::new(independent.generation));
+            independent.saved.delimited_no_header = BTreeSet::from([second.clone()]);
+            independent.delimited_changed = BTreeSet::from([second.clone()]);
+            flush(cx);
+            independent.run().unwrap();
+            install(&directory, cx);
+            assert!(!delimited_header(&first, cx));
+            assert!(!delimited_header(&second, cx));
+            set_delimited_header(first.clone(), true, cx);
+            flush(cx);
+            install(&directory, cx);
+            assert!(
+                delimited_header(&first, cx),
+                "positive control: restoring the header persists too"
+            );
+            assert!(
+                !delimited_header(&second, cx),
+                "an unrelated file's preference survives the write"
+            );
+        });
+        assert!(
+            !first.exists() && !second.exists(),
+            "preferences never create or write the canonical files"
+        );
+    }
+    use ::core::prelude::v1::test;
+
+    #[gpui::test]
+    fn tree_label_preference_defaults_to_file_names_and_survives_relaunch(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        // Legacy Settings has no tree-label key: the new default is file names.
+        std::fs::write(
+            state.join("reader-ui.json"),
+            format!("{{\"version\":{VERSION}}}"),
+        )
+        .unwrap();
+        cx.update(|cx| {
+            install(&state, cx);
+            assert!(!tree_note_titles(cx));
+            set_tree_note_titles(true, cx);
+            flush(cx);
+            install(&state, cx);
+            assert!(tree_note_titles(cx), "title mode is remembered");
+            set_tree_note_titles(false, cx);
+            flush(cx);
+            install(&state, cx);
+            assert!(!tree_note_titles(cx), "switching back is remembered too");
+        });
+    }
+
+    #[gpui::test]
+    fn tree_auto_reveal_defaults_off_survives_relaunch_and_merges(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        // Settings saved before #1762 have no key: auto-reveal stays off.
+        std::fs::write(
+            state.join("reader-ui.json"),
+            format!("{{\"version\":{VERSION}}}"),
+        )
+        .unwrap();
+        let path = state.join("reader-ui.json");
+        cx.update(|cx| {
+            install(&state, cx);
+            assert!(!tree_auto_reveal(cx), "AUTOREVEAL1762: off by default");
+            set_tree_auto_reveal(true, cx);
+            flush(cx);
+            install(&state, cx);
+            assert!(tree_auto_reveal(cx), "AUTOREVEAL1762: on is remembered");
+            // Another window's unrelated write keeps the preference.
+            set_tree_note_titles(true, cx);
+            flush(cx);
+            assert!(read(&path).unwrap().tree_auto_reveal);
+            set_tree_auto_reveal(false, cx);
+            flush(cx);
+            install(&state, cx);
+            assert!(!tree_auto_reveal(cx), "switching back is remembered too");
+        });
+    }
+
+    #[gpui::test]
+    fn note_open_mode_defaults_read_round_trips_and_migrates(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let path = state.join("reader-ui.json");
+        // State saved before #2817 has no key and must still load: Read.
+        std::fs::write(
+            &path,
+            format!("{{\"version\":{VERSION},\"tree_auto_reveal\":true}}"),
+        )
+        .unwrap();
+        cx.update(|cx| {
+            install(&state, cx);
+            assert!(
+                tree_auto_reveal(cx),
+                "positive control: the old file loaded"
+            );
+            assert_eq!(
+                note_open_mode(cx),
+                NoteOpenMode::Read,
+                "OPENMODE2817: default"
+            );
+            set_note_open_mode(NoteOpenMode::Edit, cx);
+            flush(cx);
+            install(&state, cx);
+            assert_eq!(note_open_mode(cx), NoteOpenMode::Edit, "Edit is remembered");
+            assert!(tree_auto_reveal(cx), "other settings survive the write");
+            // Another window's unrelated write keeps the preference.
+            set_tree_note_titles(true, cx);
+            flush(cx);
+            assert_eq!(read(&path).unwrap().note_open_mode, "edit");
+            set_note_open_mode(NoteOpenMode::Read, cx);
+            flush(cx);
+            install(&state, cx);
+            assert_eq!(note_open_mode(cx), NoteOpenMode::Read, "back to Read");
+        });
+        // A value from a newer build opens in Read and is not rewritten by
+        // an unrelated change.
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        json["note_open_mode"] = "future-mode".into();
+        std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+        cx.update(|cx| {
+            install(&state, cx);
+            assert_eq!(note_open_mode(cx), NoteOpenMode::Read);
+            set_tree_note_titles(false, cx);
+            flush(cx);
+        });
+        assert_eq!(read(&path).unwrap().note_open_mode, "future-mode");
+    }
+
+    #[gpui::test]
+    fn note_open_mode_of_another_type_falls_back_without_rejecting_state(cx: &mut TestAppContext) {
+        for value in ["null", "42", "true", "{\"mode\":\"edit\"}", "[\"edit\"]"] {
+            let fixture = tempfile::tempdir().unwrap();
+            let state = fixture.path().join("state");
+            std::fs::create_dir(&state).unwrap();
+            std::fs::write(
+                state.join("reader-ui.json"),
+                format!(
+                    "{{\"version\":{VERSION},\"tree_auto_reveal\":true,\"note_open_mode\":{value}}}"
+                ),
+            )
+            .unwrap();
+            cx.update(|cx| {
+                if cx.has_global::<Store>() {
+                    cx.remove_global::<Store>();
+                }
+                install(&state, cx);
+                assert!(installed(cx), "{value}: the saved UI state still loads");
+                assert!(tree_auto_reveal(cx), "{value}: other settings are kept");
+                assert_eq!(note_open_mode(cx), NoteOpenMode::Read, "{value}");
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn ui_zoom_step_defaults_and_bad_values_fall_back_without_rejecting_state(
+        cx: &mut TestAppContext,
+    ) {
+        for (value, expected) in [
+            (None, 5),
+            (Some("2"), 2),
+            (Some("10"), 10),
+            (Some("7"), 5),
+            (Some("-5"), 5),
+            (Some("2.5"), 5),
+            (Some("\"10\""), 5),
+            (Some("null"), 5),
+        ] {
+            let fixture = tempfile::tempdir().unwrap();
+            let state = fixture.path().join("state");
+            std::fs::create_dir(&state).unwrap();
+            let step = value.map_or(String::new(), |value| format!(",\"ui_zoom_step\":{value}"));
+            std::fs::write(
+                state.join("reader-ui.json"),
+                format!("{{\"version\":{VERSION},\"tree_auto_reveal\":true{step}}}"),
+            )
+            .unwrap();
+            cx.update(|cx| {
+                if cx.has_global::<Store>() {
+                    cx.remove_global::<Store>();
+                }
+                install(&state, cx);
+                assert!(installed(cx), "{value:?}: the saved UI state still loads");
+                assert!(tree_auto_reveal(cx), "{value:?}: other settings are kept");
+                assert_eq!(ui_zoom_step(cx), expected, "{value:?}");
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn saved_log_regexes_persist_merge_and_clear_pending_changes(cx: &mut TestAppContext) {
+        use okilum_core::log::regex_text::Definition;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("reader-ui.json");
+        let definition = |name: &str, pattern: &str| Definition {
+            name: name.into(),
+            pattern: pattern.into(),
+        };
+        cx.update(|cx| {
+            install(directory.path(), cx);
+            assert!(save_log_regex(definition("First", "(?P<msg>first)"), cx));
+            assert!(!save_log_regex(definition("Bad", "("), cx));
+            flush(cx);
+            assert!(
+                cx.global::<Store>().log_regex_changed.is_empty(),
+                "successful writes clear pending changes"
+            );
+            let mut external = read(&path).unwrap();
+            external
+                .log_regex
+                .insert("Remote".into(), definition("Remote", "(?P<msg>remote)"));
+            std::fs::write(&path, serde_json::to_vec(&external).unwrap()).unwrap();
+            assert!(save_log_regex(definition("Second", "(?P<msg>second)"), cx));
+            delete_log_regex("First", cx);
+            flush(cx);
+            install(directory.path(), cx);
+            let definitions = log_regex_definitions(cx);
+            assert_eq!(
+                definitions
+                    .iter()
+                    .map(|d| d.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["Remote", "Second"]
+            );
+            assert_eq!(definitions[1].pattern, "(?P<msg>second)");
+        });
+    }
+
+    /// #1169: saved log filters are global, survive a restart, and merge by
+    /// name with another process: one saved there stays, one deleted here is
+    /// deleted there, one replaced here is replaced there.
+    #[gpui::test]
+    fn saved_log_filters_persist_and_merge_by_name(cx: &mut TestAppContext) {
+        use okilum_core::log::saved_query::SavedQuery;
+        let fixture = tempfile::tempdir().unwrap();
+        let directory = fixture.path().join("state");
+        let path = directory.join("reader-ui.json");
+        let query = |name: &str, text: &str| SavedQuery {
+            name: name.into(),
+            query: text.into(),
+            ..Default::default()
+        };
+        let names = |cx: &App| -> Vec<String> {
+            saved_log_filters(cx)
+                .sorted()
+                .iter()
+                .map(|query| query.name.clone())
+                .collect()
+        };
+        cx.update(|cx| {
+            assert!(
+                !save_log_filter(query("early", "level>=warn"), cx),
+                "no state to keep it in yet"
+            );
+            install(&directory, cx);
+            assert!(saved_log_filters(cx).is_empty());
+            assert!(save_log_filter(query("Slow 5xx", "status>=500"), cx));
+            assert!(save_log_filter(query("Errors", "level>=error"), cx));
+            assert!(
+                !save_log_filter(query("   ", "level>=error"), cx),
+                "no name"
+            );
+            flush(cx);
+            // Another process saves one filter.
+            let mut external = read(&path).unwrap();
+            assert!(external.log_saved.upsert(query("Remote", "exists(err)")));
+            std::fs::write(&path, serde_json::to_vec(&external).unwrap()).unwrap();
+            // This one deletes one (spelled differently) and replaces another.
+            delete_log_filter("  errors ", cx);
+            assert!(save_log_filter(query("slow  5xx", "status>=502"), cx));
+            flush(cx);
+            let merged = read(&path).unwrap();
+            let kept: Vec<_> = merged
+                .log_saved
+                .sorted()
+                .iter()
+                .map(|query| (query.name.clone(), query.query.clone()))
+                .collect();
+            assert_eq!(
+                kept,
+                [
+                    ("Remote".to_owned(), "exists(err)".to_owned()),
+                    ("slow 5xx".to_owned(), "status>=502".to_owned()),
+                ]
+            );
+            install(&directory, cx);
+            assert_eq!(names(cx), ["Remote", "slow 5xx"], "after a restart");
+        });
+    }
+
+    /// #774: colours are per canonical root, survive a restart, and merge
+    /// per root so another process's colour for a different vault (and an
+    /// unknown future preset) is neither lost nor overwritten.
+    #[gpui::test]
+    fn vault_colors_persist_per_root_and_merge_with_other_processes(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        let other = fixture.path().join("other");
+        let future = fixture.path().join("future");
+        for dir in [&root, &other, &future] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        let directory = fixture.path().join("state");
+        let path = directory.join("reader-ui.json");
+        cx.update(|cx| {
+            install(&directory, cx);
+            assert_eq!(vault_color(&root, cx), None, "default is no colour");
+            set_vault_color(&root, Some(brand::VaultColor::Teal), cx);
+            set_vault_color(&other, Some(brand::VaultColor::Pink), cx);
+            flush(cx);
+            // Another process: removes `other`, leaves an unknown preset.
+            let mut external = read(&path).unwrap();
+            external.vault_colors.remove(&other);
+            external
+                .vault_colors
+                .insert(future.clone(), "future-colour".into());
+            std::fs::write(&path, serde_json::to_vec(&external).unwrap()).unwrap();
+            set_vault_color(&root, Some(brand::VaultColor::Blue), cx);
+            flush(cx);
+            let merged = read(&path).unwrap();
+            assert_eq!(
+                merged.vault_colors.get(&root).map(String::as_str),
+                Some("blue")
+            );
+            assert!(
+                !merged.vault_colors.contains_key(&other),
+                "unchanged roots come from the latest file"
+            );
+            assert_eq!(
+                merged.vault_colors.get(&future).map(String::as_str),
+                Some("future-colour")
+            );
+            install(&directory, cx);
+            assert_eq!(vault_color(&root, cx), Some(brand::VaultColor::Blue));
+            assert_eq!(
+                vault_color(&future, cx),
+                None,
+                "unknown preset shows nothing"
+            );
+            // «None» still clears a preset this build does not know.
+            set_vault_color(&future, None, cx);
+            flush(cx);
+            assert!(!read(&path).unwrap().vault_colors.contains_key(&future));
+            // #1050: tinting is on by default and can be turned off per vault.
+            assert_eq!(title_tint(&root, cx), Some(brand::VaultColor::Blue));
+            set_title_tint(&root, false, cx);
+            flush(cx);
+            install(&directory, cx);
+            assert_eq!(title_tint(&root, cx), None);
+            assert_eq!(
+                vault_color(&root, cx),
+                Some(brand::VaultColor::Blue),
+                "colour kept"
+            );
+            assert!(read(&path).unwrap().untinted_vaults.contains(&root));
+            set_title_tint(&root, true, cx);
+            flush(cx);
+            assert!(!read(&path).unwrap().untinted_vaults.contains(&root));
+            set_vault_color(&root, None, cx);
+            flush(cx);
+            assert!(!read(&path).unwrap().vault_colors.contains_key(&root));
+            assert_eq!(title_tint(&root, cx), None, "no colour, no tint");
+            // Clearing the colour also clears «don't tint»: a new colour
+            // starts tinted (review finding).
+            set_vault_color(&root, Some(brand::VaultColor::Blue), cx);
+            set_title_tint(&root, false, cx);
+            set_vault_color(&root, None, cx);
+            set_vault_color(&root, Some(brand::VaultColor::Pink), cx);
+            assert_eq!(title_tint(&root, cx), Some(brand::VaultColor::Pink));
+            flush(cx);
+            assert!(!read(&path).unwrap().untinted_vaults.contains(&root));
+            // #1049: a vault a link opened once is remembered; nothing is
+            // trusted before the user agrees.
+            assert!(
+                !link_trusted(&root, cx),
+                "positive control: not trusted yet"
+            );
+            trust_for_links(&root, cx);
+            flush(cx);
+            install(&directory, cx);
+            assert!(link_trusted(&root, cx));
+            assert!(read(&path).unwrap().link_trusted_vaults.contains(&root));
+            // Positive control: a colour inside a vault is refused, like layouts.
+            let inside = root.join("state");
+            install(&inside, cx);
+            set_vault_color(&root, Some(brand::VaultColor::Red), cx);
+            flush(cx);
+            assert!(!inside.join("reader-ui.json").exists());
+        });
+    }
+
+    /// #1399: a custom colour is stored as canonical `#rrggbb` beside the
+    /// presets, round-trips through a restart, and merges per root like a
+    /// preset: another process's roots, colours (even non-canonical ones)
+    /// and unrelated preferences are kept byte for byte.
+    #[gpui::test]
+    fn custom_vault_colors_round_trip_and_merge_without_touching_other_records(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let first = fixture.path().join("first");
+        let second = fixture.path().join("second");
+        let external_root = fixture.path().join("external");
+        for dir in [&first, &second, &external_root] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        let directory = fixture.path().join("state");
+        let path = directory.join("reader-ui.json");
+        let typed = brand::VaultColor::from_hex("#3A7BD5").unwrap();
+        cx.update(|cx| {
+            install(&directory, cx);
+            set_vault_color(&first, Some(brand::VaultColor::Teal), cx);
+            set_vault_color(&second, Some(typed), cx);
+            trust_for_links(&second, cx);
+            flush(cx);
+            let stored = read(&path).unwrap();
+            assert_eq!(
+                stored.vault_colors.get(&first).map(String::as_str),
+                Some("teal"),
+                "presets keep their key"
+            );
+            assert_eq!(
+                stored.vault_colors.get(&second).map(String::as_str),
+                Some("#3a7bd5"),
+                "custom is canonical lowercase"
+            );
+            // Another process: a different theme, a colour of its own written
+            // in upper case, and a preset this build does not know.
+            let mut external = read(&path).unwrap();
+            external.theme = brand::ThemeId::Nord.key().into();
+            external
+                .vault_colors
+                .insert(external_root.clone(), "#ABCDEF".into());
+            external
+                .vault_colors
+                .insert(fixture.path().join("future"), "future-colour".into());
+            std::fs::write(&path, serde_json::to_vec(&external).unwrap()).unwrap();
+            // Preset -> custom on the first vault only.
+            set_vault_color(&first, brand::VaultColor::from_hex("#000000"), cx);
+            flush(cx);
+            let merged = read(&path).unwrap();
+            assert_eq!(
+                merged.vault_colors.get(&first).map(String::as_str),
+                Some("#000000")
+            );
+            assert_eq!(
+                merged.vault_colors.get(&second).map(String::as_str),
+                Some("#3a7bd5")
+            );
+            assert_eq!(
+                merged.vault_colors.get(&external_root).map(String::as_str),
+                Some("#ABCDEF"),
+                "another process's colour is not rewritten"
+            );
+            assert_eq!(
+                merged
+                    .vault_colors
+                    .get(&fixture.path().join("future"))
+                    .map(String::as_str),
+                Some("future-colour")
+            );
+            assert_eq!(merged.theme, "nord", "unrelated preference kept");
+            assert!(merged.link_trusted_vaults.contains(&second));
+            // Restart: every colour reads back, case-insensitively.
+            install(&directory, cx);
+            assert_eq!(
+                vault_color(&first, cx),
+                Some(brand::VaultColor::Custom([0, 0, 0]))
+            );
+            assert_eq!(vault_color(&second, cx), Some(typed));
+            assert_eq!(
+                vault_color(&external_root, cx),
+                Some(brand::VaultColor::Custom([0xab, 0xcd, 0xef]))
+            );
+            // Title tint follows a custom colour and its opt-out survives.
+            assert_eq!(title_tint(&second, cx), Some(typed));
+            set_title_tint(&second, false, cx);
+            flush(cx);
+            install(&directory, cx);
+            assert_eq!(title_tint(&second, cx), None);
+            assert_eq!(vault_color(&second, cx), Some(typed), "colour kept");
+            // Custom -> None clears the colour and the opt-out, like a preset.
+            set_vault_color(&second, None, cx);
+            flush(cx);
+            let cleared = read(&path).unwrap();
+            assert!(!cleared.vault_colors.contains_key(&second));
+            assert!(!cleared.untinted_vaults.contains(&second));
+            assert_eq!(
+                cleared.vault_colors.get(&first).map(String::as_str),
+                Some("#000000"),
+                "the other vault keeps its colour"
+            );
+            // Custom -> preset on the same root.
+            set_vault_color(&first, Some(brand::VaultColor::Pink), cx);
+            flush(cx);
+            assert_eq!(
+                read(&path)
+                    .unwrap()
+                    .vault_colors
+                    .get(&first)
+                    .map(String::as_str),
+                Some("pink")
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn global_preferences_and_vault_layout_survive_flush_and_new_vault_inherits_no_paths(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        let other = fixture.path().join("other");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        let directory = fixture.path().join("state");
+        let mut saved = Layout {
+            note: "Notes/one.md".into(),
+            tree_cursor: Some("Notes".into()),
+            tree_scroll: -240.,
+            source: true,
+            ..Default::default()
+        };
+        saved.panels.notes = false;
+        saved.widths.notes = 370.;
+        saved.collapsed.insert(reader_sidebar::Section::Inbox);
+        saved.folders.insert("Notes".into());
+        saved.history.push(Visit {
+            note: saved.note.clone(),
+            position: Position {
+                item: 5,
+                offset: 14.,
+            },
+        });
+        cx.update(|cx| {
+            install(&directory, cx);
+            set_appearance(Some(ThemeMode::Dark), cx);
+            set_theme(brand::ThemeId::Nord, cx);
+            set_reading(19.5, 960., cx);
+            assert!(!find_case_sensitive(cx));
+            set_find_case_sensitive(true, cx);
+            assert!(!toolbar_labels(cx), "toolbar labels are opt-in");
+            set_toolbar_labels(true, cx);
+            record(&root, saved.clone(), true, cx);
+            assert!(
+                !directory.join("reader-ui.json").exists(),
+                "writes are debounced"
+            );
+            flush(cx);
+            install(&directory, cx);
+            assert!(matches!(appearance(cx).unwrap().0, Some(ThemeMode::Dark)));
+            assert_eq!(theme(cx), Some(brand::ThemeId::Nord));
+            assert!(
+                toolbar_labels(cx),
+                "toolbar labels survive relaunch globally"
+            );
+            assert_eq!(font_size(cx), 19.5);
+            assert_eq!(reading_width(cx), 960.);
+            assert!(
+                find_case_sensitive(cx),
+                "Match case survives relaunch outside the vault"
+            );
+            let (restored, known) = layout(&root, cx).unwrap();
+            assert!(known);
+            assert_eq!(restored, saved);
+            let (inherited, known) = layout(&other, cx).unwrap();
+            assert!(!known);
+            assert_eq!(inherited.panels, saved.panels);
+            assert_eq!(inherited.widths, saved.widths);
+            assert_eq!(inherited.collapsed, saved.collapsed);
+            assert!(inherited.note.is_empty() && inherited.history.is_empty());
+            assert!(inherited.folders.is_empty() && inherited.tree_cursor.is_none());
+            assert_eq!(inherited.tree_scroll, 0.);
+        });
+        assert!(!root.join("reader-ui.json").exists());
+    }
+
+    #[gpui::test]
+    fn vault_destination_defaults_reload_and_independent_merges(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            install(temp.path(), cx);
+            assert_eq!(vault_open(cx), "ask");
+            for value in ["current", "new", "ask"] {
+                set_vault_open(value, cx);
+                flush(cx);
+                install(temp.path(), cx);
+                assert_eq!(vault_open(cx), value);
+            }
+            set_vault_open("current", cx);
+            let pending = job(cx).unwrap();
+            let mut independent = read(&pending.path).unwrap();
+            independent.toolbar_labels = true;
+            std::fs::write(&pending.path, serde_json::to_vec(&independent).unwrap()).unwrap();
+            pending.run().unwrap();
+            let saved = read(&pending.path).unwrap();
+            assert!(
+                saved.toolbar_labels,
+                "preference write preserves unrelated changes"
+            );
+            assert_eq!(saved.vault_open, "current");
+            cx.global_mut::<Store>().saved.vault_open = "future-value".into();
+            assert_eq!(vault_open(cx), "ask");
+        });
+    }
+
+    #[gpui::test]
+    fn stale_writer_cannot_undo_a_newer_snapshot_and_other_vaults_are_merged(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let first = fixture.path().join("one");
+        let second = fixture.path().join("two");
+        for root in [&first, &second] {
+            std::fs::create_dir(root).unwrap();
+        }
+        let directory = fixture.path().join("state");
+        cx.update(|cx| {
+            install(&directory, cx);
+            set_toolbar_labels(true, cx);
+            set_tree_note_titles(true, cx);
+            record(&first, Layout::default(), true, cx);
+            let stale = job(cx).unwrap();
+            let closed = Layout {
+                panels: Default::default(),
+                ..Default::default()
+            };
+            record(&first, closed.clone(), true, cx);
+            let current = job(cx).unwrap();
+            current.run().unwrap();
+            mark_saved(current.generation, cx);
+            stale.run().unwrap();
+            assert_eq!(read(&current.path).unwrap().vaults[&first], closed);
+            // Simulate an independent process that started before the first write.
+            let independent = WriteJob {
+                changed: BTreeSet::from([second.clone()]),
+                saved: Saved {
+                    vaults: BTreeMap::from([(second.clone(), Layout::default())]),
+                    font_size: 22.,
+                    typed_views: okilum_core::typed_view::Preferences {
+                        mappings: BTreeMap::from([
+                            ("Project".into(), "tasks".into()),
+                            ("Future".into(), "optional-view".into()),
+                        ]),
+                        tasks: okilum_core::typed_view::layout::Defaults {
+                            density: okilum_core::typed_view::layout::Density::Comfortable,
+                            grouping: okilum_core::typed_view::layout::Grouping::Note,
+                        },
+                    },
+                    ..Default::default()
+                },
+                serial: Arc::new(AtomicU64::new(1)),
+                generation: 1,
+                appearance_changed: false,
+                theme_changed: false,
+                font_changed: true,
+                font_families_changed: [false; 2],
+                zoom_changed: false,
+                ui_zoom_changed: false,
+                ui_zoom_step_changed: false,
+                width_changed: false,
+                find_changed: false,
+                typed_views_changed: true,
+                toolbar_labels_changed: false,
+                tree_note_titles_changed: false,
+                tree_auto_reveal_changed: false,
+                note_open_mode_changed: false,
+                code_soft_wrap_changed: false,
+                open_in_editor_changed: false,
+                writing_modes_changed: false,
+                vault_open_changed: false,
+                settings_section_changed: false,
+                auto_pair_changed: false,
+                close_code_fences_changed: false,
+                emoji_completion_changed: false,
+                paste_ask_changed: false,
+                upload_pasted_changed: false,
+                image_import_changed: false,
+                code_views_changed: BTreeSet::new(),
+                log_editor_changed: false,
+                source_maps_changed: Default::default(),
+                splits_changed: Default::default(),
+                log_queries_changed: Default::default(),
+                log_columns_changed: Default::default(),
+                log_saved_changed: Default::default(),
+                log_regex_changed: Default::default(),
+                colors_changed: Default::default(),
+                trust_changed: Default::default(),
+                delimited_changed: Default::default(),
+                frames_changed: Default::default(),
+                last_changed: false,
+                last_frame_changed: false,
+                path: current.path.clone(),
+            };
+            set_find_case_sensitive(true, cx);
+            flush(cx);
+            independent.run().unwrap();
+            let merged = read(&current.path).unwrap();
+            assert!(
+                merged.toolbar_labels,
+                "an unrelated process must not overwrite toolbar preferences"
+            );
+            assert_eq!(merged.vaults[&first], closed);
+            assert!(merged.vaults.contains_key(&second));
+            assert!(
+                merged.find_case_sensitive,
+                "view preferences preserve newer search settings"
+            );
+            set_find_case_sensitive(false, cx);
+            set_appearance(Some(ThemeMode::Dark), cx);
+            flush(cx);
+            let merged = read(&current.path).unwrap();
+            assert_eq!(merged.appearance, "dark");
+            assert!(
+                merged.tree_note_titles,
+                "an unrelated writer preserves the tree-label preference"
+            );
+            assert!(
+                !merged.find_case_sensitive,
+                "positive control: the search setting was saved"
+            );
+            assert_eq!(
+                merged.typed_views, independent.saved.typed_views,
+                "unrelated writes preserve mappings, defaults and unknown view IDs"
+            );
+            assert_eq!(
+                okilum_core::typed_view::select(
+                    "---\ntype: Project\n---\n",
+                    &merged.typed_views.mappings
+                ),
+                okilum_core::typed_view::Selection::Native(okilum_core::typed_view::TASKS)
+            );
+            assert_eq!(
+                okilum_core::typed_view::select(
+                    "---\ntype: project\n---\n",
+                    &merged.typed_views.mappings
+                ),
+                okilum_core::typed_view::Selection::Markdown
+            );
+            assert!(matches!(
+                okilum_core::typed_view::select(
+                    "---\ntype: Future\n---\n",
+                    &merged.typed_views.mappings
+                ),
+                okilum_core::typed_view::Selection::Fallback(_)
+            ));
+
+            assert_eq!(
+                merged.font_size, 22.,
+                "unrelated global edits merge per field"
+            );
+        });
+    }
+
+    /// Full note width is one app-wide toggle kept across relaunch; the note
+    /// column follows it, and the normal-width slider never stores the
+    /// zoomed font size as the base size.
+    #[gpui::test]
+    fn full_note_width_survives_relaunch_and_widens_the_note_column(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let directory = fixture.path().join("state");
+        cx.update(|cx| {
+            install(&directory, cx);
+            assert!(!full_note_width(cx), "normal width is the default");
+            assert_eq!(note_column_width(cx), reader_layout::READER_MAX_WIDTH);
+            set_text_zoom(1.5, cx);
+            let base = base_font_size(cx);
+            set_reading_width(900., cx);
+            assert_eq!(base_font_size(cx), base, "slider keeps the unzoomed font");
+            assert_eq!(unzoomed_note_column_width(cx), 900.);
+            // The note column scales with the note text zoom (#1652).
+            assert_eq!(note_column_width(cx), 900. * text_zoom(cx));
+            set_reading_width(100., cx);
+            assert_eq!(reading_width(cx), 560., "normal width is at least 560 px");
+            set_reading_width(5000., cx);
+            assert_eq!(reading_width(cx), 1200., "normal width is at most 1200 px");
+            set_reading_width(900., cx);
+            set_full_note_width(true, cx);
+            assert!(full_note_width(cx));
+            assert!(note_column_width(cx) > 10_000., "full width spans the pane");
+            flush(cx);
+            install(&directory, cx);
+            assert!(full_note_width(cx), "full note width survives relaunch");
+            assert_eq!(reading_width(cx), 900.);
+            assert_eq!(base_font_size(cx), base);
+            set_full_note_width(false, cx);
+            assert_eq!(unzoomed_note_column_width(cx), 900.);
+            flush(cx);
+            install(&directory, cx);
+            assert!(!full_note_width(cx), "turning it off is remembered too");
+        });
+    }
+
+    #[gpui::test]
+    fn removed_vault_does_not_block_other_preferences(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("removed");
+        let directory = fixture.path().join("state");
+        std::fs::create_dir(&root).unwrap();
+        cx.update(|cx| {
+            install(&directory, cx);
+            record(&root, Layout::default(), true, cx);
+            flush(cx);
+            std::fs::remove_dir(&root).unwrap();
+            set_reading(20., 960., cx);
+            flush(cx);
+            assert_eq!(
+                read(&directory.join("reader-ui.json")).unwrap().font_size,
+                20.
+            );
+            assert!(!outside_vault(&root, &root.join("reader-ui.json")));
+        });
+    }
+
+    #[gpui::test]
+    fn state_inside_vault_is_never_created_even_by_early_window_geometry(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().canonicalize().unwrap();
+        let directory = root.join("state");
+        cx.update(|cx| {
+            install(&directory, cx);
+            guard_window_root(&format!("reader:{}", root.display()), cx);
+            record(&root, Layout::default(), true, cx);
+            flush(cx);
+        });
+        assert!(!directory.exists());
+    }
+}
+
+#[cfg(test)]
+mod update_restart_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+    #[cfg(test)]
+    #[gpui::test]
+    fn update_restart_requires_successful_state_persistence(cx: &mut gpui::TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            install(temp.path(), cx);
+            record(Path::new("/fixture"), Layout::default(), true, cx);
+            prepare_for_restart(cx).unwrap();
+            let path = temp.path().join("reader-ui.json");
+            assert!(path.is_file());
+            std::fs::remove_file(&path).unwrap();
+            std::fs::create_dir(&path).unwrap();
+            let layout = Layout {
+                note: "Changed.md".into(),
+                ..Default::default()
+            };
+            record(Path::new("/fixture"), layout, true, cx);
+            assert!(
+                prepare_for_restart(cx).is_err(),
+                "Do not quit when Reader state cannot be committed"
+            );
+        });
+    }
+}
+
+pub fn typed_views(cx: &App) -> okilum_core::typed_view::Preferences {
+    cx.try_global::<Store>()
+        .map(|store| store.saved.typed_views.clone())
+        .unwrap_or_default()
+}
+
+/// Unknown/future preference values safely ask rather than replacing a vault.
+pub fn vault_open(cx: &App) -> &'static str {
+    match cx
+        .try_global::<Store>()
+        .map(|s| s.saved.vault_open.as_str())
+    {
+        Some("current") => "current",
+        Some("new") => "new",
+        _ => "ask",
+    }
+}
+pub fn set_vault_open(value: &str, cx: &mut App) {
+    if !installed(cx) || vault_open(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.vault_open = value.into();
+    state.vault_open_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
+fn migrated_settings_section(value: &str) -> &str {
+    match value {
+        "vault" => "vaults",
+        _ => value,
+    }
+}
+
+/// Last explicitly visited Settings pane, shared by every window in this profile.
+pub fn settings_section(cx: &App) -> Option<&str> {
+    cx.try_global::<Store>()
+        .map(|state| state.saved.settings_section.as_str())
+}
+
+pub fn set_settings_section(value: &str, cx: &mut App) {
+    let value = migrated_settings_section(value);
+    if !installed(cx) || settings_section(cx) == Some(value) {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.settings_section = value.into();
+    state.settings_section_changed = true;
+    schedule(cx);
+}

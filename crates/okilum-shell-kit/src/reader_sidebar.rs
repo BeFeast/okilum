@@ -297,7 +297,7 @@ pub fn compute_inbox(
     let mut items = Vec::new();
     for note in &vault.notes {
         // Service folders are excluded by inventory; tree visibility is unrelated.
-        if crate::reader_tree::archived(&note.path) {
+        if okilum_core::projects::archived(&note.path) {
             continue;
         }
         let created = match created_at(&note.path) {
@@ -347,7 +347,7 @@ pub fn birth_time(root: &Path, rel: &str) -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
-pub use okilum_shell_kit::clock::now;
+pub use crate::clock::now;
 
 /// Compact relative age: "now", "12m", "3h", "yesterday", "4d", "3w".
 /// Used by the title-bar Recent menu (#1517).
