@@ -1,0 +1,2 @@
+# GPUI action names registered by the okilum binary before the crate split
+# (#3232). Checked by src/action_inventory_tests.rs; one name per line.

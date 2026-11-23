@@ -117,7 +117,8 @@ if has base; then
         python3 docs/help/sync/check.py &&
         python3 docs/help/board/check.py &&
         python3 docs/help/projects/check.py &&
-        python3 scripts/rebrand/check_brand.py
+        python3 scripts/rebrand/check_brand.py &&
+        python3 scripts/ci/shell-crate-budget.py
     '
 fi
 if has desktop; then
