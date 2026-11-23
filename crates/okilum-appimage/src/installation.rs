@@ -140,12 +140,16 @@ pub fn install(home: &Path, source: &Path, build: u64) -> Result<PathBuf> {
         .write(true)
         .open(image.with_file_name(".install-lock"))?;
     lock.lock()?;
-    if command.symlink_metadata().is_ok() {
-        ensure!(
-            fs::read_link(&command).is_ok_and(|p| p == image),
-            "Refusing to replace unowned okilum command"
-        );
-    }
+    // A foreign command (a hand-written wrapper, another package) is never
+    // replaced. It blocks installing other bytes, but not an ordinary launch
+    // of the managed image itself: that launch still records its owner marker
+    // and build, or a delivered or self-updated build stays unknown (#3248).
+    let foreign_command =
+        command.symlink_metadata().is_ok() && !fs::read_link(&command).is_ok_and(|p| p == image);
+    ensure!(
+        !foreign_command || source == image,
+        "Refusing to replace unowned okilum command"
+    );
     let legacy = home.join("Applications/Okilum.AppImage");
     // A new download can retire a previous install too. Do not infer ownership
     // from the filename alone: require our old launcher or the running image.
@@ -505,6 +509,29 @@ mod tests {
         fs::set_permissions(&source, fs::Permissions::from_mode(0o755)).unwrap();
         assert!(install(home.path(), &source, 7538).is_err());
         assert!(!image.exists());
+    }
+
+    #[test]
+    fn managed_launch_records_its_build_beside_a_foreign_command() {
+        // #3248: muninn's ~/.local/bin/okilum was a shell wrapper, so every
+        // launch of the managed image refused before writing its build record.
+        let home = tempfile::tempdir().unwrap();
+        let (image, command) = paths(home.path()).unwrap();
+        executable(&image, b"7963");
+        let wrapper = b"#!/bin/sh\nexec \"$HOME/.local/share/okilum/Okilum.AppImage\" \"$@\"\n";
+        executable(&command, wrapper);
+        assert_eq!(install(home.path(), &image, 7963).unwrap(), image);
+        assert_eq!(recorded_build(&image), Some(7963));
+        assert!(recorded_install(home.path(), &image));
+        assert_eq!(fs::read(&command).unwrap(), wrapper);
+        assert_eq!(fs::read(&image).unwrap(), b"7963");
+        // Control: other bytes are still never installed beside that command.
+        let download = home.path().join("download");
+        executable(&download, b"7999");
+        assert!(install(home.path(), &download, 7999).is_err());
+        assert_eq!(fs::read(&image).unwrap(), b"7963");
+        assert_eq!(recorded_build(&image), Some(7963));
+        assert_eq!(fs::read(&command).unwrap(), wrapper);
     }
 
     fn executable(path: &Path, bytes: &[u8]) {

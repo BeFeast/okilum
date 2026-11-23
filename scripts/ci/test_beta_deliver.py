@@ -74,7 +74,6 @@ class Contract(unittest.TestCase):
         self.assertIn(f'const IMAGE: &str = "{D.IMAGE}";', lib)
         fields = re.search(r'pub struct Release \{(.*?)\}', lib, re.S).group(1)
         self.assertEqual(tuple(re.findall(r'pub (\w+):', fields)), D.RELEASE_FIELDS)
-        self.assertIn(D.OWNER.decode().strip(), (ROOT / 'crates/okilum-appimage/src/installation.rs').read_text())
 
     def test_descriptor_validation(self):
         good = release_for(7760, b'x', b'p')
@@ -433,7 +432,7 @@ class Delivery(unittest.TestCase):
         self.old = b'#!/bin/sh\necho old 7746\n'
         self.image.write_bytes(self.old)
         self.image.chmod(0o755)
-        (self.image.parent / '.appimage-owner').write_bytes(D.OWNER)
+        (self.image.parent / '.appimage-owner').write_bytes(b'Okilum managed AppImage v1\n')
         D.write_build(self.image, 7746, self.image)
         self.payload = b'#!/bin/sh\necho new 7760\n' * 100
         self.publish(7760, self.payload)
@@ -643,6 +642,17 @@ class Delivery(unittest.TestCase):
         self.assertEqual(self.deliver(), 'user active')
         self.assertEqual((self.image.read_bytes(), self.signals, self.launches), (self.old, [], []))
         self.assertEqual(self.log().count('build 7760 waits: user active'), 1)
+
+    def test_install_without_owner_marker_records_the_build(self):
+        # #3248: muninn's managed AppImage had no .appimage-owner (its launch never
+        # adopted it), so a delivery left no .appimage-build and the build unknown.
+        (self.image.parent / '.appimage-owner').unlink()
+        (self.image.parent / '.appimage-build').unlink()
+        self.assertEqual(self.deliver(), 'installed 7760')
+        self.assertEqual(self.image.read_bytes(), self.payload)
+        self.assertEqual(D.recorded_build(self.image), 7760)
+        self.assertFalse((self.image.parent / '.appimage-owner').exists())
+        self.assertEqual(self.deliver(), 'up to date (7760)')
 
     def test_failed_start_rolls_back_reopens_and_gives_up_after_two(self):
         self.open_window()

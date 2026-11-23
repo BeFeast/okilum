@@ -55,7 +55,12 @@ The managed install `~/.local/share/okilum/Okilum.AppImage` records its build in
 update's startup confirmation). An AppImage launched from another path replaces
 the managed copy only when it is strictly newer or the installed build is
 unknown; otherwise it just execs the managed copy. A launcher pinned to an old
-download therefore can no longer undo self-updates (#2455).
+download therefore can no longer undo self-updates (#2455). A foreign
+`~/.local/bin/okilum` (a hand-written wrapper, another package) is never
+replaced and blocks installing bytes from another path, but a launch of the
+managed copy itself still writes the owner marker and build record (#3248).
+`scripts/dev/okilum-beta-deliver.py` writes the build record for the verified
+build it installs, with or without the owner marker.
 
 The updater downloads `https://updates.befeast.com/okilum/linux/{beta,stable}/latest.json`
 and its detached signature. The public key is the existing Linux authority
