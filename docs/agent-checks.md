@@ -95,7 +95,8 @@ macOS jobs are unchanged. Landing is unchanged: a reviewed PR with a green
   It pushes to `agent-checks-fast/<branch>`, where only the `pre-merge` job
   runs: pinned vendor/comrak verification, `cargo fmt --check`, the helper,
   CI, releases, updater, Syncthing and Sprint Python suites, Sync Help and
-  brand, `cargo clippy --workspace --all-targets --locked -- -D warnings`
+  brand, the okilum-shell size budget (`scripts/ci/shell-crate-budget.py`,
+  epic #3241; see `docs/shell-crate-split.md`), `cargo clippy --workspace --all-targets --locked -- -D warnings`
   with its own warm cache, and `cargo check --release` of the `okilum` and
   `okilum-sync-launch` binaries the AppImage builds. Clippy over all targets
   turns on dev-dependency features such as gpui `test-support`, so a call to a
