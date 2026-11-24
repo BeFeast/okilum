@@ -43,7 +43,7 @@ impl Identity {
             } else {
                 None
             },
-            size: meta.is_file().then(|| meta.len()),
+            size: meta.is_file().then_some(meta.len()),
             modified: meta.modified().ok(),
             hash: None,
         })
