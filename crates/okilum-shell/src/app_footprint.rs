@@ -2189,7 +2189,15 @@ mod tests {
         {
             let module = start + found;
             out.push_str(&text[start..module]);
-            let Some(open) = text[module..].find('{').map(|i| module + i) else {
+            // `#[cfg(test)] mod name;` loads a file and has no body here:
+            // skip the declaration alone, not code up to the next `{`.
+            let declaration = text[module..].find(';').map(|i| module + i);
+            let open = text[module..].find('{').map(|i| module + i);
+            if let Some(end) = declaration.filter(|&end| open.is_none_or(|open| end < open)) {
+                start = end + 1;
+                continue;
+            }
+            let Some(open) = open else {
                 return out;
             };
             let (mut depth, mut at) = (0usize, open);
@@ -2244,6 +2252,17 @@ mod tests {
         // An unterminated module at the end must not slice out of bounds.
         let open = "x\n#[cfg(test)]\nmod t { r#\"";
         assert_eq!(strip_test_modules(open), "x\n");
+    }
+
+    #[test]
+    fn strip_test_modules_skips_only_an_out_of_line_test_module_declaration() {
+        // main.rs declares `#[cfg(test)] mod x_tests;` (file module) before
+        // production code; that code must still be scanned.
+        let text = "#[cfg(test)]\nmod conformance_tests;\nmod a;\nfn f() { dirs::x }\n#[cfg(test)]\nmod t {\n fn g() { dirs::y }\n}\nfn h() { dirs::z }\n";
+        let production = strip_test_modules(text);
+        assert_eq!(production.matches("dirs::").count(), 2, "{production}");
+        assert!(!production.contains("conformance_tests"), "{production}");
+        assert!(production.contains("dirs::x") && production.contains("dirs::z"));
     }
 
     #[test]
