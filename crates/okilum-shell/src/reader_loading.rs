@@ -1705,7 +1705,14 @@ impl Reader {
             let source = document.source.clone();
             cx.background_executor().spawn(async move {
                 let started = std::time::Instant::now();
-                let outline = crate::note_outline(&source);
+                // Contain parser panics inside the worker so the UI can still
+                // publish the document. An empty outline also prevents a retry
+                // of the same failing scan on the UI thread.
+                let outline = std::panic::catch_unwind(|| crate::note_outline(&source))
+                    .unwrap_or_else(|_| {
+                        diagnostic_error!("Note outline preparation panicked");
+                        Vec::new()
+                    });
                 Some((outline, started.elapsed().as_secs_f64() * 1000.))
             })
         });

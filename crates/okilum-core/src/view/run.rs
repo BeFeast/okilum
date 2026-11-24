@@ -701,9 +701,7 @@ impl MarkdownSource {
                 ))
             })
             .collect();
-        let lines = std::iter::once(0)
-            .chain(text.match_indices('\n').map(|(offset, _)| offset + 1))
-            .collect();
+        let lines = crate::render::markdown_line_offsets(&text);
         Self {
             text,
             lines,

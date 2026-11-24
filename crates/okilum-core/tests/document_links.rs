@@ -328,6 +328,21 @@ fn heading_inventory_retains_setext_and_refuses_duplicates_missing_and_nested() 
     assert!(links::heading("`# Same`\n\n```\n# Same\n```\n", "same").is_err());
 }
 
+#[test]
+fn mixed_line_endings_keep_heading_and_link_offsets_in_authored_bytes() {
+    let source = "# First heading\r\n\rFirst paragraph 😀.\n\r## Recovery heading\r\r[Jump](#recovery-heading)\r";
+    let heading = links::heading(source, "Recovery heading").unwrap();
+    assert_eq!(heading.offset, source.find("## Recovery heading").unwrap());
+    assert_eq!(heading.block, 2);
+    let parsed = links::parse(source);
+    assert_eq!(parsed.len(), 1);
+    assert!(parsed[0].exact_range);
+    assert_eq!(
+        &source[parsed[0].range.clone()],
+        "[Jump](#recovery-heading)"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn dangling_root_candidate_blocks_suffix_fallback() {

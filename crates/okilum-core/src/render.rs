@@ -103,7 +103,7 @@ fn preprocess_with_files(text: &str, is_file: impl Fn(&str) -> bool) -> String {
 /// Rewrite wikilink + local image URLs in the AST in place.
 pub fn rewrite_links<'a>(root: &'a AstNode<'a>, vault: &Vault, note_rel: &str, source: &str) {
     let resolver = crate::document_links::IndexedResolver::new(vault);
-    let lines = html_line_offsets(source);
+    let lines = markdown_line_offsets(source);
     for node in root.descendants() {
         let mut data = node.data.borrow_mut();
         let pos = data.sourcepos;
@@ -127,9 +127,18 @@ pub fn rewrite_links<'a>(root: &'a AstNode<'a>, vault: &Vault, note_rel: &str, s
     }
 }
 
-pub(crate) fn html_line_offsets(source: &str) -> Vec<usize> {
+/// Comrak counts LF, CRLF and bare CR as line endings. Keep offsets in the
+/// original bytes so source ranges still address the authored note.
+pub(crate) fn markdown_line_offsets(source: &str) -> Vec<usize> {
+    let bytes = source.as_bytes();
     std::iter::once(0)
-        .chain(source.match_indices('\n').map(|(i, _)| i + 1))
+        .chain(
+            source
+                .match_indices(['\r', '\n'])
+                .filter_map(|(i, ending)| {
+                    (ending == "\n" || bytes.get(i + 1) != Some(&b'\n')).then_some(i + 1)
+                }),
+        )
         .collect()
 }
 
@@ -137,8 +146,12 @@ pub(crate) fn html_source_range(
     lines: &[usize],
     pos: comrak::nodes::Sourcepos,
 ) -> Option<std::ops::Range<usize>> {
-    let start = lines.get(pos.start.line.checked_sub(1)?)? + pos.start.column.checked_sub(1)?;
-    let end = lines.get(pos.end.line.checked_sub(1)?)? + pos.end.column;
+    let start = lines
+        .get(pos.start.line.checked_sub(1)?)?
+        .checked_add(pos.start.column.checked_sub(1)?)?;
+    let end = lines
+        .get(pos.end.line.checked_sub(1)?)?
+        .checked_add(pos.end.column)?;
     Some(start..end)
 }
 
@@ -480,9 +493,7 @@ pub fn rewrite_source_images_with(
         let _phase = crate::open_diagnostics::phase("parse");
         parse_document(&arena, text, &comrak_options())
     };
-    let lines: Vec<_> = std::iter::once(0)
-        .chain(text.match_indices('\n').map(|(at, _)| at + 1))
-        .collect();
+    let lines = markdown_line_offsets(text);
     let mut replacements = Vec::new();
     for node in root.descendants() {
         // Image labels are alt text. Avoid overlapping replacement ranges for
@@ -498,14 +509,9 @@ pub fn rewrite_source_images_with(
         let NodeValue::Image(image) = &data.value else {
             continue;
         };
-        let pos = data.sourcepos;
-        let Some(start) = lines.get(pos.start.line.saturating_sub(1)) else {
+        let Some(range) = html_source_range(&lines, data.sourcepos) else {
             continue;
         };
-        let Some(end) = lines.get(pos.end.line.saturating_sub(1)) else {
-            continue;
-        };
-        let range = start + pos.start.column.saturating_sub(1)..end + pos.end.column;
         if text.get(range.clone()).is_none() {
             continue;
         }
@@ -519,10 +525,10 @@ pub fn rewrite_source_images_with(
             .and_then(|(first, last)| {
                 let a = first.data.borrow().sourcepos.start;
                 let b = last.data.borrow().sourcepos.end;
-                text.get(
-                    (lines.get(a.line.checked_sub(1)?)? + a.column.checked_sub(1)?)
-                        ..(lines.get(b.line.checked_sub(1)?)? + b.column),
-                )
+                text.get(html_source_range(
+                    &lines,
+                    comrak::nodes::Sourcepos { start: a, end: b },
+                )?)
             })
             .unwrap_or("");
         let title = if image.title.is_empty() {

@@ -204,7 +204,7 @@ impl Fragment<'_, '_> {
             Self::Vault { profile, .. } => render::html_link_source(&source, profile.vault, path),
             Self::Snapshot => source,
         };
-        let lines = render::html_line_offsets(&source);
+        let lines = render::markdown_line_offsets(&source);
         let mut masked = document_links::wiki_parse_source(&source).into_bytes();
         let mut embed_starts = HashSet::new();
         for range in crate::prose::prose_spans(&source) {

@@ -1,0 +1,7 @@
+# Open authored mixed line endings and verify the note and heading render.
+note: "# First heading\r\n\rFirst paragraph.\n\r## Recovery heading\r\rThe Reader survives mixed line endings.\r"
+region: [300, 90, 800, 540]
+ready_text: The Reader survives mixed line endings
+steps:
+  - id: recovery-heading
+    text: Recovery heading

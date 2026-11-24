@@ -54,7 +54,7 @@ pub(crate) fn parse_tree<'a>(
     prefix_lines: usize,
     root: &'a comrak::nodes::AstNode<'a>,
 ) -> Vec<Task> {
-    let lines: Vec<_> = body.lines().collect();
+    let lines = crate::render::markdown_line_offsets(body);
     let comments = crate::obsidian::comment_spans(body);
     let mut tasks = Vec::new();
     for (block, top) in root.children().enumerate() {
@@ -64,16 +64,18 @@ pub(crate) fn parse_tree<'a>(
                 continue;
             };
             let body_line = data.sourcepos.start.line;
-            let Some(&raw) = lines.get(body_line.saturating_sub(1)) else {
+            let Some(&line_start) = body_line.checked_sub(1).and_then(|line| lines.get(line))
+            else {
                 continue;
             };
+            let line_end = lines.get(body_line).copied().unwrap_or(body.len());
+            let raw = body[line_start..line_end].trim_end_matches(['\r', '\n']);
             // The AST proves this is a checkbox, excluding fenced examples and YAML.
             let Some((before_close, text)) = raw.split_once(']') else {
                 continue;
             };
             // Hide tasks whose checkbox falls inside an Obsidian `%%…%%` comment,
             // matching `obsidian::before_links` stripping comments when rendering.
-            let line_start = raw.as_ptr() as usize - body.as_ptr() as usize;
             let checkbox_start = line_start + before_close.len().saturating_sub(2);
             let checkbox_end = line_start + before_close.len() + 1;
             if comments

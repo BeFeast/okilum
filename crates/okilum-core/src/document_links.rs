@@ -188,9 +188,7 @@ pub fn parse(source: &str) -> Vec<ParsedLink> {
         let _phase = crate::open_diagnostics::phase("parse");
         parse_document(&arena, &parse_source, &render::comrak_options())
     };
-    let lines: Vec<_> = std::iter::once(0)
-        .chain(source.match_indices('\n').map(|(i, _)| i + 1))
-        .collect();
+    let lines = render::markdown_line_offsets(source);
     root.descendants()
         .filter_map(|node| {
             let data = node.data.borrow();
@@ -264,8 +262,10 @@ pub fn parse(source: &str) -> Vec<ParsedLink> {
                 let last = node.last_child()?;
                 let a = first.data.borrow().sourcepos.start;
                 let b = last.data.borrow().sourcepos.end;
-                let a = lines.get(a.line.checked_sub(1)?)? + a.column.checked_sub(1)?;
-                let b = lines.get(b.line.checked_sub(1)?)? + b.column;
+                let a = lines
+                    .get(a.line.checked_sub(1)?)?
+                    .checked_add(a.column.checked_sub(1)?)?;
+                let b = lines.get(b.line.checked_sub(1)?)?.checked_add(b.column)?;
                 source.get(a..b)?.to_owned()
             } else {
                 target.clone()
@@ -308,7 +308,10 @@ fn checked_link_end<'a>(
         .get(block_pos.end.line.checked_sub(1)?)?
         .checked_add(block_pos.end.column)?
         .min(parse_source.len());
-    let first_line = parse_source.get(block_start..)?.lines().next()?;
+    let first_line = parse_source
+        .get(block_start..)?
+        .split(['\r', '\n'])
+        .next()?;
     if first_line.starts_with('[') {
         // A first line that is nothing on its own is a reference definition
         // Comrak took out of this paragraph: no range in it can be trusted.
@@ -645,14 +648,13 @@ impl HeadingInventory {
             let _phase = crate::open_diagnostics::phase("parse");
             parse_document(&arena, source, &render::comrak_options())
         };
-        let offsets: Vec<_> = std::iter::once(0)
-            .chain(source.match_indices('\n').map(|(i, _)| i + 1))
-            .collect();
+        let offsets = render::markdown_line_offsets(source);
+        let line_offset = |line: usize| offsets.get(line.checked_sub(1)?).copied();
         let mut entries = Vec::new();
         let mut blocks = Vec::new();
-        let mut previous_offset = 0;
+        let mut previous_offset = None;
         for (block, top) in root.children().enumerate() {
-            let top_offset = offsets[top.data.borrow().sourcepos.start.line.saturating_sub(1)];
+            let top_offset = line_offset(top.data.borrow().sourcepos.start.line);
             for node in top.descendants() {
                 let data = node.data.borrow();
                 let marker = match &data.value {
@@ -663,11 +665,14 @@ impl HeadingInventory {
                 if let Some(id) = marker {
                     // An ID alone on its line names the block before it.
                     let alone = std::ptr::eq(node, top) && block > 0;
+                    let Some(offset) = (if alone { previous_offset } else { top_offset }) else {
+                        continue;
+                    };
                     blocks.push(BlockEntry {
                         id: id.to_owned(),
                         target: HeadingTarget {
                             block: if alone { block - 1 } else { block },
-                            offset: if alone { previous_offset } else { top_offset },
+                            offset,
                             setext: false,
                         },
                     });
@@ -676,12 +681,15 @@ impl HeadingInventory {
                 let NodeValue::Heading(h) = &data.value else {
                     continue;
                 };
+                let Some(offset) = line_offset(data.sourcepos.start.line) else {
+                    continue;
+                };
                 entries.push(HeadingEntry {
                     text: heading_text(node),
                     level: h.level,
                     target: HeadingTarget {
                         block,
-                        offset: offsets[data.sourcepos.start.line.saturating_sub(1)],
+                        offset,
                         setext: h.setext,
                     },
                     supported_container: std::ptr::eq(node, top),

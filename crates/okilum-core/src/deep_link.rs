@@ -640,9 +640,7 @@ pub fn block_starts(source: &str) -> Vec<usize> {
     use comrak::{parse_document, Arena};
     let body = crate::render::without_frontmatter(source);
     let prefix = source.len() - body.len();
-    let lines: Vec<usize> = std::iter::once(0)
-        .chain(body.match_indices('\n').map(|(at, _)| at + 1))
-        .collect();
+    let lines = crate::render::markdown_line_offsets(body);
     let options = crate::render::comrak_options();
     let arena = Arena::new();
     let root = parse_document(&arena, body, &options);

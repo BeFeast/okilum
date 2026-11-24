@@ -20,9 +20,7 @@ pub fn references(source: &str, vault: &Vault, from: &str) -> Vec<ImageReference
         return Vec::new();
     }
     let resolver = crate::document_links::IndexedResolver::new(vault);
-    let lines: Vec<_> = std::iter::once(0)
-        .chain(source.match_indices('\n').map(|(at, _)| at + 1))
-        .collect();
+    let lines = markdown_line_offsets(source);
     let arena = Arena::new();
     let root = parse_document(&arena, source, &comrak_options());
     let mut images = Vec::new();
@@ -38,14 +36,9 @@ pub fn references(source: &str, vault: &Vault, from: &str) -> Vec<ImageReference
         {
             continue;
         }
-        let pos = data.sourcepos;
-        let Some(start) = lines.get(pos.start.line.saturating_sub(1)) else {
+        let Some(range) = html_source_range(&lines, data.sourcepos) else {
             continue;
         };
-        let Some(end) = lines.get(pos.end.line.saturating_sub(1)) else {
-            continue;
-        };
-        let range = start + pos.start.column.saturating_sub(1)..end + pos.end.column;
         if source
             .get(range.clone())
             .is_some_and(|value| value.starts_with("!["))

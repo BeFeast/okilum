@@ -274,13 +274,6 @@ fn keys(list: &Option<KeyList>) -> &[String] {
     }
 }
 
-fn text_lines(source: &str) -> Vec<usize> {
-    std::iter::once(0)
-        .chain(source.match_indices('\n').map(|(offset, _)| offset + 1))
-        .chain(std::iter::once(source.len()))
-        .collect()
-}
-
 pub(super) fn revision(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
@@ -314,7 +307,7 @@ pub fn parse(path: &str, source: &str) -> Result<ViewDoc, Vec<Finding>> {
         .bytes()
         .filter(|b| *b == b'\n')
         .count();
-    let lines = text_lines(body);
+    let lines = crate::render::markdown_line_offsets(body);
     let arena = Arena::new();
     let root = parse_document(&arena, body, &crate::render::comrak_options());
     let mut blocks = Vec::new();
@@ -325,6 +318,14 @@ pub fn parse(path: &str, source: &str) -> Result<ViewDoc, Vec<Finding>> {
     for node in root.children() {
         let data = node.data.borrow();
         let start = data.sourcepos.start.line;
+        let Some(&start_at) = start.checked_sub(1).and_then(|line| lines.get(line)) else {
+            heading = None;
+            continue;
+        };
+        let end_at = lines
+            .get(data.sourcepos.end.line)
+            .copied()
+            .unwrap_or(body.len());
         match &data.value {
             NodeValue::Heading(_) => {
                 let mut title = String::new();
@@ -336,17 +337,25 @@ pub fn parse(path: &str, source: &str) -> Result<ViewDoc, Vec<Finding>> {
                         _ => {}
                     }
                 }
-                let end = data.sourcepos.end.line.min(lines.len() - 1);
-                let markdown = &body[lines[start - 1]..lines[end]];
+                let Some(markdown) = body.get(start_at..end_at) else {
+                    heading = None;
+                    continue;
+                };
                 if markdown.contains('$') {
                     headings.push((prefix + start, title.clone(), markdown.to_owned()));
                 }
-                heading = Some((start, title));
+                heading = Some((start_at, title));
             }
             NodeValue::CodeBlock(code) if code.fenced && code.info.trim() == "view" => {
-                let (start_line, title) = heading.take().unwrap_or((start, String::new()));
-                push_prose(&mut parts, &body[prose_start..lines[start_line - 1]]);
-                prose_start = lines[data.sourcepos.end.line.min(lines.len() - 1)];
+                let (heading_at, title) = heading.take().unwrap_or((start_at, String::new()));
+                let Some(prose) = body.get(prose_start..heading_at) else {
+                    continue;
+                };
+                let Some(heading) = body.get(heading_at..start_at) else {
+                    continue;
+                };
+                push_prose(&mut parts, prose);
+                prose_start = end_at;
                 let line = prefix + start;
                 let block = deserialize::<Block>(path, &code.literal, line);
                 let id = block
@@ -357,7 +366,7 @@ pub fn parse(path: &str, source: &str) -> Result<ViewDoc, Vec<Finding>> {
                     .unwrap_or_else(|| format!("s{}", blocks.len() + 1));
                 parts.push(Part::Section {
                     index: blocks.len(),
-                    heading: body[lines[start_line - 1]..lines[start - 1]].to_owned(),
+                    heading: heading.to_owned(),
                 });
                 blocks.push(SectionDoc {
                     id,
