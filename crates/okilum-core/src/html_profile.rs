@@ -1,4 +1,4 @@
-//! Versioned, script-free note HTML for native clients and publishing.
+//! Versioned, script-free note and view HTML for native clients and publishing.
 //!
 //! Paths in `okilum-note:` and `okilum-asset:` are vault-relative and encoded
 //! with [`document_links::encode`]. Note fragments name HTML element IDs. A
@@ -14,6 +14,9 @@ use comrak::{Arena, Options};
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Write};
 use std::path::{Component, Path};
+
+mod snapshot;
+pub use snapshot::{render_view_snapshot, SnapshotJson};
 
 pub const VERSION: u8 = 1;
 
@@ -33,13 +36,25 @@ pub fn render_note(vault: &Vault, path: &str) -> anyhow::Result<String> {
             ))),
         )]),
     };
-    let mut out = format!(
+    let mut out = start_document();
+    Fragment::Vault {
+        profile: &mut profile,
+        page: true,
+    }
+    .render(path, &raw, &mut out)?;
+    Ok(finish_document(out))
+}
+
+fn start_document() -> String {
+    format!(
         "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<meta name=\"html_profile\" content=\"{VERSION}\">\n<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src okilum-asset:; base-uri 'none'; form-action 'none'\">\n<style>\n{}</style>\n</head>\n<body>\n<main>\n",
         include_str!("html_profile.css")
-    );
-    profile.fragment(path, &raw, true, &mut out)?;
+    )
+}
+
+fn finish_document(mut out: String) -> String {
     out.push_str("</main>\n</body>\n</html>\n");
-    Ok(out)
+    out
 }
 
 fn read_note(vault: &Vault, root: &Path, path: &str) -> anyhow::Result<String> {
@@ -83,10 +98,50 @@ struct Metadata {
     embeds: HashMap<usize, String>,
 }
 
+#[derive(Clone)]
 enum Link {
     Href(String),
     Inert(&'static str),
     WikiImage { url: String, alt: String },
+}
+
+impl Link {
+    fn write_open(&self, out: &mut dyn Write, relaxed_autolinks: bool) -> fmt::Result {
+        match self {
+            Self::Href(url) => {
+                out.write_str("<a href=\"")?;
+                html::escape_href(out, url, relaxed_autolinks)?;
+                out.write_char('"')
+            }
+            Self::Inert(status) => write!(out, "<span data-link-status=\"{status}\""),
+            Self::WikiImage { .. } => unreachable!("wiki images have no closing tag"),
+        }
+    }
+
+    fn close_tag(&self) -> &'static str {
+        match self {
+            Self::Href(_) => "</a>",
+            _ => "</span>",
+        }
+    }
+}
+
+fn note_url(path: &str) -> String {
+    format!("okilum-note:{}", document_links::encode(path))
+}
+
+fn asset_link(path: &str) -> Link {
+    Link::Href(format!("okilum-asset:{}", document_links::encode(path)))
+}
+
+fn http_link(url: &str) -> Link {
+    if url.split_once(':').is_some_and(|(scheme, _)| {
+        scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http")
+    }) {
+        Link::Href(url.to_owned())
+    } else {
+        Link::Inert("unsupported")
+    }
 }
 
 fn key(node: &AstNode<'_>) -> usize {
@@ -120,12 +175,34 @@ fn options() -> Options<'static> {
     options
 }
 
-impl Profile<'_> {
-    fn fragment(&mut self, path: &str, raw: &str, page: bool, out: &mut String) -> fmt::Result {
-        let source = obsidian::strip_comments(render::without_frontmatter(raw));
+enum Fragment<'profile, 'vault> {
+    Vault {
+        profile: &'profile mut Profile<'vault>,
+        page: bool,
+    },
+    Snapshot,
+}
+
+impl Fragment<'_, '_> {
+    fn link(&mut self, target: &str, wiki: bool, from: &str) -> Link {
+        match self {
+            Self::Vault { profile, .. } => profile.link(target, wiki, from),
+            Self::Snapshot => snapshot::excerpt_link(target, wiki, from),
+        }
+    }
+
+    fn render(&mut self, path: &str, raw: &str, out: &mut String) -> fmt::Result {
+        let text = match self {
+            Self::Vault { .. } => render::without_frontmatter(raw),
+            Self::Snapshot => raw,
+        };
+        let source = obsidian::strip_comments(text);
         let source = obsidian::rewrite_block_ids(&source);
         let source = render::rewrite_highlights(&source);
-        let source = render::html_link_source(&source, self.vault, path);
+        let source = match self {
+            Self::Vault { profile, .. } => render::html_link_source(&source, profile.vault, path),
+            Self::Snapshot => source,
+        };
         let lines = render::html_line_offsets(&source);
         let mut masked = document_links::wiki_parse_source(&source).into_bytes();
         let mut embed_starts = HashSet::new();
@@ -179,7 +256,14 @@ impl Profile<'_> {
                             );
                             continue;
                         }
-                        if page && url.starts_with("okilum-note:") {
+                        if let (
+                            Self::Vault {
+                                profile,
+                                page: true,
+                            },
+                            true,
+                        ) = (&mut *self, url.starts_with("okilum-note:"))
+                        {
                             if let Some(parent) = node.parent().filter(|parent| {
                                 matches!(parent.data.borrow().value, NodeValue::Paragraph)
                                     && parent
@@ -192,7 +276,7 @@ impl Profile<'_> {
                                 if source[start..at - 1].trim().is_empty()
                                     && range.is_some_and(|r| source[r.end..end].trim().is_empty())
                                 {
-                                    if let Some(html) = self.embed(target, path, url)? {
+                                    if let Some(html) = profile.embed(target, path, url)? {
                                         metadata.embeds.insert(key(parent), html);
                                         continue;
                                     }
@@ -217,7 +301,9 @@ impl Profile<'_> {
                 }
                 NodeValue::Image(image) => {
                     let mut link = self.link(&image.url, false, path);
-                    if matches!(&link, Link::Href(url) if url.starts_with("okilum-note:")) {
+                    if matches!(&link, Link::Href(url) if url.starts_with("okilum-note:")
+                        || matches!(self, Self::Snapshot) && !url.starts_with("okilum-asset:"))
+                    {
                         link = Link::Inert("unsupported");
                     }
                     metadata.links.insert(key(node), link);
@@ -236,44 +322,56 @@ impl Profile<'_> {
             }
         }
 
-        if page {
-            let inventory = self.headings.entry(path.to_owned()).or_insert_with(|| {
-                Some(HeadingInventory::new(&render::reader_heading_source(
-                    self.vault, path, raw,
-                )))
-            });
-            if let Some(inventory) = inventory {
-                for node in root.descendants() {
-                    let data = node.data.borrow();
-                    match &data.value {
-                        NodeValue::Heading(_)
-                            if node.parent().is_some_and(|p| p.same_node(root)) =>
-                        {
-                            let text = document_links::heading_text(node);
-                            if inventory.locate(&text).is_ok() {
-                                metadata.heading_ids.insert(key(node), anchor(&text));
-                            }
-                        }
-                        NodeValue::HtmlInline(value)
-                        | NodeValue::HtmlBlock(comrak::nodes::NodeHtmlBlock {
-                            literal: value,
-                            ..
-                        }) => {
-                            if let Some(id) = obsidian::marker_id(value) {
-                                let target = format!("^{id}");
-                                if inventory.locate(&target).is_ok() {
-                                    metadata.block_ids.insert(key(node), anchor(&target));
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
+        if let Self::Vault {
+            profile,
+            page: true,
+        } = self
+        {
+            profile.mark_anchors(path, raw, root, &mut metadata);
         }
         MobileFormatter::format_document(root, &options, out, metadata).map(|_| ())
     }
+}
 
+impl Profile<'_> {
+    fn mark_anchors<'a>(
+        &mut self,
+        path: &str,
+        raw: &str,
+        root: &'a AstNode<'a>,
+        metadata: &mut Metadata,
+    ) {
+        let inventory = self.headings.entry(path.to_owned()).or_insert_with(|| {
+            Some(HeadingInventory::new(&render::reader_heading_source(
+                self.vault, path, raw,
+            )))
+        });
+        if let Some(inventory) = inventory {
+            for node in root.descendants() {
+                let data = node.data.borrow();
+                match &data.value {
+                    NodeValue::Heading(_) if node.parent().is_some_and(|p| p.same_node(root)) => {
+                        let text = document_links::heading_text(node);
+                        if inventory.locate(&text).is_ok() {
+                            metadata.heading_ids.insert(key(node), anchor(&text));
+                        }
+                    }
+                    NodeValue::HtmlInline(value)
+                    | NodeValue::HtmlBlock(comrak::nodes::NodeHtmlBlock {
+                        literal: value, ..
+                    }) => {
+                        if let Some(id) = obsidian::marker_id(value) {
+                            let target = format!("^{id}");
+                            if inventory.locate(&target).is_ok() {
+                                metadata.block_ids.insert(key(node), anchor(&target));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
     fn link(&mut self, target: &str, wiki: bool, from: &str) -> Link {
         if !wiki && document_links::decode(target).starts_with("//") {
             return Link::Inert("unsupported");
@@ -281,7 +379,7 @@ impl Profile<'_> {
         let resolved = self.resolver.resolve(target, wiki, from);
         match (resolved.status, resolved.candidates.as_slice()) {
             ("resolved", [path]) => {
-                let mut url = format!("okilum-note:{}", document_links::encode(path));
+                let mut url = note_url(path);
                 if let Some(heading) = resolved.heading {
                     let inventory = self.headings.entry(path.clone()).or_insert_with(|| {
                         let raw = read_note(self.vault, &self.root, path).ok()?;
@@ -308,16 +406,8 @@ impl Profile<'_> {
                 }
                 Link::Href(url)
             }
-            ("attachment", [path]) => {
-                Link::Href(format!("okilum-asset:{}", document_links::encode(path)))
-            }
-            ("external", _)
-                if resolved.url.split_once(':').is_some_and(|(scheme, _)| {
-                    scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http")
-                }) =>
-            {
-                Link::Href(resolved.url)
-            }
+            ("attachment", [path]) => asset_link(path),
+            ("external", _) => http_link(&resolved.url),
             ("ambiguous", _) => Link::Inert("ambiguous"),
             ("unresolved", _) => Link::Inert("unresolved"),
             _ => Link::Inert("unsupported"),
@@ -342,7 +432,11 @@ impl Profile<'_> {
             return Ok(None);
         };
         let mut html = String::from("<section class=\"note-embed\">\n");
-        self.fragment(&path, &body, false, &mut html)?;
+        Fragment::Vault {
+            profile: self,
+            page: false,
+        }
+        .render(&path, &body, &mut html)?;
         html.push_str("</section>\n");
         Ok(Some(html))
     }
@@ -476,11 +570,6 @@ fn render_link(
     title: &str,
 ) -> Result<ChildRendering, fmt::Error> {
     let link = context.user.links.get(&key(node));
-    let tag = if matches!(link, Some(Link::Href(_))) {
-        "a"
-    } else {
-        "span"
-    };
     if entering {
         match link {
             Some(Link::WikiImage { url, alt }) => {
@@ -492,13 +581,11 @@ fn render_link(
                 context.write_str("\" />")?;
                 return Ok(ChildRendering::Skip);
             }
-            Some(Link::Href(url)) => {
-                let url = url.clone();
-                context.write_str("<a href=\"")?;
-                context.escape_href(&url)?;
-                context.write_str("\"")?;
+            Some(link) => {
+                let link = link.clone();
+                let relaxed = context.options.parse.relaxed_autolinks;
+                link.write_open(context, relaxed)?;
             }
-            Some(&Link::Inert(status)) => write!(context, "<span data-link-status=\"{status}\"")?,
             None => context.write_str("<span")?,
         }
         if !title.is_empty() {
@@ -508,7 +595,7 @@ fn render_link(
         }
         context.write_str(">")?;
     } else if !matches!(link, Some(Link::WikiImage { .. })) {
-        write!(context, "</{tag}>")?;
+        context.write_str(link.map_or("</span>", Link::close_tag))?;
     }
     Ok(if matches!(node.data.borrow().value, NodeValue::Image(_)) {
         ChildRendering::Plain

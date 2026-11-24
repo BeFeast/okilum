@@ -14,7 +14,7 @@ use crate::{
     Resolution, Vault,
 };
 use chrono::{DateTime, FixedOffset, SecondsFormat};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use std::{
     cell::OnceCell,
@@ -100,7 +100,7 @@ impl ViewResult {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ViewIdentity {
     pub path: String,
     pub rev: String,
@@ -114,7 +114,7 @@ pub struct Index {
     pub generation: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
     Ok,
@@ -154,7 +154,7 @@ impl Section {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Row {
     pub path: String,
     pub line: Option<usize>,
@@ -167,7 +167,7 @@ pub struct Row {
     pub markdown: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Group {
     pub key: Vec<Json>,
     pub count: usize,

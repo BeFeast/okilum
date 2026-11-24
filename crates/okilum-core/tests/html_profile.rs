@@ -51,3 +51,34 @@ fn mobile_profile_requires_a_vault_note() {
         assert!(html_profile::render_note(&vault, "Note.md").is_err());
     }
 }
+
+const ACTIVITY: &str = include_str!("fixtures/html-profile/views/activity.json");
+
+#[test]
+fn mobile_view_is_independent_of_json_key_order() {
+    let snapshot = serde_json::from_str(ACTIVITY).unwrap();
+    let mut reordered: serde_json::Value = serde_json::from_str(ACTIVITY).unwrap();
+    reordered.sort_all_objects();
+    let reordered = serde_json::from_value(reordered).unwrap();
+    assert_eq!(
+        html_profile::render_view_snapshot(&snapshot),
+        html_profile::render_view_snapshot(&reordered),
+    );
+}
+
+#[test]
+fn mobile_view_rejects_unsupported_versions_and_invalid_source_paths() {
+    let original: serde_json::Value = serde_json::from_str(ACTIVITY).unwrap();
+    for version in ["snapshot_version", "view_api"] {
+        let mut value = original.clone();
+        value[version] = 2.into();
+        let error = serde_json::from_value::<html_profile::SnapshotJson>(value).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Unsupported view snapshot version pair"));
+    }
+    let mut value = original;
+    value["sections"][0]["rows"][0]["path"] = "../private.md".into();
+    let error = serde_json::from_value::<html_profile::SnapshotJson>(value).unwrap_err();
+    assert!(error.to_string().contains("Invalid row source"));
+}

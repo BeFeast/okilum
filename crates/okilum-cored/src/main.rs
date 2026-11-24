@@ -7,7 +7,7 @@
 //! `brain` is the separate `ai-brain/v1` service (`docs/ai-brain-service.md`);
 //! it is not part of the reader protocol and is handed its own arguments.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
@@ -22,6 +22,7 @@ okilum-cored - JSON-lines sidecar over a Okilum vault
 USAGE:
     okilum-cored [index|mcp] --vault <PATH> [--index-dir <PATH>]
     okilum-cored render --profile mobile <NOTE> --vault <PATH>
+    okilum-cored render --profile mobile --view-snapshot <FILE.json>
     okilum-cored view --help
     okilum-cored brain --brain-id <ID> --vault <PATH> --operational-dir <PATH>
                        --records-dir <PATH> --listen <ADDR> [--managed-brain]
@@ -31,7 +32,7 @@ USAGE:
     `index` builds the search index and exits.
     `mcp`   serves the Model Context Protocol (JSON-RPC over stdio) instead —
             the same operations as tools, for agent clients.
-    `render` prints a complete HTML document for a vault-relative note.
+    `render` prints a complete HTML document for a vault-relative note or sealed view snapshot.
     `view`  runs or validates a read-only declarative vault view.
     `brain` (Unix only) serves the separate ai-brain/v1 JSON-lines service on a loopback
             TCP address (docs/ai-brain-service.md). It is not part of the
@@ -129,14 +130,16 @@ fn main() -> Result<()> {
 }
 
 fn render_cli(args: &[String]) -> Result<()> {
-    let mut vault_root = std::env::var_os("OKILUM_VAULT").map(PathBuf::from);
+    let mut vault_root = None;
     let mut profile = None;
     let mut note = None;
+    let mut snapshot_file = None;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
             "--vault" => vault_root = Some(flag_value(&mut rest, "--vault")),
             "--profile" => profile = Some(flag_value(&mut rest, "--profile")),
+            "--view-snapshot" => snapshot_file = Some(flag_value(&mut rest, "--view-snapshot")),
             "-h" | "--help" => {
                 print!("{USAGE}");
                 return Ok(());
@@ -149,11 +152,26 @@ fn render_cli(args: &[String]) -> Result<()> {
         profile.as_deref() == Some(std::path::Path::new("mobile")),
         "render requires --profile mobile\n{USAGE}"
     );
-    let note = note.ok_or_else(|| anyhow::anyhow!("render requires a note path\n{USAGE}"))?;
-    let vault_root = vault_root
-        .ok_or_else(|| anyhow::anyhow!("--vault is required (or set OKILUM_VAULT)\n{USAGE}"))?;
-    let vault = Vault::scan_metadata(&vault_root)?;
-    let html = html_profile::render_note(&vault, note)?;
+    let html = if let Some(file) = snapshot_file {
+        anyhow::ensure!(
+            note.is_none() && vault_root.is_none(),
+            "--view-snapshot takes a sealed file on its own\n{USAGE}"
+        );
+        let bytes = std::fs::read(&file)
+            .with_context(|| format!("Read view snapshot {}", file.display()))?;
+        let snapshot = serde_json::from_slice(&bytes)
+            .with_context(|| format!("Load view snapshot {}", file.display()))?;
+        html_profile::render_view_snapshot(&snapshot)
+    } else {
+        let note = note.ok_or_else(|| {
+            anyhow::anyhow!("render requires a note path or --view-snapshot\n{USAGE}")
+        })?;
+        let vault_root = vault_root
+            .or_else(|| std::env::var_os("OKILUM_VAULT").map(PathBuf::from))
+            .ok_or_else(|| anyhow::anyhow!("--vault is required (or set OKILUM_VAULT)\n{USAGE}"))?;
+        let vault = Vault::scan_metadata(&vault_root)?;
+        html_profile::render_note(&vault, note)?
+    };
     std::io::stdout().lock().write_all(html.as_bytes())?;
     Ok(())
 }

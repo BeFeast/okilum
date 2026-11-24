@@ -298,3 +298,40 @@ fn render_mobile_prints_html_without_creating_an_index() {
     assert!(html.contains("<a href=\"okilum-note:alpha.md\">alpha</a>"));
     assert!(s.strays().is_empty());
 }
+
+#[test]
+fn mobile_view_snapshots_match_html_contract() {
+    let sandbox = Sandbox::new();
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../okilum-core/tests/fixtures/html-profile/views");
+    for name in [
+        "agent-context",
+        "domain",
+        "health",
+        "okilum",
+        "questions",
+        "sidebar",
+        "whats-new",
+        "activity",
+    ] {
+        let snapshot = fixtures.join(format!("{name}.json"));
+        let output = sandbox.run(
+            &[
+                "render",
+                "--profile",
+                "mobile",
+                "--view-snapshot",
+                snapshot.to_str().unwrap(),
+            ],
+            &[],
+        );
+        assert!(output.status.success(), "{name}: {}", stderr(&output));
+        let expected = fs::read_to_string(fixtures.join(format!("{name}.html"))).unwrap();
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            expected.replace("\r\n", "\n"),
+            "{name}"
+        );
+    }
+    assert!(sandbox.strays().is_empty());
+}
