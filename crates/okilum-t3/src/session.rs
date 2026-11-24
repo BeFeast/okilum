@@ -556,17 +556,47 @@ impl ManagerGateway for PairedGateway {
         self.mcp.start_manager(project_id, title, message)
     }
 
+    /// The paired session's status, unless the MCP token runs out first.
+    /// Thread reads, chat and Now's «Waiting for me» still go through MCP, and
+    /// T3 issues that token for 30 days with no refresh grant. Reporting only
+    /// the native session hid its expiry: no renewal warning, then every
+    /// MCP read failed while the connection still showed as connected.
     fn status(&self) -> GatewayStatus {
-        if matches!(self.session.native, Some(Some(_))) {
-            return self.session.status();
+        if !matches!(self.session.native, Some(Some(_))) {
+            return self.mcp.status();
         }
-        self.mcp.status()
+        let native = self.session.status();
+        let usable = |status: &GatewayStatus| {
+            matches!(
+                status,
+                GatewayStatus::Connected { .. } | GatewayStatus::ExpiresSoon { .. }
+            )
+        };
+        if !usable(&native) {
+            return native;
+        }
+        match self.mcp.status() {
+            GatewayStatus::Expired => GatewayStatus::Expired,
+            GatewayStatus::ExpiresSoon { expires_at: mcp } => GatewayStatus::ExpiresSoon {
+                expires_at: match native {
+                    GatewayStatus::ExpiresSoon { expires_at } => expires_at.min(mcp),
+                    _ => mcp,
+                },
+            },
+            _ => native,
+        }
     }
 
+    /// The earlier of the two deadlines; either one alone when the other
+    /// credential is absent.
     fn token_expires_at(&self) -> Option<u64> {
-        match &self.session.native {
+        let native = match &self.session.native {
             Some(Some(token)) => Some(token.expires_at()),
-            _ => self.mcp.token_expires_at(),
+            _ => None,
+        };
+        match (native, self.mcp.token_expires_at()) {
+            (Some(native), Some(mcp)) => Some(native.min(mcp)),
+            (native, mcp) => native.or(mcp),
         }
     }
 

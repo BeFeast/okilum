@@ -63,7 +63,10 @@ impl std::fmt::Display for GatewayError {
                 f,
                 "Okilum is not signed in to T3 at {origin}: open the Manager panel and sign in there"
             ),
-            GatewayError::Expired => write!(f, "the T3 token has expired; reconnect"),
+            GatewayError::Expired => write!(
+                f,
+                "the T3 sign-in has expired; choose Sign in in Settings › T3"
+            ),
             GatewayError::Revoked => write!(f, "T3 refused the token; it was revoked"),
             GatewayError::InvalidCredential => write!(f, "T3 rejected the saved MCP credential; sign in again"),
             GatewayError::Unreachable(detail) => write!(f, "T3 is unreachable: {detail}"),

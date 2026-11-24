@@ -805,3 +805,81 @@ fn native_read_only_or_refused_grant_cannot_fall_back_to_mcp_for_icon_writes() {
     );
     assert_eq!(mcp.icons.load(Ordering::SeqCst), 0);
 }
+
+fn native_token_until(env: &Environment, expires_at: u64) -> crate::stream::NativeToken {
+    crate::stream::NativeToken::from_secret(
+        env,
+        &serde_json::to_vec(&json!({
+            "origin": env.origin(), "access_token": "native-mcp-expiry", "expires_at": expires_at,
+            "scope": "orchestration:read orchestration:operate"
+        }))
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+fn mcp_token_until(env: &Environment, expires_at: Option<u64>) -> Arc<dyn ManagerGateway> {
+    let token = expires_at.map(|expires_at| crate::StoredToken {
+        access_token: "mcp-expiry".into(),
+        expires_at,
+        scope: "orchestration:read orchestration:operate".into(),
+        client_id: "client".into(),
+    });
+    Arc::new(crate::McpGateway::new(env.clone(), token).unwrap())
+}
+
+/// T3 issues the MCP token for 30 days with no refresh grant, and the native
+/// session is paired separately. Thread reads and Now's «Waiting for me» still
+/// use MCP, so a paired connection must not show as connected after the MCP
+/// token has expired, and must warn before it does.
+#[test]
+fn a_paired_connection_reports_the_mcp_deadline_when_it_comes_first() {
+    let env = Environment::new("native", "https://paired.example.test").unwrap();
+    let now = crate::unix_now();
+    let day = 24 * 60 * 60;
+    let paired = |native: u64, mcp: Option<u64>| {
+        PairedGateway::new(
+            SessionGateway::native(env.clone(), Some(native_token_until(&env, native))).unwrap(),
+            mcp_token_until(&env, mcp),
+        )
+    };
+
+    let expired = paired(now + 10 * day, Some(now - 1));
+    assert_eq!(expired.status(), GatewayStatus::Expired);
+    assert_eq!(expired.token_expires_at(), Some(now - 1));
+
+    let soon = paired(now + 10 * day, Some(now + day));
+    assert_eq!(
+        soon.status(),
+        GatewayStatus::ExpiresSoon {
+            expires_at: now + day
+        }
+    );
+    assert_eq!(soon.token_expires_at(), Some(now + day));
+
+    let both_soon = paired(now + day, Some(now + 2 * day));
+    assert_eq!(
+        both_soon.status(),
+        GatewayStatus::ExpiresSoon {
+            expires_at: now + day
+        }
+    );
+
+    // Controls: a fresh MCP token, or none at all, leaves the native status.
+    let fresh = paired(now + 10 * day, Some(now + 20 * day));
+    assert_eq!(
+        fresh.status(),
+        GatewayStatus::Connected {
+            expires_at: now + 10 * day
+        }
+    );
+    assert_eq!(fresh.token_expires_at(), Some(now + 10 * day));
+    let native_only = paired(now + 10 * day, None);
+    assert_eq!(
+        native_only.status(),
+        GatewayStatus::Connected {
+            expires_at: now + 10 * day
+        }
+    );
+    assert_eq!(native_only.token_expires_at(), Some(now + 10 * day));
+}
