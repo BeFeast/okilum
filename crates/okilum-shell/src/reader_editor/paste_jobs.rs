@@ -825,22 +825,27 @@ fn copy_files(input: Target, plan: FilePlan, anchor: Anchor, window: &mut Window
         let mut saved_files = Vec::new();
         let mut base = 0u64;
         for item in &work_plan.items {
-            let FileAction::Copy { file_name } = &item.action else {
+            let FileAction::Copy { file_name, folder } = &item.action else {
                 continue;
             };
             let result = crate::note_paste::image_import::import_file(
                 &item.source,
-                &item.folder,
+                &work_plan.vault_root,
+                folder,
                 file_name,
                 work_plan.image_options,
             )
             .and_then(|imported| match imported {
                 Some(saved) => Ok((saved.name, saved.paths)),
-                None => files::copy_into(&item.source, &item.folder, file_name, &mut |n| {
-                    progress.store(base + n, Ordering::Relaxed)
-                })
+                None => files::copy_into(
+                    &item.source,
+                    &work_plan.vault_root,
+                    folder,
+                    file_name,
+                    &mut |n| progress.store(base + n, Ordering::Relaxed),
+                )
                 .map(|name| {
-                    let paths = vec![item.folder.join(&name)];
+                    let paths = vec![folder.join(&name)];
                     (name, paths)
                 })
                 .map_err(|error| error.user_text(file_name)),
@@ -852,7 +857,9 @@ fn copy_files(input: Target, plan: FilePlan, anchor: Anchor, window: &mut Window
                     saved_files.extend(paths);
                     copied.push(Some(files::link_target(
                         &name,
-                        &work_plan.relative_folder(item),
+                        &files::slash_path(
+                            folder.strip_prefix(&work_plan.vault_root).unwrap_or(folder),
+                        ),
                         &existing,
                     )));
                 }
@@ -1064,11 +1071,6 @@ fn convert_in_background(
         window,
         cx,
     );
-    let folder = attachments::attachment_folder(
-        &job.vault_root,
-        &job.note_rel,
-        attachments::AttachmentKind::Image,
-    );
     let vault_root = job.vault_root.clone();
     let stamp = job.stamp.clone();
     let image_options = job.image_options;
@@ -1083,11 +1085,12 @@ fn convert_in_background(
         finished.store(true, Ordering::Relaxed);
         diagnostic_error!(
             "Paste: background rich text bytes={html_bytes} inserted={} convert_ms={:.1} \
-             images_saved={} images_failed={} images_remote={} ms={}",
+             images_saved={} images_failed={} images_deferred={} images_remote={} ms={}",
             done.text.len(),
             done.convert_ms,
             done.saved,
             done.failed,
+            done.deferred,
             done.remote.len(),
             started.elapsed().as_millis()
         );
@@ -1104,13 +1107,15 @@ fn convert_in_background(
             if done.text.is_empty() {
                 return;
             }
-            if input.drop && !done.remote.is_empty() {
+            if let Some(refusal) = done.refusal.take() {
+                reader_toast::error(refusal, window, cx);
+            } else if done.failed > 0 {
+                reader_toast::transient(router::failed_images_text(done.failed), window, cx);
+            }
+            if let (true, false, Some(folder)) =
+                (input.drop, done.remote.is_empty(), done.folder.clone())
+            {
                 // A drop: its remote images first, then the text once.
-                if done.deferred > 0 {
-                    reader_toast::transient(router::DEFERRED_IMAGES_TEXT, window, cx);
-                } else if done.failed > 0 {
-                    reader_toast::transient(router::failed_images_text(done.failed), window, cx);
-                }
                 download_then_insert(
                     input,
                     anchor,
@@ -1164,12 +1169,7 @@ fn convert_in_background(
             } else {
                 input.track_inserted(&region, &files, window, cx)
             };
-            if done.deferred > 0 {
-                reader_toast::transient(router::DEFERRED_IMAGES_TEXT, window, cx);
-            } else if done.failed > 0 {
-                reader_toast::transient(router::failed_images_text(done.failed), window, cx);
-            }
-            if !done.remote.is_empty() {
+            if let (Some(folder), false) = (done.folder, done.remote.is_empty()) {
                 download_images(
                     input,
                     done.remote,
@@ -1249,6 +1249,7 @@ fn download_images(
     let started = std::time::Instant::now();
     cx.spawn(async move |cx| {
         let mut region = region;
+        let mut save_error = None;
         let (mut saved, mut failed, mut replaced) = (0usize, 0usize, 0usize);
         // #1073: tracks each embed as it is written, uploads at the end.
         let upload = upload_after;
@@ -1260,6 +1261,9 @@ fn download_images(
                 Err(error) => {
                     failed += 1;
                     diagnostic_error!("Paste: image download failed ({error})");
+                    if let DownloadError::Save(message) = error {
+                        save_error.get_or_insert(message);
+                    }
                     continue;
                 }
             };
@@ -1310,6 +1314,11 @@ fn download_images(
         finished.store(true, Ordering::Relaxed);
         if let Some(upload) = upload {
             cx.update(|cx| upload.start(cx));
+        }
+        if let Some(error) = save_error {
+            let _ = cx.update_window(handle, |_, window, cx| {
+                reader_toast::error(error, window, cx)
+            });
         }
         diagnostic_error!(
             "Paste: images downloaded={saved} failed={failed} replaced={replaced} ms={}",
@@ -1509,6 +1518,7 @@ fn spawn_downloads(
                     };
                     let result = download::save_remote_image_with(
                         &image.url,
+                        &vault_root,
                         &folder,
                         &stamp,
                         image_options,
@@ -1583,6 +1593,7 @@ fn download_then_insert(
         let mut replacements = Vec::new();
         let mut saved = Vec::new();
         let mut failed = 0usize;
+        let mut save_error = None;
         while let Ok((index, result)) = receiver.recv().await {
             done.fetch_add(1, Ordering::Relaxed);
             match result {
@@ -1594,6 +1605,9 @@ fn download_then_insert(
                 Err(error) => {
                     failed += 1;
                     diagnostic_error!("Drop: image download failed ({error})");
+                    if let DownloadError::Save(message) = error {
+                        save_error.get_or_insert(message);
+                    }
                 }
             }
         }
@@ -1639,7 +1653,9 @@ fn download_then_insert(
                     files.extend(leftovers.paths());
                     drop(leftovers);
                     input.upload_inserted(&region, &files, window, cx);
-                    if failed > 0 {
+                    if let Some(error) = save_error {
+                        reader_toast::error(error, window, cx);
+                    } else if failed > 0 {
                         reader_toast::transient(router::failed_images_text(failed), window, cx);
                     }
                 }

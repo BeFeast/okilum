@@ -940,6 +940,7 @@ mod local_writer_admission_tests {
         let h = a.begin_drain("shell-publication").unwrap();
         assert!(move_to_trash(&root, Path::new("note.md")).is_err());
         assert!(crate::note_paste::files::write_into(
+            &root,
             &root.join("attachments"),
             "file.bin",
             b"asset"
@@ -957,8 +958,13 @@ mod local_writer_admission_tests {
         let token = h.token().clone();
         h.release(&token).unwrap();
         trashed.restore().unwrap();
-        crate::note_paste::files::write_into(&root.join("attachments"), "file.bin", b"asset")
-            .unwrap();
+        crate::note_paste::files::write_into(
+            &root,
+            &root.join("attachments"),
+            "file.bin",
+            b"asset",
+        )
+        .unwrap();
         assert_eq!(fs::read(root.join("note.md")).unwrap(), b"exact\r\n");
         assert_eq!(
             fs::read(root.join("attachments/file.bin")).unwrap(),

@@ -96,16 +96,14 @@ impl Index {
                     _ => Status::Other,
                 };
                 let first = folder.split('/').next().unwrap_or(folder);
-                let domain = scalar("area")
-                    .filter(|area| !area.trim().is_empty())
-                    .or_else(|| match self.folders.layout() {
-                        Some(layout) => layout.area_for_path(path),
-                        None => (self.folders.is_legacy()
-                            && folder.contains('/')
-                            && !self.folders.legacy_bucket(first))
-                        .then_some(first),
-                    })
-                    .map(str::to_owned);
+                let domain = if self.folders.is_legacy() {
+                    (folder.contains('/') && !self.folders.legacy_bucket(first)).then_some(first)
+                } else {
+                    scalar("area")
+                        .filter(|area| !area.trim().is_empty())
+                        .or_else(|| self.folders.layout()?.area_for_path(path))
+                }
+                .map(str::to_owned);
                 Some(Project {
                     path: path.into(),
                     title: scalar("title")
@@ -182,6 +180,18 @@ impl Index {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn migration_review_legacy_domain_uses_physical_folder() {
+        let mut index = Index::default();
+        index.replace(
+            "Work/Projects/One/@index.md",
+            "---\ntype: project\narea: Home\n---\n",
+            1,
+        );
+        index.refresh();
+        assert_eq!(index.rows()[0].domain.as_deref(), Some("Work"));
+    }
+
     #[test]
     fn projects_are_derived_ordered_scoped_and_incremental() {
         let mut i = Index::default();

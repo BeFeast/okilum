@@ -3,15 +3,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Component, Path, PathBuf};
 
-pub const DIRECTORY: &str = ".okilum";
-pub const FILE: &str = "vault.json";
+pub use okilum_write_authority::vault_descriptor::{parse, read_bytes, Lifecycle, DIRECTORY, FILE};
 
 pub fn path(root: &Path) -> PathBuf {
     root.join(DIRECTORY).join(FILE)
 }
 
 pub fn read(root: &Path) -> Option<Value> {
-    serde_json::from_slice(&std::fs::read(path(root)).ok()?).ok()
+    parse(&read_bytes(root).ok()??).ok()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -20,10 +19,10 @@ pub struct Layout {
     pub managed_by: String,
     pub contract: String,
     pub roots: Roots,
-    #[serde(default)]
     pub domains: Vec<Domain>,
-    #[serde(default)]
-    pub generated_at: Option<String>,
+    pub generated_at: String,
+    /// Optional explicit placement for pasted attachments.
+    pub attachments: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -72,25 +71,27 @@ impl ContextPath<'_> {
 pub enum LayoutState {
     #[default]
     Legacy,
-    Managed(Layout),
+    Managed(Box<Layout>),
     Unsupported,
 }
 
 impl LayoutState {
     pub fn load(root: &Path) -> Self {
-        let Some(mut descriptor) = read(root) else {
-            return Self::Legacy;
+        let mut descriptor = match read_bytes(root) {
+            Ok(None) => return Self::Legacy,
+            Ok(Some(bytes)) => match parse(&bytes) {
+                Ok(Value::Object(descriptor)) => descriptor,
+                _ => return Self::Unsupported,
+            },
+            Err(_) => return Self::Unsupported,
         };
-        let Some(value) = descriptor
-            .as_object_mut()
-            .and_then(|object| object.remove("layout"))
-        else {
+        let Some(value) = descriptor.remove("layout") else {
             return Self::Legacy;
         };
         serde_json::from_value::<Layout>(value)
             .ok()
             .filter(Layout::valid)
-            .map_or(Self::Unsupported, Self::Managed)
+            .map_or(Self::Unsupported, |layout| Self::Managed(Box::new(layout)))
     }
 }
 
@@ -98,6 +99,10 @@ impl Layout {
     fn valid(&self) -> bool {
         if self.schema_version != 1
             || self.managed_by != "gardener"
+            || self.contract != "@Schema/layout.yaml"
+            || !self.generated_at.ends_with('Z')
+            || !matches!(self.generated_at.as_bytes().get(10), Some(b'T' | b't'))
+            || chrono::DateTime::parse_from_rfc3339(&self.generated_at).is_err()
             || !self.roots.all().into_iter().all(relative)
         {
             return false;
@@ -105,9 +110,12 @@ impl Layout {
         let mut ids = std::collections::BTreeSet::new();
         let mut paths = std::collections::BTreeSet::new();
         self.domains.iter().all(|domain| {
-            !domain.id.trim().is_empty()
-                && !domain.id.contains('/')
-                && !domain.name.trim().is_empty()
+            domain.id.split('-').all(|part| {
+                !part.is_empty()
+                    && part
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+            }) && !domain.name.trim().is_empty()
                 && relative(&domain.path)
                 && suffix(&domain.path, &self.roots.state).is_some_and(relative)
                 && ids.insert(&domain.id)
@@ -202,6 +210,50 @@ fn relative(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migration_review_layout_requires_schema_fields() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join(DIRECTORY)).unwrap();
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/lifecycle-vault");
+        let valid = read(&fixture).unwrap();
+        for (pointer, invalid) in [
+            ("/layout/domains", None),
+            ("/layout/generated_at", None),
+            ("/layout/contract", Some(serde_json::json!("layout.yaml"))),
+            (
+                "/layout/generated_at",
+                Some(serde_json::json!("2026-02-31T08:00:00Z")),
+            ),
+            (
+                "/layout/generated_at",
+                Some(serde_json::json!("2026-01-01T08:00:00+00:00")),
+            ),
+            (
+                "/layout/generated_at",
+                Some(serde_json::json!("2026-01-01 08:00:00Z")),
+            ),
+            ("/layout/domains/0/id", Some(serde_json::json!("Dev--team"))),
+        ] {
+            let mut descriptor = valid.clone();
+            if let Some(invalid) = invalid {
+                *descriptor.pointer_mut(pointer).unwrap() = invalid;
+            } else {
+                let key = pointer.rsplit('/').next().unwrap();
+                descriptor["layout"].as_object_mut().unwrap().remove(key);
+            }
+            std::fs::write(path(root.path()), serde_json::to_vec(&descriptor).unwrap()).unwrap();
+            assert!(
+                matches!(LayoutState::load(root.path()), LayoutState::Unsupported),
+                "{pointer}"
+            );
+        }
+        assert!(matches!(
+            LayoutState::load(&fixture),
+            LayoutState::Managed(_)
+        ));
+    }
 
     #[test]
     fn layout_is_independent_of_name_and_unknown_fields() {

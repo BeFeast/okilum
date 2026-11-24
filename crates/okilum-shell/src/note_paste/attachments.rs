@@ -95,25 +95,46 @@ pub struct SavedImage {
 
 /// The folder a pasted image is saved in, for `note_rel` (vault-relative,
 /// `/`-separated). Never outside the vault.
-pub fn attachment_folder(vault_root: &Path, note_rel: &str, kind: AttachmentKind) -> PathBuf {
+pub fn attachment_folder(
+    vault_root: &Path,
+    note_rel: &str,
+    kind: AttachmentKind,
+) -> io::Result<PathBuf> {
+    use okilum_core::vault_descriptor::LayoutState;
+
+    let mut note_dir = note_rel.split('/').collect::<Vec<_>>();
+    if !relative_parts(note_rel) {
+        return Err(io::Error::other("Choose a note inside the vault"));
+    }
+    note_dir.pop();
     let setting = okilum_core::vault_conventions::obsidian_attachment_setting(vault_root);
-    let note_dir: Vec<&str> = {
-        let mut parts: Vec<&str> = note_rel.split('/').filter(|p| !p.is_empty()).collect();
-        parts.pop();
-        parts
-    };
-    let relative = setting
+    let configured = setting
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .and_then(|setting| folder_from_setting(setting, &note_dir))
-        .unwrap_or_else(|| {
-            let folders = okilum_core::vault_conventions::Folders::load(vault_root);
-            if !folders.is_legacy() {
-                // The descriptor names the managed source root, without assigning
-                // a destination for a pasted file. Keep it beside its note.
-                return note_dir.iter().collect();
+        .and_then(|setting| folder_from_setting(setting, &note_dir));
+    let relative = match LayoutState::load(vault_root) {
+        LayoutState::Managed(layout) => {
+            let configured = configured
+                .map(|path| {
+                    let folder = vault_root.join(path);
+                    validate_folder(vault_root, &folder).map(|()| folder)
+                })
+                .transpose();
+            if let Ok(Some(folder)) = configured {
+                return Ok(folder);
             }
+            if let Some(path) = layout.attachments.filter(|path| relative_parts(path)) {
+                PathBuf::from(path)
+            } else {
+                return Err(configured.err().unwrap_or_else(|| {
+                    io::Error::other("This managed vault has no allowed attachment folder. Check the vault layout or Obsidian attachment setting.")
+                }));
+            }
+        }
+        LayoutState::Unsupported => return Err(unsupported_layout()),
+        LayoutState::Legacy => configured.unwrap_or_else(|| {
+            let folders = okilum_core::vault_conventions::defaults();
             let typed = Path::new(folders.legacy_attachment_folder(kind == AttachmentKind::Image));
             let legacy_root_exists = typed
                 .parent()
@@ -123,31 +144,147 @@ pub fn attachment_folder(vault_root: &Path, note_rel: &str, kind: AttachmentKind
             } else {
                 typed.to_path_buf()
             }
-        });
-    vault_root.join(relative)
+        }),
+    };
+    let folder = vault_root.join(relative);
+    validate_folder(vault_root, &folder)?;
+    Ok(folder)
 }
 
-/// The vault-relative folder for one `attachmentFolderPath` value, or `None`
-/// when it would leave the vault.
+fn unsupported_layout() -> io::Error {
+    io::Error::other("Attachment writes are blocked because this vault layout is unsupported")
+}
+
+fn relative_parts(path: &str) -> bool {
+    !path.contains(['\\', ':'])
+        && !path.chars().any(char::is_control)
+        && path.split('/').all(|part| {
+            !part.is_empty()
+                && !matches!(part, "." | "..")
+                && matches!(
+                    Path::new(part).components().next(),
+                    Some(Component::Normal(_))
+                )
+        })
+}
+
+/// Obsidian uses / for the vault root, ./ for the note folder and ./sub for
+/// a sibling folder. All remaining path parts must be real relative names.
 fn folder_from_setting(setting: &str, note_dir: &[&str]) -> Option<PathBuf> {
     let setting = setting.replace('\\', "/");
-    let (base, rest): (Vec<&str>, &str) = if setting == "." || setting == "./" {
-        (note_dir.to_vec(), "")
+    let mut folder = PathBuf::new();
+    let rest = if setting == "." {
+        folder.extend(note_dir);
+        ""
     } else if let Some(rest) = setting.strip_prefix("./") {
-        (note_dir.to_vec(), rest)
+        folder.extend(note_dir);
+        rest
     } else {
-        (Vec::new(), setting.trim_start_matches('/'))
+        setting.trim_start_matches('/')
     };
-    let mut parts: Vec<String> = base.into_iter().map(str::to_owned).collect();
-    for component in Path::new(rest).components() {
-        match component {
-            Component::Normal(part) => parts.push(part.to_str()?.to_owned()),
-            Component::CurDir => {}
-            // `..` and absolute paths could leave the vault.
-            _ => return None,
+    let rest = rest.trim_end_matches('/');
+    if !rest.is_empty() {
+        if !relative_parts(rest) {
+            return None;
+        }
+        folder.push(rest);
+    }
+    Some(folder)
+}
+
+fn allowed(layout: &okilum_core::vault_descriptor::Layout, path: &Path) -> bool {
+    let path = super::files::slash_path(path).to_lowercase();
+    [
+        layout.roots.log.as_str(),
+        layout.roots.views.as_str(),
+        layout.roots.knowledge.as_str(),
+        "@Schema",
+        okilum_core::vault_descriptor::DIRECTORY,
+    ]
+    .into_iter()
+    .all(|protected| {
+        let protected = protected.to_lowercase();
+        path != protected
+            && !path
+                .strip_prefix(&protected)
+                .is_some_and(|rest| rest.starts_with('/'))
+    })
+}
+
+/// Before creating anything and again before publishing a temporary file,
+/// verify both the live layout policy and the existing path on disk.
+pub(crate) fn validate_folder(root: &Path, folder: &Path) -> io::Result<()> {
+    use okilum_core::vault_descriptor::LayoutState;
+
+    let relative = folder
+        .strip_prefix(root)
+        .map_err(|_| io::Error::other("Choose an attachment folder inside the vault"))?;
+    if relative
+        .components()
+        .any(|part| !matches!(part, Component::Normal(_)))
+    {
+        return Err(io::Error::other(
+            "Choose an attachment folder inside the vault",
+        ));
+    }
+    let canonical_root = root.canonicalize()?;
+    for path in folder.ancestors().take_while(|path| path.starts_with(root)) {
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => {
+                return Err(io::Error::other(
+                    "Attachment folders must be real directories inside the vault",
+                ))
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
         }
     }
-    Some(parts.iter().collect())
+    let existing = folder
+        .ancestors()
+        .find(|path| path.is_dir())
+        .ok_or_else(|| io::Error::other("Attachment folder has no existing parent"))?;
+    let canonical = existing.canonicalize()?;
+    let canonical_relative = canonical
+        .strip_prefix(&canonical_root)
+        .map_err(|_| io::Error::other("Attachment folder leaves the vault"))?;
+    let planned = canonical_relative.join(folder.strip_prefix(existing).map_err(io::Error::other)?);
+    match LayoutState::load(root) {
+        LayoutState::Managed(layout)
+            if !allowed(&layout, relative) || !allowed(&layout, &planned) =>
+        {
+            return Err(io::Error::other(
+                "Attachments cannot be saved in this managed folder",
+            ));
+        }
+        LayoutState::Unsupported => return Err(unsupported_layout()),
+        _ => {}
+    }
+    Ok(())
+}
+
+pub(crate) fn admit_folder(
+    root: &Path,
+    folder: &Path,
+) -> anyhow::Result<okilum_write_authority::WriterLease> {
+    validate_folder(root, folder)?;
+    // Register the open vault scope before borrowing its lock for a child.
+    okilum_write_authority::Authority::for_root(root)?;
+    okilum_write_authority::admit_directory(folder)
+}
+
+pub(crate) fn prepare_folder(root: &Path, folder: &Path) -> io::Result<()> {
+    validate_folder(root, folder)?;
+    let relative = folder.strip_prefix(root).map_err(io::Error::other)?;
+    okilum_core::note_files::create_folders(root, relative, false).map_err(io::Error::other)?;
+    validate_folder(root, folder)
+}
+
+pub(crate) fn validate_name(name: &str) -> io::Result<()> {
+    if !relative_parts(name) || name.contains('/') {
+        return Err(io::Error::other("Choose an attachment name without a path"));
+    }
+    Ok(())
 }
 
 /// `Pasted image 20261023153000.png`, `Pasted image 20261023153000-1.png`, …
@@ -213,10 +350,13 @@ pub fn save_pasted_image_with(
 ) -> Result<SavedImage, SaveError> {
     let _admission = okilum_write_authority::operation(vault_root)
         .map_err(|e| SaveError::Write(io::Error::other(e)))?;
+    let folder = attachment_folder(vault_root, note_rel, AttachmentKind::Image)
+        .map_err(SaveError::Folder)?;
+    let _destination = okilum_write_authority::operation_for_directory(&folder)
+        .map_err(|e| SaveError::Write(io::Error::other(e)))?;
     if options.enabled {
-        let folder = attachment_folder(vault_root, note_rel, AttachmentKind::Image);
         let wanted = pasted_name(stamp, 0, image.kind.extension());
-        let saved = super::image_import::save(&folder, &wanted, &image.bytes, options)
+        let saved = super::image_import::save(vault_root, &folder, &wanted, &image.bytes, options)
             .map_err(SaveError::Webp)?;
         let path = folder.join(&saved.name);
         let target = path
@@ -231,8 +371,7 @@ pub fn save_pasted_image_with(
         });
     }
     let (bytes, kind) = normalize(image)?;
-    let folder = attachment_folder(vault_root, note_rel, AttachmentKind::Image);
-    std::fs::create_dir_all(&folder).map_err(SaveError::Folder)?;
+    prepare_folder(vault_root, &folder).map_err(SaveError::Folder)?;
     let mut temporary = tempfile::Builder::new()
         .prefix(".okilum-paste-")
         .suffix(".tmp")
@@ -242,10 +381,14 @@ pub fn save_pasted_image_with(
     temporary.as_file().sync_all().map_err(SaveError::Write)?;
     for suffix in 0..=MAX_SUFFIX {
         let file_name = pasted_name(stamp, suffix, kind.extension());
+        validate_name(&file_name).map_err(SaveError::Write)?;
         let path = folder.join(&file_name);
         if path.exists() {
             continue;
         }
+        validate_folder(vault_root, &folder).map_err(SaveError::Folder)?;
+        let _publication = okilum_write_authority::operation_for_directory(&folder)
+            .map_err(|e| SaveError::Write(io::Error::other(e)))?;
         match temporary.persist_noclobber(&path) {
             Ok(_) => {
                 sync_folder(&folder);
@@ -349,13 +492,10 @@ pub fn save_pasted_files_with(
     stamp: &str,
     is_cache: &dyn Fn(&Path) -> bool,
 ) -> Result<SavedFiles, SaveError> {
-    let _admission = okilum_write_authority::operation(vault_root)
-        .map_err(|e| SaveError::Write(io::Error::other(e)))?;
     let mut saved = SavedFiles::default();
     let mut links = Vec::new();
     let root = std::fs::canonicalize(vault_root).unwrap_or_else(|_| vault_root.to_path_buf());
     for source in files {
-        let folder = attachment_folder(vault_root, note_rel, AttachmentKind::of_path(source));
         let display = source
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -415,12 +555,16 @@ pub fn save_pasted_files_with(
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| display.clone())
         };
-        let (file_name, bytes) = copy_noclobber(source, &folder, &stem, extension.as_deref())
-            .map_err(|error| match error {
-                CopyError::Folder(e) => SaveError::Folder(e),
-                CopyError::Io(e) => SaveError::CopyFile(display.clone(), e),
-                CopyError::NoFreeName => SaveError::NoFreeName,
-            })?;
+        let folder = attachment_folder(vault_root, note_rel, AttachmentKind::of_path(source))
+            .map_err(SaveError::Folder)?;
+        let (file_name, bytes) =
+            copy_noclobber(vault_root, source, &folder, &stem, extension.as_deref()).map_err(
+                |error| match error {
+                    CopyError::Folder(e) => SaveError::Folder(e),
+                    CopyError::Io(e) => SaveError::CopyFile(display.clone(), e),
+                    CopyError::NoFreeName => SaveError::NoFreeName,
+                },
+            )?;
         links.push(if image {
             embed(&file_name)
         } else {
@@ -442,12 +586,16 @@ enum CopyError {
 /// `stem.ext`, `stem-1.ext`, … — the first free one, written completely
 /// before it gets its name.
 fn copy_noclobber(
+    vault_root: &Path,
     source: &Path,
     folder: &Path,
     stem: &str,
     extension: Option<&str>,
 ) -> Result<(String, u64), CopyError> {
-    std::fs::create_dir_all(folder).map_err(CopyError::Folder)?;
+    let _admission = admit_folder(vault_root, folder)
+        .and_then(|lease| lease.enter())
+        .map_err(|e| CopyError::Io(io::Error::other(e)))?;
+    prepare_folder(vault_root, folder).map_err(CopyError::Folder)?;
     let mut temporary = tempfile::Builder::new()
         .prefix(".okilum-paste-")
         .suffix(".tmp")
@@ -466,10 +614,14 @@ fn copy_noclobber(
             Some(extension) if !extension.is_empty() => format!("{base}.{extension}"),
             _ => base,
         };
+        validate_name(&file_name).map_err(CopyError::Io)?;
         let path = folder.join(&file_name);
         if path.exists() {
             continue;
         }
+        validate_folder(vault_root, folder).map_err(CopyError::Folder)?;
+        let _publication = okilum_write_authority::operation_for_directory(folder)
+            .map_err(|e| CopyError::Io(io::Error::other(e)))?;
         match temporary.persist_noclobber(&path) {
             Ok(_) => {
                 sync_folder(folder);
@@ -556,6 +708,90 @@ mod tests {
     }
 
     #[test]
+    fn migration_review_managed_paste_refuses_protected_and_unsupported_destinations() {
+        let vault = tempfile::tempdir().unwrap();
+        let root = vault.path();
+        let fixture =
+            include_bytes!("../../../../tests/fixtures/lifecycle-vault/.okilum/vault.json");
+        let path = root.join(".okilum/vault.json");
+        std::fs::create_dir(root.join(".okilum")).unwrap();
+        std::fs::write(&path, fixture).unwrap();
+        let note = "log/health/sleep/decisions/note.md";
+
+        for setting in [
+            None,
+            Some("./"),
+            Some("log/new"),
+            Some("@views"),
+            Some("@Schema"),
+            Some(".okilum"),
+            Some("knowledge/images"),
+        ] {
+            app_json(root, setting);
+            assert!(
+                save_pasted_image(root, note, &png(), "protected").is_err(),
+                "{setting:?}"
+            );
+        }
+        assert!(!root.join("log").exists());
+        assert!(!root.join("@views").exists());
+        assert!(!root.join("@Schema").exists());
+        assert!(!root.join("knowledge").exists());
+        assert_eq!(std::fs::read_dir(root.join(".okilum")).unwrap().count(), 1);
+
+        let mut descriptor: serde_json::Value = serde_json::from_slice(fixture).unwrap();
+        descriptor["layout"]["attachments"] = serde_json::json!("sources/files/pasted");
+        std::fs::write(&path, serde_json::to_vec(&descriptor).unwrap()).unwrap();
+        let saved = save_pasted_image(root, note, &png(), "fallback").unwrap();
+        assert_eq!(
+            saved.path.parent().unwrap(),
+            root.join("sources/files/pasted")
+        );
+
+        app_json(root, Some("state/media"));
+        let saved = save_pasted_image(root, note, &png(), "allowed").unwrap();
+        assert_eq!(saved.path.parent().unwrap(), root.join("state/media"));
+
+        descriptor["layout"]["schema_version"] = serde_json::json!(2);
+        std::fs::write(path, serde_json::to_vec(&descriptor).unwrap()).unwrap();
+        assert!(save_pasted_image(root, note, &png(), "unsupported").is_err());
+        assert!(!root
+            .join("state/media/Pasted image unsupported.png")
+            .exists());
+    }
+
+    #[test]
+    fn migration_review_paste_refuses_note_path_traversal() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        app_json(&root, Some("./"));
+        assert!(save_pasted_image(&root, "../outside/note.md", &png(), "outside").is_err());
+        assert!(!temp.path().join("outside").exists());
+        assert!(save_pasted_image(&root, "/absolute/note.md", &png(), "absolute").is_err());
+        assert!(save_pasted_image(&root, "notes/note.md", &png(), "inside").is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn migration_review_paste_refuses_a_symlinked_folder_or_ancestor() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("linked")).unwrap();
+        for setting in ["linked", "linked/subfolder"] {
+            app_json(&root, Some(setting));
+            assert!(
+                save_pasted_image(&root, "note.md", &png(), "outside").is_err(),
+                "{setting}"
+            );
+        }
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+    }
+
+    #[test]
     fn attachment_folder_follows_app_json() {
         let vault = tempfile::tempdir().unwrap();
         std::fs::create_dir(vault.path().join("attachments")).unwrap();
@@ -563,12 +799,12 @@ mod tests {
         let note = "Projects/Alpha/plan.md";
         // Absent app.json, absent key, empty value: vault-root attachments/.
         assert_eq!(
-            attachment_folder(root, note, AttachmentKind::Image),
+            attachment_folder(root, note, AttachmentKind::Image).unwrap(),
             root.join("attachments")
         );
         app_json(root, None);
         assert_eq!(
-            attachment_folder(root, note, AttachmentKind::Image),
+            attachment_folder(root, note, AttachmentKind::Image).unwrap(),
             root.join("attachments")
         );
         for (setting, expected) in [
@@ -586,7 +822,7 @@ mod tests {
         ] {
             app_json(root, Some(setting));
             assert_eq!(
-                attachment_folder(root, note, AttachmentKind::Image),
+                attachment_folder(root, note, AttachmentKind::Image).unwrap(),
                 expected,
                 "{setting:?}"
             );
@@ -594,13 +830,13 @@ mod tests {
         // A note at the vault root with "./" saves next to it, at the root.
         app_json(root, Some("./"));
         assert_eq!(
-            attachment_folder(root, "top.md", AttachmentKind::Image),
+            attachment_folder(root, "top.md", AttachmentKind::Image).unwrap(),
             root.to_path_buf()
         );
         // Unreadable JSON falls back to the default.
         std::fs::write(root.join(".obsidian/app.json"), b"{not json").unwrap();
         assert_eq!(
-            attachment_folder(root, note, AttachmentKind::Image),
+            attachment_folder(root, note, AttachmentKind::Image).unwrap(),
             root.join("attachments")
         );
     }
@@ -805,14 +1041,14 @@ mod underscore_tests {
             (AttachmentKind::File, "@Assets/Files"),
         ] {
             assert_eq!(
-                attachment_folder(root.path(), "note.md", kind),
+                attachment_folder(root.path(), "note.md", kind).unwrap(),
                 root.path().join(expected)
             );
             assert!(!root.path().join(expected).exists());
         }
         std::fs::create_dir(root.path().join("attachments")).unwrap();
         assert_eq!(
-            attachment_folder(root.path(), "note.md", AttachmentKind::File),
+            attachment_folder(root.path(), "note.md", AttachmentKind::File).unwrap(),
             root.path().join("attachments")
         );
         std::fs::create_dir(root.path().join(".obsidian")).unwrap();
@@ -822,7 +1058,7 @@ mod underscore_tests {
         )
         .unwrap();
         assert_eq!(
-            attachment_folder(root.path(), "note.md", AttachmentKind::File),
+            attachment_folder(root.path(), "note.md", AttachmentKind::File).unwrap(),
             root.path().join("_Assets/Attachments")
         );
     }

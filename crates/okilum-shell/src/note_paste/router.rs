@@ -534,10 +534,12 @@ fn route_once(board: &impl Pasteboard, cx: &RouteContext) -> Result<Routed, Offe
 
 /// Step 1: files linked in place or copied in the background.
 fn file_paste(paths: &[PathBuf], note_rel: &str, types: &[String], cx: &RouteContext) -> Routed {
+    let mut routed = Routed::new(Route::Files, types);
     let mut plan = files::plan(paths, cx.vault_root, note_rel, cx.stamp, cx.ask_above);
     plan.image_options = cx.image_options;
-    let mut routed = Routed::new(Route::Files, types);
-    if let Some(skipped) = plan.skipped_text() {
+    if let Some(refusal) = plan.refusal.take() {
+        routed = routed.notice(refusal, true);
+    } else if let Some(skipped) = plan.skipped_text() {
         routed = routed.notice(skipped, false);
     }
     if plan.items.is_empty() {
@@ -736,6 +738,8 @@ pub fn ide_code_block(hint: &VsCodeHint, plain: &str) -> Option<String> {
 #[derive(Debug, Default)]
 pub struct RichText {
     pub admission: Option<okilum_write_authority::WriterLease>,
+    pub folder: Option<PathBuf>,
+    pub refusal: Option<String>,
     /// [`Route::IdeCode`] for all-monospace code, else [`Route::RichText`].
     pub route: Option<Route>,
     pub markdown: String,
@@ -820,17 +824,35 @@ fn rich_text_with(
     if converted.markdown.trim().is_empty() {
         return None;
     }
-    let admission = okilum_write_authority::Authority::for_root(vault_root)
-        .and_then(|a| a.admit())
-        .ok();
-    let _admission = admission.as_ref().and_then(|a| a.enter().ok());
-    let admitted = _admission.is_some();
     let mut rich = RichText {
-        admission,
         route: Some(Route::RichText),
         block: converted.block,
         ..RichText::default()
     };
+    let mut operation = None;
+    if !converted.assets.is_empty() {
+        let admission = (|| -> anyhow::Result<_> {
+            let folder = attachments::attachment_folder(
+                vault_root,
+                note_rel,
+                attachments::AttachmentKind::Image,
+            )?;
+            let lease = attachments::admit_folder(vault_root, &folder)?;
+            operation = Some(lease.enter()?);
+            Ok((folder, lease))
+        })();
+        match admission {
+            Ok((folder, lease)) => {
+                rich.folder = Some(folder);
+                rich.admission = Some(lease);
+            }
+            Err(error) => {
+                rich.refusal = Some(format!(
+                    "{error}. Image data and references were kept in the draft."
+                ))
+            }
+        }
+    }
     let mut markdown = converted.markdown;
     for asset in converted.assets {
         match asset.source {
@@ -839,7 +861,7 @@ fn rich_text_with(
                     .remote
                     .iter()
                     .any(|image| image.placeholder == asset.placeholder);
-                if !known && rich.remote.len() < download::MAX_IMAGES {
+                if operation.is_some() && !known && rich.remote.len() < download::MAX_IMAGES {
                     rich.remote.push(RemoteImage {
                         url,
                         placeholder: asset.placeholder,
@@ -847,8 +869,8 @@ fn rich_text_with(
                 }
             }
             AssetSource::Data { mime, bytes } => {
-                let text = if admitted {
-                    let saved = save_data_image(&mime, bytes, vault_root, note_rel, stamp, options);
+                let text = if let Some(folder) = rich.folder.as_deref() {
+                    let saved = save_data_image(&mime, bytes, vault_root, folder, stamp, options);
                     rich.account(saved, &asset.alt)
                 } else {
                     rich.deferred += 1;
@@ -857,8 +879,8 @@ fn rich_text_with(
                 markdown = markdown.replacen(&asset.placeholder, &text, 1);
             }
             AssetSource::LocalFile(path) => {
-                let text = if admitted {
-                    let saved = save_local_image(&path, vault_root, note_rel, stamp, options);
+                let text = if let Some(folder) = rich.folder.as_deref() {
+                    let saved = save_local_image(&path, vault_root, folder, stamp, options);
                     rich.account(saved, &asset.alt)
                 } else {
                     rich.deferred += 1;
@@ -871,8 +893,6 @@ fn rich_text_with(
     rich.markdown = markdown;
     Some(rich)
 }
-
-pub const DEFERRED_IMAGES_TEXT: &str = "Vault writes are paused. Pasted image data and references were kept in the draft. Save after writes resume.";
 
 fn inline_image(mime: &str, bytes: &[u8], alt: &str) -> String {
     use base64::Engine as _;
@@ -961,7 +981,7 @@ fn save_data_image(
     mime: &str,
     bytes: Vec<u8>,
     vault_root: &Path,
-    note_rel: &str,
+    folder: &Path,
     stamp: &str,
     options: super::image_import::Options,
 ) -> Option<(String, Vec<PathBuf>)> {
@@ -975,10 +995,8 @@ fn save_data_image(
             .or(kind_of_mime(mime))?
             .extension()
     };
-    let folder =
-        attachments::attachment_folder(vault_root, note_rel, attachments::AttachmentKind::Image);
     let wanted = attachments::pasted_name(stamp, 0, extension);
-    super::image_import::save(&folder, &wanted, &bytes, options)
+    super::image_import::save(vault_root, folder, &wanted, &bytes, options)
         .ok()
         .map(|saved| {
             let target = if options.enabled {
@@ -997,7 +1015,7 @@ fn save_data_image(
 fn save_local_image(
     path: &Path,
     vault_root: &Path,
-    note_rel: &str,
+    folder: &Path,
     stamp: &str,
     options: super::image_import::Options,
 ) -> Option<(String, Vec<PathBuf>)> {
@@ -1048,9 +1066,7 @@ fn save_local_image(
         };
         files::sanitize_name(&named)
     };
-    let folder =
-        attachments::attachment_folder(vault_root, note_rel, attachments::AttachmentKind::Image);
-    super::image_import::save(&folder, &name, &bytes, options)
+    super::image_import::save(vault_root, folder, &name, &bytes, options)
         .ok()
         .map(|saved| {
             let target = if options.enabled {
@@ -1086,12 +1102,12 @@ fn rich_routed(
         rich.failed,
         rich.remote.len()
     );
-    if rich.deferred > 0 {
-        routed = routed.notice(DEFERRED_IMAGES_TEXT, false);
+    if let Some(refusal) = rich.refusal {
+        routed = routed.notice(refusal, true);
     } else if rich.failed > 0 {
         routed = routed.notice(failed_images_text(rich.failed), false);
     }
-    if let (Some(note_rel), false) = (cx.note_rel, rich.remote.is_empty()) {
+    if let (Some(folder), false) = (rich.folder, rich.remote.is_empty()) {
         let inserted = routed.insert.as_deref().unwrap_or_default();
         let after = format!(
             "{}{}{}",
@@ -1102,11 +1118,7 @@ fn rich_routed(
         routed.follow_up = Some(FollowUp::RemoteImages {
             region: Region::at(&after, sel.start, inserted.len()),
             images: rich.remote,
-            folder: attachments::attachment_folder(
-                cx.vault_root,
-                note_rel,
-                attachments::AttachmentKind::Image,
-            ),
+            folder,
             vault_root: cx.vault_root.to_path_buf(),
             stamp: cx.stamp.to_string(),
             image_options: cx.image_options,
@@ -1121,6 +1133,8 @@ fn rich_routed(
 #[derive(Debug, Default)]
 pub struct RichJobDone {
     pub admission: Option<okilum_write_authority::WriterLease>,
+    pub folder: Option<PathBuf>,
+    pub refusal: Option<String>,
     pub text: String,
     pub block: bool,
     /// Fit as Markdown ([`fit_markdown`]) rather than as plain text.
@@ -1159,6 +1173,8 @@ pub fn run_rich_job(job: RichJob) -> RichJobDone {
     if let Some(rich) = rich {
         return RichJobDone {
             admission: rich.admission,
+            folder: rich.folder,
+            refusal: rich.refusal,
             text: rich.markdown,
             block: rich.block,
             markdown: true,
@@ -1218,7 +1234,7 @@ mod tests {
         assert_eq!(done.text.matches("data:image/png;base64,").count(), 2);
         assert!(done.files.is_empty());
         assert!(!note.vault.path().join("attachments").exists());
-        assert!(DEFERRED_IMAGES_TEXT.contains("draft"));
+        assert!(done.refusal.as_deref().unwrap().contains("draft"));
         let token = hold.token().clone();
         hold.release(&token).unwrap();
         let saved = run_rich_job(job());
@@ -1501,7 +1517,7 @@ mod tests {
             assert_eq!(routed.route, Route::Files);
             match routed.follow_up {
                 Some(FollowUp::Files { plan, .. }) => match &plan.items[0].action {
-                    FileAction::Copy { file_name } => {
+                    FileAction::Copy { file_name, .. } => {
                         assert_eq!(file_name, "Pasted image 20261023120000.png")
                     }
                     other => panic!("{other:?}"),

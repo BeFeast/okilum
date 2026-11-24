@@ -93,12 +93,13 @@ fn encode(bytes: &[u8], format: image::ImageFormat, quality: u32) -> Result<Vec<
 /// The incoming attachment is replaced by WebP, never an existing vault file
 /// or the external source. Undo removes text only and retains these files.
 pub fn save(
+    vault_root: &Path,
     folder: &Path,
     wanted: &str,
     bytes: &[u8],
     options: Options,
 ) -> Result<Imported, String> {
-    let admission = okilum_write_authority::admit_directory(folder).map_err(|e| e.to_string())?;
+    let admission = attachments::admit_folder(vault_root, folder).map_err(|e| e.to_string())?;
     let _admission = admission.enter().map_err(|e| e.to_string())?;
     if bytes.len() > super::offer::MAX_IMAGE_BYTES {
         return Err("The image is too large to import (64 MB at most).".into());
@@ -144,11 +145,16 @@ pub fn save(
             retained_name.push('.');
             retained_name.push_str(&ext.to_string_lossy());
         }
-        let name =
-            files::write_into(folder, &retained_name, bytes).map_err(|e| e.user_text(&wanted))?;
+        let name = files::write_into(vault_root, folder, &retained_name, bytes)
+            .map_err(|e| e.user_text(&wanted))?;
         paths.push(folder.join(name));
     }
-    match files::write_into(folder, &output_name, converted.as_deref().unwrap_or(bytes)) {
+    match files::write_into(
+        vault_root,
+        folder,
+        &output_name,
+        converted.as_deref().unwrap_or(bytes),
+    ) {
         Ok(name) => {
             paths.push(folder.join(&name));
             Ok(Imported {
@@ -158,8 +164,12 @@ pub fn save(
             })
         }
         Err(error) => {
-            for path in paths {
-                let _ = std::fs::remove_file(path);
+            if admission.validate().is_ok()
+                && attachments::validate_folder(vault_root, folder).is_ok()
+            {
+                for path in paths {
+                    let _ = std::fs::remove_file(path);
+                }
             }
             Err(error.user_text(&output_name))
         }
@@ -169,6 +179,7 @@ pub fn save(
 /// `None` for a non-image; ordinary file copies keep their streaming path.
 pub fn import_file(
     source: &Path,
+    vault_root: &Path,
     folder: &Path,
     wanted: &str,
     options: Options,
@@ -185,7 +196,7 @@ pub fn import_file(
     file.take(super::offer::MAX_IMAGE_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
-    save(folder, wanted, &bytes, options).map(Some)
+    save(vault_root, folder, wanted, &bytes, options).map(Some)
 }
 
 #[cfg(test)]
@@ -213,7 +224,14 @@ mod tests {
     fn webp_import_preserves_dimensions_alpha_and_applies_quality() {
         let temp = tempfile::tempdir().unwrap();
         let png = fixture_png();
-        let first = save(temp.path(), "picture.png", &png, Options::default()).unwrap();
+        let first = save(
+            temp.path(),
+            temp.path(),
+            "picture.png",
+            &png,
+            Options::default(),
+        )
+        .unwrap();
         assert_eq!(first.name, "picture.webp");
         assert_eq!(first.paths.len(), 1);
         let bytes = std::fs::read(&first.paths[0]).unwrap();
@@ -244,7 +262,7 @@ mod tests {
             b"existing original",
         )
         .unwrap();
-        let saved = save(temp.path(), "picture.png", &png, options).unwrap();
+        let saved = save(temp.path(), temp.path(), "picture.png", &png, options).unwrap();
         assert_eq!(saved.name, "picture-1.webp");
         assert_eq!(saved.paths.len(), 2);
         assert_eq!(std::fs::read(&saved.paths[0]).unwrap(), png);
@@ -256,7 +274,14 @@ mod tests {
             std::fs::read(temp.path().join("picture-original.png")).unwrap(),
             b"existing original"
         );
-        let untouched = save(temp.path(), "off.png", &png, Options::disabled()).unwrap();
+        let untouched = save(
+            temp.path(),
+            temp.path(),
+            "off.png",
+            &png,
+            Options::disabled(),
+        )
+        .unwrap();
         assert_eq!(untouched.name, "off.png");
         assert_eq!(std::fs::read(&untouched.paths[0]).unwrap(), png);
     }
@@ -271,7 +296,7 @@ mod tests {
         };
         for wanted in ["picture", "picture."] {
             let folder = temp.path().join(wanted.trim_end_matches('.'));
-            let saved = save(&folder, wanted, &png, options).unwrap();
+            let saved = save(temp.path(), &folder, wanted, &png, options).unwrap();
             assert_eq!(saved.paths.len(), 2);
             assert!(!saved.paths[0]
                 .file_name()
@@ -300,9 +325,15 @@ mod tests {
         std::fs::write(&source, &png).unwrap();
         let before = std::fs::metadata(&source).unwrap().modified().unwrap();
         let folder = temp.path().join("vault/attachments");
-        let saved = import_file(&source, &folder, "source.png", Options::default())
-            .unwrap()
-            .unwrap();
+        let saved = import_file(
+            &source,
+            temp.path(),
+            &folder,
+            "source.png",
+            Options::default(),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(saved.name, "source.webp");
         assert_eq!(std::fs::read(&source).unwrap(), png);
         assert_eq!(
@@ -311,6 +342,7 @@ mod tests {
         );
         let failed = temp.path().join("failed");
         assert!(save(
+            temp.path(),
             &failed,
             "bad.png",
             b"\x89PNG\r\n\x1a\nbroken",
@@ -320,7 +352,7 @@ mod tests {
         assert!(!failed.exists());
         let blocker = temp.path().join("not-a-folder");
         std::fs::write(&blocker, b"keep").unwrap();
-        assert!(save(&blocker, "image.png", &png, Options::default()).is_err());
+        assert!(save(temp.path(), &blocker, "image.png", &png, Options::default()).is_err());
         assert_eq!(std::fs::read(blocker).unwrap(), b"keep");
     }
 
@@ -337,7 +369,14 @@ mod tests {
         bytes.extend_from_slice(&((exif.len() + 2) as u16).to_be_bytes());
         bytes.extend_from_slice(exif);
         bytes.extend_from_slice(&jpeg.into_inner()[2..]);
-        let saved = save(temp.path(), "photo.jpg", &bytes, Options::default()).unwrap();
+        let saved = save(
+            temp.path(),
+            temp.path(),
+            "photo.jpg",
+            &bytes,
+            Options::default(),
+        )
+        .unwrap();
         let decoded = image::open(&saved.paths[0]).unwrap();
         assert_eq!((decoded.width(), decoded.height()), (6, 12));
     }
@@ -349,12 +388,19 @@ mod tests {
             ("vector.svg", b"<svg/>".as_slice()),
             ("animation.gif", b"GIF89a\x01\0\x01\0".as_slice()),
         ] {
-            let saved = save(temp.path(), name, bytes, Options::default()).unwrap();
+            let saved = save(temp.path(), temp.path(), name, bytes, Options::default()).unwrap();
             assert_eq!(saved.name, name);
             assert_eq!(std::fs::read(saved.paths.last().unwrap()).unwrap(), bytes);
         }
         let webp = encode(&fixture_png(), image::ImageFormat::Png, 85).unwrap();
-        let saved = save(temp.path(), "existing.webp", &webp, Options::default()).unwrap();
+        let saved = save(
+            temp.path(),
+            temp.path(),
+            "existing.webp",
+            &webp,
+            Options::default(),
+        )
+        .unwrap();
         assert_eq!(std::fs::read(&saved.paths[0]).unwrap(), webp);
     }
 }

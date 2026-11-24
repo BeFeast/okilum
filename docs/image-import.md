@@ -35,10 +35,13 @@ retained, the receipt counts both files and names the converted image used by
 the note. Existing in-vault links do not claim a new saved attachment (#1622).
 
 Attachment placement uses Obsidian's `attachmentFolderPath` from
-`.obsidian/app.json` when set. A vault with a lifecycle layout summary in
-`.okilum/vault.json` uses the note's folder when Obsidian supplies no usable
-folder. Vaults without a layout summary retain the existing attachment
-folders and the legacy Markdown asset classification.
+`.obsidian/app.json` when set. In a managed vault, the setting must resolve
+outside the configured log, views and knowledge roots and outside `@Schema`
+and `.okilum`. If the setting is absent or points into a protected root,
+Okilum uses `layout.attachments` from `.okilum/vault.json` when it names an
+allowed folder. Attachment writes are refused if no destination is configured
+or the layout is unsupported. Vaults without a layout summary keep their
+existing attachment defaults and Markdown asset classification.
 
 Before merge, native acceptance must cover both paste and import into an
 isolated real vault, matching the disk file with the saved note link, and Undo

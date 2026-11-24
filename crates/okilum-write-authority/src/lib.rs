@@ -43,6 +43,7 @@ mod identity_macos_tests;
 mod identity_windows_tests;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 mod migration;
+pub mod vault_descriptor;
 
 const BINDING_SCHEMA: u32 = if cfg!(any(target_os = "macos", target_os = "linux", windows)) {
     2
@@ -271,6 +272,7 @@ pub struct Token {
 }
 #[derive(Clone, Debug)]
 pub struct Authority {
+    requested: Option<PathBuf>,
     account: PathBuf,
     binding_path: PathBuf,
     directory: PathBuf,
@@ -294,6 +296,7 @@ impl DurableBinding {
     /// authorizes no canonical publication: there is no root to publish into.
     pub fn admit_without_root(&self) -> Result<WriterLease> {
         let start = Authority {
+            requested: None,
             account: self.account.clone(),
             binding_path: self
                 .account
@@ -324,15 +327,19 @@ impl DurableBinding {
             writers
                 .try_lock_shared()
                 .context("Local writer drain is active; retry")?;
-            return Ok(WriterLease(Arc::new(LeaseInner {
-                authority: authority.clone(),
-                _writers: writers,
-                revision: s.revision,
-            })));
+            return Ok(WriterLease(
+                Arc::new(LeaseInner {
+                    authority: authority.clone(),
+                    _writers: writers,
+                    revision: s.revision,
+                }),
+                None,
+            ));
         }
     }
     pub fn open(&self) -> Result<Authority> {
         let authority = Authority {
+            requested: None,
             account: self.account.clone(),
             binding_path: self
                 .account
@@ -364,7 +371,12 @@ impl Authority {
         )
     }
     fn open_in(account: &Path, root: &Path) -> Result<Self> {
-        let root = root.canonicalize()?;
+        let canonical = root.canonicalize()?;
+        let mut authority = Self::open_canonical(account, canonical)?;
+        authority.requested = Some(std::path::absolute(root)?);
+        Ok(authority)
+    }
+    fn open_canonical(account: &Path, root: PathBuf) -> Result<Self> {
         ensure!(root.is_dir(), "Writer authority root is not a directory");
         ensure!(
             account.is_absolute()
@@ -431,6 +443,7 @@ impl Authority {
                 // the same physical root. Never mint a second authority for it.
                 if physical_candidate(&ancestor_identities, &b.root_identity) {
                     let a = Self {
+                        requested: None,
                         account: account.clone(),
                         binding_path: p.clone(),
                         directory: account.join(key(&b.root)),
@@ -450,6 +463,7 @@ impl Authority {
                 }
                 if b.root.starts_with(&root) && b.root != root {
                     let child = Self {
+                        requested: None,
                         account: account.clone(),
                         binding_path: p.clone(),
                         directory: account.join(key(&b.root)),
@@ -515,6 +529,7 @@ impl Authority {
         let binding_path = account.join(format!("{}.json", key(&root)));
         persist(&binding_path, &binding, true)?;
         Ok(Self {
+            requested: None,
             account,
             binding_path,
             directory,
@@ -531,6 +546,7 @@ impl Authority {
                     "Writer authority root binding mismatch"
                 );
                 let a = Self {
+                    requested: None,
                     directory: account.join(key(ancestor)),
                     account: account.to_owned(),
                     binding_path,
@@ -585,6 +601,7 @@ impl Authority {
             "Writer authority root binding mismatch"
         );
         let old = Self {
+            requested: None,
             directory: account.join(key(&bound)),
             account,
             binding_path,
@@ -629,6 +646,7 @@ impl Authority {
                     "Another vault authority owns this folder; re-attach refused"
                 );
                 let other = Self {
+                    requested: None,
                     account: old.account.clone(),
                     directory: old.account.join(key(&b.root)),
                     binding_path: p,
@@ -717,6 +735,7 @@ impl Authority {
                 let binding: Binding = read(&binding_path)?;
                 ensure!(binding.root == ancestor, "Writer scope binding mismatch");
                 return Ok(Some(Self {
+                    requested: None,
                     account: self.account.clone(),
                     directory: self.account.join(key(ancestor)),
                     binding_path,
@@ -770,6 +789,10 @@ impl Authority {
         Ok(s)
     }
     pub fn admit(&self) -> Result<WriterLease> {
+        let target = WriteTarget::check(
+            self.requested.as_deref().unwrap_or_else(|| self.root()),
+            self.root(),
+        )?;
         if let Some(lease) = ACTIVE.with(|a| {
             a.borrow()
                 .iter()
@@ -781,7 +804,7 @@ impl Authority {
                 .cloned()
         }) {
             lease.validate()?;
-            return Ok(lease);
+            return Ok(WriterLease(lease.0, Some(target)));
         }
         let (authority, _l) = self.locked()?;
         let s = authority.state()?;
@@ -791,11 +814,14 @@ impl Authority {
             .try_lock_shared()
             .context("Local writer drain is active; retain draft and retry")?;
 
-        Ok(WriterLease(Arc::new(LeaseInner {
-            authority: authority.clone(),
-            _writers: writers,
-            revision: s.revision,
-        })))
+        Ok(WriterLease(
+            Arc::new(LeaseInner {
+                authority: authority.clone(),
+                _writers: writers,
+                revision: s.revision,
+            }),
+            Some(target),
+        ))
     }
     /// Admit and enter one immediate synchronous operation. Delayed jobs use
     /// admit() and enter() separately, revalidating when publication resumes.
@@ -931,11 +957,52 @@ struct LeaseInner {
     revision: u64,
 }
 #[derive(Clone)]
-pub struct WriterLease(Arc<LeaseInner>);
+pub struct WriterLease(Arc<LeaseInner>, Option<Arc<WriteTarget>>);
+
+/// The requested directory can be narrower than the account's lock scope.
+struct WriteTarget {
+    path: PathBuf,
+    canonical: PathBuf,
+}
+
+impl WriteTarget {
+    fn check(path: &Path, authority: &Path) -> Result<Arc<Self>> {
+        let canonical = Self::checked_path(path, authority)?;
+        Ok(Arc::new(Self {
+            path: path.to_owned(),
+            canonical,
+        }))
+    }
+
+    fn checked_path(path: &Path, authority: &Path) -> Result<PathBuf> {
+        let existing = existing_directory(path)?;
+        let canonical = existing.canonicalize()?.join(path.strip_prefix(existing)?);
+        vault_descriptor::Lifecycle::check_ancestors(&canonical)?;
+        if path != canonical {
+            vault_descriptor::Lifecycle::check_ancestors(path)?;
+        }
+        if !canonical.starts_with(authority) && !path.starts_with(authority) {
+            vault_descriptor::Lifecycle::check_ancestors(authority)?;
+        }
+        Ok(canonical)
+    }
+
+    fn validate(&self, authority: &Path) -> Result<()> {
+        ensure!(
+            Self::checked_path(&self.path, authority)? == self.canonical,
+            "The writer destination changed; reopen it before writing"
+        );
+        Ok(())
+    }
+}
+
 thread_local! { static ACTIVE: RefCell<Vec<WriterLease>> = const { RefCell::new(Vec::new()) }; }
 impl WriterLease {
     pub fn validate(&self) -> Result<()> {
         self.0.authority.validate()?;
+        if let Some(target) = &self.1 {
+            target.validate(self.0.authority.root())?;
+        }
         let state = self.0.authority.state()?;
         ensure!(
             state.revision >= self.0.revision && state.phase != Phase::Held,
@@ -1006,11 +1073,21 @@ pub fn operation_for_path(path: &Path) -> Result<OperationGuard> {
 /// Resolve a destination folder before create_dir_all. Never create canonical
 /// scaffolding before admission; all missing suffixes remain under this scope.
 pub fn operation_for_directory(directory: &Path) -> Result<OperationGuard> {
-    let existing = directory
-        .ancestors()
-        .find(|p| p.is_dir())
-        .context("Destination has no existing parent")?;
-    operation(existing)
+    Ok(admit_directory(directory)?.enter_validated())
+}
+
+fn existing_directory(directory: &Path) -> Result<&Path> {
+    for ancestor in directory.ancestors() {
+        match fs::metadata(ancestor) {
+            Ok(metadata) => {
+                ensure!(metadata.is_dir(), "Destination is not a directory");
+                return Ok(ancestor);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    anyhow::bail!("Destination has no existing parent")
 }
 
 #[cfg(test)]
@@ -1025,6 +1102,61 @@ mod tests {
         let a = Authority::open_in(&t.path().join("account"), &t.path().join("vault")).unwrap();
         (t, a)
     }
+    #[test]
+    fn migration_review_archive_admission_checks_nested_targets_and_live_cutover() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let parent = temp.path().join("parent");
+        let archive = parent.join("archive");
+        let child = archive.join("child");
+        fs::create_dir_all(child.join(".okilum"))?;
+        let account = temp.path().join("account");
+        let enclosing = Authority::open_in(&account, &parent)?;
+        let writer = Authority::open_in(&account, &child)?;
+        assert_eq!(writer.root(), enclosing.root());
+        let previous = writer.admit()?;
+
+        let marker = archive.join(".brain-read-only");
+        fs::write(&marker, "")?;
+        assert!(writer
+            .admit()
+            .unwrap_err()
+            .to_string()
+            .contains("read-only archive"));
+        assert!(
+            previous.enter().is_err(),
+            "a delayed writer rechecks the target"
+        );
+        assert!(
+            enclosing.admit().is_ok(),
+            "the archive is a separate nested target"
+        );
+        fs::remove_file(marker)?;
+
+        let metadata = child.join(".okilum/vault.json");
+        for blocked in [
+            r#"{"lifecycle":{"state":"archive"}}"#,
+            r#"{"lifecycle":{"state":"active","read_only":true}}"#,
+            r#"{"lifecycle":{"state":"future"}}"#,
+            r#"{"lifecycle":{"state":"active","read_only":"false"}}"#,
+            r#"{"lifecycle":{"state":"active","path_map":{}}}"#,
+            r#"{"lifecycle":null}"#,
+            r#"{"lifecycle":{},"lifecycle":{"state":"active"}}"#,
+            r#"{"lifecycle":"#,
+        ] {
+            fs::write(&metadata, blocked)?;
+            assert!(writer.admit().is_err(), "{blocked}");
+        }
+        for writable in [
+            r#"{"name":"legacy"}"#,
+            r#"{"lifecycle":{"state":"active","extension":true}}"#,
+            r#"{"lifecycle":{"state":"active","read_only":false}}"#,
+        ] {
+            fs::write(&metadata, writable)?;
+            assert!(writer.admit().is_ok(), "{writable}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn local_writer_admission_admit_without_root_pins_drains_of_an_absent_root() -> Result<()> {
         let (temp, authority) = fixture();
@@ -1308,11 +1440,10 @@ impl std::fmt::Debug for WriterLease {
 /// Keep the admission alive through a delayed publication/rollback even when its
 /// destination folder has not been created yet.
 pub fn admit_directory(directory: &Path) -> Result<WriterLease> {
-    let existing = directory
-        .ancestors()
-        .find(|p| p.is_dir())
-        .context("Destination has no existing parent")?;
-    Authority::for_root(existing)?.admit()
+    let directory = std::path::absolute(directory)?;
+    let mut authority = Authority::for_root(existing_directory(&directory)?)?;
+    authority.requested = Some(directory);
+    authority.admit()
 }
 
 #[cfg(test)]

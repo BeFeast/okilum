@@ -64,13 +64,17 @@ fn client() -> Option<&'static reqwest::blocking::Client> {
 
 pub fn save_remote_image_with(
     url: &str,
+    vault_root: &Path,
     folder: &Path,
     stamp: &str,
     options: super::image_import::Options,
 ) -> Result<super::image_import::Imported, DownloadError> {
+    super::attachments::validate_folder(vault_root, folder)
+        .map_err(|error| DownloadError::Save(error.to_string()))?;
     let (bytes, extension) = fetch_image(url)?;
     let name = file_name(url, extension, stamp);
-    super::image_import::save(folder, &name, &bytes, options).map_err(DownloadError::Save)
+    super::image_import::save(vault_root, folder, &name, &bytes, options)
+        .map_err(DownloadError::Save)
 }
 
 /// Explicit Copy image shares the paste downloader's network and size policy
@@ -212,6 +216,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let saved = save_remote_image_with(
             &format!("http://{address}/picture.png"),
+            temp.path(),
             temp.path(),
             "1743",
             super::super::image_import::Options {

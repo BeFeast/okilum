@@ -107,7 +107,7 @@ fn typed_attachment_priority_mixed_copy_and_existing_at_asset_link() {
         (AttachmentKind::File, "@Assets/Files"),
     ] {
         assert_eq!(
-            attachments::attachment_folder(root.path(), "Notes/a.md", kind),
+            attachments::attachment_folder(root.path(), "Notes/a.md", kind).unwrap(),
             root.path().join(expected)
         );
         assert!(
@@ -117,12 +117,12 @@ fn typed_attachment_priority_mixed_copy_and_existing_at_asset_link() {
     }
     std::fs::create_dir(root.path().join("attachments")).unwrap();
     assert_eq!(
-        attachments::attachment_folder(root.path(), "a.md", AttachmentKind::Image),
+        attachments::attachment_folder(root.path(), "a.md", AttachmentKind::Image).unwrap(),
         root.path().join("attachments")
     );
     std::fs::create_dir_all(root.path().join("_Assets/Attachments")).unwrap();
     assert_eq!(
-        attachments::attachment_folder(root.path(), "a.md", AttachmentKind::File),
+        attachments::attachment_folder(root.path(), "a.md", AttachmentKind::File).unwrap(),
         root.path().join("attachments")
     );
     std::fs::create_dir(root.path().join("@Assets")).unwrap();
@@ -133,15 +133,15 @@ fn typed_attachment_priority_mixed_copy_and_existing_at_asset_link() {
         "stamp",
         None,
     );
-    assert_eq!(plan.items[0].folder, root.path().join("@Assets/Images"));
-    assert_eq!(plan.items[1].folder, root.path().join("@Assets/Files"));
-    for item in &plan.items {
-        let FileAction::Copy { file_name } = &item.action else {
+    for (item, expected) in plan.items.iter().zip(["@Assets/Images", "@Assets/Files"]) {
+        let FileAction::Copy { file_name, folder } = &item.action else {
             panic!("external file must copy")
         };
-        let name = files::copy_into(&item.source, &item.folder, file_name, &mut |_| {}).unwrap();
+        assert_eq!(folder, &root.path().join(expected));
+        let name =
+            files::copy_into(&item.source, root.path(), folder, file_name, &mut |_| {}).unwrap();
         assert_eq!(
-            std::fs::read(item.folder.join(name)).unwrap(),
+            std::fs::read(folder.join(name)).unwrap(),
             std::fs::read(&item.source).unwrap()
         );
     }
@@ -166,7 +166,7 @@ fn typed_attachment_priority_mixed_copy_and_existing_at_asset_link() {
     .unwrap();
     for kind in [AttachmentKind::Image, AttachmentKind::File] {
         assert_eq!(
-            attachments::attachment_folder(root.path(), "Notes/a.md", kind),
+            attachments::attachment_folder(root.path(), "Notes/a.md", kind).unwrap(),
             root.path().join("Notes/Custom")
         );
     }

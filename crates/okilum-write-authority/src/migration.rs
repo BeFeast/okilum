@@ -30,6 +30,7 @@ impl Authority {
             let relevant =
                 requested.starts_with(&binding.root) || binding.root.starts_with(requested);
             let authority = Self {
+                requested: None,
                 directory: account.join(key(&binding.root)),
                 account: account.to_owned(),
                 binding_path: path,

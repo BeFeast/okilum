@@ -2,6 +2,7 @@
 //! names one, without renaming its folder. An empty or blank name means the
 //! folder name. Links and every other lookup keep using the folder (and its
 //! canonical root); the display name is never an identity.
+use anyhow::Context as _;
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -11,6 +12,7 @@ use gpui_component::{
 };
 use std::{
     collections::BTreeMap,
+    io::Write as _,
     path::{Path, PathBuf},
 };
 
@@ -19,7 +21,7 @@ use std::{
 /// the tree, search or quick open. Syncthing conflict copies sit next to it
 /// and are never read; the last write wins.
 pub(crate) use okilum_core::vault_descriptor::DIRECTORY;
-use okilum_core::vault_descriptor::{path as file, FILE};
+use okilum_core::vault_descriptor::{parse, path as file, read_bytes};
 /// How often an open vault's name file is looked at for a change made on
 /// another machine.
 const POLL: std::time::Duration = std::time::Duration::from_secs(2);
@@ -44,13 +46,13 @@ pub(crate) fn read(root: &Path) -> Option<String> {
 /// removes the name. Written to a temporary file in the same folder and
 /// renamed, so another machine never syncs half a file.
 fn write(root: &Path, name: Option<&str>) -> anyhow::Result<()> {
-    let _admission = okilum_write_authority::operation(root)?;
-    let directory = root.join(DIRECTORY);
-    std::fs::create_dir_all(&directory)?;
-    let mut object: serde_json::Map<String, serde_json::Value> = match std::fs::read(file(root)) {
-        Ok(bytes) => serde_json::from_slice(&bytes)?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
-        Err(error) => return Err(error.into()),
+    let original = read_bytes(root)?;
+    let mut object = match original.as_deref() {
+        Some(bytes) => match parse(bytes)? {
+            serde_json::Value::Object(object) => object,
+            _ => anyhow::bail!("The vault descriptor must be a JSON object"),
+        },
+        None => serde_json::Map::new(),
     };
     if object.get("name").and_then(serde_json::Value::as_str) == name
         && (name.is_some() || !object.contains_key("name"))
@@ -61,14 +63,39 @@ fn write(root: &Path, name: Option<&str>) -> anyhow::Result<()> {
         Some(name) => object.insert("name".into(), name.into()),
         None => object.remove("name"),
     };
-    let temporary = directory.join(format!(".{FILE}.{}.tmp", uuid::Uuid::new_v4()));
-    let bytes = serde_json::to_vec_pretty(&object)?;
-    // A failed write or rename leaves no temporary file to sync.
-    std::fs::write(&temporary, bytes)
-        .and_then(|()| std::fs::rename(&temporary, file(root)))
-        .inspect_err(|_| {
-            let _ = std::fs::remove_file(&temporary);
-        })?;
+
+    let _admission = okilum_write_authority::operation(root)?;
+    let directory = root.join(DIRECTORY);
+    okilum_core::note_files::create_folders(root, Path::new(DIRECTORY), false)?;
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".vault-name-")
+        .suffix(".tmp")
+        .tempfile_in(&directory)?;
+    serde_json::to_writer_pretty(&mut temporary, &object)?;
+    temporary.flush()?;
+    temporary.as_file().sync_all()?;
+    publish(root, original.as_deref(), temporary)?;
+    #[cfg(unix)]
+    std::fs::File::open(directory)?.sync_all()?;
+    Ok(())
+}
+
+fn publish(
+    root: &Path,
+    original: Option<&[u8]>,
+    temporary: tempfile::NamedTempFile,
+) -> anyhow::Result<()> {
+    let _admission = okilum_write_authority::operation(root)?;
+    anyhow::ensure!(
+        read_bytes(root)?.as_deref() == original,
+        "The vault descriptor changed while saving the name. Try again."
+    );
+    if original.is_some() {
+        temporary.persist(file(root))
+    } else {
+        temporary.persist_noclobber(file(root))
+    }
+    .context("Cannot publish the vault name")?;
     Ok(())
 }
 
@@ -525,7 +552,9 @@ mod tests {
             .collect();
         assert_eq!(
             left,
-            [std::ffi::OsString::from(FILE)],
+            [std::ffi::OsString::from(
+                okilum_core::vault_descriptor::FILE
+            )],
             "only the original entry"
         );
     }
@@ -539,6 +568,48 @@ mod tests {
         std::fs::write(file(root), damaged).unwrap();
         assert!(write(root, Some("Work")).is_err());
         assert_eq!(std::fs::read(file(root)).unwrap(), damaged);
+    }
+
+    #[test]
+    fn migration_review_vault_name_rejects_duplicate_keys_without_changing_bytes() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        std::fs::create_dir(root.join(DIRECTORY)).unwrap();
+        for bytes in [
+            br#"{"name":"First","name":"Second"}"#.as_slice(),
+            br#"{"name":"Work","extra":[{"x":1,"\u0078":2}]}"#.as_slice(),
+        ] {
+            std::fs::write(file(root), bytes).unwrap();
+            assert!(write(root, Some("New name")).is_err());
+            assert_eq!(std::fs::read(file(root)).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn migration_review_vault_name_noop_leaves_metadata_directory_absent() {
+        let fixture = tempfile::tempdir().unwrap();
+        write(fixture.path(), None).unwrap();
+        assert!(!fixture.path().join(DIRECTORY).exists());
+    }
+
+    #[test]
+    fn name_publication_refuses_a_gardener_update_after_the_original_read() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        let metadata = root.join(DIRECTORY);
+        std::fs::create_dir(&metadata).unwrap();
+        let old = br#"{"name":"Old"}"#;
+        let gardener = br#"{"name":"Old","new_field":[1,2,3]}"#;
+        for original in [Some(old.as_slice()), None] {
+            let mut temporary = tempfile::NamedTempFile::new_in(&metadata).unwrap();
+            temporary.write_all(br#"{"name":"New"}"#).unwrap();
+            temporary.as_file().sync_all().unwrap();
+            std::fs::write(file(root), gardener).unwrap();
+            let error = publish(root, original, temporary).unwrap_err();
+            assert!(error.to_string().contains("changed"));
+            assert_eq!(std::fs::read(file(root)).unwrap(), gardener);
+            assert_eq!(std::fs::read_dir(&metadata).unwrap().count(), 1);
+        }
     }
 
     #[test]

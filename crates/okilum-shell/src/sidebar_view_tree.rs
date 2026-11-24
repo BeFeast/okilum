@@ -74,7 +74,7 @@ fn build_tree(
             } else {
                 projection
                     .note(path)
-                    .filter(|_| vault.folders().view_source(&path))
+                    .filter(|_| vault.folders().view_source(path))
                     .and_then(|_| source(path))
                     .ok_or_else(|| {
                         format!("Node view '{path}' must be in the vault’s views directory")

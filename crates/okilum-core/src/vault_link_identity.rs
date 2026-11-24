@@ -44,6 +44,7 @@ pub fn for_copy(root: &Path) -> Result<String> {
     if let Some(id) = read(root)? {
         return Ok(id);
     }
+    let _admission = okilum_write_authority::operation(root)?;
     let destination = root.join(FILE);
     let directory = destination.parent().context("No metadata folder")?;
     let created_directory = match std::fs::create_dir(directory) {
@@ -81,6 +82,21 @@ pub fn for_copy(root: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migration_review_archive_can_read_an_existing_identity_but_cannot_create_one() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let marker = root.join(".brain-read-only");
+        std::fs::write(&marker, "").unwrap();
+        assert!(for_copy(root).is_err());
+        assert!(!root.join(".okilum").exists());
+
+        std::fs::remove_file(&marker).unwrap();
+        let id = for_copy(root).unwrap();
+        std::fs::write(marker, "").unwrap();
+        assert_eq!(for_copy(root).unwrap(), id);
+    }
 
     #[test]
     fn copy_creates_once_and_preserves_all_metadata_bytes() {

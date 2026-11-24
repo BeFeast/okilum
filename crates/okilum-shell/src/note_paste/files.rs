@@ -36,12 +36,11 @@ pub enum FileAction {
     /// Inside the vault: linked in place, nothing copied.
     Link { text: String },
     /// Outside the vault: copied as `file_name` (or the next free variant).
-    Copy { file_name: String },
+    Copy { file_name: String, folder: PathBuf },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileItem {
-    pub folder: PathBuf,
     pub source: PathBuf,
     pub size: u64,
     pub action: FileAction,
@@ -53,13 +52,10 @@ pub struct FileItem {
 pub struct FilePlan {
     pub image_options: super::image_import::Options,
     pub items: Vec<FileItem>,
-    /// The attachment folder copies go to.
-    pub folder: PathBuf,
-    /// The vault, for the name scan that keeps a copy's link unambiguous.
+    /// Why an outside file could not be assigned a copy destination.
+    pub refusal: Option<String>,
+    /// The vault, for destination validation and an unambiguous name scan.
     pub vault_root: PathBuf,
-    /// The attachment folder relative to the vault, `/`-separated (`""`: the
-    /// vault root).
-    pub folder_rel: String,
     /// Folders on the clipboard: never pasted.
     pub folders: usize,
     /// Files that were gone by the time of the paste.
@@ -71,17 +67,6 @@ pub struct FilePlan {
 }
 
 impl FilePlan {
-    pub fn relative_folder<'a>(&'a self, item: &FileItem) -> std::borrow::Cow<'a, str> {
-        if item.folder == self.folder {
-            std::borrow::Cow::Borrowed(&self.folder_rel)
-        } else {
-            std::borrow::Cow::Owned(slash_path(
-                item.folder
-                    .strip_prefix(&self.vault_root)
-                    .unwrap_or(&item.folder),
-            ))
-        }
-    }
     pub fn copies(&self) -> usize {
         self.items
             .iter()
@@ -121,30 +106,18 @@ pub fn plan(
     stamp: &str,
     ask_above: Option<u64>,
 ) -> FilePlan {
-    let folder =
-        attachments::attachment_folder(vault_root, note_rel, attachments::AttachmentKind::File);
     let vault = std::fs::canonicalize(vault_root).unwrap_or_else(|_| vault_root.to_path_buf());
-    let folder_rel = folder
-        .strip_prefix(vault_root)
-        .map(Path::to_path_buf)
-        .unwrap_or_default();
     let mut plan = FilePlan {
         image_options: super::image_import::Options::disabled(),
         items: Vec::new(),
-        folder,
+        refusal: None,
         vault_root: vault_root.to_path_buf(),
-        folder_rel: slash_path(&folder_rel),
         folders: 0,
         missing: 0,
         copy_bytes: 0,
         ask: false,
     };
     for path in paths {
-        let destination = attachments::attachment_folder(
-            vault_root,
-            note_rel,
-            attachments::AttachmentKind::of_path(path),
-        );
         let Ok(metadata) = std::fs::metadata(path) else {
             plan.missing += 1;
             continue;
@@ -159,7 +132,6 @@ pub fn plan(
             if !hidden(rel) {
                 let text = vault_link(rel);
                 plan.items.push(FileItem {
-                    folder: destination.clone(),
                     source: path.clone(),
                     size,
                     action: FileAction::Link { text },
@@ -167,16 +139,26 @@ pub fn plan(
                 continue;
             }
         }
+        let folder = match attachments::attachment_folder(
+            vault_root,
+            note_rel,
+            attachments::AttachmentKind::of_path(path),
+        ) {
+            Ok(folder) => folder,
+            Err(error) => {
+                plan.refusal.get_or_insert_with(|| error.to_string());
+                continue;
+            }
+        };
         let file_name = copy_name(path, stamp);
         plan.copy_bytes += size;
         if ask_above.is_some_and(|limit| size > limit) {
             plan.ask = true;
         }
         plan.items.push(FileItem {
-            folder: destination.clone(),
             source: path.clone(),
             size,
-            action: FileAction::Copy { file_name },
+            action: FileAction::Copy { file_name, folder },
         });
     }
     plan
@@ -354,7 +336,7 @@ fn has_link_syntax(target: &str) -> bool {
 }
 
 /// A relative path with `/` separators.
-pub(super) fn slash_path(rel: &Path) -> String {
+pub(crate) fn slash_path(rel: &Path) -> String {
     rel.components()
         .map(|c| c.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
@@ -464,18 +446,22 @@ impl CopyError {
 /// chunks, reporting the bytes done to `progress`.
 pub fn copy_into(
     source: &Path,
+    vault_root: &Path,
     folder: &Path,
     wanted: &str,
     progress: &mut dyn FnMut(u64),
 ) -> Result<String, CopyError> {
-    let _admission = okilum_write_authority::operation_for_directory(folder)
+    let _admission = attachments::admit_folder(vault_root, folder)
+        .and_then(|lease| lease.enter())
         .map_err(|e| CopyError::Write(io::Error::other(e)))?;
-    std::fs::create_dir_all(folder).map_err(CopyError::Folder)?;
-    remove_stale_temporaries(folder);
+    attachments::validate_name(wanted).map_err(CopyError::Write)?;
+    attachments::prepare_folder(vault_root, folder).map_err(CopyError::Folder)?;
+    remove_stale_temporaries(vault_root, folder);
+    attachments::validate_folder(vault_root, folder).map_err(CopyError::Folder)?;
     let temporary = folder.join(format!(".okilum-paste-{}.tmp", uuid::Uuid::new_v4()));
     let result = copy_to_temporary(source, folder, &temporary, progress)
-        .and_then(|()| place(&temporary, folder, wanted));
-    if result.is_err() {
+        .and_then(|()| place(vault_root, &temporary, folder, wanted));
+    if result.is_err() && attachments::validate_folder(vault_root, folder).is_ok() {
         let _ = std::fs::remove_file(&temporary);
     }
     result
@@ -484,10 +470,17 @@ pub fn copy_into(
 /// Write `bytes` into `folder` as `wanted` (or the next free variant) and
 /// return the final name: a hidden temporary file first, synced, then linked
 /// into place without replacing anything (#1611: downloaded images).
-pub fn write_into(folder: &Path, wanted: &str, bytes: &[u8]) -> Result<String, CopyError> {
-    let _admission = okilum_write_authority::operation_for_directory(folder)
+pub fn write_into(
+    vault_root: &Path,
+    folder: &Path,
+    wanted: &str,
+    bytes: &[u8],
+) -> Result<String, CopyError> {
+    let _admission = attachments::admit_folder(vault_root, folder)
+        .and_then(|lease| lease.enter())
         .map_err(|e| CopyError::Write(io::Error::other(e)))?;
-    std::fs::create_dir_all(folder).map_err(CopyError::Folder)?;
+    attachments::validate_name(wanted).map_err(CopyError::Write)?;
+    attachments::prepare_folder(vault_root, folder).map_err(CopyError::Folder)?;
     let temporary = folder.join(format!(".okilum-paste-{}.tmp", uuid::Uuid::new_v4()));
     let written = (|| -> Result<(), CopyError> {
         let mut writer = std::fs::OpenOptions::new()
@@ -498,8 +491,8 @@ pub fn write_into(folder: &Path, wanted: &str, bytes: &[u8]) -> Result<String, C
         writer.write_all(bytes).map_err(CopyError::Write)?;
         writer.sync_all().map_err(CopyError::Write)
     })();
-    let result = written.and_then(|()| place(&temporary, folder, wanted));
-    if result.is_err() {
+    let result = written.and_then(|()| place(vault_root, &temporary, folder, wanted));
+    if result.is_err() && attachments::validate_folder(vault_root, folder).is_ok() {
         let _ = std::fs::remove_file(&temporary);
     }
     result
@@ -508,7 +501,7 @@ pub fn write_into(folder: &Path, wanted: &str, bytes: &[u8]) -> Result<String, C
 /// Remove hidden temporary copies an interrupted copy (Quit, a crash) left
 /// in `folder`; once per folder per run, only ones older than
 /// [`STALE_TEMPORARY`] so a copy in progress is never touched.
-fn remove_stale_temporaries(folder: &Path) {
+fn remove_stale_temporaries(vault_root: &Path, folder: &Path) {
     static SWEPT: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
     {
         let Ok(mut swept) = SWEPT.lock() else {
@@ -535,6 +528,9 @@ fn remove_stale_temporaries(folder: &Path) {
             .and_then(|modified| modified.elapsed().ok())
             .is_some_and(|age| age > STALE_TEMPORARY);
         if stale {
+            if attachments::validate_folder(vault_root, folder).is_err() {
+                return;
+            }
             let _ = std::fs::remove_file(entry.path());
         }
     }
@@ -589,13 +585,21 @@ fn same_volume(_: &Path, _: &Path) -> bool {
 }
 
 /// Move the finished temporary file to the first free name.
-fn place(temporary: &Path, folder: &Path, wanted: &str) -> Result<String, CopyError> {
+fn place(
+    vault_root: &Path,
+    temporary: &Path,
+    folder: &Path,
+    wanted: &str,
+) -> Result<String, CopyError> {
     for suffix in 0..=MAX_SUFFIX {
         let name = numbered(wanted, suffix);
         let path = folder.join(&name);
         if path.exists() {
             continue;
         }
+        attachments::validate_folder(vault_root, folder).map_err(CopyError::Folder)?;
+        let _publication = okilum_write_authority::operation_for_directory(folder)
+            .map_err(|e| CopyError::Write(io::Error::other(e)))?;
         match std::fs::hard_link(temporary, &path) {
             Ok(()) => {
                 let _ = std::fs::remove_file(temporary);
@@ -606,12 +610,15 @@ fn place(temporary: &Path, folder: &Path, wanted: &str) -> Result<String, CopyEr
             Err(_) => {
                 // No hard links here (FAT, some network shares): reserve the
                 // name, then replace only that reservation.
+                attachments::validate_folder(vault_root, folder).map_err(CopyError::Folder)?;
                 match std::fs::OpenOptions::new()
                     .write(true)
                     .create_new(true)
                     .open(&path)
                 {
                     Ok(_) => {
+                        attachments::validate_folder(vault_root, folder)
+                            .map_err(CopyError::Folder)?;
                         std::fs::rename(temporary, &path).map_err(CopyError::Write)?;
                         sync_folder(folder);
                         return Ok(name);
@@ -673,22 +680,22 @@ mod tests {
         assert_eq!(plan.items.len(), 1);
         assert_eq!(plan.copy_bytes, 4);
         assert!(!plan.ask);
-        assert_eq!(plan.folder, vault.path().join("attachments"));
-        let FileAction::Copy { file_name } = &plan.items[0].action else {
+        let FileAction::Copy { file_name, folder } = &plan.items[0].action else {
             panic!("{plan:?}");
         };
+        assert_eq!(folder, &vault.path().join("attachments"));
         // A temp-dir PDF keeps its name; only images get pasted-image names.
         assert_eq!(file_name, "Report Q3.pdf");
-        let name = copy_into(&doc, &plan.folder, file_name, &mut |_| {}).unwrap();
+        let name = copy_into(&doc, vault.path(), folder, file_name, &mut |_| {}).unwrap();
         assert_eq!(name, "Report Q3.pdf");
-        let again = copy_into(&doc, &plan.folder, file_name, &mut |_| {}).unwrap();
+        let again = copy_into(&doc, vault.path(), folder, file_name, &mut |_| {}).unwrap();
         assert_eq!(again, "Report Q3-1.pdf");
         assert_eq!(
-            std::fs::read(plan.folder.join("Report Q3.pdf")).unwrap(),
+            std::fs::read(folder.join("Report Q3.pdf")).unwrap(),
             b"%PDF"
         );
         // No temporary file is left.
-        let names: Vec<_> = std::fs::read_dir(&plan.folder)
+        let names: Vec<_> = std::fs::read_dir(folder)
             .unwrap()
             .map(|e| e.unwrap().file_name().into_string().unwrap())
             .collect();
@@ -736,6 +743,22 @@ mod tests {
         );
         assert!(!plan.ask, "nothing is copied, nothing to confirm");
         assert!(!root.join("attachments/shot-1.png").exists());
+    }
+
+    #[test]
+    fn unsupported_layout_keeps_existing_links_and_refuses_outside_copies() {
+        let vault = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = vault.path();
+        let inside = root.join("existing.pdf");
+        let outside = outside.path().join("outside.pdf");
+        write(&root.join(".okilum/vault.json"), br#"{"layout":null}"#);
+        write(&inside, b"existing");
+        write(&outside, b"outside");
+        let plan = plan(&[outside, inside], root, "note.md", "stamp", None);
+        assert_eq!(links(&plan, &[]), ["![[existing.pdf]]"]);
+        assert_eq!(plan.copies(), 0);
+        assert!(plan.refusal.unwrap().contains("unsupported"));
     }
 
     #[test]
@@ -830,11 +853,11 @@ mod tests {
         let plan = plan(&paths, vault.path(), "n.md", "20261023193000", None);
         let mut copied = Vec::new();
         for item in &plan.items {
-            let FileAction::Copy { file_name } = &item.action else {
+            let FileAction::Copy { file_name, folder } = &item.action else {
                 panic!("{item:?}");
             };
             copied.push(Some(
-                copy_into(&item.source, &plan.folder, file_name, &mut |_| {}).unwrap(),
+                copy_into(&item.source, vault.path(), folder, file_name, &mut |_| {}).unwrap(),
             ));
         }
         assert_eq!(
@@ -846,7 +869,12 @@ mod tests {
             ]
         );
         assert_eq!(
-            std::fs::read(plan.folder.join("Pasted image 20261023193000-1.png")).unwrap(),
+            std::fs::read(
+                vault
+                    .path()
+                    .join("attachments/Pasted image 20261023193000-1.png")
+            )
+            .unwrap(),
             b"\x89PNG\r\n\x1a\nc"
         );
     }
