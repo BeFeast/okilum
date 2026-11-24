@@ -1,0 +1,118 @@
+# On okilum-dev, rsync the rehearsal into a scratch directory under ~/work.
+# scripts/verify grove-rehearsal --binary "$OKILUM_BINARY" --scratch-vault "$GROVE_SCRATCH"
+# The runner stages its own copy before launching Okilum.
+#
+# The gate is expected to fail on the November 24 rehearsal. Assertions
+# stop at the first failure. The later steps document the remaining gates.
+#
+# Manual checks: grep the app log and trace vault-root filesystem probes for
+# Projects, Areas, Resources, Archive and _Assets. Under the descriptor's
+# nested_roots, check that all four vault folders use a vault icon, both units
+# use ordinary folder icons, and a view query for exact nested note paths
+# excludes all six roots while returning an outside control. The vault icons
+# and view boundary are known gaps (VD4).
+open: state/ai/tools/vibe-coding/anthropic-patterns/cursor-rules-reference.md
+appearance: light
+preferences:
+  note_open_mode: read
+rig:
+  persistent_pointer: true
+region: [335, 128, 700, 650]
+ready_text: Cursor Rules Reference
+# A cold launch can render the opening note before vault-wide queries are ready.
+wait_for_vault: 180
+steps:
+  - id: loaded-tree
+    region: [0, 125, 275, 245]
+    text_order: [log, sources, state]
+  - id: quick-state-result
+    keys: [k]
+    mods: [ctrl]
+    type: VibeCoding Glossary
+    wait: 2
+    region: [364, 110, 640, 315]
+    text_order: [VibeCoding Glossary, anthropic-patterns]
+  - id: quick-state-open
+    keys: [Return]
+    wait: 1
+    text: Development style
+  - id: quick-log-result
+    keys: [k]
+    mods: [ctrl]
+    type: Raspberry Pi Digest
+    wait: 2
+    region: [364, 110, 640, 315]
+    text_order: [Raspberry Pi Digest, homelab]
+  - id: quick-log-open
+    keys: [Return]
+    wait: 1
+    text: Auto-generated rollup
+  - id: migrated-note-search
+    keys: [k]
+    mods: [ctrl]
+    type: log/ai/ai-agents-historical/final/Agents Network
+    wait: 2
+  - id: migrated-note-embed
+    keys: [Return]
+    wait: 2
+    text_order: [Agents Network, OpenClaw Fleet Network, Host Matrix]
+  - id: migrated-wikilink
+    click: [720, 366]
+    wait: 2
+    text: AI Agent Fleet Network
+  # Known failure. The rehearsal declares inbox and knowledge but omits
+  # their directories. With hidden entries shown, the tree exposes four roots.
+  - id: declared-tree
+    click: [258, 108]
+    region: [0, 126, 275, 350]
+    text_order: ['@views', inbox, knowledge, log, sources, state]
+  - id: workbench-open
+    click: [247, 68]
+    wait: 3
+    region: [0, 45, 279, 690]
+    text: Rescan
+  # Known failure. Changes has typed groups, but In Progress puts every
+  # rehearsal context in one unlabelled group.
+  - id: workbench-kind-status
+    region: [0, 100, 279, 350]
+    text_order: [IN PROGRESS, project, active]
+  - id: tree-mode
+    click: [184, 68]
+  # Known failure (VD4). The canonical state result is a positive control.
+  # The duplicate from the nested vault must be absent.
+  - id: nested-vault-quick-open
+    keys: [k]
+    mods: [ctrl]
+    type: Python for C++ Devs
+    wait: 2
+    region: [364, 122, 640, 320]
+    text: state / ai / learning
+    text_absent: Obsidian Vaults
+  - id: close-quick-open
+    keys: [Escape, Escape]
+  # Known failure (VD4). The canonical log results are a positive control.
+  # The matching note from the nested repo-seed unit must be absent.
+  - id: nested-unit-search
+    keys: [f]
+    mods: [ctrl, shift]
+    type: apertune-maestro-issue-wave
+    wait: 5
+    region: [364, 112, 640, 380]
+    text: Apertune Maestro Issue Wave
+    text_absent: repo-seed
+  - id: close-search
+    keys: [Escape, Escape]
+  # Known failure. The rehearsal has no @views/sidebar.md (or other sidebar
+  # view definition), and the descriptor alone does not expose Areas.
+  - id: areas-button
+    region: [0, 46, 278, 80]
+    text: Areas
+  - id: areas
+    click: [159, 110]
+    region: [0, 130, 260, 595]
+    text_order: [AI, Business, Dev, Finance, Health, HomeLab, Life, Music, SAP, Video]
+  - id: domain-view
+    click: [43, 339]
+    wait: 2
+    region: [280, 90, 807, 625]
+    text_order: [Music, Projects and contexts, Recent decisions]

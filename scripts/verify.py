@@ -457,7 +457,10 @@ def run(args, scenario, output, result):
     with tempfile.TemporaryDirectory(prefix='okilum-verify-') as scratch:
         root = Path(scratch)
         vault = root / ('brain' if any('cutover' in step for step in scenario['steps']) else 'vault')
-        vault.mkdir()
+        if args.scratch_vault is None:
+            vault.mkdir()
+        else:
+            shutil.copytree(args.scratch_vault, vault)
         if 'note' in scenario:
             (vault / 'scenario.md').write_text(scenario['note'])
         copy_vault_fixture(vault, scenario.get('vault'))
@@ -532,6 +535,12 @@ def run(args, scenario, output, result):
                         break
                     if time.monotonic() > deadline:
                         raise AssertionError(f'Fixture content not visible: {visible!r}')
+                if 'wait_for_vault' in scenario:
+                    deadline = time.monotonic() + scenario['wait_for_vault']
+                    while not any(e.get('phase') == 'vault_ready' for e in trace_events(root)):
+                        require(proc.poll() is None, f'App exited while indexing: {proc.returncode}')
+                        require(time.monotonic() < deadline, 'Vault indexing did not finish')
+                        time.sleep(.25)
                 result['checks'] = []
                 for step in scenario['steps']:
                     name = step['id']
@@ -662,10 +671,16 @@ def main():
     parser.add_argument('--output', type=Path, help='Evidence directory (pool: under ~/work/qa-evidence)')
     parser.add_argument('--in-slot', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--binary', help='Use an already-built app for regression/bisect; skips build')
+    parser.add_argument('--scratch-vault', type=Path,
+                        help='Copy a rig-host scratch vault into the isolated run (requires --binary)')
     parser.add_argument('--measure-incremental', action='store_true', help='Time a one-line shell change in the slot')
     parser.add_argument('--live-cutover', action='store_true',
                         help='Check the root switch with the archive window still open')
     args = parser.parse_args()
+    if args.scratch_vault is not None:
+        args.scratch_vault = args.scratch_vault.resolve()
+        if not args.binary or not args.scratch_vault.is_dir():
+            parser.error('--scratch-vault requires --binary and an existing directory')
     if Path(args.scenario).name != args.scenario:
         parser.error('scenario must be an id, not a path')
     if not (ROOT / 'acceptance' / f'{args.scenario}.yaml').is_file():
