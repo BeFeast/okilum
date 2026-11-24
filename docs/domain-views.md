@@ -1,5 +1,13 @@
 # Domain views
 
+Layout groups the sidebar; it never hides a file. Without a vault-authored
+sidebar, Areas lists the declared domains, each with the number of files in
+its folder and a disclosure that expands into that folder as it is on disk
+(folders first, `@`/`.` items hidden as in the Tree). **All files** follows
+the domains and lists the whole vault as the Tree does, so anything outside a
+domain (inbox, sources, knowledge, log, undeclared folders) stays reachable.
+A domain row's name still opens its domain view; files open as from the Tree.
+
 Areas opens the built-in `@views/domain.md` for a domain when the sidebar
 definition omits `node_view` or points at `[[@views/domain]]`. A vault file at
 `@views/domain.md` supplies the template instead. A custom `node_view` can still
