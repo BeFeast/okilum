@@ -105,7 +105,8 @@ impl Target {
                 let range = line_range(source, self.line).ok_or("Task line is unavailable")?;
                 let raw = &source[range.clone()];
                 let rel_after_box = self.checkbox.end + 1 - range.start;
-                let markers = done_markers(source, self.line, raw, rel_after_box);
+                let protected = protected_line_spans(source, self.line);
+                let markers = done_markers(raw, rel_after_box, &protected);
                 if markers.len() > 1 {
                     return Err("The task has more than one done date marker".into());
                 }
@@ -129,6 +130,14 @@ impl Target {
                             let trimmed = raw.trim_end_matches([' ', '\t']);
                             let block = regex::Regex::new(r"[ \t]+\^[A-Za-z0-9-]+$").unwrap();
                             let end = block.find(trimmed).map_or(trimmed.len(), |m| m.start());
+                            if protected.iter().any(|span| span.contains(&end))
+                                || is_escaped_at(raw, end)
+                            {
+                                return Err(
+                                    "Cannot insert done date inside protected Markdown syntax"
+                                        .into(),
+                                );
+                            }
                             after.insert_str(range.start + end, &format!(" [done:: {value}]"));
                         }
                         [marker] => {
@@ -144,6 +153,20 @@ impl Target {
                     }
                     if source.get(self.checkbox.clone()) == Some(" ") {
                         after.replace_range(self.checkbox.clone(), "x");
+                    }
+                    let after_range =
+                        line_range(&after, self.line).ok_or("Task line is unavailable")?;
+                    let after_protected = protected_line_spans(&after, self.line);
+                    let after_markers = done_markers(
+                        &after[after_range.clone()],
+                        self.checkbox.end + 1 - after_range.start,
+                        &after_protected,
+                    );
+                    if after_markers.len() != 1 || after_markers[0].value != value {
+                        return Err(
+                            "Cannot safely place done date outside protected Markdown syntax"
+                                .into(),
+                        );
                     }
                 } else {
                     if let [marker] = markers.as_slice() {
@@ -241,23 +264,66 @@ impl Plan {
         Ok(&self.before)
     }
 }
-fn line_range(source: &str, line: usize) -> Option<Range<usize>> {
-    let mut offset = 0;
-    for (i, raw) in source.split_inclusive('\n').enumerate() {
-        if i + 1 == line {
-            let text = raw.strip_suffix('\n').unwrap_or(raw);
-            let text = text.strip_suffix('\r').unwrap_or(text);
-            return Some(offset..offset + text.len());
-        }
-        offset += raw.len();
-    }
-    None
+fn has_lone_cr(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes
+        .iter()
+        .enumerate()
+        .any(|(i, &b)| b == b'\r' && bytes.get(i + 1) != Some(&b'\n'))
 }
+
+fn markdown_line_ranges(text: &str) -> Vec<Range<usize>> {
+    let bytes = text.as_bytes();
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\r' => {
+                ranges.push(start..i);
+                i += if bytes.get(i + 1) == Some(&b'\n') {
+                    2
+                } else {
+                    1
+                };
+                start = i;
+            }
+            b'\n' => {
+                ranges.push(start..i);
+                i += 1;
+                start = i;
+            }
+            _ => i += 1,
+        }
+    }
+    if start < bytes.len() {
+        ranges.push(start..bytes.len());
+    }
+    ranges
+}
+
+fn line_range(source: &str, line: usize) -> Option<Range<usize>> {
+    if line == 0 {
+        return None;
+    }
+    let body = crate::render::without_frontmatter(source);
+    let prefix_len = source.len() - body.len();
+    let prefix = &source[..prefix_len];
+    if has_lone_cr(prefix) {
+        return None;
+    }
+    let prefix_lines = prefix.bytes().filter(|&b| b == b'\n').count();
+    let body_line = line.checked_sub(prefix_lines).filter(|&n| n > 0)?;
+    let range = markdown_line_ranges(body).into_iter().nth(body_line - 1)?;
+    Some(prefix_len + range.start..prefix_len + range.end)
+}
+
 fn plain_metadata(source: &str, span: Range<usize>) -> bool {
     let body = crate::render::without_frontmatter(source);
     let prefix = source.len() - body.len();
-    let starts: Vec<_> = std::iter::once(0)
-        .chain(body.match_indices('\n').map(|(i, _)| i + 1))
+    let starts: Vec<_> = markdown_line_ranges(body)
+        .into_iter()
+        .map(|range| range.start)
         .collect();
     let arena = Arena::new();
     let root = parse_document(&arena, body, &crate::render::comrak_options());
@@ -291,13 +357,23 @@ struct DoneMarker<'a> {
     value: &'a str,
 }
 
+fn is_escaped_at(raw: &str, byte_index: usize) -> bool {
+    raw[..byte_index]
+        .bytes()
+        .rev()
+        .take_while(|&b| b == b'\\')
+        .count()
+        % 2
+        == 1
+}
+
 fn protected_line_spans(source: &str, line: usize) -> Vec<Range<usize>> {
     let body = crate::render::without_frontmatter(source);
     let prefix_lines = source[..source.len() - body.len()]
         .bytes()
         .filter(|&b| b == b'\n')
         .count();
-    let Some(body_line) = line.checked_sub(prefix_lines) else {
+    let Some(body_line) = line.checked_sub(prefix_lines).filter(|&n| n > 0) else {
         return Vec::new();
     };
     let arena = Arena::new();
@@ -312,15 +388,23 @@ fn protected_line_spans(source: &str, line: usize) -> Vec<Range<usize>> {
                     | NodeValue::Link(_)
                     | NodeValue::WikiLink(_)
                     | NodeValue::Image(_)
-            ) && pos.start.line == body_line
+                    | NodeValue::HtmlInline(_)
+                    | NodeValue::Math(_)
+                    | NodeValue::Raw(_)
+            ) && pos.start.line <= body_line
+                && pos.end.line >= body_line
             {
-                Some(
-                    pos.start.column.saturating_sub(1)..if pos.end.line == body_line {
-                        pos.end.column
-                    } else {
-                        usize::MAX
-                    },
-                )
+                let start = if pos.start.line < body_line {
+                    0
+                } else {
+                    pos.start.column.saturating_sub(1)
+                };
+                let end = if pos.end.line > body_line {
+                    usize::MAX
+                } else {
+                    pos.end.column
+                };
+                Some(start..end)
             } else {
                 None
             }
@@ -329,60 +413,41 @@ fn protected_line_spans(source: &str, line: usize) -> Vec<Range<usize>> {
 }
 
 fn done_markers<'a>(
-    source: &str,
-    line: usize,
     raw: &'a str,
     rel_after_box: usize,
+    protected: &[Range<usize>],
 ) -> Vec<DoneMarker<'a>> {
+    // Only Dataview inline fields are mutable; compatibility emoji (`✅`) stays read-only.
     static DONE_MARKER: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(
-            r"\[([\w-]+)::([^\]\r\n]*)\]|\(([\w-]+)::([^()\r\n]*)\)|(✅\u{fe0f}?)[ \t]*([^\s]*)",
-        )
-        .unwrap()
+        regex::Regex::new(r"\[([\w-]+)::([^\]\r\n]*)\]|\(([\w-]+)::([^()\r\n]*)\)").unwrap()
     });
     let tail = raw.get(rel_after_box..).unwrap_or("");
-    let protected = protected_line_spans(source, line);
     let mut found = Vec::new();
     for cap in DONE_MARKER.captures_iter(tail) {
         let full = cap.get(0).unwrap();
         let abs_start = rel_after_box + full.start();
         let abs_end = rel_after_box + full.end();
-        if protected.iter().any(|span| span.contains(&abs_start))
-            || raw[..abs_start]
-                .bytes()
-                .rev()
-                .take_while(|&b| b == b'\\')
-                .count()
-                % 2
-                == 1
-        {
+        if protected.iter().any(|span| span.contains(&abs_start)) || is_escaped_at(raw, abs_start) {
             continue;
         }
-        if let Some(key) = cap.get(1).or_else(|| cap.get(3)) {
-            let key = key.as_str();
-            if !key.eq_ignore_ascii_case("done") && !key.eq_ignore_ascii_case("completion") {
-                continue;
-            }
-            let val_match = cap.get(2).or_else(|| cap.get(4)).unwrap();
-            let raw_val = val_match.as_str();
-            let trimmed_start = raw_val.len() - raw_val.trim_start_matches([' ', '\t']).len();
-            let trimmed = raw_val.trim_matches([' ', '\t']);
-            let val_start = rel_after_box + val_match.start() + trimmed_start;
-            let val_end = val_start + trimmed.len();
-            found.push(DoneMarker {
-                span: abs_start..abs_end,
-                value_span: val_start..val_end,
-                value: trimmed,
-            });
-        } else if let Some(val_match) = cap.get(6) {
-            let val_start = rel_after_box + val_match.start();
-            let val_end = rel_after_box + val_match.end();
-            found.push(DoneMarker {
-                span: abs_start..abs_end,
-                value_span: val_start..val_end,
-                value: val_match.as_str(),
-            });
+        let Some(key) = cap.get(1).or_else(|| cap.get(3)) else {
+            continue;
+        };
+        let key = key.as_str();
+        if !key.eq_ignore_ascii_case("done") && !key.eq_ignore_ascii_case("completion") {
+            continue;
         }
+        let val_match = cap.get(2).or_else(|| cap.get(4)).unwrap();
+        let raw_val = val_match.as_str();
+        let trimmed_start = raw_val.len() - raw_val.trim_start_matches([' ', '\t']).len();
+        let trimmed = raw_val.trim_matches([' ', '\t']);
+        let val_start = rel_after_box + val_match.start() + trimmed_start;
+        let val_end = val_start + trimmed.len();
+        found.push(DoneMarker {
+            span: abs_start..abs_end,
+            value_span: val_start..val_end,
+            value: trimmed,
+        });
     }
     found
 }
@@ -518,10 +583,10 @@ mod tests {
     }
 
     #[test]
-    fn check_with_done_handles_legacy_emoji_code_spans_and_refuses_ambiguous() {
+    fn check_with_done_preserves_readonly_legacy_emoji_code_spans_and_refuses_ambiguous() {
         let done = time::macros::date!(2026 - 11 - 24);
-        // Legacy emoji done marker is removed cleanly on reopen, keeping trailing spaces + CRLF.
-        let legacy = "- [x] Done task [owner:: oleg] ✅ 2026-11-23  \r\n";
+        // Legacy compatibility emoji (`✅`) is read-only: reopening flips only the checkbox.
+        let legacy = "- [x] Task ✅ 2026-01-01  \r\n";
         let t = Target::capture("a.md", legacy, 1).unwrap();
         let reopened = t
             .plan(
@@ -534,7 +599,24 @@ mod tests {
             .unwrap();
         assert_eq!(
             reopened.after.as_bytes(),
-            b"- [ ] Done task [owner:: oleg]  \r\n"
+            "- [ ] Task ✅ 2026-01-01  \r\n".as_bytes()
+        );
+
+        // Reopening removes an inline [done:: ...] while still preserving legacy emoji.
+        let legacy_plus_inline = "- [x] Task ✅ 2026-01-01 [done:: 2026-11-24]  \r\n";
+        let t = Target::capture("a.md", legacy_plus_inline, 1).unwrap();
+        let reopened = t
+            .plan(
+                legacy_plus_inline,
+                Change::CheckWithDone {
+                    checked: false,
+                    done,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            reopened.after.as_bytes(),
+            "- [ ] Task ✅ 2026-01-01  \r\n".as_bytes()
         );
 
         // Code spans, links, and escaped markers are untouched when adding [done:: ...].
@@ -555,12 +637,12 @@ mod tests {
             b"- [x] Document `[done:: 2026-01-01]` and [ref [done:: 2026-01-02]](a.md) and \\[done:: 2026-01-03] [done:: 2026-11-24]  \r\n"
         );
 
-        // Malformed or duplicate plain done markers fail closed.
+        // Malformed or duplicate plain inline done markers fail closed.
         for bad in [
             "- [ ] Bad [done:: nope]\n",
-            "- [ ] Bad ✅ 2026-02-30\n",
+            "- [ ] Bad (completion:: 2026-02-30)\n",
             "- [ ] Two [done:: 2026-11-20] [done:: 2026-11-21]\n",
-            "- [ ] Two [done:: 2026-11-20] ✅ 2026-11-21\n",
+            "- [ ] Two [done:: 2026-11-20] (completion:: 2026-11-21)\n",
         ] {
             let t = Target::capture("a.md", bad, 1).unwrap();
             assert!(
@@ -575,5 +657,73 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn check_with_done_respects_lone_cr_line_boundaries() {
+        let done = time::macros::date!(2026 - 11 - 24);
+        let source = "- [ ] First\r- [x] Second [done:: 2026-01-01]\n";
+        let target = Target::capture("test.md", source, 1).unwrap();
+        let plan = target
+            .plan(
+                source,
+                Change::CheckWithDone {
+                    checked: true,
+                    done,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            plan.after.as_bytes(),
+            b"- [x] First [done:: 2026-11-24]\r- [x] Second [done:: 2026-01-01]\n"
+        );
+        assert_eq!(
+            plan.undo_source(&plan.after).unwrap().as_bytes(),
+            source.as_bytes()
+        );
+    }
+
+    #[test]
+    fn check_with_done_refuses_multiline_code_span_and_link_insertion() {
+        let done = time::macros::date!(2026 - 11 - 24);
+        for source in [
+            "- [ ] Example `code\n  continued`\n",
+            "- [ ] [Example\n  label](https://example.org)\n",
+            "- [ ] Example trailing escape\\\n  continued\n",
+        ] {
+            let target = Target::capture("test.md", source, 1).unwrap();
+            assert!(
+                target
+                    .plan(
+                        source,
+                        Change::CheckWithDone {
+                            checked: true,
+                            done,
+                        },
+                    )
+                    .is_err(),
+                "must refuse inserting done marker inside protected span: {source:?}"
+            );
+        }
+        // Positive control: closed single-line code span still succeeds outside code.
+        let control = "- [ ] Example `code [done:: 2026-01-01]`  \r\n";
+        let target = Target::capture("test.md", control, 1).unwrap();
+        let plan = target
+            .plan(
+                control,
+                Change::CheckWithDone {
+                    checked: true,
+                    done,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            plan.after.as_bytes(),
+            b"- [x] Example `code [done:: 2026-01-01]` [done:: 2026-11-24]  \r\n"
+        );
+        assert_eq!(
+            crate::tasks::parse("test.md", &plan.after)[0].done,
+            Some(done)
+        );
     }
 }
