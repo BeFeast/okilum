@@ -537,9 +537,6 @@ fn verify_check_with_done_postcondition(
         .issues
         .iter()
         .any(|issue| issue.key == "done");
-    let has_duplicate_done = after_task.metadata.issues.iter().any(|issue| {
-        issue.key == "done" && issue.kind == crate::tasks::MetadataIssueKind::Duplicate
-    });
     if checked {
         if after_task.done != Some(done) || has_done_issue {
             return Err(
@@ -547,7 +544,7 @@ fn verify_check_with_done_postcondition(
             );
         }
     } else if has_plain_legacy_done_emoji(after_raw, after_rel, &after_protected) {
-        if after_task.done != before_task.done || has_duplicate_done {
+        if after_task.done != before_task.done || has_done_issue {
             return Err("Cannot reopen task cleanly alongside read-only done metadata".into());
         }
     } else if after_task.done.is_some() || has_done_issue {
@@ -992,6 +989,19 @@ mod tests {
                 "must refuse protected/conflicting completion: {source:?}"
             );
         }
+
+        // Reopening with an invalid legacy `✅` done issue must refuse without writing.
+        let invalid_legacy_reopen = "- [x] Task ✅ nope\n";
+        let target = Target::capture("test.md", invalid_legacy_reopen, 1).unwrap();
+        assert!(target
+            .plan(
+                invalid_legacy_reopen,
+                Change::CheckWithDone {
+                    checked: false,
+                    done,
+                },
+            )
+            .is_err());
 
         // 4. Checkboxes inside `%%…%%` comments are hidden from Tasks projection and
         //    refused by Target::capture (cannot be reopened or completed).

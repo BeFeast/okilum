@@ -534,6 +534,27 @@ mod tests {
             assert_eq!(std::fs::read(&file).unwrap(), source.as_bytes());
         }
 
+        // Reopening with an invalid legacy `✅` done marker refuses with zero disk writes.
+        let bad_reopen_file = root.join("legacy-bad-reopen.md");
+        let bad_reopen_source = "- [x] Task ✅ nope\n";
+        std::fs::write(&bad_reopen_file, bad_reopen_source).unwrap();
+        let bad_reopen_target =
+            Target::capture("legacy-bad-reopen.md", bad_reopen_source, 1).unwrap();
+        assert!(apply(
+            &root,
+            &drafts,
+            &bad_reopen_target,
+            Change::CheckWithDone {
+                checked: false,
+                done,
+            },
+        )
+        .is_err());
+        assert_eq!(
+            std::fs::read(&bad_reopen_file).unwrap(),
+            bad_reopen_source.as_bytes()
+        );
+
         // Checkboxes inside `%%…%%` comments are neither indexed nor writable on disk.
         for (name, source, line) in [
             ("commented-hidden.md", "%%\n- [x] Hidden\n%%\n", 2usize),
