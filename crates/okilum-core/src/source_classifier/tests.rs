@@ -678,3 +678,56 @@ fn wikilink_whitespace_preserves_source_and_reveals_exact_syntax() {
         );
     }
 }
+
+#[test]
+fn breaks_and_br_rows_keep_prose_projected_with_exact_source() {
+    // #3259: a <br> row conceals its tag and stays an empty row; a row-edge
+    // tag and a backslash break conceal; a mid-row tag stays for the shell
+    // overlay to draw as a line break; trailing-space breaks keep their bytes.
+    for (source, expected) in [
+        ("**a**<br>b", "a<br>b"),
+        ("**a**<br>\nb", "a\nb"),
+        ("**a**\n<BR />b", "a\nb"),
+        ("**a**\\\nb", "a\nb"),
+        ("**a**  \nb", "a  \nb"),
+        ("x\n\n<br>\n\ny", "x\n\n\n\ny"),
+        ("x\n\n<br />\n<br/>\n\ny", "x\n\n\n\n\ny"),
+        ("**a** &nbsp; &#38;", "a &nbsp; &#38;"),
+    ] {
+        assert_eq!(display(source), expected, "{source:?}");
+    }
+    // Positive control: any other raw HTML keeps its whole block Source.
+    assert_eq!(display("**a**<b>b</b>"), "**a**<b>b</b>");
+    assert_eq!(display("x\n\n<div>\n\ny"), "x\n\n<div>\n\ny");
+}
+
+#[test]
+fn break_tags_and_character_references_are_recognised_exactly() {
+    for (text, len) in [
+        ("<br>", Some(4)),
+        ("<BR/>x", Some(5)),
+        ("<br  />", Some(7)),
+        ("<bra>", None),
+        ("<br", None),
+        ("<b>", None),
+    ] {
+        assert_eq!(break_tag(text), len, "{text:?}");
+    }
+    for (text, decoded) in [
+        ("&nbsp;x", Some((6, "\u{a0}"))),
+        ("&amp;", Some((5, "&"))),
+        ("&#38;", Some((5, "&"))),
+        ("&#x2014;", Some((8, "—"))),
+        ("&copy;", Some((6, "©"))),
+        ("&nosuch;", None),
+        ("&#10;", None),
+        ("&amp", None),
+        ("& amp;", None),
+    ] {
+        assert_eq!(
+            character_reference(text),
+            decoded.map(|(n, s)| (n, s.to_owned())),
+            "{text:?}"
+        );
+    }
+}

@@ -1,6 +1,6 @@
 //! Render-only punctuation candidates in a classifier-approved prose block.
 //! Coordinates always refer to authored UTF-8; this module never edits source.
-use std::ops::Range;
+use std::{borrow::Cow, ops::Range};
 use unicode_segmentation::UnicodeSegmentation;
 
 #[cfg(test)]
@@ -12,7 +12,7 @@ thread_local! {
 pub(super) fn replacements(
     source: &str,
     eligible: impl Fn(&Range<usize>) -> bool,
-) -> Vec<(Range<usize>, &'static str)> {
+) -> Vec<(Range<usize>, Cow<'static, str>)> {
     INDEXED_BYTES.with(|n| n.set(n.get() + source.len()));
     let boundaries: Vec<_> = source
         .grapheme_indices(true)
@@ -46,9 +46,9 @@ struct Event {
     boundary: bool,
     kind: EventKind,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum EventKind {
-    Fixed(&'static str),
+    Fixed(Cow<'static, str>),
     Open(char),
     Close(char),
 }
@@ -133,7 +133,7 @@ impl Inventory {
     pub(super) fn replacements(
         &self,
         eligible: impl Fn(&Range<usize>) -> bool,
-    ) -> Vec<(Range<usize>, &'static str)> {
+    ) -> Vec<(Range<usize>, Cow<'static, str>)> {
         let mut out = Vec::new();
         for paragraph in self.rows.split(|r| r.blank) {
             let russian = paragraph
@@ -144,7 +144,9 @@ impl Inventory {
             for event in paragraph.iter().flat_map(|r| &r.events) {
                 let admitted = event.boundary && eligible(&event.range) && eligible(&event.context);
                 match event.kind {
-                    EventKind::Fixed(glyph) if admitted => out.push((event.range.clone(), glyph)),
+                    EventKind::Fixed(ref glyph) if admitted => {
+                        out.push((event.range.clone(), glyph.clone()))
+                    }
                     EventKind::Open(ch) => {
                         let pending = if ch == '"' { &mut double } else { &mut single };
                         *pending = Some((event.range.clone(), admitted));
@@ -160,8 +162,8 @@ impl Inventory {
                                 } else {
                                     ("“", "”")
                                 };
-                                out.push((open, left));
-                                out.push((event.range.clone(), right));
+                                out.push((open, left.into()));
+                                out.push((event.range.clone(), right.into()));
                             }
                         }
                     }
@@ -180,7 +182,7 @@ pub(super) fn replacements_indexed(
     source: &str,
     eligible: impl Fn(&Range<usize>) -> bool,
     boundary: impl Fn(&Range<usize>) -> bool,
-) -> Vec<(Range<usize>, &'static str)> {
+) -> Vec<(Range<usize>, Cow<'static, str>)> {
     Inventory::new(source, 0, boundary).replacements(eligible)
 }
 
@@ -209,15 +211,26 @@ fn lex(source: &str, origin: usize, boundary: &impl Fn(&Range<usize>) -> bool) -
             .count()
             % 2
             == 1;
-        let (len, glyph) = if tail.starts_with("...") {
-            (3, Some("…"))
-        } else if tail.starts_with("---") {
-            (3, Some("—"))
-        } else if tail.starts_with("--") {
-            (2, Some("—"))
-        } else {
-            (ch.len_utf8(), None)
-        };
+        // A mid-row `<br>` the classifier admitted draws a line break; a
+        // character reference draws its character (#3259). Row-edge tags
+        // are concealed markers, never eligible here.
+        let reference = (ch == '&')
+            .then(|| okilum_core::source_classifier::character_reference(tail))
+            .flatten();
+        let (len, glyph): (usize, Option<Cow<'static, str>>) =
+            if let Some(len) = okilum_core::source_classifier::break_tag(tail) {
+                (len, Some("\n".into()))
+            } else if let Some((len, decoded)) = reference {
+                (len, Some(decoded.into()))
+            } else if tail.starts_with("...") {
+                (3, Some("…".into()))
+            } else if tail.starts_with("---") {
+                (3, Some("—".into()))
+            } else if tail.starts_with("--") {
+                (2, Some("—".into()))
+            } else {
+                (ch.len_utf8(), None)
+            };
         let range = at..at + len;
         if !escaped {
             let event = if let Some(glyph) = glyph {
@@ -234,7 +247,7 @@ fn lex(source: &str, origin: usize, boundary: &impl Fn(&Range<usize>) -> bool) -
                     .then(|| contraction_context(source, &(0..source.len()), &range))
                     .flatten();
                 if let Some(context) = contraction {
-                    Some((EventKind::Fixed("’"), context, admitted))
+                    Some((EventKind::Fixed("’".into()), context, admitted))
                 } else if before.is_none_or(|c| !c.is_alphanumeric() && c != '"' && c != '\'')
                     && after.is_some_and(|c| !c.is_whitespace())
                 {
@@ -302,7 +315,7 @@ mod tests {
     fn shown(source: &str, eligible: impl Fn(&Range<usize>) -> bool) -> String {
         let mut text = source.to_owned();
         for (range, glyph) in replacements(source, eligible).into_iter().rev() {
-            text.replace_range(range, glyph);
+            text.replace_range(range, &glyph);
         }
         text
     }
@@ -409,7 +422,7 @@ mod tests {
         ] {
             let at = raw.find('\'').unwrap();
             let candidates = replacements(raw, |_| true);
-            assert_eq!(candidates, vec![(at..at + 1, "’")], "{raw:?}");
+            assert_eq!(candidates, vec![(at..at + 1, "’".into())], "{raw:?}");
             assert_eq!(shown(raw, |_| true), raw.replacen('\'', "’", 1));
         }
         assert_eq!(

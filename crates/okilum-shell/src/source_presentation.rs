@@ -504,8 +504,33 @@ impl CachedProvider {
         if let Some(math) = &math {
             styles = math.restyle(styles);
         }
-        let decorations = projection_decorations(colors, &styles, heading_rules);
-        let line_indents = metadata.indents(&projection);
+        // Core display lines, moved past any line break the overlay draws.
+        let line = |core: usize| math.as_ref().map_or(core, |m| m.line(core));
+        let line_scales = line_scales
+            .into_iter()
+            .flat_map(|scale| {
+                // A heading split by `<br>` keeps its size on every piece.
+                (line(scale.line)..line(scale.line + 1)).map(move |at| LineScale {
+                    line: at,
+                    hang: if at == line(scale.line) {
+                        scale.hang
+                    } else {
+                        0
+                    },
+                    ..scale
+                })
+            })
+            .collect();
+        let decorations = projection_decorations(colors, &styles, || {
+            heading_rules()
+                .into_iter()
+                .map(|at| line(at + 1) - 1)
+                .collect()
+        });
+        let mut line_indents = metadata.indents(&projection);
+        for indent in &mut line_indents {
+            indent.line = line(indent.line);
+        }
         let mut blocks = metadata.blocks(&projection, active);
         // A different revision must wait for its worker classification. Never
         // apply old directive offsets to a newer draft, even if lengths match.
@@ -528,6 +553,9 @@ impl CachedProvider {
             ));
             blocks.sort_by_key(|block| block.source.start.0);
         }
+        for block in &mut blocks {
+            block.lines = line(block.lines.start)..line(block.lines.end);
+        }
         Some(Arc::new(MappedProjection {
             source: source.clone(),
             // Retained with the styles, so a revision not yet classified keeps
@@ -544,10 +572,11 @@ impl CachedProvider {
     }
 }
 
-/// Core display text with inline formulas (#1645) and smart punctuation
-/// (#1644) replaced by their one-line rendering. Replacements never contain a
-/// line break, so line numbers, blocks and heading scales stay those of the
-/// core display. Positions inside replacements snap to their edges with bias.
+/// Core display text with inline formulas (#1645), smart punctuation (#1644),
+/// character references and mid-row `<br>` (#3259) replaced by their
+/// rendering. Only a `<br>` draws a line break; [`MathOverlay::line`] moves
+/// core display lines (blocks, heading scales and rules, indents) past it.
+/// Positions inside replacements snap to their edges with bias.
 #[derive(Clone)]
 struct MathOverlay {
     core: okilum_core::source_projection::revision::Text,
@@ -555,6 +584,9 @@ struct MathOverlay {
     /// Sorted, disjoint: the formula's core display range, the range drawn in
     /// its place, and its glyph runs relative to that range.
     segments: Vec<MathSegment>,
+    /// Core display lines holding drawn line breaks, sorted, with the number
+    /// of breaks drawn up to and including that segment.
+    breaks: Vec<(usize, usize)>,
 }
 
 #[derive(Clone)]
@@ -671,11 +703,27 @@ impl MathOverlay {
             }
             text
         };
+        let mut drawn = 0;
+        let breaks = segments
+            .iter()
+            .filter_map(|segment| {
+                let count = segment.rendered.matches('\n').count();
+                drawn += count;
+                (count > 0).then(|| (display.line_at(segment.core.start), drawn))
+            })
+            .collect();
         Self {
             core: display.clone(),
             text,
             segments,
+            breaks,
         }
+    }
+
+    /// The drawn line where core display line `core` starts.
+    fn line(&self, core: usize) -> usize {
+        let before = self.breaks.partition_point(|&(line, _)| line < core);
+        core + before.checked_sub(1).map_or(0, |i| self.breaks[i].1)
     }
 
     fn forward(&self, core: usize, bias: ConcealBias) -> usize {
@@ -1640,6 +1688,64 @@ mod tests {
     }
 
     #[test]
+    fn breaks_and_references_draw_while_inactive_and_reveal_exact_source() {
+        // #3259: mid-row <br> draws a line break, references their character,
+        // a <br> row and a backslash break conceal; code keeps its bytes.
+        let raw = "# Head<br>more\n\nEcho<br>Foxtrot<br />Golf\n\nPapa&nbsp;Q &amp; &#38; `&amp;<br>`\n\n<br>\n\nC\\\nD\n\nend";
+        let source = source(raw);
+        let provider = Arc::new(CachedProvider::classify(source.clone()));
+        let frame = provider.compose(&source, &inactive(&source)).unwrap();
+        assert_eq!(
+            frame.text(),
+            "Head\nmore\n\nEcho\nFoxtrot\nGolf\n\nPapa\u{a0}Q & & &amp;<br>\n\n\n\nC\nD\n\nend"
+        );
+        assert_eq!(
+            frame.source().text,
+            source.text,
+            "source bytes stay authored"
+        );
+        // The heading keeps its size on both pieces; lines below move down.
+        assert_eq!(
+            frame
+                .line_scales()
+                .iter()
+                .map(|s| s.line)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        let tag = raw.find("<br>Foxtrot").unwrap();
+        let shown = frame.text().find("\nFoxtrot").unwrap();
+        assert_eq!(
+            frame.to_projected(SourceByte(tag), ConcealBias::Left),
+            Some(ProjectedByte(shown))
+        );
+        assert_eq!(
+            frame.to_projected(SourceByte(tag + 4), ConcealBias::Right),
+            Some(ProjectedByte(shown + 1))
+        );
+        assert_eq!(
+            frame.to_source(ProjectedByte(shown + 1), ConcealBias::Right),
+            Some(SourceByte(tag + 4))
+        );
+        let cursor = SourceByte(raw.find("Foxtrot").unwrap());
+        let active = ActiveSource {
+            anchor: cursor,
+            head: cursor,
+            ..ActiveSource::default()
+        };
+        let revealed = provider.compose(&source, &active).unwrap();
+        assert!(
+            revealed.text().contains("Echo<br>Foxtrot<br />Golf"),
+            "the caret's paragraph shows its source: {:?}",
+            revealed.text()
+        );
+        assert!(
+            revealed.text().contains("Papa\u{a0}Q"),
+            "other blocks stay drawn"
+        );
+    }
+
+    #[test]
     fn smart_punctuation_maps_rendered_glyphs_and_reveals_exact_source() {
         let source = source("\"Привет\" -- ... `\"code\" -- ...`\n\nend");
         let provider = Arc::new(CachedProvider::classify(source.clone()));
@@ -1727,7 +1833,7 @@ mod tests {
                         (
                             range.clone(),
                             Arc::new(tex::Linear {
-                                text: (*glyph).into(),
+                                text: glyph.to_string(),
                                 runs: Vec::new(),
                             }),
                         )

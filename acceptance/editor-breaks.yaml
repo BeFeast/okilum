@@ -1,0 +1,47 @@
+# #3259 (editor half): Live Preview draws the breaks the Reader does while
+# the caret is elsewhere (Ctrl+Shift+E opens Live Preview with the caret in
+# the heading). An inline <br>, <br/>, <br /> starts a new visual line; a
+# trailing backslash hard break hides its backslash; named and numeric
+# entities show their character (&nbsp; does not collapse); a <br> line
+# between paragraphs is an empty line, its tag hidden. The caret in a
+# paragraph shows its exact source again; the source is never changed.
+# The note is a quoted string so the trailing spaces survive editors.
+# Bravo -> Charlie is the plain paragraph gap (one blank source row).
+note: "# Editor breaks\n\nAlpha trailing spaces  \nBravo after spaces\n\nCharlie backslash\\\nDelta after backslash\n\nEcho tag<br>Foxtrot after tag<br/>Golf after slash<br />Hotel after spaced slash\n\nPapa&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Quebec Romeo Sierra\n\nTango &amp; Uniform &#38; Victor\n\nLima before tag\n\n<br>\n\nMike after tag\n"
+region: [300, 60, 800, 700]
+ready_text: Alpha
+steps:
+  - id: enter-editor
+    keys: [e]
+    mods: [ctrl, shift]
+    wait: 1.5
+    text: Tango & Uniform & Victor
+    text_absent: '<br'
+    layout:
+      # An inline <br> starts a new line: below the previous one, closer
+      # than a paragraph break (on the base all four share one line).
+      - {a: Echo, b: Foxtrot, min: 12, less_than: {a: Bravo, b: Charlie}}
+      - {a: Foxtrot, b: Golf, min: 12, less_than: {a: Bravo, b: Charlie}}
+      - {a: Golf, b: Hotel, min: 12, less_than: {a: Bravo, b: Charlie}}
+      # Hard breaks keep their own line.
+      - {a: Alpha, b: Bravo, min: 12, less_than: {a: Bravo, b: Charlie}}
+      - {a: Charlie, b: Delta, min: 12, less_than: {a: Bravo, b: Charlie}}
+      # Six &nbsp; are wider than one space and the words read apart.
+      - {a: Papa, b: Quebec, axis: x, more_than: {a: Romeo, b: Sierra, axis: x, by: 10}}
+      # The <br> line stays a row: one empty line more than a paragraph gap.
+      - {a: Lima, b: Mike, more_than: {a: Bravo, b: Charlie, by: 12}}
+  - id: no-entity-source
+    text: Quebec
+    text_absent: 'nbsp'
+  - id: no-amp-source
+    text: Quebec
+    text_absent: '&amp;'
+  - id: no-backslash
+    text: Charlie backslash
+    text_absent: 'backslash\'
+  - id: reveal-on-caret
+    # Eight Down presses move the caret from the heading into the Echo
+    # paragraph: its raw tags show again for editing.
+    keys: [Down, Down, Down, Down, Down, Down, Down, Down]
+    wait: 1
+    text: tag<br>Foxtrot

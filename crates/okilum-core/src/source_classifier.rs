@@ -519,6 +519,13 @@ fn content_blocks<'a>(
         match &child.data.borrow().value {
             NodeValue::Paragraph => blocks.push(child),
             NodeValue::Heading(h) if !h.setext => blocks.push(child),
+            // A top-level row of only `<br>` tags is an empty line (#3259).
+            NodeValue::HtmlBlock(html)
+                if matches!(node.data.borrow().value, NodeValue::Document)
+                    && break_rows(&html.literal) =>
+            {
+                blocks.push(child)
+            }
             NodeValue::List(_)
             | NodeValue::Item(_)
             | NodeValue::TaskItem(_)
@@ -605,6 +612,18 @@ impl<'s> Context<'s> {
     }
     fn block<'a>(&self, node: &'a AstNode<'a>, candidate: &mut Candidate) -> Option<()> {
         let range = self.range(node)?;
+        if matches!(node.data.borrow().value, NodeValue::HtmlBlock(_)) {
+            // Rows of only `<br>` (content_blocks): each tag conceals and its
+            // row stays, an empty line as the Reader draws it (#3259).
+            let mut at = range.start;
+            for row in self.source.get(range.clone())?.split_inclusive('\n') {
+                let indent = row.len() - row.trim_start_matches([' ', '\t']).len();
+                let tag = break_tag(&row[indent..])?;
+                candidate.markers.push(at + indent..at + indent + tag);
+                at += row.len();
+            }
+            return Some(());
+        }
         if let NodeValue::Heading(h) = &node.data.borrow().value {
             let raw = self.source.get(range.clone())?;
             let prefix = raw.bytes().take_while(|&b| b == b'#').count();
@@ -687,6 +706,38 @@ impl<'s> Context<'s> {
     fn inline<'a>(&self, node: &'a AstNode<'a>, candidate: &mut Candidate) -> Option<()> {
         let data = node.data.borrow();
         if matches!(data.value, NodeValue::SoftBreak) {
+            return Some(());
+        }
+        if matches!(data.value, NodeValue::LineBreak) {
+            // A hard break already ends its source row. A backslash break
+            // conceals its backslash; trailing spaces are invisible (#3259).
+            if let Some(range) = self.range(node) {
+                if self.source.as_bytes().get(range.start) == Some(&b'\\') {
+                    candidate.markers.push(range.start..range.start + 1);
+                }
+            }
+            return Some(());
+        }
+        if let NodeValue::HtmlInline(html) = &data.value {
+            // Only a line break tag is admitted; other inline HTML keeps the
+            // block Source. At a row's start or end the row already breaks, so
+            // the tag conceals; mid-row Live Preview draws a line break in its
+            // place (the shell's display overlay) (#3259).
+            if break_tag(html) != Some(html.len()) {
+                return None;
+            }
+            let range = self.range(node)?;
+            let row_edge = |sibling: Option<&'a AstNode<'a>>| {
+                sibling.is_none_or(|n| {
+                    matches!(
+                        n.data.borrow().value,
+                        NodeValue::SoftBreak | NodeValue::LineBreak
+                    )
+                })
+            };
+            if row_edge(node.previous_sibling()) || row_edge(node.next_sibling()) {
+                candidate.markers.push(range);
+            }
             return Some(());
         }
         let range = self.range(node)?;
@@ -915,6 +966,66 @@ impl<'s> Context<'s> {
         });
         Some(())
     }
+}
+
+/// The length of the `<br>`, `<br/>` or `<br />` tag (any case, spaces before
+/// the slash) that `text` starts with.
+pub fn break_tag(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    if bytes.len() < 4 || bytes[0] != b'<' || !bytes[1..3].eq_ignore_ascii_case(b"br") {
+        return None;
+    }
+    let mut at = 3;
+    while bytes.get(at).is_some_and(|b| matches!(b, b' ' | b'\t')) {
+        at += 1;
+    }
+    if bytes.get(at) == Some(&b'/') {
+        at += 1;
+    }
+    (bytes.get(at) == Some(&b'>')).then_some(at + 1)
+}
+
+/// Whether an HTML block is only rows holding one `<br>` tag each.
+fn break_rows(literal: &str) -> bool {
+    let rows = literal.trim_end_matches(['\r', '\n']);
+    !rows.is_empty()
+        && rows.lines().all(|row| {
+            let row = row.trim_matches([' ', '\t']);
+            break_tag(row) == Some(row.len())
+        })
+}
+
+/// The length and character of the HTML entity or numeric character
+/// reference `text` starts with (`&nbsp;`, `&#38;`, `&#x26;`), decoded by the
+/// same parser that classifies the note. None when it is not one, or when it
+/// would draw a control character (`&#10;`).
+pub fn character_reference(text: &str) -> Option<(usize, String)> {
+    let body = text.strip_prefix('&')?;
+    let end = body.bytes().take(33).position(|b| b == b';')?;
+    let name = &body[..end];
+    let shaped = match name.strip_prefix('#') {
+        Some(number) => match number.strip_prefix(['x', 'X']) {
+            Some(hex) => (1..=6).contains(&hex.len()) && hex.bytes().all(|b| b.is_ascii_hexdigit()),
+            None => (1..=7).contains(&number.len()) && number.bytes().all(|b| b.is_ascii_digit()),
+        },
+        None => !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric()),
+    };
+    if !shaped {
+        return None;
+    }
+    let raw = &text[..end + 2];
+    let arena = Arena::new();
+    let root = comrak::parse_document(&arena, raw, &Options::default());
+    let paragraph = root.first_child()?;
+    let child = paragraph.first_child()?;
+    if child.next_sibling().is_some() {
+        return None;
+    }
+    let decoded = match &child.data.borrow().value {
+        NodeValue::Text(value) if &**value != raw => value.to_string(),
+        _ => return None,
+    };
+    (!decoded.is_empty() && !decoded.chars().any(char::is_control)).then_some((raw.len(), decoded))
 }
 
 /// Keep authored escapes/entities. A `$` left as text is money or a formula
