@@ -14,13 +14,14 @@ use std::path::PathBuf;
 mod mcp;
 mod view_cmd;
 
-use okilum_core::{ir, render_html, Resolution, Searcher, Vault};
+use okilum_core::{html_profile, ir, render_html, Resolution, Searcher, Vault};
 
 const USAGE: &str = "\
 okilum-cored - JSON-lines sidecar over a Okilum vault
 
 USAGE:
     okilum-cored [index|mcp] --vault <PATH> [--index-dir <PATH>]
+    okilum-cored render --profile mobile <NOTE> --vault <PATH>
     okilum-cored view --help
     okilum-cored brain --brain-id <ID> --vault <PATH> --operational-dir <PATH>
                        --records-dir <PATH> --listen <ADDR> [--managed-brain]
@@ -30,6 +31,7 @@ USAGE:
     `index` builds the search index and exits.
     `mcp`   serves the Model Context Protocol (JSON-RPC over stdio) instead —
             the same operations as tools, for agent clients.
+    `render` prints a complete HTML document for a vault-relative note.
     `view`  runs or validates a read-only declarative vault view.
     `brain` (Unix only) serves the separate ai-brain/v1 JSON-lines service on a loopback
             TCP address (docs/ai-brain-service.md). It is not part of the
@@ -54,6 +56,9 @@ fn main() -> Result<()> {
     }
     if args.get(1).is_some_and(|arg| arg == "view") {
         std::process::exit(i32::from(view_cmd::run_cli(&args[2..])));
+    }
+    if args.get(1).is_some_and(|arg| arg == "render") {
+        return render_cli(&args[2..]);
     }
     let mut vault_root = std::env::var_os("OKILUM_VAULT").map(PathBuf::from);
     let mut index_dir_arg = std::env::var_os("OKILUM_INDEX_DIR").map(PathBuf::from);
@@ -120,6 +125,36 @@ fn main() -> Result<()> {
         writeln!(out, "{resp}")?;
         out.flush()?;
     }
+    Ok(())
+}
+
+fn render_cli(args: &[String]) -> Result<()> {
+    let mut vault_root = std::env::var_os("OKILUM_VAULT").map(PathBuf::from);
+    let mut profile = None;
+    let mut note = None;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--vault" => vault_root = Some(flag_value(&mut rest, "--vault")),
+            "--profile" => profile = Some(flag_value(&mut rest, "--profile")),
+            "-h" | "--help" => {
+                print!("{USAGE}");
+                return Ok(());
+            }
+            path if !path.starts_with('-') && note.is_none() => note = Some(path),
+            other => anyhow::bail!("unknown render argument: {other}\n{USAGE}"),
+        }
+    }
+    anyhow::ensure!(
+        profile.as_deref() == Some(std::path::Path::new("mobile")),
+        "render requires --profile mobile\n{USAGE}"
+    );
+    let note = note.ok_or_else(|| anyhow::anyhow!("render requires a note path\n{USAGE}"))?;
+    let vault_root = vault_root
+        .ok_or_else(|| anyhow::anyhow!("--vault is required (or set OKILUM_VAULT)\n{USAGE}"))?;
+    let vault = Vault::scan_metadata(&vault_root)?;
+    let html = html_profile::render_note(&vault, note)?;
+    std::io::stdout().lock().write_all(html.as_bytes())?;
     Ok(())
 }
 

@@ -676,17 +676,8 @@ impl HeadingInventory {
                 let NodeValue::Heading(h) = &data.value else {
                     continue;
                 };
-                let mut text = String::new();
-                for child in node.descendants().skip(1) {
-                    match &child.data.borrow().value {
-                        NodeValue::Text(t) => text.push_str(t),
-                        NodeValue::Code(c) => text.push_str(&c.literal),
-                        NodeValue::SoftBreak | NodeValue::LineBreak => text.push(' '),
-                        _ => {}
-                    }
-                }
                 entries.push(HeadingEntry {
-                    text,
+                    text: heading_text(node),
                     level: h.level,
                     target: HeadingTarget {
                         block,
@@ -726,6 +717,19 @@ impl HeadingInventory {
         }
         Ok(first.target.clone())
     }
+}
+
+pub(crate) fn heading_text<'a>(node: &'a AstNode<'a>) -> String {
+    let mut text = String::new();
+    for child in node.descendants().skip(1) {
+        match &child.data.borrow().value {
+            NodeValue::Text(t) => text.push_str(t),
+            NodeValue::Code(c) => text.push_str(&c.literal),
+            NodeValue::SoftBreak | NodeValue::LineBreak => text.push(' '),
+            _ => {}
+        }
+    }
+    text
 }
 
 /// Inventory all real headings before selecting a surface-supported landing.

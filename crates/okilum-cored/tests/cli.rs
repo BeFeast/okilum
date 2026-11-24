@@ -283,3 +283,18 @@ fn unsupported_brain_refuses_before_creating_state_but_reader_still_works() {
         "read-only reader still works: {result:?}"
     );
 }
+
+#[test]
+fn render_mobile_prints_html_without_creating_an_index() {
+    let s = Sandbox::new();
+    let output = s.run(
+        &["render", "--profile", "mobile", "demo.md"],
+        &[("OKILUM_VAULT", &s.vault)],
+    );
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let html = String::from_utf8(output.stdout).unwrap();
+    assert!(html.starts_with("<!doctype html>\n"));
+    assert!(html.contains("<meta name=\"html_profile\" content=\"1\">"));
+    assert!(html.contains("<a href=\"okilum-note:alpha.md\">alpha</a>"));
+    assert!(s.strays().is_empty());
+}

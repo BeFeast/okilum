@@ -37,6 +37,7 @@ pub mod folder_registration;
 #[cfg(all(unix, feature = "brain"))]
 pub mod goal_criteria;
 pub mod har;
+pub mod html_profile;
 pub mod ir;
 pub mod json_schema;
 pub mod kubernetes;

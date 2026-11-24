@@ -32,7 +32,7 @@ pub fn comrak_options() -> Options<'static> {
     o
 }
 
-fn embed_regex() -> &'static Regex {
+pub(crate) fn embed_regex() -> &'static Regex {
     static EMBED: std::sync::LazyLock<Regex> =
         std::sync::LazyLock::new(|| Regex::new(r"!\[\[([^\]\[]+?)\]\]").unwrap());
     &EMBED
@@ -103,25 +103,14 @@ fn preprocess_with_files(text: &str, is_file: impl Fn(&str) -> bool) -> String {
 /// Rewrite wikilink + local image URLs in the AST in place.
 pub fn rewrite_links<'a>(root: &'a AstNode<'a>, vault: &Vault, note_rel: &str, source: &str) {
     let resolver = crate::document_links::IndexedResolver::new(vault);
-    let lines: Vec<_> = std::iter::once(0)
-        .chain(source.match_indices('\n').map(|(i, _)| i + 1))
-        .collect();
+    let lines = html_line_offsets(source);
     for node in root.descendants() {
         let mut data = node.data.borrow_mut();
         let pos = data.sourcepos;
         match &mut data.value {
             NodeValue::WikiLink(w) => {
-                let authored = lines
-                    .get(pos.start.line.saturating_sub(1))
-                    .zip(lines.get(pos.end.line.saturating_sub(1)))
-                    .and_then(|(a, b)| {
-                        source.get((a + pos.start.column.saturating_sub(1))..(b + pos.end.column))
-                    })
-                    .and_then(|s| s.strip_prefix("[[")?.strip_suffix("]]"))
-                    .and_then(|s| s.split('|').next())
-                    .map(str::trim);
-                w.url = authored
-                    .map(|target| resolver.resolve(target, true, note_rel).url)
+                w.url = html_wiki_source(source, &lines, pos)
+                    .map(|(target, _)| resolver.resolve(target, true, note_rel).url)
                     .unwrap_or_else(|| format!("{UNRESOLVED_SCHEME}invalid-source-range"));
             }
             NodeValue::Image(img) => {
@@ -136,6 +125,33 @@ pub fn rewrite_links<'a>(root: &'a AstNode<'a>, vault: &Vault, note_rel: &str, s
             _ => {}
         }
     }
+}
+
+pub(crate) fn html_line_offsets(source: &str) -> Vec<usize> {
+    std::iter::once(0)
+        .chain(source.match_indices('\n').map(|(i, _)| i + 1))
+        .collect()
+}
+
+pub(crate) fn html_source_range(
+    lines: &[usize],
+    pos: comrak::nodes::Sourcepos,
+) -> Option<std::ops::Range<usize>> {
+    let start = lines.get(pos.start.line.checked_sub(1)?)? + pos.start.column.checked_sub(1)?;
+    let end = lines.get(pos.end.line.checked_sub(1)?)? + pos.end.column;
+    Some(start..end)
+}
+
+pub(crate) fn html_wiki_source<'a>(
+    source: &'a str,
+    lines: &[usize],
+    pos: comrak::nodes::Sourcepos,
+) -> Option<(&'a str, Option<&'a str>)> {
+    let inner = source
+        .get(html_source_range(lines, pos)?)?
+        .strip_prefix("[[")?
+        .strip_suffix("]]")?;
+    Some(crate::document_links::wiki_parts(inner))
 }
 
 pub(crate) fn percent_decode(s: &str) -> String {
@@ -192,14 +208,15 @@ pub fn split_open_url(rest: &str) -> (String, Option<String>) {
 /// Obsidian's rule, not GitHub's slug: the texts match case-insensitively
 /// after trimming, and runs of whitespace count as one space (#49).
 pub fn heading_matches(heading_text: &str, target: &str) -> bool {
-    fn norm(s: &str) -> String {
-        s.split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .to_lowercase()
-    }
-    let t = norm(target);
-    !t.is_empty() && norm(heading_text) == t
+    let target = normalized_heading(target);
+    !target.is_empty() && normalized_heading(heading_text) == target
+}
+
+pub(crate) fn normalized_heading(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 /// Full HTML pipeline for a note read from disk: the `okilum-cored` JSON-lines
@@ -217,8 +234,33 @@ pub fn render_html_from_source(
     theme: &str,
 ) -> anyhow::Result<String> {
     let text = preprocess(without_frontmatter(raw));
+    let text = html_link_source(&text, vault, note_rel);
+    let arena = Arena::new();
+    let opts = comrak_options();
+    let root = parse_html_source(&arena, &text, &opts);
+    rewrite_links(root, vault, note_rel, &text);
+
+    let adapter = SyntectAdapter::new(Some(theme));
+    let mut plugins = Plugins::default();
+    plugins.render.codefence_syntax_highlighter = Some(&adapter);
+
+    let mut out = String::new();
+    format_html_with_plugins(root, &opts, &mut out, &plugins)?;
+    Ok(out)
+}
+
+pub(crate) fn parse_html_source<'a>(
+    arena: &'a Arena<AstNode<'a>>,
+    text: &str,
+    options: &Options<'_>,
+) -> &'a AstNode<'a> {
+    let _phase = crate::open_diagnostics::phase("parse");
+    parse_document(arena, text, options)
+}
+
+pub(crate) fn html_link_source(text: &str, vault: &Vault, note_rel: &str) -> String {
     let mut edits = Vec::new();
-    for (link, destination) in crate::document_links::fallback_links(&text, vault, note_rel) {
+    for (link, destination) in crate::document_links::fallback_links(text, vault, note_rel) {
         let (path, heading) = link
             .target
             .split_once('#')
@@ -232,22 +274,7 @@ pub fn render_html_from_source(
         }
         edits.push((destination, encoded));
     }
-    let text = splice(&text, edits);
-    let arena = Arena::new();
-    let opts = comrak_options();
-    let root = {
-        let _phase = crate::open_diagnostics::phase("parse");
-        parse_document(&arena, &text, &opts)
-    };
-    rewrite_links(root, vault, note_rel, &text);
-
-    let adapter = SyntectAdapter::new(Some(theme));
-    let mut plugins = Plugins::default();
-    plugins.render.codefence_syntax_highlighter = Some(&adapter);
-
-    let mut out = String::new();
-    format_html_with_plugins(root, &opts, &mut out, &plugins)?;
-    Ok(out)
+    splice(text, edits)
 }
 
 /// Rewrite `[[wikilinks]]` and relative `[text](note.md)` links in Markdown
@@ -1279,16 +1306,10 @@ fn expand_embeds_structure(
             let body = if path.is_empty() || path == from_note {
                 None
             } else {
-                vault.read_note(&path).ok().and_then(|raw| {
-                    let body = without_frontmatter(&raw);
-                    if let Some(id) = block {
-                        crate::obsidian::block_section(body, id)
-                    } else if heading.is_empty() {
-                        Some(body.to_string())
-                    } else {
-                        heading_section(body, heading)
-                    }
-                })
+                vault
+                    .read_note(&path)
+                    .ok()
+                    .and_then(|raw| embed_section(&raw, block, heading))
             };
             match body {
                 Some(body) => {
@@ -1314,6 +1335,17 @@ fn expand_embeds_structure(
         }
         out
     })
+}
+
+pub(crate) fn embed_section(raw: &str, block: Option<&str>, heading: &str) -> Option<String> {
+    let body = without_frontmatter(raw);
+    if let Some(id) = block {
+        crate::obsidian::block_section(body, id)
+    } else if heading.is_empty() {
+        Some(body.to_owned())
+    } else {
+        heading_section(body, heading)
+    }
 }
 
 /// A tilde run one longer than any that starts a line of `body`, and at
