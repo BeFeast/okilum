@@ -1,0 +1,40 @@
+# State: @views/okilum.md opened on the shared fixture vault.
+# Action: verify Decisions are ordered newest first, scroll to Tasks, check
+# "Write view schema", verify it leaves Tasks and shows the Undo toast, then
+# open its source note (state/dev/okilum/index.md) and confirm the box is ticked.
+vault: crates/okilum-core/tests/fixtures/views
+open: "@views/okilum.md"
+appearance: light
+preferences:
+  note_open_mode: read
+rig:
+  persistent_pointer: true
+region: [265, 90, 840, 645]
+ready_text: Decisions
+steps:
+  - id: decisions-newest-first
+    text_order:
+      - "2026-11-24"
+      - "2026-11-20"
+      - "2026-11-10"
+  - id: scroll-to-tasks
+    keys: [End]
+    mods: [ctrl]
+    wait: 0.5
+    text: Write view schema
+  - id: check-write-view-schema
+    click: [368, 355]
+    wait: 1.5
+    text_absent: Write view schema
+  - id: undo-toast-visible
+    region: [900, 560, 466, 208]
+    text: Undo
+  - id: open-source-note
+    click: [460, 388]
+    wait: 1.0
+    text: Typed projection over the vault snapshot
+  - id: source-note-ticked
+    keys: [e]
+    mods: [ctrl]
+    wait: 0.6
+    text: "[x] Write view schema"

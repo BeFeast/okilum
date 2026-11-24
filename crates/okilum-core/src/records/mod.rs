@@ -106,6 +106,10 @@ impl Projection {
         &self.schema
     }
 
+    pub fn schema_arc(&self) -> Arc<FieldSchema> {
+        Arc::clone(&self.schema)
+    }
+
     pub fn notes(&self) -> impl Iterator<Item = &NoteRecord> {
         self.notes.values().map(Arc::as_ref)
     }

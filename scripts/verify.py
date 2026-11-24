@@ -449,12 +449,18 @@ def run(args, scenario, output, result):
                             while time.monotonic() < deadline and not condition(shot, step, scenario['region'])[0]:
                                 time.sleep(.2)
                                 rig.shot(shot)
-                    if ('max_ms' not in step and 'text' in step) or 'text_absent' in step:
+                    if ('max_ms' not in step and 'text' in step) or 'text_absent' in step or 'text_order' in step:
                         check['text'] = text(shot, step.get('region', scenario['region']))
                         if 'max_ms' not in step and 'text' in step:
                             require(step['text'] in check['text'], check)
                         if 'text_absent' in step:
                             require(step['text_absent'] not in check['text'], check)
+                        if 'text_order' in step:
+                            pos = 0
+                            for needle in step['text_order']:
+                                found = check['text'].find(needle, pos)
+                                require(found != -1, {**check, 'missing_in_order': needle})
+                                pos = found + len(needle)
                     if 'max_ms' not in step and 'pixels' in step:
                         rule = step['pixels']
                         check['pixels'] = pixels(shot, rule['region'], rule['expression'])

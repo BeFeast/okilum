@@ -394,4 +394,56 @@ mod tests {
         assert!(receipt.undo(&root, &drafts).is_err());
         assert!(apply(&root, &drafts, &target, Change::Checked(true)).is_err());
     }
+
+    #[test]
+    fn view_check_with_done_preserves_bytes_refuses_stale_and_undoes_exact_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let drafts = temp.path().join("state/editor-drafts");
+        std::fs::create_dir(&root).unwrap();
+        let original = "\u{feff}---\r\ntype: questions\r\n---\r\n- [ ] Approve `@views/out/` [owner:: oleg] 📅 2026-11-26  \r\n- [ ] Sibling line  \r\n";
+        let file = root.join("questions.md");
+        std::fs::write(&file, original).unwrap();
+        let mut index = Index::default();
+        index.replace("questions.md", original);
+        let task = index.note_tasks("questions.md").remove(0);
+        let done = time::macros::date!(2026 - 11 - 24);
+
+        let receipt = apply_indexed(
+            &root,
+            &drafts,
+            &index,
+            &task,
+            Change::CheckWithDone {
+                checked: true,
+                done,
+            },
+        )
+        .unwrap()
+        .unwrap();
+        let expected = "\u{feff}---\r\ntype: questions\r\n---\r\n- [x] Approve `@views/out/` [owner:: oleg] 📅 2026-11-26 [done:: 2026-11-24]  \r\n- [ ] Sibling line  \r\n";
+        assert_eq!(std::fs::read(&file).unwrap(), expected.as_bytes());
+
+        // Stale index is refused with no write.
+        let err = apply_indexed(
+            &root,
+            &drafts,
+            &index,
+            &task,
+            Change::CheckWithDone {
+                checked: false,
+                done,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("The note changed, refresh"),
+            "{err}"
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), expected.as_bytes());
+
+        // Undo restores the exact previous bytes.
+        receipt.undo(&root, &drafts).unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), original.as_bytes());
+    }
 }

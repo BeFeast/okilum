@@ -100,6 +100,52 @@ fn target_url(
     Ok(identity.thread_url(thread))
 }
 
+fn parse_thread_url(url: &str) -> anyhow::Result<(&str, &str)> {
+    let rest = url
+        .strip_prefix("t3code://threads/")
+        .ok_or_else(|| anyhow::anyhow!("Unsupported T3 thread URL"))?;
+    let (env_id, thread_id) = rest
+        .split_once('/')
+        .ok_or_else(|| anyhow::anyhow!("Malformed T3 thread URL"))?;
+    let valid_part = |part: &str| {
+        !part.is_empty()
+            && !part.contains(['/', '?', '#'])
+            && !part.chars().any(char::is_whitespace)
+    };
+    anyhow::ensure!(
+        valid_part(env_id) && valid_part(thread_id),
+        "Malformed T3 thread URL"
+    );
+    Ok((env_id, thread_id))
+}
+
+fn resolve_thread_url(
+    url: &str,
+    state: Option<&Path>,
+    missing_handler: bool,
+) -> anyhow::Result<String> {
+    let (env_id, thread_id) = parse_thread_url(url)?;
+    if !missing_handler {
+        return Ok(url.to_owned());
+    }
+    let origin = connections::last_origin(state)?
+        .ok_or_else(|| anyhow::anyhow!("Connect to T3 before opening the web fallback"))?;
+    let environment = Environment::new("t3", &origin)?;
+    let identity = ServerIdentity {
+        environment_id: env_id.to_owned(),
+        label: "T3".into(),
+    };
+    Ok(okilum_t3::projects::manager_url(&environment, &identity, thread_id)?.into())
+}
+
+/// Open a canonical `t3code://threads/<env>/<thread>` link through the same
+/// desktop URI handler, Linux window reveal, and web fallback as «Open in T3».
+pub(crate) fn open_thread_url(url: &str, state: Option<&Path>, cx: &mut App) -> anyhow::Result<()> {
+    let target = resolve_thread_url(url, state, missing_handler(cx)?)?;
+    open_desktop_url(&target, cx);
+    Ok(())
+}
+
 impl ProjectView {
     pub(super) fn open_in_t3(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(thread) = self.chat.as_ref().map(|chat| chat.thread_id.clone()) else {
@@ -185,5 +231,32 @@ mod protocol_tests {
             "https://t3.oklabs.uk/env/mcp:thread"
         );
         assert!(target_url(&identity, "mcp:thread", None, true).is_err());
+    }
+
+    #[test]
+    fn view_thread_url_validates_scheme_and_falls_back_to_saved_origin() {
+        let url = "t3code://threads/env-fixture/thread-views";
+        assert_eq!(resolve_thread_url(url, None, false).unwrap(), url);
+        for invalid in [
+            "https://example.com/env/thread",
+            "t3code://threads/only-env",
+            "t3code://threads/env/thread/extra",
+            "t3code://threads/env/thread?x=1",
+            "t3code://threads/env/thread#frag",
+            "t3code://threads/env/bad thread",
+        ] {
+            assert!(
+                resolve_thread_url(invalid, None, false).is_err(),
+                "{invalid}"
+            );
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let env = Environment::new("maestro", "https://t3.oklabs.uk").unwrap();
+        connections::save_last_origin(temp.path(), &env).unwrap();
+        assert_eq!(
+            resolve_thread_url(url, Some(temp.path()), true).unwrap(),
+            "https://t3.oklabs.uk/env-fixture/thread-views"
+        );
+        assert!(resolve_thread_url(url, None, true).is_err());
     }
 }

@@ -269,6 +269,21 @@ impl FieldSchema {
     pub fn note_field(&self, name: &str) -> Option<&Field> {
         self.fields.get(name).or_else(|| self.builtins.get(name))
     }
+
+    pub fn today(&self, now: chrono::DateTime<chrono::Utc>) -> time::Date {
+        use chrono::Datelike;
+        let local = now.with_timezone(&self.timezone);
+        time::Date::from_calendar_date(
+            local.year(),
+            (local.month() as u8).try_into().expect("valid month"),
+            local.day() as u8,
+        )
+        .expect("valid calendar date")
+    }
+
+    pub fn today_now(&self) -> time::Date {
+        self.today(chrono::Utc::now())
+    }
 }
 
 fn globset(patterns: impl IntoIterator<Item = String>) -> Result<GlobSet> {

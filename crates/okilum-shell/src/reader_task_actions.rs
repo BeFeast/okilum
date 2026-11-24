@@ -115,6 +115,31 @@ impl Reader {
         }
     }
 
+    /// Apply a declarative view `check` action through the same revision-bound,
+    /// FileEditor-locked safe-save and Undo toast path as Tasks dashboards.
+    pub(super) fn apply_view_task_check(
+        &mut self,
+        index: Arc<Index>,
+        task: Task,
+        expected_rev: &str,
+        checked: bool,
+        done: time::Date,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if index.note_revision(&task.path) != Some(expected_rev) {
+            reader_toast::error("Task unchanged: The note changed, refresh.", window, cx);
+            return;
+        }
+        self.apply_task_change(
+            index,
+            task,
+            Change::CheckWithDone { checked, done },
+            window,
+            cx,
+        );
+    }
+
     fn run_task_change(
         &mut self,
         action: TaskAction,

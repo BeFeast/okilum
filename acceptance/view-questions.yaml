@@ -1,0 +1,39 @@
+# State: @views/questions.md opened on the shared fixture vault.
+# Action: verify rows are grouped by context, verify the T3 control is shown
+# only on the row that has a thread, check that row so it leaves the view,
+# then click Undo to bring the row back.
+vault: crates/okilum-core/tests/fixtures/views
+open: "@views/questions.md"
+appearance: light
+preferences:
+  note_open_mode: read
+rig:
+  persistent_pointer: true
+region: [265, 90, 840, 645]
+ready_text: Ticking a box approves
+steps:
+  - id: grouped-by-context
+    text_order:
+      - okilum
+      - snapshot folder
+      - Keep Tree
+      - tasker
+      - Archive Tasker
+  - id: thread-action-visible-on-thread-row
+    region: [265, 282, 840, 38]
+    text: T3
+  - id: thread-action-absent-on-other-rows
+    region: [265, 320, 840, 140]
+    text: Archive Tasker
+    text_absent: T3
+  - id: check-first-question
+    click: [368, 300]
+    wait: 1.5
+    text_absent: snapshot folder
+  - id: undo-toast-visible
+    region: [900, 560, 466, 208]
+    text: Undo
+  - id: undo-restores-row
+    click: [1158, 705]
+    wait: 1.5
+    text: snapshot folder

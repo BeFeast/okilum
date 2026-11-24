@@ -1,6 +1,11 @@
-use okilum_core::view::{Finding, Row, Section, Show, Status, ViewPart, ViewResult};
+use super::actions;
+use okilum_core::{
+    records::Projection,
+    tasks::Index as TasksIndex,
+    view::{Finding, Row, Section, Show, Status, ViewPart, ViewResult},
+};
 use serde_json::Value;
-use std::fmt::Write;
+use std::{fmt::Write, sync::Arc};
 
 /// Values are data, even when they contain Markdown syntax or a table delimiter.
 fn literal(text: &str) -> String {
@@ -72,7 +77,20 @@ fn table(out: &mut String, keys: &[String], rows: &[Row]) {
     }
 }
 
-fn rows(out: &mut String, section: &Section, rows: &[Row]) {
+fn rows(
+    out: &mut String,
+    section: &Section,
+    rows: &[Row],
+    projection: &Projection,
+    tasks: Option<&Arc<TasksIndex>>,
+    blocks: &mut actions::Blocks,
+) {
+    if actions::has_actions(rows) {
+        let index = blocks.push(section, rows, projection, tasks);
+        out.push_str(&blocks.fence(index));
+        out.push('\n');
+        return;
+    }
     match section.show {
         Show::List => {
             for row in rows {
@@ -143,7 +161,15 @@ fn diagnostics(out: &mut String, findings: &[Finding]) {
     }
 }
 
-fn section(out: &mut String, section: &Section, heading: &str, as_of: &str) {
+fn section(
+    out: &mut String,
+    section: &Section,
+    heading: &str,
+    as_of: &str,
+    projection: &Projection,
+    tasks: Option<&Arc<TasksIndex>>,
+    blocks: &mut actions::Blocks,
+) {
     if !heading.is_empty() {
         writeln!(out, "{}\n", heading.trim_end()).unwrap();
     }
@@ -178,7 +204,7 @@ fn section(out: &mut String, section: &Section, heading: &str, as_of: &str) {
     }
     if section.groups.is_empty() {
         if !section.rows.is_empty() {
-            rows(out, section, &section.rows);
+            rows(out, section, &section.rows, projection, tasks, blocks);
         }
     } else {
         let mut offset = 0;
@@ -209,7 +235,14 @@ fn section(out: &mut String, section: &Section, heading: &str, as_of: &str) {
             }
             let end = offset + group.count.min(section.rows.len() - offset);
             if end > offset {
-                rows(out, section, &section.rows[offset..end]);
+                rows(
+                    out,
+                    section,
+                    &section.rows[offset..end],
+                    projection,
+                    tasks,
+                    blocks,
+                );
                 offset = end;
             }
         }
@@ -219,8 +252,13 @@ fn section(out: &mut String, section: &Section, heading: &str, as_of: &str) {
     }
 }
 
-pub(super) fn render(result: &ViewResult) -> String {
+pub(super) fn render(
+    result: &ViewResult,
+    projection: &Projection,
+    tasks: Option<&Arc<TasksIndex>>,
+) -> (String, actions::Blocks) {
     let mut markdown = String::new();
+    let mut blocks = actions::Blocks::new();
     diagnostics(&mut markdown, &result.findings);
     for part in result.parts() {
         match part {
@@ -229,11 +267,19 @@ pub(super) fn render(result: &ViewResult) -> String {
                 heading,
                 section: output,
             } => {
-                section(&mut markdown, output, heading, &result.as_of);
+                section(
+                    &mut markdown,
+                    output,
+                    heading,
+                    &result.as_of,
+                    projection,
+                    tasks,
+                    &mut blocks,
+                );
             }
         }
     }
-    markdown
+    (markdown, blocks)
 }
 
 pub(super) fn unavailable(message: &str) -> String {

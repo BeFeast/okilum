@@ -24,7 +24,7 @@ mod composer;
 mod connections;
 pub(crate) mod credentials;
 mod design;
-mod desktop;
+pub(crate) mod desktop;
 #[cfg(native_manager)]
 mod discuss_handoff;
 #[cfg(native_manager)]

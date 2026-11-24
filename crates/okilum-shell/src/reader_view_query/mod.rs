@@ -1,9 +1,12 @@
-//! Read-only query results presented through the Reader's Markdown typography.
+//! Declarative query views presented through the Reader's Markdown typography,
+//! with explicit revision-bound task actions and T3 navigation controls.
 use super::*;
 use okilum_core::document_links::HeadingEntry;
+use okilum_core::tasks::Index as TasksIndex;
 use okilum_core::view;
 use std::collections::BTreeMap;
 
+mod actions;
 mod index;
 mod markdown;
 
@@ -28,6 +31,7 @@ pub(super) struct Content {
     pub text: Entity<TextViewState>,
     headings: Arc<[HeadingEntry]>,
     heading_labels: Arc<BTreeMap<String, String>>,
+    actions: Arc<actions::Blocks>,
 }
 
 impl Content {
@@ -88,12 +92,28 @@ impl Reader {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 struct Request {
     epoch: u64,
     source: Arc<str>,
     bindings: Option<Bindings>,
+    tasks: Option<Arc<TasksIndex>>,
 }
+
+impl PartialEq for Request {
+    fn eq(&self, other: &Self) -> bool {
+        self.epoch == other.epoch
+            && self.source == other.source
+            && self.bindings == other.bindings
+            && match (&self.tasks, &other.tasks) {
+                (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+
+impl Eq for Request {}
 
 #[derive(Default)]
 struct Cache {
@@ -103,13 +123,19 @@ struct Cache {
     task: Option<Task<()>>,
 }
 
+struct Evaluated {
+    markdown: String,
+    labels: BTreeMap<String, String>,
+    blocks: actions::Blocks,
+}
+
 fn evaluate(
     path: &str,
     request: &Request,
     index: &Index,
     vault: &Vault,
     searcher: Option<&Searcher>,
-) -> Result<(String, BTreeMap<String, String>), String> {
+) -> Result<Evaluated, String> {
     let doc = view::parse(path, &request.source).map_err(|findings| {
         findings
             .into_iter()
@@ -119,7 +145,13 @@ fn evaluate(
     })?;
     let projection = match &index.projection {
         Ok(projection) => projection,
-        Err(error) => return Ok((markdown::unavailable(error), BTreeMap::new())),
+        Err(error) => {
+            return Ok(Evaluated {
+                markdown: markdown::unavailable(error),
+                labels: BTreeMap::new(),
+                blocks: actions::Blocks::new(),
+            })
+        }
     };
     let mut run = view::RunContext::new(projection, vault, chrono::Local::now().fixed_offset());
     run.generation = request.epoch;
@@ -128,7 +160,12 @@ fn evaluate(
         run.args = bindings.args.clone();
     }
     let result = view::run(&doc, &run);
-    Ok((markdown::render(&result), result.heading_labels))
+    let (markdown, blocks) = markdown::render(&result, projection, request.tasks.as_ref());
+    Ok(Evaluated {
+        markdown,
+        labels: result.heading_labels,
+        blocks,
+    })
 }
 
 pub(super) fn render(
@@ -154,6 +191,7 @@ pub(super) fn render(
         epoch: reader.view_query_generation,
         source,
         bindings: reader.pane.navigation.view_bindings().cloned(),
+        tasks: reader.tasks_index.clone(),
     };
     let Some(index) = &reader.view_query_index else {
         return Some(loading(reader, cx));
@@ -179,7 +217,7 @@ pub(super) fn render(
         let worker = cx.background_executor().spawn(async move {
             let _lease = lease;
             evaluate(&input_path, &input, &index, &vault, searcher.as_deref())
-                .map(|(markdown, labels)| (note_outline(&markdown), markdown, labels))
+                .map(|evaluated| (note_outline(&evaluated.markdown), evaluated))
         });
         let target = cache.downgrade();
         let task = cx.spawn_in(window, async move |reader, cx| {
@@ -191,7 +229,7 @@ pub(super) fn render(
                         return;
                     }
                     match output {
-                        Ok((headings, markdown, labels)) => {
+                        Ok((headings, evaluated)) => {
                             cache.fallback = false;
                             let content = cache.content.get_or_insert_with(|| Content {
                                 text: cx.new(|cx| {
@@ -202,12 +240,14 @@ pub(super) fn render(
                                 }),
                                 headings: Arc::default(),
                                 heading_labels: Arc::default(),
+                                actions: Arc::new(actions::Blocks::new()),
                             });
                             content.headings = headings.into();
-                            content.heading_labels = Arc::new(labels);
+                            content.heading_labels = Arc::new(evaluated.labels);
+                            content.actions = Arc::new(evaluated.blocks);
                             content
                                 .text
-                                .update(cx, |state, cx| state.set_text(&markdown, cx));
+                                .update(cx, |state, cx| state.set_text(&evaluated.markdown, cx));
                         }
                         Err(reason) => {
                             if !cache.fallback && visible {
@@ -250,6 +290,20 @@ pub(super) fn render(
     style.heading_base_font_size = px(reader_ui_state::font_size(cx));
     style.top_padding = px(44.);
     style.bottom_padding = reader_toast::bottom_space(window, cx);
+    let view = TextView::new(&content.text)
+        .style(style)
+        .font_family(reader_fonts::note(cx))
+        .text_size(px(reader_ui_state::font_size(cx)))
+        .scrollable(true)
+        .selectable(true)
+        .selection_format(reader.sel_format)
+        .on_link_click(|_, _, _, _| {})
+        .pl(reader_window_view::note_gutter(window))
+        .pr(px(READER_SIDE_PADDING))
+        .w_full()
+        .h_full()
+        .max_w(px(reader_ui_state::note_column_width(cx)));
+    let view = actions::install(view, cx.weak_entity());
     Some(
         h_flex()
             .debug_selector(|| "native-query-view".into())
@@ -257,21 +311,7 @@ pub(super) fn render(
             .min_w_0()
             .overflow_hidden()
             .justify_center()
-            .child(
-                TextView::new(&content.text)
-                    .style(style)
-                    .font_family(reader_fonts::note(cx))
-                    .text_size(px(reader_ui_state::font_size(cx)))
-                    .scrollable(true)
-                    .selectable(true)
-                    .selection_format(reader.sel_format)
-                    .on_link_click(|_, _, _, _| {})
-                    .pl(reader_window_view::note_gutter(window))
-                    .pr(px(READER_SIDE_PADDING))
-                    .w_full()
-                    .h_full()
-                    .max_w(px(reader_ui_state::note_column_width(cx))),
-            )
+            .child(view)
             .into_any_element(),
     )
 }

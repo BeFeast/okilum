@@ -160,6 +160,9 @@ impl Index {
             .map(|note| note.tasks.clone())
             .unwrap_or_default()
     }
+    pub fn note_revision(&self, path: &str) -> Option<&str> {
+        self.notes.get(path).map(|note| note.revision.as_str())
+    }
     pub fn remove(&mut self, path: &str) -> bool {
         self.notes.remove(path).is_some()
     }
@@ -177,7 +180,7 @@ impl Index {
             .get(&task.path)
             .ok_or("The task source is no longer indexed")?;
         if note.revision != crate::task_edit::revision(source) {
-            return Err("This note changed. Refresh the dashboard before editing the task.".into());
+            return Err("The note changed, refresh.".into());
         }
         if !note.tasks.contains(task) {
             return Err("The task does not belong to this displayed snapshot".into());
