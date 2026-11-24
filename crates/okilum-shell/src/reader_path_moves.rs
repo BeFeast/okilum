@@ -123,10 +123,10 @@ impl Reader {
             }
             let from = reader.selected_file();
             let to = plan.target(from)?;
-            reader
-                .pane
-                .editing
-                .is_none()
+            // A deleted note the person already left (Save As / Don't Save)
+            // goes where they asked: a Save As copy matches its hash but is
+            // not a move to follow.
+            (reader.pane.editing.is_none() && !reader.left_deleted_note())
                 .then(|| (reader.pane.id(), from.to_owned(), to.to_owned()))
         });
         for (pane, from, to) in targets.into_iter().flatten() {
@@ -136,6 +136,7 @@ impl Reader {
                 if reader.vault_root == root
                     && reader.selected_file() == from
                     && reader.pane.editing.is_none()
+                    && !reader.left_deleted_note()
                 {
                     if reader.pane.current_rel == from {
                         // A verified move of an open Reader note is a

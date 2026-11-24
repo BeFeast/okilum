@@ -61,6 +61,19 @@ impl Reader {
         true
     }
 
+    /// The person chose Save As / Don't Save for the deleted note on screen,
+    /// and the navigation they asked for is under way.
+    pub(crate) fn left_deleted_note(&self) -> bool {
+        self.pane
+            .deleted_note_leaving
+            .as_ref()
+            .is_some_and(|(root, rel, generation)| {
+                root == &self.vault_root
+                    && rel == &self.pane.current_rel
+                    && *generation == self.pane.navigation.generation
+            })
+    }
+
     /// Navigation away from the note on screen (`target`, or another vault
     /// with `None`). Every presentation mode asks before leaving. The caller
     /// hands its navigation to `ask_leaving_deleted_note`.
@@ -69,16 +82,7 @@ impl Reader {
         target: Option<&str>,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self
-            .pane
-            .deleted_note_leaving
-            .as_ref()
-            .is_some_and(|(root, rel, generation)| {
-                root == &self.vault_root
-                    && rel == &self.pane.current_rel
-                    && *generation == self.pane.navigation.generation
-            })
-        {
+        if self.left_deleted_note() {
             return false;
         }
         // Navigation can beat the debounced watcher notification.
