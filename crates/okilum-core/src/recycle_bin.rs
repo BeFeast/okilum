@@ -135,23 +135,25 @@ mod windows {
     }
 
     pub fn move_to_trash(root: &Path, relative: &Path) -> Result<Trashed> {
-        let _scope = okilum_write_authority::Authority::for_root(root)?;
         let root = root.canonicalize()?;
         let source = checked(&root, relative)?;
+        // A network or unsupported local location has no Recycle Bin.
+        let _parent = crate::windows_files::Directory::open(
+            source.parent().context("Missing source folder")?,
+        )?;
         let metadata = fs::symlink_metadata(&source)?;
         ensure!(
             (metadata.is_file() || metadata.is_dir()) && !metadata.file_type().is_symlink(),
             "Choose a regular file or folder, not a link"
         );
+        let _scope = okilum_write_authority::operation(&root)?;
+        crate::vault_mutation::check_relocation(&root, relative)?;
         let directory = if metadata.is_dir() {
             &source
         } else {
             source.parent().context("Missing source folder")?
         };
         let _admission = okilum_write_authority::operation_for_directory(directory)?;
-        // A network or unsupported local location has no Recycle Bin: Windows would
-        // delete the item for good. Refuse before touching it.
-        crate::windows_files::Directory::open(source.parent().context("Missing source folder")?)?;
         let identity = identity(&source)?;
         let bin = recycle_bin(&root)?;
         let before = records(&bin);
@@ -224,10 +226,10 @@ mod windows {
                 "The item in the Recycle Bin changed; restore it from the Recycle Bin"
             );
             let destination = checked(&self.root, &self.relative)?;
-            ensure!(
-                destination.parent().is_some_and(Path::is_dir),
-                "Cannot Undo: the original folder is gone. The item remains in the Recycle Bin"
-            );
+            let original_parent = destination.parent().context("Missing original folder")?;
+            let _parent = crate::windows_files::Directory::open(original_parent)
+                .context("Cannot Undo: the original folder is unavailable. The item remains in the Recycle Bin")?;
+            let _destination = okilum_write_authority::operation_for_directory(original_parent)?;
             // No MOVEFILE_REPLACE_EXISTING: Undo never replaces a newer item.
             // SAFETY: both paths are NUL-terminated wide strings.
             let ok = unsafe {

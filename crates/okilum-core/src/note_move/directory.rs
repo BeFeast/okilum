@@ -108,7 +108,7 @@ impl DirectorySnapshot {
 }
 
 pub struct DirectoryMovePlan {
-    authority: okilum_write_authority::Authority,
+    scope: MoveScope,
     source_dir: File,
     source_name: OsString,
     target_dir: File,
@@ -130,6 +130,7 @@ impl DirectoryMovePlan {
             !crate::vault::service_path(from) && !crate::vault::service_path(to),
             "Service folders cannot be moved"
         );
+        let scope = MoveScope::prepare(root, from, to)?;
         let (source_dir, source_name) = parent_any(root, from)?;
         let (target_dir, target_name) = parent_any(root, to)?;
         ensure!(
@@ -138,7 +139,7 @@ impl DirectoryMovePlan {
         );
         check_destination(&source_dir, &source_name, &target_dir, &target_name)?;
         Ok(Self {
-            authority: okilum_write_authority::Authority::for_root(root)?,
+            scope,
             source_dir,
             source_name,
             target_dir,
@@ -147,11 +148,13 @@ impl DirectoryMovePlan {
         })
     }
     pub fn commit(self) -> Result<Moved> {
-        let _admission = self.authority.operation()?;
+        let _admission = self.scope.admit()?;
         ensure!(
             DirectorySnapshot::at(&self.source_dir, &self.source_name)? == self.expected,
             "Folder changed after preview; nothing was moved"
         );
+        self.scope
+            .check_pinned_parents(&self.source_dir, &self.target_dir)?;
         crate::unix_publish::no_replace(
             &self.source_dir,
             &self.source_name,

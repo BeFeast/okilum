@@ -371,3 +371,52 @@ fn nested_boundary_stops_source_reads_links_projection_and_incremental_updates(
     assert!(worker.vault.resolve("Unit/New").path().is_none());
     Ok(())
 }
+
+#[test]
+fn vd4_review_outside_file_still_resolves_with_a_nested_vault() {
+    let parent = tempfile::tempdir().unwrap();
+    let root = parent.path().join("Outer");
+    std::fs::create_dir_all(root.join("Nested/.obsidian")).unwrap();
+    std::fs::write(root.join("start.md"), "# Outer").unwrap();
+    std::fs::write(parent.path().join("outside.pdf"), b"outside").unwrap();
+    let vault = Vault::scan(&root).unwrap();
+    let mut preparation =
+        LinkPreparation::new(&vault, "start.md", |_| panic!("attachment")).with_local_files();
+    let (link, state) = preparation.link("../outside.pdf", false);
+    assert_eq!(link.status, "outside_file");
+    assert_eq!(state.status, LinkStatus::Resolved);
+}
+
+#[test]
+fn vd4_review_declared_boundary_matches_filesystem_case_alias() {
+    use okilum_core::vault_descriptor;
+    use std::{fs, path::Path};
+
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    fs::create_dir(root.join(".okilum")).unwrap();
+    fs::create_dir(root.join("Nested")).unwrap();
+    fs::write(root.join("Nested/Note.md"), "# Nested").unwrap();
+    fs::write(root.join("Nested/Events.jsonl"), "{\"event\":\"nested\"}\n").unwrap();
+    // Exercise the same physical-directory lookup on a case-sensitive Unix rig.
+    // The ordinary inventory walk does not follow this alias.
+    #[cfg(unix)]
+    if !root.join("nested").exists() {
+        std::os::unix::fs::symlink("Nested", root.join("nested")).unwrap();
+    }
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/lifecycle-vault");
+    let mut descriptor = vault_descriptor::read(&fixture).unwrap();
+    descriptor["layout"]["nested_roots"] = serde_json::json!([
+        {"path":"nested","kind":"vault","tree_sha256":"0".repeat(64),"files":2}
+    ]);
+    fs::write(
+        vault_descriptor::path(root),
+        serde_json::to_vec(&descriptor).unwrap(),
+    )
+    .unwrap();
+    let vault = Vault::scan(root).unwrap();
+    assert!(vault.nested_boundary("Nested/Note.md").is_some());
+    assert!(vault.nested_boundary("nested/Events.jsonl").is_some());
+    assert!(vault.notes.is_empty());
+}

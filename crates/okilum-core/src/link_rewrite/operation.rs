@@ -204,6 +204,18 @@ impl Operation {
         let _admission = okilum_write_authority::operation(&operation.root)?;
         ensure!(!operation.reverted, "This operation was already reverted");
         let moved = operation.move_completed()?;
+        let _move_admission = if moved {
+            Some(
+                crate::vault_mutation::MoveScope::prepare(
+                    &operation.root,
+                    Path::new(&operation.to),
+                    Path::new(&operation.from),
+                )?
+                .admit()?,
+            )
+        } else {
+            None
+        };
         if let Some(snapshot) = &operation.directory {
             let location = if moved {
                 &operation.to

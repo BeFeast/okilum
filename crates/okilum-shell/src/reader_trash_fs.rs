@@ -94,7 +94,6 @@ pub fn stamp(_path: &Path, meta: &fs::Metadata) -> (u64, u64, u64, i64, i64) {
 }
 
 pub fn move_to_trash(root: &Path, relative: &Path) -> Result<Trashed> {
-    let _scope = okilum_write_authority::Authority::for_root(root)?;
     let root = root.canonicalize()?;
     let (source_parent, source_name) = parent(&root, relative)?;
     let source = root.join(relative);
@@ -103,6 +102,8 @@ pub fn move_to_trash(root: &Path, relative: &Path) -> Result<Trashed> {
         metadata.is_file() || metadata.is_dir(),
         "Choose a regular file or folder, not a symbolic link"
     );
+    let _scope = okilum_write_authority::operation(&root)?;
+    okilum_core::vault_mutation::check_relocation(&root, relative)?;
     let directory = if metadata.is_dir() {
         &source
     } else {
@@ -188,6 +189,9 @@ impl Trashed {
             "The item in {kept_in} changed; restore it through the system file manager"
         );
         let (destination, name) = parent(&self.root, &self.relative)?;
+        let original_parent = self.relative.parent().context("Missing original folder")?;
+        let _destination =
+            okilum_write_authority::operation_for_directory(&self.root.join(original_parent))?;
         let source_parent = if let Some(saved) = &self.vault_trash {
             let root = open(&self.root, directory_flags(), Mode::empty())?;
             let metadata = std::fs::File::from(root.try_clone()?).metadata()?;
@@ -571,6 +575,51 @@ fn system_trash(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vd4_review_trash_refuses_folder_containing_a_separate_vault() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("Parent/Separate/.obsidian")).unwrap();
+        fs::write(root.join("Parent/Separate/Keep.md"), "keep").unwrap();
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                INJECT_NO_VOLUME_TRASH.with(|value| value.set(false));
+            }
+        }
+        INJECT_NO_VOLUME_TRASH.with(|value| value.set(true));
+        let _reset = Reset;
+        let error = move_to_trash(root, Path::new("Parent"))
+            .err()
+            .expect("folder refused");
+        assert!(
+            error.to_string().contains("contains a separate vault"),
+            "{error:#}"
+        );
+        assert!(root.join("Parent/Separate/Keep.md").is_file());
+        assert!(!root.join(".trash").exists());
+    }
+
+    #[test]
+    fn vd4_review_trash_restore_refuses_parent_that_became_an_archive() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("Vault");
+        let folder = root.join("Folder");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("Note.md"), "keep").unwrap();
+        let trashed = Trashed::test_move(
+            &root,
+            Path::new("Folder/Note.md"),
+            &temp.path().join("Trash"),
+        );
+        fs::write(folder.join(".brain-read-only"), "").unwrap();
+        let error = trashed.restore().unwrap_err();
+        assert!(error.to_string().contains("read-only archive"), "{error:#}");
+        assert!(!folder.join("Note.md").exists());
+        assert!(trashed.location.is_file());
+    }
+
     #[test]
     fn nested_archive_refuses_trash_for_both_note_and_archive_root() {
         let temp = tempfile::tempdir().unwrap();

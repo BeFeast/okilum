@@ -24,7 +24,7 @@ pub struct Layout {
     pub generated_at: String,
     /// Optional explicit placement for pasted attachments.
     pub attachments: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nested_roots")]
     pub nested_roots: Vec<NestedRoot>,
 }
 
@@ -35,6 +35,43 @@ pub struct NestedRoot {
     pub tree_sha256: String,
     pub files: u64,
     pub name: Option<String>,
+}
+
+fn deserialize_nested_roots<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<NestedRoot>, D::Error> {
+    let Value::Array(entries) = Value::deserialize(deserializer)? else {
+        eprintln!("Ignoring vault descriptor nested_roots: expected an array");
+        return Ok(Vec::new());
+    };
+    let mut paths = std::collections::BTreeSet::new();
+    let mut roots = Vec::new();
+    for (index, entry) in entries.into_iter().enumerate() {
+        let Ok(entry) = serde_json::from_value::<NestedRoot>(entry) else {
+            eprintln!("Ignoring malformed vault descriptor nested_roots[{index}]");
+            continue;
+        };
+        if !entry.path.contains(['\\', '\0'])
+            && entry
+                .path
+                .split('/')
+                .all(|part| !part.is_empty() && !matches!(part, "." | ".."))
+            && Path::new(&entry.path)
+                .components()
+                .all(|part| matches!(part, Component::Normal(_)))
+            && entry.tree_sha256.len() == 64
+            && entry
+                .tree_sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            && paths.insert(entry.path.clone())
+        {
+            roots.push(entry);
+        } else {
+            eprintln!("Ignoring invalid or duplicate vault descriptor nested_roots[{index}]");
+        }
+    }
+    Ok(roots)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -51,6 +88,41 @@ pub enum NestedBoundary {
 }
 
 pub type NestedBoundaries = BTreeMap<String, NestedBoundary>;
+
+/// Match a case variant only when both spellings reach the same folder.
+/// Ordinary names and vaults with no declarations need no filesystem probe.
+pub(crate) fn boundary_at<'a>(
+    root: &Path,
+    boundaries: &'a NestedBoundaries,
+    relative: &str,
+) -> Option<(&'a String, &'a NestedBoundary)> {
+    boundaries.get_key_value(relative).or_else(|| {
+        if boundaries.is_empty() {
+            return None;
+        }
+        let lower = relative.to_lowercase();
+        boundaries.iter().find(|(path, _)| {
+            path.to_lowercase() == lower && same_directory(&root.join(path), &root.join(relative))
+        })
+    })
+}
+
+fn same_directory(left: &Path, right: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let (Ok(left), Ok(right)) = (std::fs::metadata(left), std::fs::metadata(right)) else {
+            return false;
+        };
+        left.is_dir() && right.is_dir() && (left.dev(), left.ino()) == (right.dev(), right.ino())
+    }
+    #[cfg(not(unix))]
+    {
+        left.canonicalize().ok().is_some_and(|left| {
+            left.is_dir() && right.canonicalize().is_ok_and(|right| left == right)
+        })
+    }
+}
 
 pub(crate) fn declared_boundaries(root: &Path) -> NestedBoundaries {
     let LayoutState::Managed(layout) = LayoutState::load(root) else {
@@ -178,29 +250,6 @@ impl Layout {
         {
             return false;
         }
-        let mut nested_paths = std::collections::BTreeSet::new();
-        if !self.nested_roots.iter().all(|entry| {
-            !entry.path.contains('\\')
-                && entry
-                    .path
-                    .split('/')
-                    .all(|part| !part.is_empty() && !matches!(part, "." | ".."))
-                && Path::new(&entry.path)
-                    .components()
-                    .all(|part| matches!(part, Component::Normal(_)))
-                && entry.tree_sha256.len() == 64
-                && entry
-                    .tree_sha256
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-                && entry
-                    .name
-                    .as_ref()
-                    .is_none_or(|name| !name.trim().is_empty())
-                && nested_paths.insert(&entry.path)
-        }) {
-            return false;
-        }
         let mut ids = std::collections::BTreeSet::new();
         let mut paths = std::collections::BTreeSet::new();
         self.domains.iter().all(|domain| {
@@ -304,6 +353,40 @@ fn relative(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vd4_review_malformed_nested_entries_preserve_the_layout_and_valid_roots() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join(DIRECTORY)).unwrap();
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/lifecycle-vault");
+        let mut descriptor = read(&fixture).unwrap();
+        let hash = "0".repeat(64);
+        let valid = serde_json::json!({"path":"Vault","kind":"vault","tree_sha256":hash,"files":1,"name":""});
+        descriptor["layout"]["nested_roots"] = serde_json::json!([
+            {"path":"Unknown","kind":"submodule","tree_sha256":hash,"files":3},
+            {"path":"../bad","kind":"unit","tree_sha256":hash,"files":0},
+            {"path":"Wrong hash","kind":"vault","tree_sha256":"bad","files":3},
+            valid,
+            {"path":"Vault","kind":"unit","tree_sha256":hash,"files":2},
+            {"path":"Unit","kind":"unit","tree_sha256":hash,"files":0}
+        ]);
+        std::fs::write(path(root.path()), serde_json::to_vec(&descriptor).unwrap()).unwrap();
+        let LayoutState::Managed(layout) = LayoutState::load(root.path()) else {
+            panic!("Malformed nested entries must not disable the layout");
+        };
+        assert_eq!(layout.roots.state, "state");
+        assert_eq!(layout.nested_roots.len(), 2);
+        assert_eq!(layout.nested_roots[0].name.as_deref(), Some(""));
+        assert_eq!(layout.nested_roots[1].kind, NestedKind::Unit);
+
+        descriptor["layout"]["nested_roots"] = serde_json::json!({"wrong":"shape"});
+        std::fs::write(path(root.path()), serde_json::to_vec(&descriptor).unwrap()).unwrap();
+        let LayoutState::Managed(layout) = LayoutState::load(root.path()) else {
+            panic!("A malformed optional field must not disable the layout");
+        };
+        assert!(layout.nested_roots.is_empty());
+    }
 
     #[test]
     fn migration_review_layout_requires_schema_fields() {

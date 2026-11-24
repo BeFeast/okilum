@@ -41,6 +41,19 @@ fn explicit_creation_never_overwrites_or_creates_parent_folders() {
     );
 }
 
+#[test]
+fn vd4_review_explicit_creation_refuses_nested_archive() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().canonicalize().unwrap();
+    let archive = root.join("Archive");
+    fs::create_dir(&archive).unwrap();
+    fs::write(archive.join(".brain-read-only"), "").unwrap();
+    let note = archive.join("new.md");
+    let error = resolve_explicit_path(&note, Some(&root)).unwrap_err();
+    assert!(error.to_string().contains("read-only archive"), "{error:#}");
+    assert!(!note.exists());
+}
+
 fn init(cx: &mut gpui::TestAppContext, state: &Path) {
     cx.update(|cx| {
         crate::test_init(cx);

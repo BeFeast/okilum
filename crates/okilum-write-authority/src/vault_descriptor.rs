@@ -134,7 +134,8 @@ impl Lifecycle {
         }
     }
 
-    pub(crate) fn check_ancestors(directory: &Path) -> anyhow::Result<()> {
+    /// Check lifecycle metadata on the directory and every enclosing folder.
+    pub fn check_ancestors(directory: &Path) -> anyhow::Result<()> {
         for root in directory.ancestors() {
             match Self::load(root) {
                 Self::Writable => {}

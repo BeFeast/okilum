@@ -359,6 +359,27 @@ fn walk(
             }
         };
         for entry in listed {
+            if !relative.as_os_str().is_empty() && entry.name == ".obsidian" {
+                let path = relative.join(&entry.name);
+                match entry.known {
+                    Some(meta) if meta.dir => {
+                        // Only its existence is meaningful. Opening or changing
+                        // a service file must not invalidate the reader index.
+                        manifest.insert(
+                            path,
+                            Stamp {
+                                dir: true,
+                                len: 0,
+                                modified: None,
+                                racy: false,
+                            },
+                        );
+                    }
+                    None => keep_previous(previous, &path, true, &mut manifest),
+                    Some(_) => {}
+                }
+                continue;
+            }
             if skipped(&entry.name, entry.known.is_none_or(|meta| meta.dir)) {
                 continue;
             }
@@ -606,6 +627,29 @@ mod tests {
 
     fn set(paths: &[&str]) -> BTreeSet<String> {
         paths.iter().map(|path| path.to_string()).collect()
+    }
+
+    #[test]
+    fn vd4_review_polling_notices_nested_obsidian_marker_without_reading_contents() {
+        let mut share = Harness::new();
+        let marker = share.path("Notes/.obsidian");
+        std::fs::create_dir(&marker).unwrap();
+        // Fail any attempt to enumerate the marker, as a service directory.
+        *share.share.failing.lock().unwrap() = Some(marker.clone());
+        assert!(
+            share.walk().unwrap().rescan,
+            "new marker requires reconciliation"
+        );
+        std::fs::write(marker.join("plugin.md"), "service content").unwrap();
+        assert!(
+            !share.walk().unwrap().rescan,
+            "service churn does not require reconciliation"
+        );
+        std::fs::remove_dir_all(marker).unwrap();
+        assert!(
+            share.walk().unwrap().rescan,
+            "marker removal requires reconciliation"
+        );
     }
 
     #[test]

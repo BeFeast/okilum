@@ -818,14 +818,21 @@ impl Vault {
                     }
                     if entry.file_type().is_dir() {
                         let key = note_path(relative);
-                        if !boundaries.contains_key(&key) {
+                        if let Some((declared, _)) =
+                            vault_descriptor::boundary_at(root, &boundaries, &key)
+                        {
+                            if declared != &key {
+                                let declared = declared.clone();
+                                let boundary = boundaries.remove(&declared).unwrap();
+                                boundaries.insert(key, boundary);
+                            }
+                            walk.skip_current_dir();
+                        } else {
                             if let Some(boundary) = vault_descriptor::marked_boundary(entry.path())
                             {
-                                boundaries.insert(key.clone(), boundary);
+                                boundaries.insert(key, boundary);
+                                walk.skip_current_dir();
                             }
-                        }
-                        if boundaries.contains_key(&key) {
-                            walk.skip_current_dir();
                         }
                     }
                 }
@@ -1291,7 +1298,12 @@ impl Vault {
             e.depth() == 0
                 || (!service_path(relative)
                     && (!e.file_type().is_dir()
-                        || (!boundaries.contains_key(&note_path(relative))
+                        || (vault_descriptor::boundary_at(
+                            root,
+                            &boundaries,
+                            &note_path(relative),
+                        )
+                        .is_none()
                             && !vault_descriptor::boundary_marker(e.path()))))
         }) {
             checkpoint()?;
@@ -1345,7 +1357,9 @@ impl Vault {
         }
         let mut candidate = path;
         loop {
-            if let Some((root, boundary)) = self.nested_boundaries.get_key_value(candidate) {
+            if let Some((root, boundary)) =
+                vault_descriptor::boundary_at(&self.root, &self.nested_boundaries, candidate)
+            {
                 return Some((root, boundary));
             }
             candidate = candidate.rsplit_once('/')?.0;
@@ -1362,11 +1376,11 @@ impl Vault {
                 std::path::Component::Normal(name) => normalized.push(name),
                 std::path::Component::ParentDir => {
                     if !normalized.pop() {
-                        return true;
+                        return false;
                     }
                 }
                 std::path::Component::CurDir => {}
-                _ => return true,
+                _ => return false,
             }
         }
         self.nested_boundary(&note_path(&normalized))

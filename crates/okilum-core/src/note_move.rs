@@ -1,4 +1,5 @@
 //! Preview-bound, non-replacing moves of ordinary notes within one vault.
+use crate::vault_mutation::MoveScope;
 use anyhow::{bail, Context, Result};
 use rustix::fs::{open, openat, Mode, OFlags};
 use std::{
@@ -116,7 +117,7 @@ fn check_destination(
 }
 
 pub struct MovePlan {
-    authority: okilum_write_authority::Authority,
+    scope: MoveScope,
     source_dir: File,
     source_name: OsString,
     target_dir: File,
@@ -141,13 +142,14 @@ impl MovePlan {
         if from == to {
             bail!("Choose a different name or folder");
         }
+        let scope = MoveScope::prepare(root, from, to)?;
         let (source_dir, source_name) = parent(root, from)?;
         let (target_dir, target_name) = parent(root, to)?;
         let expected = snapshot(&source_dir, &source_name)?;
         // Atomic NOREPLACE below is authoritative; this only improves the preview.
         check_destination(&source_dir, &source_name, &target_dir, &target_name)?;
         Ok(Self {
-            authority: okilum_write_authority::Authority::for_root(root)?,
+            scope,
             source_dir,
             source_name,
             target_dir,
@@ -170,13 +172,15 @@ impl MovePlan {
     }
 
     fn commit_before_rename(self, before: impl FnOnce()) -> Result<Moved> {
-        let _admission = self.authority.operation()?;
+        let _admission = self.scope.admit()?;
         if snapshot(&self.source_dir, &self.source_name)
             .context("The source is no longer readable. Nothing was moved; preview again")?
             != self.expected
         {
             bail!("The note changed after preview. Nothing was moved; preview again");
         }
+        self.scope
+            .check_pinned_parents(&self.source_dir, &self.target_dir)?;
         before();
         crate::unix_publish::no_replace(&self.source_dir, &self.source_name, &self.target_dir, &self.target_name)
             .context("Nothing was moved: destination exists, source changed, or the filesystem cannot perform a safe move")?;

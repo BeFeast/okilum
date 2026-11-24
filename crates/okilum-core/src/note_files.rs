@@ -56,7 +56,8 @@ fn publish_created(
     parts: &[Component<'_>],
 ) -> Result<()> {
     let parent = relative.parent().context("Missing destination folder")?;
-    let _scope = okilum_write_authority::Authority::for_root(root)?;
+    crate::vault_mutation::validate_directories(root, parent, false)?;
+    let _scope = okilum_write_authority::operation(root)?;
     let _admission = okilum_write_authority::operation_for_directory(&root.join(parent))?;
     #[cfg(windows)]
     {
@@ -242,7 +243,8 @@ pub fn create_folders(root: &Path, relative: &Path, exclusive_last: bool) -> Res
     {
         bail!("Choose a folder inside the vault");
     }
-    let _scope = okilum_write_authority::Authority::for_root(root)?;
+    crate::vault_mutation::validate_directories(root, relative, true)?;
+    let _scope = okilum_write_authority::operation(root)?;
     let _admission = okilum_write_authority::operation_for_directory(&root.join(relative))?;
     #[cfg(windows)]
     {
@@ -311,7 +313,8 @@ pub fn create_from_template(
         bail!("Use a Markdown (.md) filename");
     }
     let parent = relative.parent().context("Choose a note filename")?;
-    let _scope = okilum_write_authority::Authority::for_root(root)?;
+    crate::vault_mutation::validate_directories(root, parent, true)?;
+    let _scope = okilum_write_authority::operation(root)?;
     let _admission = okilum_write_authority::operation_for_directory(&root.join(parent))?;
     if catalog.contains_target(relative) {
         bail!("Choose a note destination outside the templates folder");
@@ -375,6 +378,43 @@ mod tests {
     fn nested_archive(root: &Path) {
         std::fs::create_dir_all(root.join("Archive vault/Notes")).unwrap();
         std::fs::write(root.join("Archive vault/.brain-read-only"), "").unwrap();
+    }
+
+    #[test]
+    fn vd4_review_root_hold_precedes_admission_of_an_archive_target() {
+        let root = tempfile::tempdir().unwrap();
+        nested_archive(root.path());
+        let authority = okilum_write_authority::Authority::for_root(root.path()).unwrap();
+        let hold = authority.begin_drain("vd4-root-hold").unwrap();
+        let errors = [
+            create(root.path(), Path::new("Archive vault/Notes/New.md")).unwrap_err(),
+            create_folders(root.path(), Path::new("Archive vault/Notes/New"), true).unwrap_err(),
+        ];
+        let token = hold.token().clone();
+        hold.release(&token).unwrap();
+        for error in errors {
+            assert!(error.to_string().contains("writer hold"), "{error:#}");
+        }
+    }
+
+    #[test]
+    fn vd4_review_creation_rejects_a_directory_symlink_before_archive_admission() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        nested_archive(outside.path());
+        std::os::unix::fs::symlink(
+            outside.path().join("Archive vault/Notes"),
+            root.path().join("alias"),
+        )
+        .unwrap();
+        for error in [
+            create(root.path(), Path::new("alias/New.md")).unwrap_err(),
+            create_folders(root.path(), Path::new("alias/New"), true).unwrap_err(),
+        ] {
+            assert!(error.to_string().contains("symbolic link"), "{error:#}");
+        }
+        assert!(!outside.path().join("Archive vault/Notes/New").exists());
+        assert!(!outside.path().join("Archive vault/Notes/New.md").exists());
     }
 
     #[test]

@@ -1,4 +1,5 @@
 //! Preview-bound NTFS/ReFS moves. Ancestors stay pinned; publication never replaces.
+use crate::vault_mutation::MoveScope;
 use crate::windows_files::{identity, information, move_no_replace, Directory};
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -49,7 +50,7 @@ pub struct Moved {
     pub warning: Option<String>,
 }
 pub struct MovePlan {
-    authority: okilum_write_authority::Authority,
+    scope: MoveScope,
     source: Directory,
     source_name: OsString,
     target: Directory,
@@ -61,10 +62,11 @@ impl MovePlan {
         ensure!(from != to, "Choose a different name or folder");
         let (source, source_name) = parent(root, from, true)?;
         let (target, target_name) = parent(root, to, true)?;
+        let scope = MoveScope::prepare(root, from, to)?;
         vacant(&target, &target_name)?;
         let expected = snapshot(&source, &source_name)?;
         Ok(Self {
-            authority: okilum_write_authority::Authority::for_root(root)?,
+            scope,
             source,
             source_name,
             target,
@@ -81,7 +83,7 @@ impl MovePlan {
         Ok(plan)
     }
     pub fn commit(self) -> Result<Moved> {
-        let _admission = self.authority.operation()?;
+        let _admission = self.scope.admit()?;
         // Retain the read handle through publication to exclude in-place writes.
         // DELETE sharing permits publication; replacement races are checked below.
         let (_guard, bytes, info) = self.source.read(&self.source_name)?;
@@ -188,7 +190,7 @@ impl DirectorySnapshot {
     }
 }
 pub struct DirectoryMovePlan {
-    authority: okilum_write_authority::Authority,
+    scope: MoveScope,
     source: Directory,
     source_name: OsString,
     target: Directory,
@@ -208,13 +210,14 @@ impl DirectoryMovePlan {
         );
         let (source, source_name) = parent(root, from, false)?;
         let (target, target_name) = parent(root, to, false)?;
+        let scope = MoveScope::prepare(root, from, to)?;
         ensure!(
             DirectorySnapshot::at(&source, &source_name)? == *expected,
             "Folder changed after preview"
         );
         vacant(&target, &target_name)?;
         Ok(Self {
-            authority: okilum_write_authority::Authority::for_root(root)?,
+            scope,
             source,
             source_name,
             target,
@@ -223,7 +226,7 @@ impl DirectoryMovePlan {
         })
     }
     pub fn commit(self) -> Result<Moved> {
-        let _admission = self.authority.operation()?;
+        let _admission = self.scope.admit()?;
         ensure!(
             DirectorySnapshot::at(&self.source, &self.source_name)? == self.expected,
             "Folder changed after preview; nothing was moved"
