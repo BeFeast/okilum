@@ -240,8 +240,9 @@ fn pin_from_file_menu_keeps_the_file_in_the_row_across_navigation_and_relaunch(
     reader.read_with(visual, |r, _| assert_eq!(r.selected_file(), "A.md"));
 }
 
-/// #2789: a pinned file deleted or renamed outside Okilum stays in the row,
-/// marked missing, until removed. The Pinned menu leaves it out, and a click
+/// #2789: a pinned file deleted or moved out of the vault outside Okilum
+/// stays in the row, marked missing, until removed. A rename inside the
+/// vault is a verified move and the pin follows it. The Pinned menu leaves it out, and a click
 /// on it opens nothing. Pinned folders stay out of the row.
 ///
 /// Without the fix the pruning of a complete inventory drops the pin
@@ -269,24 +270,51 @@ fn a_pin_moved_or_deleted_elsewhere_shows_as_missing_until_removed(cx: &mut Test
         assert!(pins.iter().all(|p| !p.missing), "control: all present");
     });
 
-    // Renamed outside Okilum: the old path is gone from the next inventory.
+    // Renamed inside the vault outside Okilum: a verified move, so the pin
+    // follows the file (docs/vault-move-map.md, 0c58d1565).
     std::fs::rename(root.join("Docs/C.md"), root.join("Docs/C renamed.md")).unwrap();
     reader.update_in(visual, |r, window, cx| {
         r.refresh_inventory(okilum_core::Changes::default(), window, cx)
     });
     visual.run_until_parked();
     reader.read_with(visual, |r, _| {
+        let pins = r.pinned_files();
+        assert_eq!(
+            pins.iter().map(|p| p.path.as_str()).collect::<Vec<_>>(),
+            ["Docs/C renamed.md", "B.md"],
+            "the pin follows the rename"
+        );
+        assert!(pins.iter().all(|p| !p.missing), "{pins:?}");
+    });
+
+    // Moved out of the vault: nothing to follow, so the old path is gone
+    // from the next inventory and the pin stays, marked missing (#2789).
+    std::fs::rename(
+        root.join("Docs/C renamed.md"),
+        fixture.path().join("C renamed.md"),
+    )
+    .unwrap();
+    reader.update_in(visual, |r, window, cx| {
+        r.refresh_inventory(okilum_core::Changes::default(), window, cx)
+    });
+    visual.run_until_parked();
+    reader.read_with(visual, |r, _| {
         assert!(
-            r.vault
+            !r.vault
                 .entries
                 .iter()
                 .any(|e| e.path == "Docs/C renamed.md"),
-            "control: the inventory saw the rename"
+            "control: the inventory saw the move out"
         );
-        assert!(r.sidebar.is_pinned("Docs/C.md"), "the vanished pin stays");
+        assert!(
+            r.sidebar.is_pinned("Docs/C renamed.md"),
+            "the vanished pin stays"
+        );
         let missing = r.pinned_files();
         assert!(
-            missing.iter().any(|p| p.path == "Docs/C.md" && p.missing),
+            missing
+                .iter()
+                .any(|p| p.path == "Docs/C renamed.md" && p.missing),
             "{missing:?}"
         );
         assert!(missing.iter().any(|p| p.path == "B.md" && !p.missing));
@@ -295,14 +323,14 @@ fn a_pin_moved_or_deleted_elsewhere_shows_as_missing_until_removed(cx: &mut Test
             .into_iter()
             .map(|entry| entry.path)
             .collect();
-        assert!(!menu.contains(&"Docs/C.md".to_owned()), "{menu:?}");
+        assert!(!menu.contains(&"Docs/C renamed.md".to_owned()), "{menu:?}");
         assert!(menu.contains(&"B.md".to_owned()), "control: {menu:?}");
     });
     assert!(
-        bounds(visual, "reader-pin-Docs/C.md").is_some(),
+        bounds(visual, "reader-pin-Docs/C renamed.md").is_some(),
         "shown as missing"
     );
-    click(visual, "reader-pin-Docs/C.md");
+    click(visual, "reader-pin-Docs/C renamed.md");
     reader.read_with(visual, |r, _| assert_eq!(r.selected_file(), "A.md"));
     visual.update(|window, cx| window.clear_notifications(cx));
 
@@ -316,7 +344,7 @@ fn a_pin_moved_or_deleted_elsewhere_shows_as_missing_until_removed(cx: &mut Test
         assert!(r.pinned_files().iter().all(|p| p.missing));
     });
     click(visual, "reader-unpin-B.md");
-    click(visual, "reader-unpin-Docs/C.md");
+    click(visual, "reader-unpin-Docs/C renamed.md");
     reader.read_with(visual, |r, _| {
         assert_eq!(r.sidebar.pinned, ["Folder"], "only the folder pin is left");
         assert!(r.pinned_files().is_empty());
