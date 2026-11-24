@@ -1,34 +1,12 @@
 //! Read-only project records (#1892). Canonical Markdown remains the authority.
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, io::Read, path::Path};
+use std::{collections::BTreeMap, io::Read, path::Path, sync::Arc, time::SystemTime};
+
+pub use okilum_core::view::builtin::ProjectKind as Kind;
 
 const MAX_FILE: usize = 256 * 1024;
 const MAX_TOTAL: usize = 4 * 1024 * 1024;
 const MAX_ENTRIES: usize = 512;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind {
-    Decisions,
-    Reports,
-    Handovers,
-}
-impl Kind {
-    pub const ALL: [Self; 3] = [Self::Decisions, Self::Reports, Self::Handovers];
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Decisions => "Decisions",
-            Self::Reports => "Reports",
-            Self::Handovers => "Handovers",
-        }
-    }
-    pub fn directories(self) -> &'static [&'static str] {
-        match self {
-            Self::Decisions => &["ops/decisions", "decisions"],
-            Self::Reports => &["ops/daily", "ops/reports", "reports"],
-            Self::Handovers => &["handovers", "ops/handovers"],
-        }
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Record {
@@ -39,6 +17,8 @@ pub struct Record {
     pub status: Option<String>,
     pub body: String,
     pub revision: String,
+    pub source: Arc<str>,
+    pub modified: Option<SystemTime>,
 }
 impl Record {
     pub fn draft(&self, kind: Kind) -> String {
@@ -137,10 +117,10 @@ fn load(project: &Path, path: &Path, budget: &mut Budget) -> anyhow::Result<Reco
         full.canonicalize()?.starts_with(project.canonicalize()?),
         "record escapes project"
     );
+    let file = std::fs::File::open(&full)?;
+    let modified = file.metadata()?.modified().ok();
     let mut bytes = Vec::new();
-    std::fs::File::open(&full)?
-        .take((MAX_FILE + 1) as u64)
-        .read_to_end(&mut bytes)?;
+    file.take((MAX_FILE + 1) as u64).read_to_end(&mut bytes)?;
     anyhow::ensure!(
         bytes.len() <= MAX_FILE,
         "record exceeds 256 KiB; not truncated"
@@ -201,6 +181,8 @@ fn load(project: &Path, path: &Path, budget: &mut Budget) -> anyhow::Result<Reco
         status: field("status"),
         body: body.to_owned(),
         revision,
+        source: source.into(),
+        modified,
     })
 }
 

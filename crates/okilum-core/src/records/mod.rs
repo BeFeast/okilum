@@ -4,6 +4,7 @@ mod note;
 mod schema;
 pub(crate) mod value;
 
+pub(crate) use note::project as project_note;
 pub use schema::{Field, FieldSchema, FieldType};
 pub use value::{Link, Value};
 
@@ -75,6 +76,19 @@ pub struct Projection {
 }
 
 impl Projection {
+    pub(crate) fn from_records(
+        schema: Arc<FieldSchema>,
+        notes: impl IntoIterator<Item = NoteRecord>,
+    ) -> Self {
+        Self {
+            schema,
+            notes: notes
+                .into_iter()
+                .map(|note| (note.path.clone(), Arc::new(note)))
+                .collect(),
+        }
+    }
+
     pub fn build<'a>(
         schema: Arc<FieldSchema>,
         sources: impl IntoIterator<Item = Source<'a>>,

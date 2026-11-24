@@ -1,0 +1,52 @@
+# Open a synthetic project and read the records in all three existing tabs.
+# Create a vault override while Decisions is visible and read its added column.
+vault: tests/fixtures/project-record-views
+note: '# Workspace entry'
+appearance: light
+features:
+  agents: true
+preferences:
+  note_open_mode: read
+rig:
+  persistent_pointer: true
+region: [0, 38, 790, 705]
+ready_text: Workspace entry
+steps:
+  - id: projects
+    keys: [p]
+    mods: [ctrl, alt]
+    wait: 1
+    text_order: [Projects, Cedar Studio]
+    region: [285, 53, 390, 165]
+  - id: project-board
+    keys: [Return]
+    wait: 1
+    text: Decisions
+  - id: reports
+    click: [160, 60]
+    text: Delivery report
+  - id: handovers
+    click: [226, 60]
+    text: Continuation notes
+  - id: decisions
+    click: [94, 60]
+    text_order: [Choose a direction, Review the options]
+    text_absent: Owner
+  - id: decisions-override
+    vault_create:
+      path: '@views/project-decisions.md'
+      source: |
+        ---
+        type: view
+        ---
+        ```view
+        id: decisions
+        from: notes
+        show: table
+        sort: [-date]
+        cols: [title, date, path, owner]
+        ```
+    text: Owner
+    text_order: [Choose a direction, Review the options]
+  - id: owner-value
+    text: Alice

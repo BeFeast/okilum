@@ -8,11 +8,22 @@ and Manager draft. Switching these tabs never sends a message.
 
 These views read existing Markdown, without enrollment, conversion or writes:
 
-| View | Project-relative directories |
-| --- | --- |
-| Decisions | `ops/decisions`, `decisions` |
-| Reports | `ops/daily`, `ops/reports`, `reports` |
-| Handovers | `handovers`, `ops/handovers` |
+| View | Project-relative directories | Vault override |
+| --- | --- | --- |
+| Decisions | `ops/decisions`, `decisions` | `@views/project-decisions.md` |
+| Reports | `ops/daily`, `ops/reports`, `reports` | `@views/project-reports.md` |
+| Handovers | `handovers`, `ops/handovers` | `@views/project-handovers.md` |
+
+The [shipped templates](../crates/okilum-core/src/view/builtin/) list the title,
+date and source path, newest first. An override at the corresponding path in
+the vault takes precedence for that tab across projects. Use a `type: view`
+note with one `view` block and `from: notes`. The query runs over the active
+project's record directories for that tab. `where`, `sort` and `cols` can filter,
+order and select fields from those records. The displays are `list` and `table`.
+For example, set `show: table` and `cols: [title, date, path, owner]` to add an
+Owner column. An invalid override shows its error in the tab. Removing it
+restores the shipped template. The tab offers its existing read-only navigation
+and Manager draft actions.
 
 One file is one record. Its authored frontmatter `title`, or first H1, is the
 list title; the filename is only a fallback. An authored `date`, or valid ISO

@@ -212,6 +212,14 @@ def replace_vault_text(vault, spec):
     target.write_text(source.replace(before, spec['after'], 1))
 
 
+def create_vault_text(vault, spec):
+    target = (vault / spec['path']).resolve()
+    require(target.is_relative_to(vault), f'Path must stay inside the vault: {spec["path"]}')
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open('x', encoding='utf-8') as stream:
+        stream.write(spec['source'])
+
+
 def condition(path, rule, default_region):
     """Does the screenshot satisfy a step's `text` and/or `pixels` rule? (ok, details)"""
     details, ok = {}, True
@@ -391,6 +399,8 @@ def run(args, scenario, output, result):
             'version': 1, 'appearance': scenario.get('appearance', 'light'),
             **scenario.get('preferences', {}),
         }))
+        if 'features' in scenario:
+            (state / 'features.json').write_text(json.dumps(scenario['features']))
         rig_options = scenario.get('rig', {})
         require(set(rig_options) <= {'output_scale', 'floating', 'persistent_pointer'},
                 f'Unknown rig keys: {rig_options}')
@@ -445,9 +455,11 @@ def run(args, scenario, output, result):
                             rig.click(*step['click'])
                         if 'vault_replace' in step:
                             replace_vault_text(vault, step['vault_replace'])
+                        if 'vault_create' in step:
+                            create_vault_text(vault, step['vault_create'])
                         time.sleep(step.get('wait', .4))
                         rig.shot(shot)
-                        if 'vault_replace' in step:
+                        if 'vault_replace' in step or 'vault_create' in step:
                             deadline = time.monotonic() + 10
                             while time.monotonic() < deadline and not condition(shot, step, scenario['region'])[0]:
                                 time.sleep(.2)

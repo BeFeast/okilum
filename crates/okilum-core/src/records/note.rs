@@ -12,7 +12,7 @@ use comrak::{nodes::NodeValue, parse_document, Arena};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(super) fn project(schema: &FieldSchema, source: Source<'_>) -> NoteRecord {
+pub(crate) fn project(schema: &FieldSchema, source: Source<'_>) -> NoteRecord {
     let text = String::from_utf8_lossy(source.bytes);
     let path = schema.layout.project(source.path);
     let mut row = NoteRecord {

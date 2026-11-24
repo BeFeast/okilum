@@ -1,14 +1,18 @@
 //! Variant A project tabs and read-only Markdown records (#1892).
 use super::*;
 use okilum_core::agent_rules::Refresh;
-use okilum_t3::records::{Kind, Record, Snapshot};
+use okilum_t3::records::{Kind, Record};
+
+mod query;
 
 pub(crate) struct RecordsView {
     area: PathBuf,
+    vault_root: PathBuf,
+    vault: Arc<Vault>,
     pub(crate) kind: Option<Kind>,
     visible: bool,
     refresh: Refresh,
-    snapshot: Snapshot,
+    snapshot: query::Snapshot,
     selected: Option<String>,
     query: Entity<InputState>,
     _query: Subscription,
@@ -30,10 +34,12 @@ impl Reader {
         if self.project_navigation.records.contains_key(area) {
             return;
         }
-        let records = cx.new(|cx| RecordsView::new(area.to_owned(), window, cx));
         let mut published = self.vault.clone();
         let mut epoch = self.source_publication_epoch;
         let root = self.vault_root.clone();
+        let records = cx.new(|cx| {
+            RecordsView::new(area.to_owned(), root.clone(), published.clone(), window, cx)
+        });
         let refreshed = records.downgrade();
         let publication = cx.observe(&cx.entity(), move |this, _, cx| {
             if this.vault_root != root
@@ -43,7 +49,10 @@ impl Reader {
             }
             published = this.vault.clone();
             epoch = this.source_publication_epoch;
-            let _ = refreshed.update(cx, |records, cx| records.changed(cx));
+            let _ = refreshed.update(cx, |records, cx| {
+                records.vault = published.clone();
+                records.changed(cx);
+            });
         });
         records.update(cx, |records, _| records._publication = Some(publication));
         let owner = area.to_owned();
@@ -181,15 +190,23 @@ impl ProjectView {
 }
 
 impl RecordsView {
-    pub(crate) fn new(area: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        area: PathBuf,
+        vault_root: PathBuf,
+        vault: Arc<Vault>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search records"));
         let subscription = cx.observe(&query, |_, _, cx| cx.notify());
         Self {
             area,
+            vault_root,
+            vault,
             kind: None,
             visible: false,
             refresh: Refresh::default(),
-            snapshot: Snapshot::default(),
+            snapshot: query::Snapshot::default(),
             selected: None,
             query,
             _query: subscription,
@@ -211,7 +228,7 @@ impl RecordsView {
         }
         self.refresh.deactivate();
         self.kind = kind;
-        self.snapshot = Snapshot::default();
+        self.snapshot = query::Snapshot::default();
         self.selected = None;
         self.notice = None;
         self.query
@@ -248,11 +265,14 @@ impl RecordsView {
         let Some(ticket) = self.refresh.begin() else {
             return;
         };
+        let root = self.vault_root.clone();
+        let vault = self.vault.clone();
+        let previous = self.snapshot.sources.clone();
         cx.spawn(async move |this, cx| {
             let area = ticket.project.clone();
             let snapshot = cx
                 .background_executor()
-                .spawn(async move { okilum_t3::records::read(&area, kind) })
+                .spawn(async move { query::load(&root, &vault, &area, kind, &previous) })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.refresh.finish(&ticket) {
@@ -264,33 +284,22 @@ impl RecordsView {
         })
         .detach();
     }
-    fn install(&mut self, mut snapshot: Snapshot, cx: &mut Context<Self>) {
-        if !snapshot.problems.is_empty() {
-            for previous in &self.snapshot.records {
-                if !snapshot.records.iter().any(|r| r.path == previous.path) {
-                    snapshot.records.push(previous.clone());
-                    snapshot.problems.push(format!(
-                        "{}: previous snapshot retained; current source unavailable",
-                        previous.path
-                    ));
-                }
-            }
-        }
+    fn install(&mut self, snapshot: query::Snapshot, cx: &mut Context<Self>) {
         self.snapshot = snapshot;
-        if !self
-            .snapshot
-            .records
-            .iter()
-            .any(|r| Some(&r.path) == self.selected.as_ref())
-        {
-            self.selected = self.snapshot.records.first().map(|r| r.path.clone());
+        if self.current().is_none() {
+            self.selected = self
+                .snapshot
+                .rows
+                .first()
+                .map(|row| self.snapshot.sources[row.source].path.clone());
         }
         self.update_content(cx);
     }
     fn current(&self) -> Option<&Record> {
         self.snapshot
-            .records
+            .rows
             .iter()
+            .map(|row| &self.snapshot.sources[row.source])
             .find(|r| Some(&r.path) == self.selected.as_ref())
     }
     fn update_content(&self, cx: &mut Context<Self>) {
@@ -300,6 +309,47 @@ impl RecordsView {
     }
 }
 
+fn column_label(column: &str) -> String {
+    let mut chars = column.chars();
+    chars.next().map_or_else(String::new, |first| {
+        format!(
+            "{}{}",
+            first.to_uppercase(),
+            chars.as_str().replace('_', " ")
+        )
+    })
+}
+
+fn column_width(column: &str) -> f32 {
+    match column {
+        "title" | "path" => 142.,
+        "date" => 86.,
+        _ => 92.,
+    }
+}
+
+fn table_row<'a>(
+    columns: &[String],
+    cells: impl IntoIterator<Item = &'a str>,
+    color: Hsla,
+) -> impl IntoElement {
+    h_flex()
+        .gap_2()
+        .items_start()
+        .children(columns.iter().zip(cells).map(|(column, cell)| {
+            div()
+                .w(px(column_width(column)))
+                .flex_shrink_0()
+                .whitespace_normal()
+                .text_xs()
+                .text_color(color)
+                .when(column == "title", |cell| {
+                    cell.font_weight(FontWeight::SEMIBOLD)
+                })
+                .child(cell.to_owned())
+        }))
+}
+
 impl Render for RecordsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(kind) = self.kind else {
@@ -307,18 +357,35 @@ impl Render for RecordsView {
         };
         let colors = brand::palette(cx);
         let query = self.query.read(cx).value().to_lowercase();
+        let columns = &self.snapshot.columns;
+        let table = self.snapshot.table;
+        let table_width = columns
+            .iter()
+            .map(|column| column_width(column) + 8.)
+            .sum::<f32>()
+            + 32.;
         let mut list = v_flex()
             .id("record-list")
             .debug_selector(|| "project-record-list".into())
-            .w(px(240.))
+            .w(px(if table { table_width.min(500.) } else { 240. }))
             .flex_shrink_0()
             .min_h_0()
             .gap_2()
             .p_3()
             .overflow_y_scroll()
+            .when(table, |list| list.max_w(relative(0.64)).overflow_x_scroll())
             .track_scroll(&self.list_scroll);
+        if table {
+            let labels: Vec<_> = columns.iter().map(|column| column_label(column)).collect();
+            list = list.child(div().px_2().child(table_row(
+                columns,
+                labels.iter().map(String::as_str),
+                colors.text_muted,
+            )));
+        }
         let mut count = 0;
-        for record in &self.snapshot.records {
+        for row in &self.snapshot.rows {
+            let record = &self.snapshot.sources[row.source];
             if !query.is_empty()
                 && !format!("{} {} {}", record.title, record.path, record.body)
                     .to_lowercase()
@@ -329,44 +396,43 @@ impl Render for RecordsView {
             count += 1;
             let path = record.path.clone();
             let selected = self.selected.as_ref() == Some(&path);
+            let content = if table {
+                table_row(columns, row.cells.iter().map(String::as_str), colors.text)
+                    .into_any_element()
+            } else {
+                v_flex()
+                    .w_full()
+                    .min_w_0()
+                    .gap_1()
+                    .children(
+                        columns
+                            .iter()
+                            .zip(&row.cells)
+                            .filter(|(_, cell)| !cell.is_empty())
+                            .map(|(column, cell)| {
+                                div()
+                                    .w_full()
+                                    .whitespace_normal()
+                                    .when_else(
+                                        column == "title",
+                                        |title| title.text_sm().font_weight(FontWeight::SEMIBOLD),
+                                        |value| value.text_xs().text_color(colors.text_muted),
+                                    )
+                                    .child(cell.clone())
+                            }),
+                    )
+                    .into_any_element()
+            };
             list = list.child(
                 Button::new(SharedString::from(format!("record-{}", record.path)))
                     .debug_selector(move || format!("project-record-{count}"))
                     .ghost()
                     .selected(selected)
                     .w_full()
+                    .when(table, |button| button.min_w(px(table_width - 24.)).px_2())
                     .h_auto()
                     .py_2()
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .min_w_0()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .w_full()
-                                    .whitespace_normal()
-                                    .text_sm()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(record.title.clone()),
-                            )
-                            .child(
-                                div().text_xs().text_color(colors.text_muted).child(
-                                    record
-                                        .date
-                                        .clone()
-                                        .unwrap_or_else(|| "Date not specified".into()),
-                                ),
-                            )
-                            .child(
-                                div()
-                                    .w_full()
-                                    .whitespace_normal()
-                                    .text_xs()
-                                    .text_color(colors.text_muted)
-                                    .child(record.path.clone()),
-                            ),
-                    )
+                    .child(content)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.selected = Some(path.clone());
                         this.notice = None;
@@ -450,7 +516,7 @@ impl Render for RecordsView {
                     ),
             )
             .when(
-                self.refresh.is_pending() && !self.snapshot.records.is_empty(),
+                self.refresh.is_pending() && !self.snapshot.rows.is_empty(),
                 |view| {
                     view.child(
                         div()

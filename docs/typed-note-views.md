@@ -1,7 +1,8 @@
 # Typed note views (#636)
 
-Approved owner direction: Markdown remains canonical; native view definitions
-belong to the app, not special vault files. The first built-in view is `tasks`.
+Markdown remains canonical. The app owns the renderer and supported displays
+and actions, and vaults can supply declarative queries in `type: view` Markdown
+notes with fenced `view` blocks. The first built-in view is `tasks`.
 This first core slice defines selection and section parsing only. It does not
 activate a native view, change Settings, or enable task writes.
 

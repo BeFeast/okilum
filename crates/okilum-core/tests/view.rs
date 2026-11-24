@@ -24,6 +24,71 @@ fn timestamp(value: &str) -> DateTime<FixedOffset> {
 }
 
 #[test]
+fn project_record_override_selects_fields_and_rows_from_the_same_sources() {
+    use view::builtin::{project_records, ProjectKind, ProjectRecord};
+
+    let root = tempfile::tempdir().unwrap();
+    let newer = "Cedar/ops/decisions/2026-11-24-new.md";
+    let older = "Cedar/decisions/2026-11-20-old.md";
+    let vault = Vault::from_note_paths([newer.into(), older.into(), "Elsewhere.md".into()]);
+    let run = |kind| {
+        project_records(
+            root.path(),
+            &vault,
+            kind,
+            [
+                ProjectRecord {
+                    source: Source {
+                        path: older,
+                        bytes: b"---\nowner: alice\n---\n# Older\n",
+                        mtime: None,
+                    },
+                    title: "Older",
+                    date: Some("2026-11-20"),
+                    status: None,
+                },
+                ProjectRecord {
+                    source: Source {
+                        path: newer,
+                        bytes: b"# Newer\n",
+                        mtime: None,
+                    },
+                    title: "Newer",
+                    date: Some("2026-11-24"),
+                    status: None,
+                },
+            ],
+        )
+    };
+    let baseline = run(ProjectKind::Decisions).unwrap();
+    assert_eq!(baseline.show, view::Show::List);
+    assert_eq!(baseline.cols, ["title", "date", "path"]);
+    assert_eq!(baseline.rows[0].path, newer);
+    assert_eq!(baseline.rows[1].path, older);
+
+    fs::create_dir(root.path().join("@views")).unwrap();
+    let path = root.path().join("@views/project-decisions.md");
+    let definition = "---\ntype: view\n---\n```view\nfrom: notes\nwhere: owner = alice\nshow: table\ncols: [title, owner]\n```\n";
+    fs::write(&path, definition).unwrap();
+    let overridden = run(ProjectKind::Decisions).unwrap();
+    assert_eq!(overridden.show, view::Show::Table);
+    assert_eq!(overridden.cols, ["title", "owner"]);
+    assert_eq!(overridden.rows.len(), 1);
+    assert_eq!(overridden.rows[0].path, older);
+    assert_eq!(overridden.rows[0].fields["owner"], "alice");
+    assert_eq!(fs::read_to_string(&path).unwrap(), definition);
+
+    fs::write(&path, "# Invalid override\n").unwrap();
+    assert!(run(ProjectKind::Decisions)
+        .unwrap_err()
+        .contains("@views/project-decisions.md:1: Expected view frontmatter"));
+    assert_eq!(run(ProjectKind::Reports).unwrap().show, view::Show::List);
+    assert_eq!(run(ProjectKind::Handovers).unwrap().show, view::Show::List);
+    fs::remove_file(path).unwrap();
+    assert_eq!(run(ProjectKind::Decisions).unwrap().cols, baseline.cols);
+}
+
+#[test]
 fn all_examples_are_deterministic_and_match_golden_json() {
     let root = Path::new(FIXTURE);
     let schema = Arc::new(FieldSchema::load(root).unwrap());

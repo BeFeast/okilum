@@ -1,0 +1,15 @@
+version: '1'
+timezone: Asia/Jerusalem
+scope: {include: '**', exclude: []}
+path_projection: {templates_from: 'layout.yaml#layers'}
+fields:
+  title: {type: string}
+  date: {type: date}
+  status: {type: string}
+  owner: {type: string}
+builtins:
+  path: {type: string}
+  mtime: {type: datetime}
+  rev: {type: string}
+task_fields: {}
+section_fields: {}

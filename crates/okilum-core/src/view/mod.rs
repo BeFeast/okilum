@@ -1,5 +1,6 @@
 //! Read-only execution of the vault's declarative view_api: 0 contract.
 mod bind;
+pub mod builtin;
 mod compute;
 mod parse;
 mod render;

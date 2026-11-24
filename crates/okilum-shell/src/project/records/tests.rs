@@ -170,7 +170,13 @@ fn records_1892_refresh_retains_selected_identity_and_failure_never_looks_empty(
     let source = area.join("ops/decisions/2026-11-07.md");
     std::fs::write(&source, "# Original\n").unwrap();
     let (view, visual) = cx.add_window_view(|window, cx| {
-        let mut view = RecordsView::new(area.clone(), window, cx);
+        let mut view = RecordsView::new(
+            area.clone(),
+            area.clone(),
+            Arc::new(Vault::from_note_paths([])),
+            window,
+            cx,
+        );
         view.select(Some(Kind::Decisions), window, cx);
         view.set_visible(true, cx);
         view

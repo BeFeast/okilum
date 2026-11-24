@@ -127,6 +127,7 @@ portable packages do not contain the helper. Native first-merge acceptance and
 beta delivery are recorded in [#2043](https://git.oklabs.uk/BeFeast/okilum/issues/2043).
 
 **Typed note views extension (2026-10-07, #636):** [typed views and Tasks editing](typed-note-views.md) defines native views over plain Markdown, explicit revision-checked task edits and Undo. The reader/MCP protocol remains read-only.
+The app owns the renderer and supported displays and actions, and vaults can supply declarative queries in `type: view` notes under `@views/`.
 
 **Remote Log view extension (2026-10-20, #1441):** [vault-scoped Kibana sources](remote-log-view.md)
 adds explicit Discover import and bounded remote history in the existing Log view.
