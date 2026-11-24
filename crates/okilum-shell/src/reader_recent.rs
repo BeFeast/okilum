@@ -232,7 +232,7 @@ impl Reader {
                             .iter()
                             .any(|entry| entry.path == target.relative);
                         this.close_recent_gallery(window, cx);
-                        if listed {
+                        if listed && !this.open_archive_shortcut(&target.relative, cx) {
                             this.open_recent_file(PathBuf::from(&target.relative), window, cx);
                         }
                         return;
@@ -337,7 +337,10 @@ impl Reader {
             self.nav_entries(reader_title_nav::Menu::Recent, reader_sidebar::now())
                 .into_iter()
                 .filter(|entry| {
-                    !entry.folder && inventory.iter().any(|file| file.path == entry.path)
+                    !entry.folder
+                        && (self.sidebar.moved_uncertain.contains(&entry.path)
+                            || Path::new(&entry.path).is_absolute()
+                            || inventory.iter().any(|file| file.path == entry.path))
                 })
                 .take(40),
         );

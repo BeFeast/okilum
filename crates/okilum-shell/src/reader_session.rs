@@ -20,6 +20,7 @@ struct Published {
     service_version: u64,
     sources: Arc<reader_publication::Sources>,
     reconciled: bool,
+    path_moves: reader_path_moves::Plan,
     warnings: Vec<okilum_core::vault::UnreadableEntry>,
     network: bool,
     limited_external_refresh: bool,
@@ -98,6 +99,7 @@ impl Reader {
                 service_version: 0,
                 sources: Arc::default(),
                 reconciled: false,
+                path_moves: Default::default(),
                 warnings: self
                     .loading
                     .as_ref()
@@ -225,7 +227,10 @@ impl Reader {
         let source = published.sources.get(&self.pane.current_rel);
         let source_changed =
             published.reconciled || source.is_some_and(|source| source.version > previous_version);
-        if !self.pane.current_rel.is_empty() && (source_changed || graph_changed) {
+        if !self.apply_live_moves(&published.path_moves, window, cx)
+            && !self.pane.current_rel.is_empty()
+            && (source_changed || graph_changed)
+        {
             self.reconcile_source_publication(
                 published.sources.get(&self.pane.current_rel),
                 graph_changed,
@@ -247,7 +252,11 @@ impl Reader {
         cx.notify();
     }
 
-    pub(crate) fn publish_shared_ready(&mut self, sources: Arc<reader_publication::Sources>) {
+    pub(crate) fn publish_shared_ready(
+        &mut self,
+        sources: Arc<reader_publication::Sources>,
+        path_moves: reader_path_moves::Plan,
+    ) {
         let Some(session) = &self.shared_session else {
             return;
         };
@@ -278,6 +287,7 @@ impl Reader {
             service_version: shared.published.service_version,
             sources,
             reconciled: true,
+            path_moves,
             warnings: self
                 .loading
                 .as_ref()
@@ -346,13 +356,13 @@ impl Reader {
                 shared.published.service_version = shared.published.service_version.wrapping_add(1);
                 shared.published.version = shared.published.version.wrapping_add(1);
             }
-            shared.pending = Default::default();
+            let pending = std::mem::take(&mut shared.pending);
             let force_source_read = std::mem::take(&mut shared.force_source_read);
             drop(shared);
             self.refresh_inventory_unshared(
                 okilum_core::Changes {
                     rescan: true,
-                    ..Default::default()
+                    ..pending
                 },
                 force_source_read,
                 window,
@@ -366,6 +376,8 @@ impl Reader {
         let mut watcher = shared.watcher.take();
         let mut changes = std::mem::take(&mut shared.pending);
         let previous = shared.published.clone();
+        let navigation = self.navigation_paths();
+        let state_directory = self.session_directory.clone();
         let index = shared.index.clone();
         #[cfg(test)]
         let hold = shared.hold.take();
@@ -382,10 +394,18 @@ impl Reader {
                 }
                 let result = if changes.is_empty() {
                     Ok(None)
-                } else if changes.rescan {
-                    Err(anyhow::anyhow!("Watcher overflow needs reconciliation"))
+                } else if changes.rescan || changes.bulk_topology() {
+                    Err(anyhow::anyhow!("Vault topology needs reconciliation"))
                 } else {
-                    update(&mut state, previous, &changes, index.as_deref()).map(Some)
+                    update(
+                        &mut state,
+                        previous,
+                        &changes,
+                        index.as_deref(),
+                        state_directory.as_deref(),
+                        navigation,
+                    )
+                    .map(Some)
                 };
                 let mut shared = session.lock().unwrap();
                 shared.watcher = watcher;
@@ -413,7 +433,10 @@ fn update(
     mut published: Published,
     changes: &okilum_core::Changes,
     index: Option<&Path>,
+    state_directory: Option<&Path>,
+    navigation: Vec<String>,
 ) -> anyhow::Result<Published> {
+    published.path_moves = Default::default();
     if !changes.metadata.is_empty() {
         published.service_version = published.service_version.wrapping_add(1);
         if changes.notes_empty() {
@@ -423,6 +446,14 @@ fn update(
     let mut note_changes = changes.clone();
     note_changes.metadata.clear();
     let batch = state.apply(&note_changes, &mut |_, _| Ok(()))?;
+    if batch.topology_changed || changes.archive_cutover() {
+        published.path_moves = reader_path_moves::live_plan(
+            &state.vault,
+            state_directory,
+            navigation,
+            changes.archive_cutover(),
+        );
+    }
     published.view_query = Some(reader_view_query::update_index(
         published.view_query.take(),
         &state.vault,

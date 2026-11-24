@@ -214,13 +214,13 @@ impl Reader {
         };
         let entry = |path: &str, age: Option<String>| Entry {
             path: path.to_owned(),
-            label: self.note_label(path),
+            label: self.shortcut_label(path),
             location: location(path, &folder),
             age,
             folder: self.tree.is_directory(path),
             unsaved: false,
         };
-        match menu {
+        let mut entries: Vec<_> = match menu {
             Menu::Recent => self
                 .sidebar
                 .recent
@@ -234,10 +234,34 @@ impl Reader {
                 .sidebar
                 .pinned
                 .iter()
-                .filter(|path| shown(path) && !self.pin_missing(path))
+                .filter(|path| {
+                    shown(path)
+                        && (!self.pin_missing(path) || self.sidebar.moved_uncertain.contains(*path))
+                })
                 .map(|path| entry(path, None))
                 .collect(),
+        };
+        if folder.is_empty() {
+            if let Some(archive) = &self.sidebar.archive_shortcuts {
+                let archived = |path: &str, age| Entry {
+                    path: archive.root.join(path).to_string_lossy().into_owned(),
+                    label: format!("(moved?) {}", self.note_label(path)),
+                    location: Some(vault_name::folder_name(&archive.root)),
+                    age,
+                    folder: false,
+                    unsaved: false,
+                };
+                match menu {
+                    Menu::Recent => entries.extend(archive.recent.iter().map(|(path, at)| {
+                        archived(path, Some(reader_sidebar::age_label(*at, now)))
+                    })),
+                    Menu::Pinned => {
+                        entries.extend(archive.pinned.iter().map(|path| archived(path, None)))
+                    }
+                }
+            }
         }
+        entries
     }
 
     fn nav_visible(&self, menu: Menu) -> (Vec<Entry>, bool) {
@@ -316,6 +340,9 @@ impl Reader {
             return;
         };
         self.close_nav_menu(window, cx);
+        if self.open_archive_shortcut(&entry.path, cx) {
+            return;
+        }
         if entry.folder {
             self.reveal_in_tree(&entry.path, window, cx);
         } else {

@@ -522,6 +522,7 @@ impl Reader {
         }
         if !changes.is_empty()
             && !changes.rescan
+            && !changes.bulk_topology()
             && self.incremental_state.is_some()
             && self.searcher.is_some()
         {

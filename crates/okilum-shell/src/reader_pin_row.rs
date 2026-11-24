@@ -92,7 +92,7 @@ impl Reader {
             .filter(|path| !self.tree.is_directory(path))
             .map(|path| PinnedFile {
                 path: path.clone(),
-                label: self.note_label(path),
+                label: self.shortcut_label(path),
                 missing: self.pin_missing(path),
             })
             .collect()

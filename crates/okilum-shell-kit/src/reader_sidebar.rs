@@ -86,6 +86,12 @@ pub struct State {
     /// Notes or folders, in pin order.
     #[serde(default)]
     pub pinned: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub path_identities: BTreeMap<String, identity::Identity>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub moved_uncertain: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_shortcuts: Option<cutover::ArchiveShortcuts>,
     /// Only `Folders` is written. Older profiles may still carry Recent or
     /// Pinned here; they are read and ignored. The retired `scroll_revealed`
     /// and `folders_only_restore` keys are dropped on load (#1508).
@@ -116,6 +122,10 @@ pub struct State {
     #[serde(default)]
     pub nav_all_vault: BTreeSet<String>,
 }
+
+pub mod cutover;
+pub mod identity;
+pub mod moves;
 
 fn write_left_mode<S: serde::Serializer>(
     mode: &LeftMode,

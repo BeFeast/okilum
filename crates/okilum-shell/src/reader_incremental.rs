@@ -103,6 +103,8 @@ impl Reader {
         })
         .detach();
         let worker_changes = changes.clone();
+        let navigation = self.navigation_paths();
+        let state_directory = self.session_directory.clone();
         let requested = std::time::Instant::now();
         let publish_trace = trace.clone();
         let cache = self.index_dir.clone();
@@ -125,6 +127,11 @@ impl Reader {
             worker_cancel.check()?;
             let start = std::time::Instant::now();
             let batch = state.apply(&worker_changes, &mut |_, _| worker_cancel.check())?;
+            let path_moves = if batch.topology_changed || worker_changes.archive_cutover() {
+                reader_path_moves::live_plan(&state.vault, state_directory.as_deref(), navigation, worker_changes.archive_cutover())
+            } else {
+                Default::default()
+            };
             // Capture the immutable published snapshot on UI; copying all project
             // metadata belongs to this worker, just like applying the batch.
             let mut projects = (*projects).clone();
@@ -200,7 +207,7 @@ impl Reader {
             if let Some(trace) = &worker_trace {
                 trace.event("incremental_update", serde_json::json!({"directory_hints":worker_changes.directories.len(), "topology_changed":batch.topology_changed, "changed": batch.changed.len(), "removed": batch.removed.len(), "read": batch.read, "affected": batch.affected.len(), "source_graph_ms":source_ms, "duration_ms":start.elapsed().as_secs_f64()*1000.}));
             }
-            Ok::<_, anyhow::Error>((state, tasks, projects, view_query, workbench, searcher, sources, titles, batch, published, inventory,
+            Ok::<_, anyhow::Error>((state, tasks, projects, view_query, workbench, searcher, sources, titles, batch, published, inventory, path_moves,
                 { #[cfg(any(unix, windows))] { candidates } #[cfg(not(any(unix, windows)))] { None::<()> } }))
         });
         cx.spawn_in(window, async move |this, cx| {
@@ -229,6 +236,7 @@ impl Reader {
                             batch,
                             published,
                             inventory,
+                            path_moves,
                             candidates,
                         )) => {
                             // Arc assignment can be the last owner of a vault-sized
@@ -272,8 +280,10 @@ impl Reader {
                             }
                             this.quick_open.inventory = Some(inventory);
                             this.refresh_quick_open(cx);
-                            if sources.contains_key(&this.pane.current_rel)
-                                || batch.removed.contains(&this.pane.current_rel)
+                            if !this.apply_live_moves(&path_moves, window, cx)
+                                && (sources.contains_key(&this.pane.current_rel)
+                                    || batch.removed.contains(&this.pane.current_rel)
+                                    || (graph_changed && reader_loading::render_depends_on_inventory(&this.pane.note_source)))
                             {
                                 this.reconcile_source_publication(sources.get(&this.pane.current_rel).cloned().as_ref(), graph_changed, window, cx);
                             }

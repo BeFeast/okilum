@@ -155,6 +155,78 @@ def write_fixtures(vault, specs):
         target.write_bytes(generate_markdown(spec) if kind == 'markdown' else generate_json(spec))
 
 
+def numbered_paths(spec):
+    return [spec['path'].format(i=i) for i in range(spec['count'])]
+
+
+def move_vault_fixture(vault, spec):
+    """Move files and apply the caller's fixture link rewrites."""
+    moves = dict(spec.get('paths', {}))
+    for batch in spec.get('numbered', ()):
+        sources = numbered_paths({'path': batch['from'], 'count': batch['count']})
+        targets = numbered_paths({'path': batch['to'], 'count': batch['count']})
+        moves.update(zip(sources, targets, strict=True))
+    for source, target in moves.items():
+        before, after = (vault / source).resolve(), (vault / target).resolve()
+        require(before.is_relative_to(vault) and after.is_relative_to(vault)
+                and before.is_file() and not after.exists(), f'Invalid move: {source} → {target}')
+        after.parent.mkdir(parents=True, exist_ok=True)
+        before.rename(after)
+    for rewrite in spec.get('rewrite', ()):
+        replace_vault_text(vault, rewrite)
+    return moves
+
+
+def cutover_fixture(archive, spec):
+    """Publish a synthetic sealed Grove copy and mark the retained Brain archive."""
+    grove = archive.parent / 'grove'
+    shutil.copytree(archive, grove)
+    moves = move_vault_fixture(grove, spec)
+    grove_id = '550e8400-e29b-41d4-a716-446655440000'
+    archive_id = '550e8400-e29b-41d4-a716-446655440001'
+    for vault, identity, lifecycle in (
+        (grove, grove_id, {'state': 'active'}),
+        (archive, archive_id, {
+            'state': 'archive', 'read_only': True,
+            'successor': {'vault_id': grove_id, 'name': 'grove'},
+            'path_map': {'command': 'brain where', 'note': '@views/path-map.md'},
+        }),
+    ):
+        create_vault_text(vault, {
+            'path': '.okilum/link-identity.json',
+            'source': json.dumps({'version': 1, 'id': identity}),
+        })
+        create_vault_text(vault, {
+            'path': '.okilum/vault.json',
+            'source': json.dumps({'version': 1, 'lifecycle': lifecycle}),
+        })
+    for old in spec.get('retired', ()):
+        (grove / old).unlink()
+        moves[old] = None
+    for directory, _, _ in os.walk(grove, topdown=False):
+        folder = Path(directory)
+        if folder != grove and not any(folder.iterdir()):
+            folder.rmdir()
+    create_vault_text(grove, {
+        'path': '@views/path-map.jsonl',
+        'source': ''.join(json.dumps({
+            'old_path': old, 'new_path': new, 'action': 'move' if new else 'retire',
+            'rule': 'fixture', 'reason': '', 'aliases': [],
+        }) + '\n' for old, new in moves.items()),
+    })
+    create_vault_text(grove, {
+        'path': '@views/path-map.md',
+        'source': '# Migration map\n\n[Sealed map](path-map.jsonl)\n',
+    })
+    create_vault_text(archive, {'path': '.brain-read-only', 'source': 'Archived'})
+    for directory, _, files in os.walk(archive, topdown=False):
+        for name in files:
+            (Path(directory) / name).chmod(0o444)
+        Path(directory).chmod(0o555)
+    require(not os.access(archive, os.W_OK), 'The fixture Brain archive is writable')
+    return grove
+
+
 def copy_vault_fixture(vault, fixture):
     """`vault: <repo-relative dir>`: copy that fixture tree into the isolated vault."""
     if fixture is None:
@@ -375,12 +447,15 @@ def run(args, scenario, output, result):
             raise RuntimeError(f'Missing Linux acceptance dependency: {tool}')
     with tempfile.TemporaryDirectory(prefix='okilum-verify-') as scratch:
         root = Path(scratch)
-        vault = root / 'vault'
+        vault = root / ('brain' if any('cutover' in step for step in scenario['steps']) else 'vault')
         vault.mkdir()
         if 'note' in scenario:
             (vault / 'scenario.md').write_text(scenario['note'])
         copy_vault_fixture(vault, scenario.get('vault'))
         write_fixtures(vault, scenario.get('generate', ()))
+        for spec in scenario.get('generate_numbered', ()):
+            write_fixtures(vault, ({'kind': 'text', 'path': path, 'text': spec['text'].format(i=i)}
+                                   for i, path in enumerate(numbered_paths(spec))))
         rebase_jsonl_dates(vault, scenario.get('jsonl_latest_days_ago', {}))
         apply_mtimes(vault, scenario.get('mtime', {}), result)
         for step in scenario['steps']:
@@ -395,6 +470,11 @@ def run(args, scenario, output, result):
             outside_file.write_text(scenario['outside_note'])
         state = root / 'home/state/okilum'
         state.mkdir(parents=True)
+        if 'sidebar_state' in scenario:
+            key = hashlib.sha256(os.fsencode(vault)).hexdigest()[:24]
+            sidebar = state / 'sidebar'
+            sidebar.mkdir()
+            (sidebar / f'{key}.json').write_text(json.dumps(scenario['sidebar_state']))
         (state / 'reader-ui.json').write_text(json.dumps({
             'version': 1, 'appearance': scenario.get('appearance', 'light'),
             **scenario.get('preferences', {}),
@@ -409,9 +489,16 @@ def run(args, scenario, output, result):
         proc = None
         try:
             with (output / 'app.log').open('w') as log:
+                def launch(note, restore=False):
+                    argv = [binary, '--index-dir', str(root / ('index-grove' if restore else 'index'))]
+                    if not restore:
+                        argv.extend(['--vault', str(vault)])
+                    if note is not None:
+                        argv.extend(['--note', note])
+                    return subprocess.Popen(argv, env=rig.env, stdout=log, stderr=log)
+
                 start = time.monotonic()
-                proc = subprocess.Popen([binary, '--vault', str(vault), '--index-dir', str(root / 'index'),
-                                         '--note', scenario.get('open', 'scenario.md')], env=rig.env, stdout=log, stderr=log)
+                proc = launch(scenario.get('open', 'scenario.md'))
                 # The app's after-first-frame diagnostic, not a sleep/window-exists proxy.
                 deadline = time.monotonic() + 45
                 while time.monotonic() < deadline:
@@ -453,15 +540,35 @@ def run(args, scenario, output, result):
                             rig.keys(*step['keys'], mods=step.get('mods', ()))
                         if 'click' in step:
                             rig.click(*step['click'])
+                        if 'type' in step:
+                            # wtype interprets a standalone hyphen as stdin.
+                            # Feed the whole literal query through a closed pipe.
+                            command('wtype', '-', input=step['type'], text=True,
+                                    env=rig.env, timeout=10)
                         if 'vault_replace' in step:
                             replace_vault_text(vault, step['vault_replace'])
                         if 'vault_create' in step:
                             create_vault_text(vault, step['vault_create'])
+                        if step.get('restart'):
+                            rig.keys('q', mods=['ctrl'])
+                            require(proc.wait(timeout=15) == 0, 'App did not exit cleanly')
+                            proc = None
+                        if 'vault_move' in step:
+                            move_vault_fixture(vault, step['vault_move'])
+                        if 'cutover' in step:
+                            require(step.get('restart'), 'Cutover requires a restart')
+                            vault = cutover_fixture(vault, step['cutover'])
+                        if step.get('restart'):
+                            rig.close()
+                            rig = Rig(root, 1366, input_methods=None, **rig_options)
+                            rig.env['OKILUM_STATE_DIR'] = str(state)
+                            proc = launch(None, restore='cutover' in step)
                         time.sleep(step.get('wait', .4))
                         rig.shot(shot)
-                        if 'vault_replace' in step or 'vault_create' in step:
+                        if set(step) & {'vault_replace', 'vault_create', 'vault_move', 'restart'}:
                             deadline = time.monotonic() + 10
                             while time.monotonic() < deadline and not condition(shot, step, scenario['region'])[0]:
+                                require(proc.poll() is None, f'App exited: {proc.returncode}')
                                 time.sleep(.2)
                                 rig.shot(shot)
                     if ('max_ms' not in step and 'text' in step) or 'text_absent' in step or 'text_order' in step:
@@ -518,7 +625,8 @@ def run(args, scenario, output, result):
                         rig.shot(output / 'failure.png')
                     except (OSError, subprocess.SubprocessError):
                         pass
-                proc.terminate()
+                if proc.poll() is None:
+                    proc.terminate()
                 try:
                     proc.wait(timeout=10)
                 except subprocess.TimeoutExpired:

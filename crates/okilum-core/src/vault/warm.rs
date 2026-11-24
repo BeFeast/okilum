@@ -29,6 +29,13 @@ impl SourceRevision {
         self.modified
     }
 
+    /// The filesystem's device and file number, independent of source edits
+    /// and rename timestamps. Consumers supply their own reuse/volume checks.
+    pub fn native_file_id(path: &Path) -> Option<(u64, u64)> {
+        let revision = Self::metadata(path).ok()?;
+        (revision.inode != 0).then_some((revision.device, revision.inode))
+    }
+
     /// Reuse requires a verified fingerprint, or native timestamps outside the
     /// vulnerable tick on a known local filesystem. `read` supplies fingerprints
     /// whenever fractional timestamp digits cannot establish that guarantee.

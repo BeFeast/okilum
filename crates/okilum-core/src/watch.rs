@@ -12,7 +12,8 @@
 //!   Syncthing sync lands hundreds of files inside a second. The watcher
 //!   collects paths for a 300 ms quiet window after relevant events and hands
 //!   over one batch. Ignored activity does not extend it; repeated writes to an
-//!   already-pending note do. A 2 s maximum age bounds continuous-write batches.
+//!   already-pending note do. A 2 s maximum age bounds ordinary batches. Bulk
+//!   topology changes use a longer quiet window and the 12 s maximum.
 //! - **The watcher does not rescan or reindex.** It reports which notes
 //!   changed; the caller decides whether that is an incremental index update
 //!   (the shell batches it through `Searcher::update_snapshot_batch`) or a
@@ -74,6 +75,16 @@ impl Changes {
     pub fn is_bulk(&self) -> bool {
         self.rescan || self.changed.len() + self.removed.len() >= BULK_THRESHOLD
     }
+
+    /// Mass removal/rename batches are cheaper to reconcile from inventory.
+    pub fn bulk_topology(&self) -> bool {
+        (!self.removed.is_empty() && self.changed.len() + self.removed.len() >= BULK_THRESHOLD)
+            || self.directories.len() >= BULK_THRESHOLD
+    }
+
+    pub fn archive_cutover(&self) -> bool {
+        self.directories.contains(".brain-read-only")
+    }
 }
 
 /// Above this many notes in one batch, tell the caller to rescan instead.
@@ -84,6 +95,8 @@ pub const QUIET_WINDOW: Duration = Duration::from_millis(300);
 
 /// Bound delivery during sustained writes; callers retain normal bulk handling.
 pub const MAX_BATCH_AGE: Duration = Duration::from_secs(2);
+const BULK_QUIET_WINDOW: Duration = Duration::from_millis(900);
+const BULK_MAX_BATCH_AGE: Duration = Duration::from_secs(12);
 
 #[cfg(target_os = "linux")]
 mod mounts;
@@ -380,6 +393,11 @@ impl VaultWatcher {
                     }
                     continue;
                 }
+                if relative == Path::new(".brain-read-only") {
+                    self.pending.directories.insert(".brain-read-only".into());
+                    relevant = true;
+                    continue;
+                }
                 // View schemas and JSONL sources are attachments. Reconcile
                 // their parent without adding them to the Markdown source bank.
                 if (relative.starts_with("@Schema")
@@ -458,7 +476,12 @@ impl VaultWatcher {
                 self.relevant_event();
             }
         }
-        let quiet = self.last_event.is_some_and(|t| t.elapsed() >= QUIET_WINDOW);
+        let quiet_window = if self.pending.bulk_topology() {
+            BULK_QUIET_WINDOW
+        } else {
+            QUIET_WINDOW
+        };
+        let quiet = self.last_event.is_some_and(|t| t.elapsed() >= quiet_window);
         if (quiet || self.batch_expired()) && !self.pending.is_empty() {
             self.last_event = None;
             self.first_event = None;
@@ -488,10 +511,12 @@ impl VaultWatcher {
     }
 
     fn batch_expired(&self) -> bool {
-        !self.pending.is_empty()
-            && self
-                .first_event
-                .is_some_and(|t| t.elapsed() >= MAX_BATCH_AGE)
+        let max_age = if self.pending.bulk_topology() {
+            BULK_MAX_BATCH_AGE
+        } else {
+            MAX_BATCH_AGE
+        };
+        !self.pending.is_empty() && self.first_event.is_some_and(|t| t.elapsed() >= max_age)
     }
 
     /// Block until a batch is ready or `timeout` passes. For tests and CLIs;

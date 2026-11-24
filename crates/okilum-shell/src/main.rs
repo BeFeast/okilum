@@ -135,6 +135,7 @@ mod reader_pane;
 #[cfg(target_os = "linux")]
 mod reader_panel_resize;
 mod reader_panes;
+mod reader_path_moves;
 mod reader_pdf;
 mod reader_perf_probe;
 mod reader_pin_row;

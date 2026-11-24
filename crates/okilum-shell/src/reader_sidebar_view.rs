@@ -386,11 +386,15 @@ impl Reader {
             return;
         };
         let state = self.sidebar.clone();
+        let root = self.vault_root.clone();
+        let navigation = self.navigation_paths();
         let latest = self.sidebar_save_sequence.clone();
         let sequence = latest.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         cx.background_executor()
             .spawn(async move {
-                if let Err(error) = state.save_ordered(&path, sequence, &latest) {
+                if let Err(error) = reader_path_moves::save_sidebar(
+                    state, &path, &root, navigation, sequence, &latest,
+                ) {
                     diagnostic_error!("Could not save sidebar state: {error:#}");
                 }
             })

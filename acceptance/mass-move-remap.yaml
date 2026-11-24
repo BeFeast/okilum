@@ -1,0 +1,152 @@
+# A saved Brain session follows the sealed map to Grove. A live bulk rename follows.
+vault: tests/fixtures/mass-move-remap
+open: Legacy/Bundle/Anchor.md
+appearance: light
+preferences:
+  note_open_mode: read
+rig:
+  persistent_pointer: true
+sidebar_state:
+  now_enabled: false
+  recent: [[Legacy/Recent beacon.md, 1795478400], [Legacy/Retired.md, 1795478000]]
+  pinned: [Legacy/Pinned beacon.md]
+  recent_projects: [Legacy/Bundle]
+  nav_all_vault: [Legacy/Bundle]
+generate:
+  - path: Legacy/Bundle/Anchor.md
+    kind: text
+    text: |
+      # Anchor
+
+      Migration reader sentinel
+
+      [Relative destination](../Target.md)
+
+      ![[chart.png]]
+  - path: Legacy/Target.md
+    kind: text
+    text: '# Relative destination body'
+  - path: Legacy/Pinned beacon.md
+    kind: text
+    text: |
+      # Pinned beacon
+
+      Bookmark destination body
+  - path: Legacy/Recent beacon.md
+    kind: text
+    text: |
+      # Recent beacon
+
+      Recent destination body
+  - path: Legacy/Bundle/@index.md
+    kind: text
+    text: '# Cutover project'
+  - path: Legacy/Archived.md
+    kind: text
+    text: '# Archived context'
+  - path: Legacy/Video summary.md
+    kind: text
+    text: '# Captured video summary'
+  - path: Legacy/Video transcript.md
+    kind: text
+    text: '# Captured video transcript'
+  - path: Legacy/Retired.md
+    kind: text
+    text: '# Retained in Brain'
+generate_numbered:
+  - path: 'Legacy/Bulk/Note-{i:04d}.md'
+    count: 1200
+    text: '# MigrationWitness{i:04d}'
+region: [260, 70, 815, 610]
+ready_text: Migration reader sentinel
+steps:
+  - id: embed-before
+    wait: 2
+    pixels: &green_embed
+      region: [260, 90, 815, 585]
+      expression: 'g>0.7&&r<0.2&&b<0.3?1:0'
+      min: 9000
+      max: 11000
+  - id: restored-session
+    restart: true
+    cutover:
+      retired: [Legacy/Retired.md]
+      paths:
+        Legacy/Bundle/Anchor.md: state/dev/cutover/Anchor.md
+        Legacy/Bundle/chart.png: state/dev/cutover/chart.png
+        Legacy/Bundle/@index.md: state/dev/cutover/@index.md
+        Legacy/Archived.md: log/dev/archive/final/Archived.md
+        Legacy/Video summary.md: sources/video/2026/11/24/summary.md
+        Legacy/Video transcript.md: sources/video/2026/11/24/transcript.md
+        Legacy/Target.md: log/dev/cutover/Target.md
+        Legacy/Pinned beacon.md: state/Pinned beacon.md
+        Legacy/Recent beacon.md: state/Recent beacon.md
+      numbered:
+        - from: 'Legacy/Bulk/Note-{i:04d}.md'
+          to: 'state/Bulk/Note-{i:04d}.md'
+          count: 1200
+      rewrite:
+        - path: state/dev/cutover/Anchor.md
+          before: '../Target.md'
+          after: '../../../log/dev/cutover/Target.md'
+    text: Migration reader sentinel
+    text_order: [state, cutover, Migration reader sentinel]
+    pixels: *green_embed
+  - id: relative-link
+    click: [386, 273]
+    wait: 1.2
+    text: Relative destination body
+  - id: recent-list
+    click: [95, 20]
+    region: [280, 35, 810, 610]
+    text: Recent beacon
+    text_order: [moved, Retired]
+  - id: recent-filter
+    type: Recent beacon
+    region: [280, 35, 810, 610]
+    text: Recent beacon
+  - id: recent-open
+    keys: [Return]
+    text: Recent destination body
+  - id: pinned-list
+    click: [207, 20]
+    region: [95, 25, 400, 230]
+    text: Pinned beacon
+  - id: bookmark-open
+    keys: [Return]
+    text: Bookmark destination body
+  - id: live-tree
+    vault_move:
+      paths:
+        state/Pinned beacon.md: ArchiveCutover/Pinned beacon.md
+      numbered:
+        - from: 'state/Bulk/Note-{i:04d}.md'
+          to: 'ArchiveCutover/Note-{i:04d}.md'
+          count: 1200
+    region: [0, 100, 280, 430]
+    text: ArchiveCutover
+  - id: live-pin-follows
+    text: Bookmark destination body
+    region: [260, 70, 815, 610]
+    text_order: [ArchiveCutover, Bookmark destination body]
+  - id: quick-open
+    keys: [k]
+    mods: [ctrl]
+  - id: quick-open-new-path
+    type: Note-0507
+    wait: 1
+    text: ArchiveCutover
+    text_absent: Bulk
+  - id: dismiss-quick-open
+    keys: [Escape, Escape]
+  - id: full-text-search
+    keys: [f]
+    mods: [ctrl, shift]
+  - id: index-new-path
+    type: MigrationWitness0507
+    wait: 1
+    text: ArchiveCutover
+    text_absent: Bulk
+  - id: index-opens-moved-note
+    keys: [Return]
+    text_order: [ArchiveCutover, MigrationWitness0507]

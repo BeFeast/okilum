@@ -1,6 +1,6 @@
 //! Local Reader startup. Saved managed identities are never read on this path.
 use super::{
-    reader_history, reader_open,
+    reader_history, reader_open, reader_path_moves,
     reader_recent_vaults::{self, Status, Unavailable},
     Opts,
 };
@@ -116,9 +116,10 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
                 let windows = directory
                     .as_deref()
                     .map(|directory| {
-                        restorable_windows(super::reader_open_windows::load_session_windows(
+                        restorable_windows(
                             directory,
-                        ))
+                            super::reader_open_windows::load_session_windows(directory),
+                        )
                     })
                     .unwrap_or_default();
                 let history = history(directory);
@@ -255,6 +256,7 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
                     opts.single_file = true;
                 } else {
                     opts.vault = Some(intent.root);
+                    opts.note = intent.note;
                 }
                 if let Err(error) = reader_open::open_window(opts, cx) {
                     diagnostic_error!("Cannot open {}: {error:#}", last.display());
@@ -313,7 +315,21 @@ fn history(
                     },
                 )
             }
-            Ok(None) => reader_open::OpenIntent::validate(&root, Some(&root), None),
+            Ok(None) => {
+                let mapped =
+                    reader_path_moves::Cutover::from_archive(&root, &roots).and_then(|cutover| {
+                        let old = reader_history::ReadingHistory::last_document(&directory, &root)
+                            .ok()??;
+                        let target = cutover.target(&old)?.to_owned();
+                        Some((cutover.grove, target))
+                    });
+                match mapped {
+                    Some((grove, target)) => {
+                        reader_open::OpenIntent::validate(&grove.join(target), Some(&grove), None)
+                    }
+                    None => reader_open::OpenIntent::validate(&root, Some(&root), None),
+                }
+            }
             Err(error) => Err(error),
         };
         (root, intent)
@@ -321,19 +337,52 @@ fn history(
     Ok((directory, roots, restore))
 }
 
-/// Each window's note as it can be reopened (#1375): kept only while the
-/// note is still there. Every window gets its note explicitly: a vault opened
-/// without one takes the note its UI state names, which is one window's note
-/// for all of them. The reading position comes back either way, since it is
-/// kept with that note.
+/// Reconcile all saved windows of one vault against the same move evidence.
 fn restorable_windows(
+    directory: &Path,
     windows: Vec<(super::reader_open_windows::Window, bool)>,
 ) -> Vec<(super::reader_open_windows::Window, bool)> {
+    let mut paths = std::collections::BTreeMap::<PathBuf, Vec<String>>::new();
+    for ((root, note), single_file) in &windows {
+        if let Some(note) = note.as_ref().filter(|_| !single_file) {
+            paths.entry(root.clone()).or_default().push(note.clone());
+        }
+    }
+    let roots = reader_path_moves::known_roots(Some(directory));
+    let cutovers: std::collections::BTreeMap<_, _> = paths
+        .keys()
+        .filter_map(|root| {
+            Some((
+                root.clone(),
+                reader_path_moves::Cutover::from_archive(root, &roots)?,
+            ))
+        })
+        .collect();
+    let plans: std::collections::BTreeMap<_, _> = paths
+        .into_iter()
+        .map(|(root, saved)| {
+            let plan = reader_path_moves::resolve(&root, Some(directory), saved, None);
+            (root, plan)
+        })
+        .collect();
     windows
         .into_iter()
         .map(|((root, note), single_file)| {
-            // A missing quick file must fail visibly, never become a vault.
-            let note = note.filter(|note| single_file || root.join(note).is_file());
+            if !single_file {
+                if let Some((cutover, target)) = cutovers
+                    .get(&root)
+                    .and_then(|cutover| Some((cutover, cutover.target(note.as_deref()?)?)))
+                {
+                    return ((cutover.grove.clone(), Some(target.to_owned())), false);
+                }
+            }
+            let note = note.and_then(|note| {
+                if let Some(target) = plans.get(&root).and_then(|plan| plan.target(&note)) {
+                    return Some(target.to_owned());
+                }
+                // A missing quick file must fail visibly, never become a vault.
+                (single_file || root.join(&note).is_file()).then_some(note)
+            });
             ((root, note), single_file)
         })
         .collect()

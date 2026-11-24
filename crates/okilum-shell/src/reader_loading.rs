@@ -75,6 +75,7 @@ enum Event {
         document: Option<(String, prepared_links::PreparedDocument)>,
         published: Option<async_channel::Sender<()>>,
         recovery_notice: Option<String>,
+        path_moves: reader_path_moves::Plan,
         /// A log opened in the quick viewer; `document` is then the empty selection.
         log: Option<reader_log::LogDocument>,
     },
@@ -101,45 +102,108 @@ enum Event {
         index: Option<PathBuf>,
         sources: std::collections::HashMap<String, String>,
         titles: std::collections::HashMap<String, String>,
+        path_moves: reader_path_moves::Plan,
     },
     Failed(String, Option<PathBuf>),
 }
 
 #[cfg(test)]
 fn prepare_first(opts: &Opts, cancel: &Cancellation) -> Result<Event> {
-    prepare_first_with_ui_notes(opts, cancel, &Default::default())
+    prepare_first_with_ui_notes(opts, cancel, &Default::default(), &Default::default())
 }
 
 fn prepare_first_with_ui_notes(
     opts: &Opts,
     cancel: &Cancellation,
     notes: &std::collections::BTreeMap<PathBuf, String>,
+    navigation_paths: &std::collections::BTreeMap<PathBuf, Vec<String>>,
 ) -> Result<Event> {
     let mut recovery_notice = None;
+    let mut moves = None;
+    let directory = opts.session_directory.as_deref();
+    let resolve_moves = |root: &Path, paths: Vec<String>| {
+        let mut plan = reader_path_moves::resolve(root, directory, paths, None);
+        let mut known = reader_path_moves::known_roots(directory);
+        known.extend(notes.keys().cloned());
+        if let (Some(cutover), Some(directory)) = (
+            reader_path_moves::Cutover::into_grove(root, &known),
+            directory,
+        ) {
+            let old = reader_sidebar::State::load(&reader_sidebar::State::path(
+                directory,
+                &cutover.archive,
+            ));
+            plan.import = Some(Box::new((cutover, old)));
+        }
+        plan
+    };
+    let extras = |root: &Path| {
+        let mut paths = navigation_paths.get(root).cloned().unwrap_or_default();
+        if let Some(directory) = &opts.session_directory {
+            paths.extend(
+                reader_open_windows::load_session_windows(directory)
+                    .into_iter()
+                    .filter(|((saved_root, _), single)| saved_root == root && !single)
+                    .filter_map(|((_, note), _)| note),
+            );
+        }
+        paths
+    };
     let mut event = prepare_first_with_last_document(opts, cancel, |root| {
-        if let Some(note) = notes.get(root).filter(|note| !note.is_empty()) {
-            if root.join(note).is_file() {
-                return Ok(Some(note.clone()));
-            }
+        let ui_note = notes.get(root).filter(|note| !note.is_empty());
+        let saved = match ui_note {
+            Some(note) if root.join(note).is_file() => Some(note.clone()),
+            _ => match directory {
+                Some(directory) => {
+                    let (document, notice) =
+                        reader_history::ReadingHistory::last_document_or_recover(directory, root)?;
+                    recovery_notice = notice;
+                    document
+                }
+                None => None,
+            },
+        };
+        let paths = extras(root)
+            .into_iter()
+            .chain(saved.iter().cloned())
+            .collect();
+        let plan = resolve_moves(root, paths);
+        let unresolved = ui_note
+            .map(String::as_str)
+            .or(saved.as_deref())
+            .filter(|note| plan.uncertain(note));
+        if let Some(path) = unresolved {
+            recovery_notice = Some(format!("{path} (moved?)"));
+            moves = Some(plan);
+            return Ok(Some(String::new()));
         }
-        match &opts.session_directory {
-            Some(directory) => {
-                let (document, notice) =
-                    crate::reader_history::ReadingHistory::last_document_or_recover(
-                        directory, root,
-                    )?;
-                recovery_notice = notice;
-                Ok(document)
-            }
-            None => Ok(None),
-        }
+        let document = ui_note
+            .and_then(|note| plan.target(note).map(str::to_owned))
+            .or_else(|| saved.map(|note| plan.target(&note).map_or(note.clone(), str::to_owned)))
+            .or_else(|| {
+                let (cutover, _) = plan.import.as_deref()?;
+                let note = notes.get(&cutover.archive).cloned().or_else(|| {
+                    reader_history::ReadingHistory::last_document(directory?, &cutover.archive)
+                        .ok()
+                        .flatten()
+                })?;
+                cutover.target(&note).map(str::to_owned)
+            });
+        moves = Some(plan);
+        Ok(document)
     })?;
     if let Event::First {
+        intent,
         recovery_notice: notice,
+        path_moves,
         ..
     } = &mut event
     {
         *notice = recovery_notice;
+        if !intent.single_file {
+            *path_moves =
+                moves.unwrap_or_else(|| resolve_moves(&intent.root, extras(&intent.root)));
+        }
     }
     Ok(event)
 }
@@ -181,6 +245,7 @@ fn prepare_log(path: &Path, root: Option<&Path>, cancel: &Cancellation) -> Resul
         )),
         published: None,
         recovery_notice: None,
+        path_moves: Default::default(),
         log: Some(reader_log::LogDocument {
             rel,
             file: Arc::new(file),
@@ -225,6 +290,7 @@ fn prepare_folder_view(root: &Path, cancel: &Cancellation) -> Result<Event> {
         )),
         published: None,
         recovery_notice: None,
+        path_moves: Default::default(),
         log: None,
     })
 }
@@ -263,6 +329,7 @@ fn prepare_plain_file(path: &Path, root: Option<&Path>, cancel: &Cancellation) -
         )),
         published: None,
         recovery_notice: None,
+        path_moves: Default::default(),
         log: None,
     })
 }
@@ -356,6 +423,7 @@ fn prepare_first_existing_document(
             document: Some((rel, document)),
             published: None,
             recovery_notice: None,
+            path_moves: Default::default(),
             log: None,
         });
     }
@@ -578,6 +646,7 @@ fn prepare_first_existing_document(
         document,
         published: None,
         recovery_notice: None,
+        path_moves: Default::default(),
         log: None,
     })
 }
@@ -1141,6 +1210,7 @@ fn prepare_rest_with_io_and_snapshot(
             index: Some(base),
             sources,
             titles,
+            path_moves: Default::default(),
         });
     }
 }
@@ -1155,6 +1225,14 @@ fn preparation_warning(
         operation,
         error: okilum_core::vault::display_error(&format!("{error:#}")),
     }
+}
+
+/// An image resolved from the previous inventory may still have a file URL
+/// after its asset moved. Re-render it when publishing the reconciled graph.
+pub(super) fn render_depends_on_inventory(rendered: &str) -> bool {
+    okilum_core::render::has_pending_embeds(rendered)
+        || okilum_core::render::has_unavailable_images(rendered)
+        || (rendered.contains("![") && rendered.contains("file://"))
 }
 
 /// Fork a completed immutable baseline; never mutate an index used by First or
@@ -1483,6 +1561,7 @@ type PreparedOutline = (Vec<okilum_core::document_links::HeadingEntry>, f64);
 
 pub(crate) struct PendingDocument {
     intent: reader_open::OpenIntent,
+    path_moves: reader_path_moves::Plan,
     vault: Vault,
     searcher: Option<Box<Searcher>>,
     rel: String,
@@ -1559,6 +1638,7 @@ impl Reader {
         searcher: Option<Box<Searcher>>,
         published: Option<async_channel::Sender<()>>,
         log: Option<reader_log::LogDocument>,
+        path_moves: reader_path_moves::Plan,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1631,6 +1711,7 @@ impl Reader {
         });
         self.pane.pending_open_document = Some(PendingDocument {
             intent,
+            path_moves,
             vault,
             searcher,
             rel,
@@ -1833,6 +1914,9 @@ impl Reader {
         self.panel_preferences_ready = false;
         self.resizing_panel = None;
         self.vault = Arc::new(pending.vault);
+        if !self.single_file {
+            self.apply_startup_moves(&pending.path_moves, cx);
+        }
         if self.single_file {
             // Retire vault-only projections and invalidate any late Inbox result.
             // The Inbox source otherwise pins the complete predecessor graph.
@@ -2041,12 +2125,7 @@ impl Reader {
             .navigation
             .reconciliation_generation
             .wrapping_add(1);
-        // Note and block embeds both wait for the inventory; an unchanged
-        // source must still be rendered again to resolve them (#932). So does
-        // an image the incomplete inventory did not know yet (#1126).
-        let pending_embed = okilum_core::render::has_pending_embeds(&self.pane.note_source)
-            || okilum_core::render::has_unavailable_images(&self.pane.note_source);
-        if !pending_embed
+        if !render_depends_on_inventory(&self.pane.note_source)
             && self.pane.note_canonical_source.as_deref() == Some(raw.as_ref())
             && self.note_encoding_damaged
                 == self.vault.note_encoding_damaged(&self.pane.current_rel)
@@ -2172,10 +2251,9 @@ impl Reader {
                     };
                     if previous_canonical.as_ref() == Some(&raw)
                         && previous_damaged == encoding_damaged
-                        && previous_rendered.as_deref().is_some_and(|source| {
-                            !okilum_core::render::has_pending_embeds(source)
-                                && !okilum_core::render::has_unavailable_images(source)
-                        })
+                        && previous_rendered
+                            .as_deref()
+                            .is_some_and(|source| !render_depends_on_inventory(source))
                     {
                         return Ok(None);
                     }
@@ -2682,16 +2760,18 @@ impl Reader {
             cancel.cancel();
         }
         self.incremental_epoch = self.incremental_epoch.wrapping_add(1);
-        self.incremental_state = None;
-        self.tasks_index = None;
-        self.projects = Arc::default();
-        let retired_query = self.view_query_index.take();
+        let retired = (
+            self.incremental_state.take(),
+            self.tasks_index.take(),
+            std::mem::take(&mut self.projects),
+            self.view_query_index.take(),
+            std::mem::take(&mut self.workbench),
+        );
         cx.background_executor()
             .spawn(async move {
-                drop(retired_query);
+                drop(retired);
             })
             .detach();
-        self.workbench = Arc::default();
         self.workbench_ready = None;
         self.workbench_pending = self.workbench_pending.wrapping_add(1);
         self.incremental_initializing = false;
@@ -2773,6 +2853,22 @@ impl Reader {
         let panel_revision = self.panel_widths_revision;
         let recovery_startup = self.pane.recovery_startup;
         let ui_notes = reader_ui_state::notes(cx);
+        let saved_navigation = ui_notes
+            .keys()
+            .filter_map(|root| {
+                let (layout, true) = reader_ui_state::layout(root, cx)? else {
+                    return None;
+                };
+                let paths = std::iter::once(layout.note)
+                    .chain(layout.history.into_iter().map(|visit| visit.note))
+                    .collect();
+                Some((root.clone(), paths))
+            })
+            .collect();
+        let live_navigation = refresh_worker.then(|| self.navigation_paths());
+        let archive_cutover = refresh
+            .as_ref()
+            .is_some_and(okilum_core::Changes::archive_cutover);
         cx.background_executor()
             .spawn(async move {
                 let mut opts = opts;
@@ -2804,7 +2900,7 @@ impl Reader {
                                 }),
                             )?;
                         }
-                        let mut first = prepare_first_with_ui_notes(&opts, &cancel, &ui_notes)?;
+                        let mut first = prepare_first_with_ui_notes(&opts, &cancel, &ui_notes, &saved_navigation)?;
                         if let Event::First { document, intent, .. } = &first {
                             opts.note = document.as_ref().map(|(path, _)| path.clone())
                                 .filter(|path| !path.is_empty()).or_else(|| intent.note.clone());
@@ -2906,7 +3002,7 @@ impl Reader {
                             .map_err(|_| anyhow::anyhow!("Test hold closed"))?;
                         cancel.check()?;
                     }
-                    let ready = prepare_rest_with_snapshot(&root, &opts, &cancel, &send, previous)
+                    let mut ready = prepare_rest_with_snapshot(&root, &opts, &cancel, &send, previous)
                         .with_context(|| {
                             format!("Prepare vault {}", okilum_core::vault::display_path(&root))
                         })
@@ -2919,6 +3015,11 @@ impl Reader {
                                 );
                             }
                         })?;
+                    if let (Some(paths), Event::Ready { vault, path_moves, .. }) = (live_navigation, &mut ready) {
+                        *path_moves = reader_path_moves::live_plan(
+                            vault, opts.session_directory.as_deref(), paths, archive_cutover,
+                        );
+                    }
                     cancel.check()?;
                     if let Some(trace) = &opts.diagnostics {
                         trace.event("ready_worker_send", serde_json::json!({}));
@@ -2997,11 +3098,12 @@ impl Reader {
                                 published,
                                 recovery_notice,
                                 log,
+                                path_moves,
                             } => {
                                 if let Some(trace) = &this.loading.as_ref().unwrap().opts.diagnostics { trace.event("first_event_received", serde_json::json!({})); }
                                 this.loading.as_mut().unwrap().opts.cache_lease = cache_lease;
                                 this.stage_first_document(
-                                    intent, vault, document, searcher, published, log, window, cx,
+                                    intent, vault, document, searcher, published, log, path_moves, window, cx,
                                 );
                                 #[cfg(target_os = "linux")]
                                 reader_sync_conflicts::show_startup_notice(window, cx);
@@ -3075,6 +3177,7 @@ impl Reader {
                                 index,
                                 sources,
                                 titles,
+                                path_moves,
                             } => {
                                 if this.loading.as_ref().unwrap().network && vault.unreadable.iter().any(|item| item.path == vault.root) {
                                     let load = this.loading.as_mut().unwrap();
@@ -3092,6 +3195,7 @@ impl Reader {
                                 let ready_vault = vault;
                                 let state_vault = ready_vault.clone();
                                 let shared_publication = this.shared_session.is_some();
+                                let shared_path_moves = path_moves.clone();
                                 #[cfg(any(unix, windows))]
                                 { this.move_index = None; }
                                 let index_task = cx.background_executor().spawn(async move {
@@ -3118,7 +3222,7 @@ impl Reader {
                                             this.incremental_initializing = false;
                                             #[cfg(any(unix, windows))]
                                             { this.move_index = candidates; this.reminder_tick(cx); }
-                                            this.publish_shared_ready(sources);
+                                            this.publish_shared_ready(sources, shared_path_moves);
                                             #[cfg(not(any(unix, windows)))]
                                             let _ = candidates;
                                             cx.notify();
@@ -3134,7 +3238,9 @@ impl Reader {
                                 this.set_backlinks(this.vault.backlinks(this.selected_file()), false);
                                 this.sync_tree();
                                 this.backlink_titles = Arc::new(titles);
-                                this.reconcile_inventory_document(&sources, window, cx);
+                                if !this.apply_live_moves(&path_moves, window, cx) {
+                                    this.reconcile_inventory_document(&sources, window, cx);
+                                }
                                 if this.loading.as_ref().unwrap().network_waiting {
                                     if let Some(trace) = &this.loading.as_ref().unwrap().opts.diagnostics {
                                         trace.event("network_recovered", serde_json::json!({"generation": generation}));
