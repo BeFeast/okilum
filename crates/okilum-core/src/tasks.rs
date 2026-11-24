@@ -109,6 +109,10 @@ pub fn parse(path: &str, source: &str) -> Vec<Task> {
         .bytes()
         .filter(|b| *b == b'\n')
         .count();
+    parse_body(path, body, prefix_lines)
+}
+
+pub(crate) fn parse_body(path: &str, body: &str, prefix_lines: usize) -> Vec<Task> {
     let arena = Arena::new();
     let root = parse_document(&arena, body, &comrak_options());
     parse_tree(path, body, prefix_lines, root)
@@ -136,9 +140,19 @@ pub(crate) fn parse_tree<'a>(
                 .unwrap_or(0..0);
             let raw = &body[line_range.clone()];
             // The AST proves this is a checkbox, excluding fenced examples and YAML.
-            let Some((_, text)) = raw.split_once(']') else {
+            let Some((before_close, text)) = raw.split_once(']') else {
                 continue;
             };
+            // Hide tasks whose checkbox falls inside an Obsidian `%%…%%` comment,
+            // matching `obsidian::before_links` stripping comments when rendering.
+            let checkbox_start = line_range.start + before_close.len().saturating_sub(2);
+            let checkbox_end = line_range.start + before_close.len() + 1;
+            if comments
+                .iter()
+                .any(|comment| comment.start < checkbox_end && checkbox_start < comment.end)
+            {
+                continue;
+            }
             let text = text.trim();
             let metadata = metadata::parse(
                 node,

@@ -453,9 +453,9 @@ fn markdown(row: &mut NoteRecord, body: &str, prefix_lines: usize) -> Option<Str
         .any(|marker| body.contains(marker));
     let mut title = None;
     let mut tasks_open = 0;
-    if has_tasks || body.contains(['#', '=', '-']) {
+    if body.contains(['#', '=', '-']) {
         let arena = Arena::new();
-        let root = parse_document(&arena, body, &tasks::comrak_options());
+        let root = parse_document(&arena, body, &render::comrak_options());
         for top in root.children() {
             for node in top.descendants() {
                 let data = node.data.borrow();
@@ -467,12 +467,6 @@ fn markdown(row: &mut NoteRecord, body: &str, prefix_lines: usize) -> Option<Str
                     match &child.data.borrow().value {
                         NodeValue::Text(value) => text.push_str(value),
                         NodeValue::Code(value) => text.push_str(&value.literal),
-                        NodeValue::Math(math) => {
-                            let delim = if math.display_math { "$$" } else { "$" };
-                            text.push_str(delim);
-                            text.push_str(&math.literal);
-                            text.push_str(delim);
-                        }
                         NodeValue::SoftBreak | NodeValue::LineBreak => text.push(' '),
                         _ => {}
                     }
@@ -498,11 +492,11 @@ fn markdown(row: &mut NoteRecord, body: &str, prefix_lines: usize) -> Option<Str
                 });
             }
         }
-        if has_tasks {
-            for task in tasks::parse_tree(&row.path, body, prefix_lines, root) {
-                tasks_open += usize::from(!task.checked);
-                row.add_task(task);
-            }
+    }
+    if has_tasks {
+        for task in tasks::parse_body(&row.path, body, prefix_lines) {
+            tasks_open += usize::from(!task.checked);
+            row.add_task(task);
         }
     }
     row.fields
@@ -590,6 +584,18 @@ mod tests {
             .unwrap(),
         );
         let cases = [
+            (
+                "knowledge/link-in-dollars.md",
+                "# $[label](a.md)$\n",
+                "$label$",
+            ),
+            (
+                "knowledge/entity-in-dollars.md",
+                "# $a &amp; b$\n",
+                "$a & b$",
+            ),
+            ("knowledge/code-in-dollars.md", "# $`code`$\n", "$code$"),
+            ("knowledge/escape-in-dollars.md", "# $\\$x$\n", "$$x$"),
             ("knowledge/solve.md", "# Solve $x^2$\n", "Solve $x^2$"),
             ("knowledge/energy.md", "# $E=mc^2$\n", "$E=mc^2$"),
             ("knowledge/money.md", "# $2$ a month\n", "$2$ a month"),

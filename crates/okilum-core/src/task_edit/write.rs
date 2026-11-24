@@ -498,6 +498,7 @@ mod tests {
                 "multiline-obsidian-comment.md",
                 "- [ ] Actual %% hidden\n  still hidden %%\n",
             ),
+            ("split-obsidian-comment.md", "- [ ] A %%\n- [ ] C %%\n"),
         ] {
             let file = root.join(name);
             std::fs::write(&file, source).unwrap();
@@ -512,6 +513,20 @@ mod tests {
                 },
             )
             .is_err());
+            assert_eq!(std::fs::read(&file).unwrap(), source.as_bytes());
+        }
+
+        // Checkboxes inside `%%…%%` comments are neither indexed nor writable on disk.
+        for (name, source, line) in [
+            ("commented-hidden.md", "%%\n- [x] Hidden\n%%\n", 2usize),
+            ("commented-second.md", "- [ ] A %%\n- [ ] C %%\n", 2usize),
+        ] {
+            let file = root.join(name);
+            std::fs::write(&file, source).unwrap();
+            let mut idx = Index::default();
+            idx.replace(name, source);
+            assert!(idx.note_tasks(name).iter().all(|t| t.line != line));
+            assert!(Target::capture(name, source, line).is_err());
             assert_eq!(std::fs::read(&file).unwrap(), source.as_bytes());
         }
 

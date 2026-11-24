@@ -65,11 +65,21 @@ impl Target {
             .captures(raw)
             .and_then(|c| c.get(1))
             .ok_or("Unsupported task checkbox syntax")?;
+        let checkbox = range.start + bom + status.start()..range.start + bom + status.end();
+        let checkbox_brackets =
+            (checkbox.start - range.start).saturating_sub(1)..(checkbox.end - range.start) + 1;
+        let protected = crate::tasks::protected_line_spans(source, line);
+        if protected
+            .iter()
+            .any(|span| range_overlaps(span, &checkbox_brackets))
+        {
+            return Err("The task checkbox is inside protected Markdown syntax".into());
+        }
         Ok(Self {
             path: path.into(),
             revision: revision(source),
             line,
-            checkbox: range.start + bom + status.start()..range.start + bom + status.end(),
+            checkbox,
         })
     }
     pub fn path(&self) -> &str {
@@ -330,6 +340,10 @@ struct DoneMarker<'a> {
     value: &'a str,
 }
 
+fn range_overlaps(a: &Range<usize>, b: &Range<usize>) -> bool {
+    a.start < b.end && b.start < a.end
+}
+
 fn is_escaped_at(raw: &str, byte_index: usize) -> bool {
     raw[..byte_index]
         .bytes()
@@ -388,11 +402,19 @@ fn verify_check_with_done_postcondition(
         return Err("Task edit violated byte-preservation invariant".into());
     }
 
-    // 2. Inline marker invariant on the edited line (under the shared parser).
+    // 2. Inline marker and checkbox invariants on the edited line (under the shared parser).
     let after_range = line_range(after, line).ok_or("Task line is unavailable")?;
     let after_raw = &after[after_range.clone()];
     let after_rel = checkbox.end + 1 - after_range.start;
     let after_protected = crate::tasks::protected_line_spans(after, line);
+    let after_checkbox_brackets = (checkbox.start - after_range.start).saturating_sub(1)
+        ..(checkbox.end - after_range.start) + 1;
+    if after_protected
+        .iter()
+        .any(|span| range_overlaps(span, &after_checkbox_brackets))
+    {
+        return Err("The task checkbox is inside protected Markdown syntax".into());
+    }
     let after_markers = done_markers(after_raw, after_rel, &after_protected);
     if checked {
         if after_markers.len() != 1 || after_markers[0].value != done_value {
@@ -935,14 +957,8 @@ mod tests {
         for multi_comment in [
             "- [ ] Actual %% hidden\n  still hidden %%\n",
             "- [ ] Actual %% [done:: 2026-01-01]\n  still hidden %%\n",
-            "%%\n- [ ] Hidden task\n%%\n",
         ] {
-            let line = if multi_comment.starts_with("%%\n") {
-                2
-            } else {
-                1
-            };
-            let target = Target::capture("test.md", multi_comment, line).unwrap();
+            let target = Target::capture("test.md", multi_comment, 1).unwrap();
             assert!(
                 target
                     .plan(
@@ -956,5 +972,27 @@ mod tests {
                 "must refuse inserting done marker inside multi-line comment: {multi_comment:?}"
             );
         }
+
+        // Checkboxes inside `%%…%%` comments are hidden from Tasks projection and
+        // refused by Target::capture (cannot be reopened or completed).
+        let hidden_checked = "%%\n- [x] Hidden\n%%\n";
+        assert!(crate::tasks::parse("test.md", hidden_checked).is_empty());
+        assert!(Target::capture("test.md", hidden_checked, 2).is_err());
+
+        let split_comment = "- [ ] A %%\n- [ ] C %%\n";
+        let split_tasks = crate::tasks::parse("test.md", split_comment);
+        assert_eq!(split_tasks.len(), 1);
+        assert_eq!(split_tasks[0].line, 1);
+        assert!(Target::capture("test.md", split_comment, 2).is_err());
+        let target_a = Target::capture("test.md", split_comment, 1).unwrap();
+        assert!(target_a
+            .plan(
+                split_comment,
+                Change::CheckWithDone {
+                    checked: true,
+                    done,
+                },
+            )
+            .is_err());
     }
 }
