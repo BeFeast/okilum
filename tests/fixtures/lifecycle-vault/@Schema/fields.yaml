@@ -8,14 +8,25 @@ fields:
     closed: true
     values: [inbox, sources, knowledge, state, log]
   area: {type: enum, values: [Dev, Health], closed: true}
+  context: {type: string}
   kind:
     type: enum
     closed: true
-    values_by_layer: {state: [project, area], log: [decisions, final]}
+    values_by_layer: {state: [project, area], log: [decisions, reports, handovers, final]}
   status:
     type: enum
     closed: true
     values_by_layer: {state: [active, parked, done]}
+  channel: {type: string}
+  date: {type: date}
+  tags: {type: 'list<string>'}
+  title: {type: string}
+  type: {type: string}
+  updated: {type: date}
 builtins: {}
-task_fields: {}
+task_fields:
+  checked: {type: bool}
+  due: {type: date}
+  priority: {type: number}
+  text: {type: string}
 section_fields: {}

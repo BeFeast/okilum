@@ -481,6 +481,15 @@ impl Reader {
                     .text_ellipsis()
                     .child(activity.unit.title.clone()),
             )
+            .when_some(activity.group.status.clone(), |row, status| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(10.))
+                        .text_color(tokens.text_muted)
+                        .child(status),
+                )
+            })
             .child(
                 div()
                     .flex_none()
@@ -699,8 +708,11 @@ impl Reader {
         let current_unit = index.unit_for(&self.pane.current_rel);
         let mut groups: std::collections::BTreeMap<_, Vec<&Activity>> = Default::default();
         for activity in &view.active {
-            let (priority, label) = if view.managed {
-                (0, activity.group.label())
+            let group = if view.managed {
+                match index.activity_context(activity) {
+                    Some((context, domain)) => (0, context.name, Some((domain, context.domain))),
+                    None => (1, "—", None),
+                }
             } else {
                 let domain = activity.legacy_domain();
                 let priority = match domain {
@@ -709,12 +721,12 @@ impl Reader {
                     "AI · HomeLab" => 2,
                     _ => 3,
                 };
-                (priority, domain.to_owned())
+                (priority, domain, None)
             };
-            groups.entry((priority, label)).or_default().push(activity);
+            groups.entry(group).or_default().push(activity);
         }
         let mut active = v_flex().w_full().min_w_0().pb_2();
-        for ((_, label), mut rows) in groups {
+        for ((_, label, domain), mut rows) in groups {
             // Keep the current context visible even when the group is compact.
             // Stable sorting preserves recency among the other projects.
             rows.sort_by_key(|row| current_unit != Some(row.unit.path.as_str()));
@@ -732,12 +744,24 @@ impl Reader {
                             .min_w_0()
                             .overflow_hidden()
                             .text_ellipsis()
-                            .child(label.clone()),
+                            .child(label.to_owned()),
                     )
+                    .when_some(domain, |header, (name, _)| {
+                        header.child(
+                            div()
+                                .flex_none()
+                                .max_w(px(100.))
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(name.to_owned()),
+                        )
+                    })
                     .child(rows.len().to_string()),
             );
-            let key = if view.managed {
-                format!("active-group-{label}")
+            let key = if let Some((_, domain_id)) = domain {
+                format!("active-context-{domain_id}:{label}")
+            } else if view.managed {
+                "active-context-unassigned".into()
             } else {
                 format!("domain-{label}")
             };

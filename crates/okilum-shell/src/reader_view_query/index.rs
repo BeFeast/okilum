@@ -21,10 +21,7 @@ pub(crate) fn load(vault: &Vault, snapshot: &Snapshot) -> Index {
         .context("Could not load the view field contract in @Schema")
         .map(|schema| Arc::new(Projection::from_snapshot(Arc::new(schema), snapshot)))
         .map_err(|error| format!("{error:#}"));
-    let areas = projection
-        .as_ref()
-        .ok()
-        .and_then(|projection| sidebar_view_tree::build(projection, vault, snapshot));
+    let areas = sidebar_view_tree::build(projection.as_deref(), vault, snapshot);
     Arc::new(Published { projection, areas })
 }
 
@@ -41,11 +38,11 @@ pub(crate) fn update(
         return load(vault, snapshot);
     };
     let published = Arc::make_mut(&mut index);
-    if let Ok(projection) = &mut published.projection {
-        if !batch.changed.is_empty() || !batch.removed.is_empty() {
+    if !batch.changed.is_empty() || !batch.removed.is_empty() {
+        if let Ok(projection) = &mut published.projection {
             Arc::make_mut(projection).apply_snapshot(snapshot, batch);
         }
-        published.areas = sidebar_view_tree::build(projection, vault, snapshot);
     }
+    published.areas = sidebar_view_tree::build(published.projection.as_deref(), vault, snapshot);
     index
 }

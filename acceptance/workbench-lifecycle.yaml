@@ -1,11 +1,43 @@
-# Open the capture in Tree, then switch to Now and read the lifecycle groups.
+# Open the capture with Now selected and check the lifecycle context groups.
 vault: tests/fixtures/lifecycle-vault
 open: inbox/Capture.md
+sidebar_state:
+  left_mode: now
+  now_enabled: true
+  now_collapsed: [changes, pins]
+generate:
+  - path: state/dev/garden/@index.md
+    kind: text
+    text: |
+      ---
+      kind: project
+      status: active
+      ---
+      # Garden journal
+  - path: state/dev/orchard/@index.md
+    kind: text
+    text: |
+      ---
+      kind: project
+      status: active
+      ---
+      # Orchard journal
+  - path: state/health/@index.md
+    kind: text
+    text: |
+      ---
+      type: project
+      status: active
+      ---
+      # Health domain note
 mtime:
   inbox/Capture.md: 0
   sources/web/2026/11/24/Reference.md: 0
   knowledge/evening-light.md: 0
   state/health/sleep/@index.md: 0
+  state/dev/garden/@index.md: 0
+  state/dev/orchard/@index.md: 0
+  state/health/@index.md: 0
   log/health/sleep/decisions/2026-11-24-lights-out.md: 0
   log/health/sleep/final/Retired.md: 0
   state/health/sleep/Archive/2026-11-24-lights-out.md: 0
@@ -20,14 +52,19 @@ region: [265, 85, 950, 550]
 ready_text: Lifecycle entry
 steps:
   - id: now-open
-    click: [243, 69]
     wait: 1.5
     text: Rescan
     region: [0, 45, 279, 690]
-  - id: active-project-group
-    text_order: [Health, project, active]
-    region: [0, 45, 279, 690]
+  - id: active-context-groups
+    text_order: [garden, Dev, orchard, Dev, sleep, Health, health]
+    region: [0, 145, 279, 265]
     text_absent: Projects
+    pixels:
+      # The em dash on the unassigned context heading is too small for OCR.
+      region: [7, 341, 18, 16]
+      expression: "r<0.6 && g<0.6 && b<0.6 ? 1 : 0"
+      min: 3
+      max: 25
   - id: decision-group
     click: [75, 665]
     wait: 0.7
@@ -39,7 +76,7 @@ steps:
       before: 'status: active'
       after: 'status: parked'
     text: parked
-    region: [0, 110, 279, 150]
+    region: [0, 145, 279, 200]
   - id: quick-open-alias
     keys: [k]
     mods: [ctrl]

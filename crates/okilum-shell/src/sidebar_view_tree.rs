@@ -1,7 +1,7 @@
-//! Virtual sidebar built from the same published records as Reader views.
+//! Virtual sidebar from a vault-authored tree or the built-in domain list.
 use super::*;
 use gpui_component::menu::{ContextMenuExt as _, PopupMenuItem};
-use okilum_core::{records::Projection, vault::warm::Snapshot, view};
+use okilum_core::{records::Projection, vault::warm::Snapshot, vault_descriptor::Layout, view};
 use reader_sidebar::LeftMode;
 
 pub(super) type Published = Option<Result<Arc<Tree>, String>>;
@@ -21,20 +21,33 @@ struct Row {
 enum Target {
     Branch {
         key: String,
-        count: usize,
+        count: Option<usize>,
         end: usize,
         bindings: Option<reader_view_query::Bindings>,
     },
     Note(String),
 }
 
-pub(super) fn build(projection: &Projection, vault: &Vault, snapshot: &Snapshot) -> Published {
-    let mut definitions = projection
-        .notes()
-        .filter(|note| vault.folders().view_source(&note.path))
-        .filter_map(|note| view::parse(&note.path, &snapshot.source(&note.path)?).ok())
+pub(super) fn build(
+    projection: Result<&Projection, &String>,
+    vault: &Vault,
+    snapshot: &Snapshot,
+) -> Published {
+    let layout = vault.folders().layout();
+    let mut definitions = snapshot
+        .source_paths()
+        .filter(|path| vault.folders().view_source(path))
+        .filter(|path| {
+            layout.is_some()
+                || projection
+                    .as_ref()
+                    .is_ok_and(|projection| projection.note(path).is_some())
+        })
+        .filter_map(|path| view::parse(path, &snapshot.source(path)?).ok())
         .filter(view::ViewDoc::is_sidebar_tree);
-    let definition = definitions.next()?;
+    let Some(definition) = definitions.next() else {
+        return Some(build_builtin_tree(layout?, vault).map(Arc::new));
+    };
     if let Some(other) = definitions.next() {
         return Some(Err(format!(
             "Multiple views define Areas: {} and {}",
@@ -42,7 +55,43 @@ pub(super) fn build(projection: &Projection, vault: &Vault, snapshot: &Snapshot)
             other.path()
         )));
     }
-    Some(build_tree(&definition, projection, vault, snapshot).map(Arc::new))
+    Some(
+        projection
+            .map_err(String::clone)
+            .and_then(|projection| build_tree(&definition, projection, vault, snapshot))
+            .map(Arc::new),
+    )
+}
+
+fn domain_template(vault: &Vault) -> Result<view::ViewDoc, String> {
+    let source = view::builtin::domain_source(&vault.root)?;
+    view::parse(view::builtin::DOMAIN_PATH, &source).map_err(|findings| findings[0].message.clone())
+}
+
+fn build_builtin_tree(layout: &Layout, vault: &Vault) -> Result<Tree, String> {
+    let template = domain_template(vault)?;
+    let rows = view::builtin::sidebar_domains(layout, &template)
+        .enumerate()
+        .map(|(index, domain)| Row {
+            label: domain.label.clone(),
+            depth: 0,
+            target: Target::Branch {
+                key: domain.key.clone(),
+                count: None,
+                end: index + 1,
+                bindings: Some(reader_view_query::Bindings {
+                    key: domain.key,
+                    label: domain.label,
+                    args: domain.args,
+                }),
+            },
+        })
+        .collect();
+    Ok(Tree {
+        rows,
+        template: Some(template.path().to_owned()),
+        notice: None,
+    })
 }
 
 fn build_tree(
@@ -69,18 +118,16 @@ fn build_tree(
         .resolve_node_view(vault, definition.path())
         .and_then(|path| {
             let path = path.as_deref().unwrap_or(view::builtin::DOMAIN_PATH);
-            let text = if path == view::builtin::DOMAIN_PATH {
-                view::builtin::domain_source(&vault.root)?
-            } else {
-                projection
-                    .note(path)
-                    .filter(|_| vault.folders().view_source(path))
-                    .and_then(|_| source(path))
-                    .ok_or_else(|| {
-                        format!("Node view '{path}' must be in the vault’s views directory")
-                    })?
-                    .into()
-            };
+            if path == view::builtin::DOMAIN_PATH {
+                return domain_template(vault);
+            }
+            let text = projection
+                .note(path)
+                .filter(|_| vault.folders().view_source(path))
+                .and_then(|_| source(path))
+                .ok_or_else(|| {
+                    format!("Node view '{path}' must be in the vault’s views directory")
+                })?;
             view::parse(path, &text).map_err(|findings| findings[0].message.clone())
         });
     let mut tree = Tree {
@@ -133,7 +180,7 @@ fn append_rows(
             depth,
             target: Target::Branch {
                 key,
-                count: node.count,
+                count: Some(node.count),
                 end: 0,
                 bindings,
             },
@@ -282,26 +329,28 @@ fn area_row(
             let view = template.map(str::to_owned).zip(bindings.clone());
             element
                 .when(row.depth == 0, |row| row.font_weight(FontWeight::SEMIBOLD))
-                .child(
-                    div()
-                        .id("areas-disclosure")
-                        .flex_none()
-                        .child(
-                            Icon::new(if expanded {
-                                IconName::ChevronDown
-                            } else {
-                                IconName::ChevronRight
-                            })
-                            .xsmall()
-                            .text_color(tokens.text_faint),
-                        )
-                        .on_click(move |_, _, cx| {
-                            cx.stop_propagation();
-                            with_areas(&toggle, epoch, cx, |reader, cx| {
-                                toggle_branch(reader, &toggle_key, cx)
-                            });
-                        }),
-                )
+                .when(count.is_some(), |row| {
+                    row.child(
+                        div()
+                            .id("areas-disclosure")
+                            .flex_none()
+                            .child(
+                                Icon::new(if expanded {
+                                    IconName::ChevronDown
+                                } else {
+                                    IconName::ChevronRight
+                                })
+                                .xsmall()
+                                .text_color(tokens.text_faint),
+                            )
+                            .on_click(move |_, _, cx| {
+                                cx.stop_propagation();
+                                with_areas(&toggle, epoch, cx, |reader, cx| {
+                                    toggle_branch(reader, &toggle_key, cx)
+                                });
+                            }),
+                    )
+                })
                 .when(row.depth > 0, |row| {
                     row.child(
                         Icon::new(if expanded {
@@ -314,7 +363,9 @@ fn area_row(
                     )
                 })
                 .child(label)
-                .child(div().text_color(colors.text_muted).child(count.to_string()))
+                .when_some(*count, |row, count| {
+                    row.child(div().text_color(colors.text_muted).child(count.to_string()))
+                })
                 .on_click(move |_, window, cx| {
                     with_areas(&open, epoch, cx, |reader, cx| {
                         if let Some((path, bindings)) = &view {

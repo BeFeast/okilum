@@ -1,0 +1,40 @@
+# Open Areas from the lifecycle layout, then add a vault-authored override.
+vault: tests/fixtures/lifecycle-vault
+open: inbox/Capture.md
+appearance: light
+rig:
+  persistent_pointer: true
+preferences:
+  note_open_mode: read
+region: [265, 92, 825, 650]
+ready_text: Lifecycle entry
+steps:
+  - id: areas-tab
+    wait: 2
+    text: Areas
+    region: [10, 92, 205, 35]
+  - id: layout-domains
+    click: [159, 110]
+    text_order: [Dev, Health]
+    region: [0, 132, 250, 100]
+  - id: builtin-domain
+    click: [52, 172]
+    text_order: [Health, Projects and contexts, Sleep routine]
+  - id: authored-sidebar
+    vault_create:
+      path: '@views/sidebar.md'
+      source: |
+        ---
+        type: view
+        sidebar: true
+        ---
+        ```view
+        from: notes
+        where: area = Health and layer = state
+        show: tree
+        levels: [area]
+        ```
+    wait: 2
+    text: Health 2
+    text_absent: Dev
+    region: [0, 132, 250, 100]

@@ -4,7 +4,7 @@ use crate::{
     records::{FieldSchema, NoteRecord, Projection, Value},
     vault::warm::Snapshot,
     vault_conventions,
-    vault_descriptor::{ContextLayer, Layout},
+    vault_descriptor::{ContextId, ContextLayer, Layout},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -388,6 +388,19 @@ impl Index {
     }
     pub fn unit_for(&self, path: &str) -> Option<&str> {
         self.notes.get(path)?.unit.as_deref()
+    }
+
+    pub fn activity_context<'a>(
+        &'a self,
+        activity: &'a Activity,
+    ) -> Option<(ContextId<'a>, &'a str)> {
+        let layout = self.layout.as_ref()?;
+        let context = layout.context(&activity.unit.path)?.id;
+        let domain = layout
+            .domains
+            .iter()
+            .find(|domain| domain.id == context.domain)?;
+        Some((context, &domain.name))
     }
 
     pub fn replace(&mut self, path: &str, source: &str, mtime: u64) {

@@ -1,4 +1,8 @@
 //! Shipped declarative views and their vault overrides.
+mod sidebar;
+
+pub use sidebar::{sidebar_domains, SidebarDomain};
+
 use super::{parse, run, Finding, RunContext, Section, Show, Status};
 use crate::{
     agent_imports::{Failure, RootedSource, Source as _},
