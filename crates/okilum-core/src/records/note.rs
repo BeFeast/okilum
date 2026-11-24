@@ -455,7 +455,7 @@ fn markdown(row: &mut NoteRecord, body: &str, prefix_lines: usize) -> Option<Str
     let mut tasks_open = 0;
     if has_tasks || body.contains(['#', '=', '-']) {
         let arena = Arena::new();
-        let root = parse_document(&arena, body, &render::comrak_options());
+        let root = parse_document(&arena, body, &tasks::comrak_options());
         for top in root.children() {
             for node in top.descendants() {
                 let data = node.data.borrow();

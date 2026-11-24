@@ -39,22 +39,11 @@ static MARKER: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
-pub(super) fn parse<'a>(item: &'a AstNode<'a>, text: &str, offset: usize, line: usize) -> Metadata {
-    let mut meta = Metadata::default();
-    let mut markers = MARKER.captures_iter(text).peekable();
-    if markers.peek().is_none() {
-        meta.text = text.to_owned();
-        return meta;
-    }
-
-    // The Markdown AST accounts for escaped delimiters, reference links and
-    // variable-length code spans. Inspect only the checkbox's opening line.
-    let protected: Vec<Range<usize>> = item
-        .children()
-        .next()
-        .filter(|node| matches!(node.data.borrow().value, NodeValue::Paragraph))
-        .into_iter()
-        .flat_map(|paragraph| paragraph.descendants())
+/// Byte ranges on 1-based `line` inside `root` that contain non-plain-text
+/// Markdown syntax (code spans, links, wikilinks, images, inline HTML, math).
+/// Shared between task projection and task editing so reader and writer agree.
+pub(crate) fn protected_spans<'a>(root: &'a AstNode<'a>, line: usize) -> Vec<Range<usize>> {
+    root.descendants()
         .filter_map(|node| {
             let data = node.data.borrow();
             let pos = data.sourcepos;
@@ -64,21 +53,46 @@ pub(super) fn parse<'a>(item: &'a AstNode<'a>, text: &str, offset: usize, line: 
                     | NodeValue::Link(_)
                     | NodeValue::WikiLink(_)
                     | NodeValue::Image(_)
-            ) && pos.start.line == line
+                    | NodeValue::HtmlInline(_)
+                    | NodeValue::Math(_)
+                    | NodeValue::Raw(_)
+            ) && pos.start.line <= line
+                && pos.end.line >= line
             {
-                // Comrak code positions start at the code contents.
-                Some(
-                    pos.start.column.saturating_sub(1)..if pos.end.line == line {
-                        pos.end.column
-                    } else {
-                        usize::MAX
-                    },
-                )
+                let start = if pos.start.line < line {
+                    0
+                } else {
+                    pos.start.column.saturating_sub(1)
+                };
+                let end = if pos.end.line > line {
+                    usize::MAX
+                } else {
+                    pos.end.column
+                };
+                Some(start..end)
             } else {
                 None
             }
         })
-        .collect();
+        .collect()
+}
+
+pub(super) fn parse<'a>(item: &'a AstNode<'a>, text: &str, offset: usize, line: usize) -> Metadata {
+    let mut meta = Metadata::default();
+    let mut markers = MARKER.captures_iter(text).peekable();
+    if markers.peek().is_none() {
+        meta.text = text.to_owned();
+        return meta;
+    }
+
+    // The Markdown AST accounts for escaped delimiters, reference links, math,
+    // inline HTML and variable-length code spans. Inspect only the opening line.
+    let protected: Vec<Range<usize>> = item
+        .children()
+        .next()
+        .filter(|node| matches!(node.data.borrow().value, NodeValue::Paragraph))
+        .map(|paragraph| protected_spans(paragraph, line))
+        .unwrap_or_default();
 
     let mut seen = Vec::new();
     let mut remaining = 0;

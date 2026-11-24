@@ -102,10 +102,15 @@ impl Target {
                 if checked && !(1..=9999).contains(&done.year()) {
                     return Err("Task date is outside the supported calendar".into());
                 }
+                let before_tasks = crate::tasks::parse(&self.path, source);
+                let before_pos = before_tasks
+                    .iter()
+                    .position(|t| t.line == self.line)
+                    .ok_or("The source line is not a Markdown task")?;
                 let range = line_range(source, self.line).ok_or("Task line is unavailable")?;
                 let raw = &source[range.clone()];
                 let rel_after_box = self.checkbox.end + 1 - range.start;
-                let protected = protected_line_spans(source, self.line);
+                let protected = crate::tasks::protected_line_spans(source, self.line);
                 let markers = done_markers(raw, rel_after_box, &protected);
                 if markers.len() > 1 {
                     return Err("The task has more than one done date marker".into());
@@ -118,13 +123,14 @@ impl Target {
                     .map_err(|_| "The task has malformed done date metadata")?;
                 }
                 // Mutate inline done date before the checkbox so `self.checkbox` stays valid.
+                let mut inline_edit: Option<(Range<usize>, usize)> = None;
+                let value = format!(
+                    "{:04}-{:02}-{:02}",
+                    done.year(),
+                    u8::from(done.month()),
+                    done.day()
+                );
                 if checked {
-                    let value = format!(
-                        "{:04}-{:02}-{:02}",
-                        done.year(),
-                        u8::from(done.month()),
-                        done.day()
-                    );
                     match markers.as_slice() {
                         [] => {
                             let trimmed = raw.trim_end_matches([' ', '\t']);
@@ -138,35 +144,23 @@ impl Target {
                                         .into(),
                                 );
                             }
-                            after.insert_str(range.start + end, &format!(" [done:: {value}]"));
+                            let inserted = format!(" [done:: {value}]");
+                            let at = range.start + end;
+                            after.insert_str(at, &inserted);
+                            inline_edit = Some((at..at, inserted.len()));
                         }
                         [marker] => {
                             if marker.value != value {
-                                after.replace_range(
-                                    range.start + marker.value_span.start
-                                        ..range.start + marker.value_span.end,
-                                    &value,
-                                );
+                                let span = range.start + marker.value_span.start
+                                    ..range.start + marker.value_span.end;
+                                after.replace_range(span.clone(), &value);
+                                inline_edit = Some((span, value.len()));
                             }
                         }
                         _ => unreachable!("checked above"),
                     }
                     if source.get(self.checkbox.clone()) == Some(" ") {
                         after.replace_range(self.checkbox.clone(), "x");
-                    }
-                    let after_range =
-                        line_range(&after, self.line).ok_or("Task line is unavailable")?;
-                    let after_protected = protected_line_spans(&after, self.line);
-                    let after_markers = done_markers(
-                        &after[after_range.clone()],
-                        self.checkbox.end + 1 - after_range.start,
-                        &after_protected,
-                    );
-                    if after_markers.len() != 1 || after_markers[0].value != value {
-                        return Err(
-                            "Cannot safely place done date outside protected Markdown syntax"
-                                .into(),
-                        );
                     }
                 } else {
                     if let [marker] = markers.as_slice() {
@@ -181,12 +175,27 @@ impl Target {
                         } else {
                             (marker.span.start, marker.span.end)
                         };
-                        after.replace_range(range.start + rm_start..range.start + rm_end, "");
+                        let span = range.start + rm_start..range.start + rm_end;
+                        after.replace_range(span.clone(), "");
+                        inline_edit = Some((span, 0));
                     }
                     if source.get(self.checkbox.clone()) != Some(" ") {
                         after.replace_range(self.checkbox.clone(), " ");
                     }
                 }
+                verify_check_with_done_postcondition(
+                    &self.path,
+                    self.line,
+                    &self.checkbox,
+                    source,
+                    &after,
+                    inline_edit,
+                    &before_tasks,
+                    before_pos,
+                    checked,
+                    done,
+                    &value,
+                )?;
             }
             Change::Due(date) | Change::Scheduled(date) => {
                 let marker = if matches!(change, Change::Scheduled(_)) {
@@ -264,44 +273,6 @@ impl Plan {
         Ok(&self.before)
     }
 }
-fn has_lone_cr(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    bytes
-        .iter()
-        .enumerate()
-        .any(|(i, &b)| b == b'\r' && bytes.get(i + 1) != Some(&b'\n'))
-}
-
-fn markdown_line_ranges(text: &str) -> Vec<Range<usize>> {
-    let bytes = text.as_bytes();
-    let mut ranges = Vec::new();
-    let mut start = 0;
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\r' => {
-                ranges.push(start..i);
-                i += if bytes.get(i + 1) == Some(&b'\n') {
-                    2
-                } else {
-                    1
-                };
-                start = i;
-            }
-            b'\n' => {
-                ranges.push(start..i);
-                i += 1;
-                start = i;
-            }
-            _ => i += 1,
-        }
-    }
-    if start < bytes.len() {
-        ranges.push(start..bytes.len());
-    }
-    ranges
-}
-
 fn line_range(source: &str, line: usize) -> Option<Range<usize>> {
     if line == 0 {
         return None;
@@ -309,24 +280,26 @@ fn line_range(source: &str, line: usize) -> Option<Range<usize>> {
     let body = crate::render::without_frontmatter(source);
     let prefix_len = source.len() - body.len();
     let prefix = &source[..prefix_len];
-    if has_lone_cr(prefix) {
+    if crate::tasks::has_lone_cr(prefix) {
         return None;
     }
     let prefix_lines = prefix.bytes().filter(|&b| b == b'\n').count();
     let body_line = line.checked_sub(prefix_lines).filter(|&n| n > 0)?;
-    let range = markdown_line_ranges(body).into_iter().nth(body_line - 1)?;
+    let range = crate::tasks::markdown_line_ranges(body)
+        .into_iter()
+        .nth(body_line - 1)?;
     Some(prefix_len + range.start..prefix_len + range.end)
 }
 
 fn plain_metadata(source: &str, span: Range<usize>) -> bool {
     let body = crate::render::without_frontmatter(source);
     let prefix = source.len() - body.len();
-    let starts: Vec<_> = markdown_line_ranges(body)
+    let starts: Vec<_> = crate::tasks::markdown_line_ranges(body)
         .into_iter()
         .map(|range| range.start)
         .collect();
     let arena = Arena::new();
-    let root = parse_document(&arena, body, &crate::render::comrak_options());
+    let root = parse_document(&arena, body, &crate::tasks::comrak_options());
     root.descendants().any(|node| {
         let data = node.data.borrow();
         if !matches!(data.value, NodeValue::Text(_))
@@ -367,49 +340,120 @@ fn is_escaped_at(raw: &str, byte_index: usize) -> bool {
         == 1
 }
 
-fn protected_line_spans(source: &str, line: usize) -> Vec<Range<usize>> {
-    let body = crate::render::without_frontmatter(source);
-    let prefix_lines = source[..source.len() - body.len()]
-        .bytes()
-        .filter(|&b| b == b'\n')
-        .count();
-    let Some(body_line) = line.checked_sub(prefix_lines).filter(|&n| n > 0) else {
-        return Vec::new();
+fn has_plain_legacy_done_emoji(
+    raw: &str,
+    rel_after_box: usize,
+    protected: &[Range<usize>],
+) -> bool {
+    let tail = raw.get(rel_after_box..).unwrap_or("");
+    tail.match_indices('✅').any(|(at, _)| {
+        let abs = rel_after_box + at;
+        !protected.iter().any(|span| span.contains(&abs)) && !is_escaped_at(raw, abs)
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_check_with_done_postcondition(
+    path: &str,
+    line: usize,
+    checkbox: &Range<usize>,
+    source: &str,
+    after: &str,
+    inline_edit: Option<(Range<usize>, usize)>,
+    before_tasks: &[crate::tasks::Task],
+    before_pos: usize,
+    checked: bool,
+    done: Date,
+    done_value: &str,
+) -> Result<(), String> {
+    // 1. Byte-level invariant: every byte outside the checkbox char and the single
+    //    inline done-field edit must remain identical to `source`.
+    let bytes_preserved = match inline_edit {
+        None => {
+            after.len() == source.len()
+                && after.as_bytes()[..checkbox.start] == source.as_bytes()[..checkbox.start]
+                && after.as_bytes()[checkbox.end..] == source.as_bytes()[checkbox.end..]
+        }
+        Some((span, replacement_len)) => {
+            span.start >= checkbox.end
+                && span.end <= source.len()
+                && after.len() == source.len() - (span.end - span.start) + replacement_len
+                && after.as_bytes()[..checkbox.start] == source.as_bytes()[..checkbox.start]
+                && after.as_bytes()[checkbox.end..span.start]
+                    == source.as_bytes()[checkbox.end..span.start]
+                && after.as_bytes()[span.start + replacement_len..] == source.as_bytes()[span.end..]
+        }
     };
-    let arena = Arena::new();
-    let root = parse_document(&arena, body, &crate::render::comrak_options());
-    root.descendants()
-        .filter_map(|node| {
-            let data = node.data.borrow();
-            let pos = data.sourcepos;
-            if matches!(
-                data.value,
-                NodeValue::Code(_)
-                    | NodeValue::Link(_)
-                    | NodeValue::WikiLink(_)
-                    | NodeValue::Image(_)
-                    | NodeValue::HtmlInline(_)
-                    | NodeValue::Math(_)
-                    | NodeValue::Raw(_)
-            ) && pos.start.line <= body_line
-                && pos.end.line >= body_line
-            {
-                let start = if pos.start.line < body_line {
-                    0
-                } else {
-                    pos.start.column.saturating_sub(1)
-                };
-                let end = if pos.end.line > body_line {
-                    usize::MAX
-                } else {
-                    pos.end.column
-                };
-                Some(start..end)
-            } else {
-                None
-            }
-        })
-        .collect()
+    if !bytes_preserved {
+        return Err("Task edit violated byte-preservation invariant".into());
+    }
+
+    // 2. Inline marker invariant on the edited line (under the shared parser).
+    let after_range = line_range(after, line).ok_or("Task line is unavailable")?;
+    let after_raw = &after[after_range.clone()];
+    let after_rel = checkbox.end + 1 - after_range.start;
+    let after_protected = crate::tasks::protected_line_spans(after, line);
+    let after_markers = done_markers(after_raw, after_rel, &after_protected);
+    if checked {
+        if after_markers.len() != 1 || after_markers[0].value != done_value {
+            return Err("Cannot safely place done date outside protected Markdown syntax".into());
+        }
+    } else if !after_markers.is_empty() {
+        return Err("Could not cleanly remove inline done date metadata".into());
+    }
+
+    // 3. Re-projection invariant with the same Tasks projection used by views.
+    let after_tasks = crate::tasks::parse(path, after);
+    if after_tasks.len() != before_tasks.len() {
+        return Err("Task edit would change the note's task structure".into());
+    }
+    for (idx, (before_t, after_t)) in before_tasks.iter().zip(after_tasks.iter()).enumerate() {
+        if idx != before_pos && before_t != after_t {
+            return Err("Task edit would alter another task in the note".into());
+        }
+    }
+    let before_task = &before_tasks[before_pos];
+    let after_task = &after_tasks[before_pos];
+    if after_task.path != before_task.path
+        || after_task.line != before_task.line
+        || after_task.body_line != before_task.body_line
+        || after_task.checked != checked
+        || after_task.metadata.text != before_task.metadata.text
+        || after_task.due != before_task.due
+        || after_task.scheduled != before_task.scheduled
+        || after_task.start != before_task.start
+        || after_task.priority != before_task.priority
+        || after_task.metadata.owner != before_task.metadata.owner
+        || after_task.metadata.thread != before_task.metadata.thread
+        || after_task.metadata.created != before_task.metadata.created
+        || after_task.metadata.other != before_task.metadata.other
+    {
+        return Err(
+            "Task edit would change projected fields other than checkbox and done date".into(),
+        );
+    }
+    let has_done_issue = after_task
+        .metadata
+        .issues
+        .iter()
+        .any(|issue| issue.key == "done");
+    let has_duplicate_done = after_task.metadata.issues.iter().any(|issue| {
+        issue.key == "done" && issue.kind == crate::tasks::MetadataIssueKind::Duplicate
+    });
+    if checked {
+        if after_task.done != Some(done) || has_done_issue {
+            return Err(
+                "Cannot set done date without conflicting with existing read-only metadata".into(),
+            );
+        }
+    } else if has_plain_legacy_done_emoji(after_raw, after_rel, &after_protected) {
+        if after_task.done != before_task.done || has_duplicate_done {
+            return Err("Cannot reopen task cleanly alongside read-only done metadata".into());
+        }
+    } else if after_task.done.is_some() || has_done_issue {
+        return Err("Cannot clear done date cleanly without modifying read-only metadata".into());
+    }
+    Ok(())
 }
 
 fn done_markers<'a>(
@@ -725,5 +769,143 @@ mod tests {
             crate::tasks::parse("test.md", &plan.after)[0].done,
             Some(done)
         );
+    }
+
+    #[test]
+    fn check_with_done_aligns_projection_and_writer_on_lone_cr_math_legacy_and_html() {
+        let done = time::macros::date!(2026 - 11 - 24);
+
+        // 1. Lone CR: reader and writer share CommonMark line boundaries, so checking
+        //    displayed row "Third" checks line 3 and leaves First & Second intact.
+        let cr_source = "- [ ] First\r- [ ] Second\n- [ ] Third\n";
+        let projected = crate::tasks::parse("test.md", cr_source);
+        assert_eq!(projected.len(), 3);
+        let third = projected.iter().find(|t| t.text == "Third").unwrap();
+        assert_eq!(third.line, 3);
+        let target = Target::capture("test.md", cr_source, third.line).unwrap();
+        let plan = target
+            .plan(
+                cr_source,
+                Change::CheckWithDone {
+                    checked: true,
+                    done,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            plan.after.as_bytes(),
+            b"- [ ] First\r- [ ] Second\n- [x] Third [done:: 2026-11-24]\n"
+        );
+
+        // 2. Math spans (`$...$` and `$$...$$`, incl. tabs/quotes/BOM) stay untouched.
+        for source in [
+            "- [ ] Review $[done:: 2026-01-01]$\n",
+            "- [ ] Review $$[done:: 2026-01-01]$$\n",
+            "- [ ] Review $(completion:: 2026-01-01)$\n",
+            "- Parent\n\t- [ ] $[done:: 2026-01-01]$\n",
+            "> - [ ] $$[done:: 2026-01-01]$$\n",
+            "\u{feff}- [ ] $[done:: 2026-01-01]$\n",
+        ] {
+            let tasks = crate::tasks::parse("test.md", source);
+            assert_eq!(tasks.len(), 1, "{source:?}");
+            assert_eq!(
+                tasks[0].done, None,
+                "math must not project done: {source:?}"
+            );
+            let target = Target::capture("test.md", source, tasks[0].line).unwrap();
+            let plan = target
+                .plan(
+                    source,
+                    Change::CheckWithDone {
+                        checked: true,
+                        done,
+                    },
+                )
+                .unwrap();
+            let expected =
+                source
+                    .replacen("[ ]", "[x]", 1)
+                    .replacen('\n', " [done:: 2026-11-24]\n", 1);
+            // Only the task line's trailing LF gets the suffix (for 2-line input take last LF).
+            let expected = if source.contains("\n\t") {
+                format!(
+                    "{} [done:: 2026-11-24]\n",
+                    source.trim_end_matches('\n').replacen("[ ]", "[x]", 1)
+                )
+            } else {
+                expected
+            };
+            assert_eq!(plan.after.as_bytes(), expected.as_bytes(), "{source:?}");
+            let reparsed = crate::tasks::parse("test.md", &plan.after);
+            assert_eq!(reparsed[0].done, Some(done), "{source:?}");
+            assert!(reparsed[0].metadata.issues.is_empty(), "{source:?}");
+        }
+        // Multi-line math refuses without writing.
+        let multi_math = "- [ ] Example $a +\n  b$\n";
+        let target = Target::capture("test.md", multi_math, 1).unwrap();
+        assert!(target
+            .plan(
+                multi_math,
+                Change::CheckWithDone {
+                    checked: true,
+                    done,
+                },
+            )
+            .is_err());
+
+        // 3. Completing a task with read-only legacy `✅` cannot set effective done to
+        //    today without touching read-only metadata or creating duplicates -> refuse.
+        for legacy in [
+            "- [ ] Task ✅ 2026-01-01\n",
+            "- [ ] Task ✅ nope\n",
+            "- [ ] Task ✅ 2026-01-01 [done:: 2026-01-02]\n",
+            "- [ ] Task ✅ 2026-11-24\n",
+        ] {
+            let target = Target::capture("test.md", legacy, 1).unwrap();
+            assert!(
+                target
+                    .plan(
+                        legacy,
+                        Change::CheckWithDone {
+                            checked: true,
+                            done,
+                        },
+                    )
+                    .is_err(),
+                "must refuse completing task with read-only legacy emoji: {legacy:?}"
+            );
+        }
+
+        // 4. Inline HTML comments and attributes are ignored by both reader and writer,
+        //    so completing leaves HTML intact and projects effective done = today.
+        for html in [
+            "- [ ] <!-- [done:: 2026-01-01] --> Task\n",
+            "- [ ] <span title=\"[done:: 2026-01-01]\">Task</span>\n",
+        ] {
+            let before = crate::tasks::parse("test.md", html);
+            assert_eq!(before[0].done, None, "{html:?}");
+            let target = Target::capture("test.md", html, 1).unwrap();
+            let plan = target
+                .plan(
+                    html,
+                    Change::CheckWithDone {
+                        checked: true,
+                        done,
+                    },
+                )
+                .unwrap();
+            let expected = format!(
+                "{} [done:: 2026-11-24]\n",
+                html.trim_end_matches('\n').replacen("[ ]", "[x]", 1)
+            );
+            assert_eq!(plan.after.as_bytes(), expected.as_bytes(), "{html:?}");
+            let reparsed = crate::tasks::parse("test.md", &plan.after);
+            assert_eq!(reparsed[0].done, Some(done), "{html:?}");
+            assert!(reparsed[0].metadata.issues.is_empty(), "{html:?}");
+            assert_eq!(
+                reparsed[0].metadata.text, before[0].metadata.text,
+                "{html:?}"
+            );
+        }
     }
 }

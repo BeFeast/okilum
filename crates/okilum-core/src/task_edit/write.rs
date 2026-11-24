@@ -481,12 +481,18 @@ mod tests {
         receipt.undo(&root, &drafts).unwrap();
         assert_eq!(std::fs::read(&cr_file).unwrap(), cr_original.as_bytes());
 
-        // Multi-line code span and link are refused with zero disk writes.
+        // Multi-line code span, link, and read-only legacy emoji completion are refused with zero disk writes.
         for (name, source) in [
             ("multiline-code.md", "- [ ] Example `code\n  continued`\n"),
             (
                 "multiline-link.md",
                 "- [ ] [Example\n  label](https://example.org)\n",
+            ),
+            ("legacy-date.md", "- [ ] Task ✅ 2026-01-01\n"),
+            ("legacy-bad.md", "- [ ] Task ✅ nope\n"),
+            (
+                "legacy-with-inline.md",
+                "- [ ] Task ✅ 2026-01-01 [done:: 2026-01-02]\n",
             ),
         ] {
             let file = root.join(name);
@@ -504,5 +510,35 @@ mod tests {
             .is_err());
             assert_eq!(std::fs::read(&file).unwrap(), source.as_bytes());
         }
+
+        // Displayed row "Third" after a lone CR targets line 3 via Index, leaving First & Second untouched.
+        let cr3_file = root.join("cr3.md");
+        let cr3_original = "- [ ] First\r- [ ] Second\n- [ ] Third\n";
+        std::fs::write(&cr3_file, cr3_original).unwrap();
+        let mut cr3_index = Index::default();
+        cr3_index.replace("cr3.md", cr3_original);
+        let third = cr3_index
+            .note_tasks("cr3.md")
+            .into_iter()
+            .find(|t| t.text == "Third")
+            .unwrap();
+        let cr3_receipt = apply_indexed(
+            &root,
+            &drafts,
+            &cr3_index,
+            &third,
+            Change::CheckWithDone {
+                checked: true,
+                done,
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            std::fs::read(&cr3_file).unwrap(),
+            b"- [ ] First\r- [ ] Second\n- [x] Third [done:: 2026-11-24]\n"
+        );
+        cr3_receipt.undo(&root, &drafts).unwrap();
+        assert_eq!(std::fs::read(&cr3_file).unwrap(), cr3_original.as_bytes());
     }
 }

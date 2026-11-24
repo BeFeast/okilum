@@ -1,10 +1,72 @@
 //! Disposable task projection with source revisions for explicit edit planning.
-use comrak::{nodes::NodeValue, parse_document, Arena};
-use std::{cmp::Ordering, collections::BTreeMap, sync::Arc};
+use comrak::{nodes::NodeValue, parse_document, Arena, Options};
+use std::{cmp::Ordering, collections::BTreeMap, ops::Range, sync::Arc};
 use time::{Date, Duration};
 
 mod metadata;
 pub use metadata::{Issue as MetadataIssue, IssueKind as MetadataIssueKind, Metadata};
+
+/// Shared parser configuration for task projection, record extraction, and task
+/// editing, matching the renderer (including dollar math).
+pub(crate) fn comrak_options() -> Options<'static> {
+    let mut options = crate::render::comrak_options();
+    options.extension.math_dollars = true;
+    options
+}
+
+pub(crate) fn has_lone_cr(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes
+        .iter()
+        .enumerate()
+        .any(|(i, &b)| b == b'\r' && bytes.get(i + 1) != Some(&b'\n'))
+}
+
+/// Split text into CommonMark line content ranges (`\r\n`, `\n`, or lone `\r`),
+/// matching comrak's 1-based line numbering so reader and writer never disagree.
+pub(crate) fn markdown_line_ranges(text: &str) -> Vec<Range<usize>> {
+    let bytes = text.as_bytes();
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\r' => {
+                ranges.push(start..i);
+                i += if bytes.get(i + 1) == Some(&b'\n') {
+                    2
+                } else {
+                    1
+                };
+                start = i;
+            }
+            b'\n' => {
+                ranges.push(start..i);
+                i += 1;
+                start = i;
+            }
+            _ => i += 1,
+        }
+    }
+    if start < bytes.len() {
+        ranges.push(start..bytes.len());
+    }
+    ranges
+}
+
+pub(crate) fn protected_line_spans(source: &str, line: usize) -> Vec<Range<usize>> {
+    let body = crate::render::without_frontmatter(source);
+    let prefix_lines = source[..source.len() - body.len()]
+        .bytes()
+        .filter(|&b| b == b'\n')
+        .count();
+    let Some(body_line) = line.checked_sub(prefix_lines).filter(|&n| n > 0) else {
+        return Vec::new();
+    };
+    let arena = Arena::new();
+    let root = parse_document(&arena, body, &comrak_options());
+    metadata::protected_spans(root, body_line)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Task {
@@ -44,7 +106,7 @@ pub fn parse(path: &str, source: &str) -> Vec<Task> {
         .filter(|b| *b == b'\n')
         .count();
     let arena = Arena::new();
-    let root = parse_document(&arena, body, &crate::render::comrak_options());
+    let root = parse_document(&arena, body, &comrak_options());
     parse_tree(path, body, prefix_lines, root)
 }
 
@@ -54,7 +116,10 @@ pub(crate) fn parse_tree<'a>(
     prefix_lines: usize,
     root: &'a comrak::nodes::AstNode<'a>,
 ) -> Vec<Task> {
-    let lines: Vec<_> = body.lines().collect();
+    let lines: Vec<_> = markdown_line_ranges(body)
+        .into_iter()
+        .map(|range| &body[range])
+        .collect();
     let mut tasks = Vec::new();
     for (block, top) in root.children().enumerate() {
         for node in top.descendants() {
