@@ -12,6 +12,7 @@ mod cards;
 mod graph;
 mod index;
 mod markdown;
+mod set;
 mod timeline;
 
 pub(super) use index::Index;

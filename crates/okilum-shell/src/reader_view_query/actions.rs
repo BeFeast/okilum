@@ -64,6 +64,7 @@ pub(super) struct ActionRow {
     primary: String,
     meta: Vec<String>,
     check: Option<CheckAction>,
+    sets: Vec<set::SetAction>,
     thread: Option<String>,
     open_task: Option<IndexedTask>,
     pub(super) date: Option<timeline::Date>,
@@ -193,7 +194,7 @@ pub(super) fn has_actions(rows: &[Row]) -> bool {
     rows.iter().any(|row| {
         row.actions
             .iter()
-            .any(|a| a == "check" || a == "open:thread")
+            .any(|a| a == "check" || a == "open:thread" || set::has_set_action(a))
     })
 }
 
@@ -295,11 +296,14 @@ fn build_row(
         .at
         .as_deref()
         .filter(|_| section.show == Show::Timeline);
+    let sets = set::build_actions(row, projection);
     let mut values: Vec<String> = section
         .cols
         .iter()
-        .filter(|key| Some(key.as_str()) != at)
-        .filter_map(|key| row.fields.get(key))
+        .enumerate()
+        .filter(|(_, key)| Some(key.as_str()) != at)
+        .filter(|(ix, key)| *ix == 0 || !sets.iter().any(|s| s.field.name() == key.as_str()))
+        .filter_map(|(_, key)| row.fields.get(key))
         .map(plain_value)
         .filter(|cell| !cell.is_empty())
         .collect();
@@ -328,6 +332,7 @@ fn build_row(
         primary,
         meta: values,
         check,
+        sets,
         thread,
         open_task,
         date: at.and_then(|key| timeline::Date::from_value(row.fields.get(key)?)),
@@ -613,6 +618,12 @@ impl RowRenderer<'_> {
                         .child(cell.clone())
                 }))
             });
+
+        for set_action in &row.sets {
+            line = line.child(set::render_control(
+                set_action, &row.path, &row.rev, nonce, block_ix, row_ix, reader, root,
+            ));
+        }
 
         if let Some(thread_url) = &row.thread {
             let thread_reader = reader.clone();

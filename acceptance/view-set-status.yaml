@@ -1,0 +1,96 @@
+# State: @views/active-projects.md opened on the shared fixture vault.
+# Action: set "Budget 2027" status from active to parked, verify it leaves
+# Active projects and shows the Undo toast, click Undo to restore it, then set
+# it to parked again, open the source note, and confirm `status: parked`.
+vault: crates/okilum-core/tests/fixtures/views
+generate:
+  - path: "@views/active-projects.md"
+    kind: text
+    text: |
+      ---
+      type: view
+      view: query
+      title: Active projects
+      ---
+      # Active projects
+
+      ## Active
+      ```view
+      from: notes
+      where: kind = project and status = active and area in (Dev, Finance)
+      cols: [title, status]
+      sort: title
+      show: table
+      actions:
+        - {set: status}
+      ```
+
+      ## Parked
+      ```view
+      from: notes
+      where: kind = project and status = parked
+      cols: [title, status]
+      sort: title
+      show: table
+      actions:
+        - {set: status}
+      ```
+open: "@views/active-projects.md"
+appearance: light
+preferences:
+  note_open_mode: read
+rig:
+  persistent_pointer: true
+region: [265, 90, 840, 645]
+ready_text: Budget 2027
+steps:
+  - id: active-table-initial
+    region: [265, 190, 840, 145]
+    text_order:
+      - Budget 2027
+      - Okilum
+  - id: open-status-menu
+    click: [990, 270]
+    wait: 0.5
+    region: [960, 290, 140, 90]
+    text_order:
+      - parked
+      - done
+  - id: select-parked
+    click: [1010, 328]
+    wait: 1.5
+    region: [265, 190, 840, 125]
+    text: Okilum
+    text_absent: Budget 2027
+  - id: undo-toast-visible
+    region: [900, 560, 466, 208]
+    text: Undo
+  - id: undo-restores-active
+    click: [1158, 705]
+    wait: 1.5
+    region: [265, 190, 840, 145]
+    text_order:
+      - Budget 2027
+      - Okilum
+  - id: open-status-menu-again
+    click: [990, 270]
+    wait: 0.5
+    region: [960, 290, 140, 90]
+    text_order:
+      - parked
+      - done
+  - id: select-parked-again
+    click: [1010, 328]
+    wait: 1.5
+    region: [265, 190, 840, 125]
+    text: Okilum
+    text_absent: Budget 2027
+  - id: open-parked-note
+    click: [410, 378]
+    wait: 1.0
+    text: Collecting fixed costs.
+  - id: note-shows-status-parked
+    keys: [e]
+    mods: [ctrl]
+    wait: 0.6
+    text: "status: parked"

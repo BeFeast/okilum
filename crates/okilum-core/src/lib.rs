@@ -34,6 +34,7 @@ pub mod facets;
 #[cfg(any(unix, windows))]
 pub mod file_editor;
 pub mod folder_registration;
+pub mod frontmatter_edit;
 #[cfg(all(unix, feature = "brain"))]
 pub mod goal_criteria;
 pub mod har;
