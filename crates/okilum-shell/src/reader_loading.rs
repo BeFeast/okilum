@@ -3209,7 +3209,7 @@ impl Reader {
                                     let tasks = reader_tasks::from_snapshot(&move_snapshot);
                                     let projects = Arc::new(okilum_core::projects::Index::from_snapshot(&move_snapshot));
                                     let view_query = reader_view_query::load_index(&state_vault, &move_snapshot);
-                                    let workbench = reader_workbench::from_snapshot(&move_snapshot, &state_vault.root);
+                                    let workbench = reader_workbench::from_snapshot(&move_snapshot, &state_vault.root, &view_query);
                                     let state = okilum_core::vault::warm::incremental::State::new((*state_vault).clone(), *move_snapshot);
                                     #[cfg(any(unix, windows))]
                                     let candidates = state.candidates.clone();

@@ -4,16 +4,13 @@
 //! Folder: `.obsidian/app.json` `attachmentFolderPath` — `/` is the vault
 //! root, `./` the note's folder, `./sub` a folder under the note's folder, any
 //! other value a vault-relative folder. Absent (or unusable): the typed vault
-//! default (`@Assets/Images` or `Files`, with legacy directory fallbacks). Name: `Pasted image YYYYMMDDHHMMSS.png`, `-1`, `-2`, …
+//! folder profile supplies the image and file defaults. Name: `Pasted image YYYYMMDDHHMMSS.png`, `-1`, `-2`, …
 //! when taken. The file is written to a temporary file in that folder and
 //! linked into place without replacing anything, before the embed is inserted.
 
 use super::offer::{ImageKind, PastedImage, MAX_IMAGE_BYTES};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
-
-/// Where pasted images go when the vault does not say.
-pub const DEFAULT_FOLDER: &str = "@Assets/Images";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttachmentKind {
@@ -99,10 +96,7 @@ pub struct SavedImage {
 /// The folder a pasted image is saved in, for `note_rel` (vault-relative,
 /// `/`-separated). Never outside the vault.
 pub fn attachment_folder(vault_root: &Path, note_rel: &str, kind: AttachmentKind) -> PathBuf {
-    let setting = std::fs::read(vault_root.join(".obsidian").join("app.json"))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .and_then(|app| app.get("attachmentFolderPath")?.as_str().map(str::to_owned));
+    let setting = okilum_core::vault_conventions::obsidian_attachment_setting(vault_root);
     let note_dir: Vec<&str> = {
         let mut parts: Vec<&str> = note_rel.split('/').filter(|p| !p.is_empty()).collect();
         parts.pop();
@@ -114,16 +108,20 @@ pub fn attachment_folder(vault_root: &Path, note_rel: &str, kind: AttachmentKind
         .filter(|s| !s.is_empty())
         .and_then(|setting| folder_from_setting(setting, &note_dir))
         .unwrap_or_else(|| {
-            let typed = match kind {
-                AttachmentKind::Image => DEFAULT_FOLDER,
-                AttachmentKind::File => "@Assets/Files",
-            };
-            if vault_root.join("@Assets").is_dir() {
-                PathBuf::from(typed)
-            } else if vault_root.join("attachments").is_dir() {
+            let folders = okilum_core::vault_conventions::Folders::load(vault_root);
+            if !folders.is_legacy() {
+                // The descriptor names the managed source root, without assigning
+                // a destination for a pasted file. Keep it beside its note.
+                return note_dir.iter().collect();
+            }
+            let typed = Path::new(folders.legacy_attachment_folder(kind == AttachmentKind::Image));
+            let legacy_root_exists = typed
+                .parent()
+                .is_some_and(|parent| vault_root.join(parent).is_dir());
+            if !legacy_root_exists && vault_root.join("attachments").is_dir() {
                 PathBuf::from("attachments")
             } else {
-                PathBuf::from(typed)
+                typed.to_path_buf()
             }
         });
     vault_root.join(relative)

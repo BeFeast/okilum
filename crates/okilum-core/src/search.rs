@@ -306,7 +306,7 @@ impl Searcher {
                     .iter()
                     .filter(|doc| {
                         !crate::vault::service_path(Path::new(&doc.path))
-                            && !crate::vault_conventions::asset_content(&doc.path)
+                            && !vault.folders().asset_content(&doc.path)
                     })
                     .enumerate()
                     .map(|(count, doc)| {
@@ -450,9 +450,7 @@ impl Searcher {
         rel: &str,
         title: &str,
     ) -> Result<Option<TantivyDocument>> {
-        if crate::vault::service_path(Path::new(rel))
-            || crate::vault_conventions::asset_content(rel)
-        {
+        if crate::vault::service_path(Path::new(rel)) || vault.folders().asset_content(rel) {
             return Ok(None);
         }
         match vault.read_note(rel) {
@@ -688,7 +686,7 @@ impl Searcher {
     ) -> Result<()> {
         let parsed: Vec<_> = documents
             .iter()
-            .filter(|doc| !crate::vault_conventions::asset_content(&doc.path))
+            .filter(|doc| !vault.folders().asset_content(&doc.path))
             .map(|document| {
                 Self::document_for_text(
                     self.f,

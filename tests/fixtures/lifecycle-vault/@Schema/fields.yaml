@@ -1,0 +1,21 @@
+version: '1'
+timezone: Asia/Jerusalem
+scope: {include: '**/*.md', exclude: []}
+path_projection: {templates_from: 'layout.yaml#layers'}
+fields:
+  layer:
+    type: enum
+    closed: true
+    values: [inbox, sources, knowledge, state, log]
+  area: {type: enum, values: [Dev, Health], closed: true}
+  kind:
+    type: enum
+    closed: true
+    values_by_layer: {state: [project, area], log: [decisions, final]}
+  status:
+    type: enum
+    closed: true
+    values_by_layer: {state: [active, parked, done]}
+builtins: {}
+task_fields: {}
+section_fields: {}

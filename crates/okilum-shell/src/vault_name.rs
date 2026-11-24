@@ -18,8 +18,8 @@ use std::{
 /// file in a service folder that every inventory skips, so it never shows in
 /// the tree, search or quick open. Syncthing conflict copies sit next to it
 /// and are never read; the last write wins.
-pub(crate) const DIRECTORY: &str = ".okilum";
-const FILE: &str = "vault.json";
+pub(crate) use okilum_core::vault_descriptor::DIRECTORY;
+use okilum_core::vault_descriptor::{path as file, FILE};
 /// How often an open vault's name file is looked at for a change made on
 /// another machine.
 const POLL: std::time::Duration = std::time::Duration::from_secs(2);
@@ -33,15 +33,10 @@ pub(crate) struct Names {
 }
 impl Global for Names {}
 
-fn file(root: &Path) -> PathBuf {
-    root.join(DIRECTORY).join(FILE)
-}
-
 /// The name in the vault's file; `None` when it is missing, empty, blank or
 /// not readable as JSON. Reading never writes.
 pub(crate) fn read(root: &Path) -> Option<String> {
-    let bytes = std::fs::read(file(root)).ok()?;
-    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let value = okilum_core::vault_descriptor::read(root)?;
     clean(value.get("name")?.as_str()?)
 }
 
@@ -52,19 +47,22 @@ fn write(root: &Path, name: Option<&str>) -> anyhow::Result<()> {
     let _admission = okilum_write_authority::operation(root)?;
     let directory = root.join(DIRECTORY);
     std::fs::create_dir_all(&directory)?;
-    let mut value = std::fs::read(file(root))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .filter(serde_json::Value::is_object)
-        .unwrap_or_else(|| serde_json::json!({}));
-    let object = value.as_object_mut().expect("an object");
-    object.insert("version".into(), 1.into());
+    let mut object: serde_json::Map<String, serde_json::Value> = match std::fs::read(file(root)) {
+        Ok(bytes) => serde_json::from_slice(&bytes)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
+        Err(error) => return Err(error.into()),
+    };
+    if object.get("name").and_then(serde_json::Value::as_str) == name
+        && (name.is_some() || !object.contains_key("name"))
+    {
+        return Ok(());
+    }
     match name {
         Some(name) => object.insert("name".into(), name.into()),
         None => object.remove("name"),
     };
     let temporary = directory.join(format!(".{FILE}.{}.tmp", uuid::Uuid::new_v4()));
-    let bytes = serde_json::to_vec_pretty(&value)?;
+    let bytes = serde_json::to_vec_pretty(&object)?;
     // A failed write or rename leaves no temporary file to sync.
     std::fs::write(&temporary, bytes)
         .and_then(|()| std::fs::rename(&temporary, file(root)))
@@ -533,16 +531,30 @@ mod tests {
     }
 
     #[test]
+    fn rename_preserves_damaged_descriptor_bytes() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        std::fs::create_dir_all(root.join(DIRECTORY)).unwrap();
+        let damaged = b"{\"name\":";
+        std::fs::write(file(root), damaged).unwrap();
+        assert!(write(root, Some("Work")).is_err());
+        assert_eq!(std::fs::read(file(root)).unwrap(), damaged);
+    }
+
+    #[test]
     fn writing_keeps_other_fields() {
         let fixture = tempfile::tempdir().unwrap();
         let root = fixture.path();
         std::fs::create_dir_all(root.join(DIRECTORY)).unwrap();
-        std::fs::write(file(root), br#"{"version":1,"color":"teal"}"#).unwrap();
+        let descriptor = serde_json::json!({"version": 4, "color": "teal", "layout": {"extension": {"kept": true}}});
+        std::fs::write(file(root), serde_json::to_vec(&descriptor).unwrap()).unwrap();
         write(root, Some("Work")).unwrap();
         let value: serde_json::Value =
             serde_json::from_slice(&std::fs::read(file(root)).unwrap()).unwrap();
         assert_eq!(value["name"], "Work");
         assert_eq!(value["color"], "teal");
+        assert_eq!(value["version"], descriptor["version"]);
+        assert_eq!(value["layout"], descriptor["layout"]);
         write(root, None).unwrap();
         assert_eq!(read(root), None);
     }

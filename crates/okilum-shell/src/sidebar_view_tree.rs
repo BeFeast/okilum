@@ -31,7 +31,7 @@ enum Target {
 pub(super) fn build(projection: &Projection, vault: &Vault, snapshot: &Snapshot) -> Published {
     let mut definitions = projection
         .notes()
-        .filter(|note| note.path.starts_with("@views/"))
+        .filter(|note| vault.folders().view_source(&note.path))
         .filter_map(|note| view::parse(&note.path, &snapshot.source(&note.path)?).ok())
         .filter(view::ViewDoc::is_sidebar_tree);
     let definition = definitions.next()?;
@@ -74,9 +74,11 @@ fn build_tree(
             } else {
                 projection
                     .note(path)
-                    .filter(|_| path.starts_with("@views/"))
+                    .filter(|_| vault.folders().view_source(&path))
                     .and_then(|_| source(path))
-                    .ok_or_else(|| format!("Node view '{path}' must be a view under @views/"))?
+                    .ok_or_else(|| {
+                        format!("Node view '{path}' must be in the vault’s views directory")
+                    })?
                     .into()
             };
             view::parse(path, &text).map_err(|findings| findings[0].message.clone())

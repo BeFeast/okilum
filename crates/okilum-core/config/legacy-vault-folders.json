@@ -1,0 +1,9 @@
+{
+  "markdown_assets": "@Assets",
+  "archived": ["Archive", "Архив"],
+  "buckets": ["Projects", "Areas", "Resources"],
+  "projects": "Projects",
+  "image_attachments": "@Assets/Images",
+  "file_attachments": "@Assets/Files",
+  "domains": ["AI", "Business", "Dev", "Finance", "Health", "HomeLab", "Life", "Music", "Video"]
+}

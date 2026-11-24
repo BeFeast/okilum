@@ -116,3 +116,4 @@ pub mod unix_publish;
 pub use okilum_write_authority as local_writer_authority;
 
 pub mod vault_conventions;
+pub mod vault_descriptor;

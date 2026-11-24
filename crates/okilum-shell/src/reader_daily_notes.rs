@@ -417,10 +417,17 @@ impl Reader {
 
     /// Nothing set up yet: ask where, prefilled, instead of writing anything.
     fn begin_daily_setup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (initial, placeholder) = self.vault.folders().layout().map_or_else(
+            || {
+                let legacy = okilum_core::daily_notes::DEFAULT_FOLDER.to_owned();
+                (legacy.clone(), legacy)
+            },
+            |layout| (String::new(), format!("{}/…", layout.roots.log)),
+        );
         let folder = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(okilum_core::daily_notes::DEFAULT_FOLDER)
-                .default_value(okilum_core::daily_notes::DEFAULT_FOLDER)
+                .placeholder(placeholder)
+                .default_value(initial)
         });
         folder.update(cx, |input, cx| input.focus(window, cx));
         let setup = cx.new(|_| Setup {
@@ -560,7 +567,15 @@ impl Reader {
                 return;
             }
         };
-        if prefs.origin == Origin::Default {
+        let folders = self.vault.folders();
+        if folders.layout_unavailable() {
+            reader_toast::error("Vault layout is unavailable".to_owned(), window, cx);
+            return;
+        }
+        if prefs.origin == Origin::Default
+            || (folders.layout().is_some()
+                && prefs.settings.folder.trim().trim_matches('/').is_empty())
+        {
             self.trace_file_operation("daily_note", "setup", "", None, cx);
             self.begin_daily_setup(window, cx);
             return;

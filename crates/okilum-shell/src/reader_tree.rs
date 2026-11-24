@@ -41,14 +41,10 @@ pub fn hidden(path: &str) -> bool {
     okilum_core::vault_conventions::hidden(path)
 }
 
-/// PARA archive folders, with or without a numeric prefix ("4 Archive").
-pub fn archived(path: &str) -> bool {
-    okilum_core::projects::archived(path)
-}
-
 #[derive(Clone, Default)]
 pub struct Tree {
     root: PathBuf,
+    folders: Arc<okilum_core::vault_conventions::Folders>,
     scope: String,
     children: BTreeMap<String, Vec<VaultEntry>>,
     kinds: BTreeMap<String, EntryKind>,
@@ -194,7 +190,7 @@ impl Tree {
             kind,
         });
         let root = self.root.clone();
-        self.refresh(&root, &entries);
+        self.refresh_with_folders(&root, &entries, self.folders.clone());
     }
 
     /// Publish a completed local move before watcher inventory delivery.
@@ -225,10 +221,24 @@ impl Tree {
             *anchor = okilum_core::link_rewrite::moved_path(anchor, from, to);
         }
         let root = self.root.clone();
-        self.refresh(&root, &entries);
+        self.refresh_with_folders(&root, &entries, self.folders.clone());
     }
 
+    #[cfg(test)]
     pub fn refresh(&mut self, root: &Path, entries: &[VaultEntry]) {
+        self.refresh_with_folders(
+            root,
+            entries,
+            okilum_core::vault_conventions::defaults().clone(),
+        );
+    }
+
+    pub fn refresh_with_folders(
+        &mut self,
+        root: &Path,
+        entries: &[VaultEntry],
+        folders: Arc<okilum_core::vault_conventions::Folders>,
+    ) {
         if self.root != root {
             *self = Self {
                 note_titles: self.note_titles,
@@ -236,6 +246,7 @@ impl Tree {
             };
             self.root = root.to_path_buf();
         }
+        self.folders = folders;
         self.children.clear();
         self.kinds.clear();
         // Hidden items are kept and filtered at flatten time, so a reveal or
@@ -416,7 +427,7 @@ impl Tree {
                         label: tree_label(&path, kind, self.note_titles, &self.titles),
                         expanded: self.expanded.contains(&path),
                         kind,
-                        archived: archived(&path),
+                        archived: self.folders.archived(&path),
                         path: path.clone(),
                         depth: depth - 1,
                     });

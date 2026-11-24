@@ -73,11 +73,13 @@ fn units(root: &Path) -> Vec<Unit> {
 pub(super) fn from_snapshot(
     snapshot: &okilum_core::vault::warm::Snapshot,
     root: &Path,
+    projection: &reader_view_query::Index,
 ) -> Arc<Index> {
     let (now, midnight, yesterday) = clock();
     Arc::new(Index::from_snapshot(
         snapshot,
         units(root),
+        projection.projection.as_deref().ok(),
         now,
         midnight,
         yesterday,
@@ -87,17 +89,17 @@ pub(super) fn from_snapshot(
 pub(super) fn update_index(
     index: &mut Index,
     snapshot: &okilum_core::vault::warm::Snapshot,
+    projection: &reader_view_query::Index,
     removed: &std::collections::BTreeSet<String>,
     changed: &std::collections::BTreeSet<String>,
 ) {
-    for path in removed {
-        index.remove(path);
-    }
-    for path in changed {
-        index.replace_snapshot(snapshot, path);
-    }
+    index.apply_snapshot(
+        snapshot,
+        projection.projection.as_deref().ok(),
+        removed,
+        changed,
+    );
     let (now, midnight, yesterday) = clock();
-    index.update_context(snapshot);
     index.observed_at = now;
     index.refresh(now, midnight, yesterday);
 }
@@ -168,8 +170,8 @@ impl Reader {
                 .view
                 .days
                 .iter()
-                .flat_map(|day| &day.places)
-                .flat_map(|place| &place.rows)
+                .flat_map(|day| &day.groups)
+                .flat_map(|group| &group.rows)
             {
                 labels
                     .entry(row.modified)
@@ -432,7 +434,7 @@ impl Reader {
         };
         let status = activity.unit.status.to_ascii_lowercase();
         let color = match status.as_str() {
-            "paused" | "on-hold" | "blocked" => tokens.warning,
+            "parked" | "paused" | "on-hold" | "blocked" => tokens.warning,
             "planned" | "planning" => tokens.text_muted,
             _ => tokens.accent,
         };
@@ -595,6 +597,13 @@ impl Reader {
                 .into_any_element();
         };
         let view = &index.view;
+        if view.layout_unavailable {
+            return div()
+                .p_2()
+                .text_color(tokens.text_muted)
+                .child("Vault layout is unavailable")
+                .into_any_element();
+        }
         let reader = cx.entity().downgrade();
         let menu_reader = reader.clone();
         let settings_reader = reader.clone();
@@ -688,21 +697,25 @@ impl Reader {
                         }),
                 );
         let current_unit = index.unit_for(&self.pane.current_rel);
-        let mut groups: std::collections::BTreeMap<&str, Vec<&Activity>> = Default::default();
+        let mut groups: std::collections::BTreeMap<_, Vec<&Activity>> = Default::default();
         for activity in &view.active {
-            groups.entry(activity.domain()).or_default().push(activity);
+            let (priority, label) = if view.managed {
+                (0, activity.group.label())
+            } else {
+                let domain = activity.legacy_domain();
+                let priority = match domain {
+                    "Dev" => 0,
+                    "Music" => 1,
+                    "AI · HomeLab" => 2,
+                    _ => 3,
+                };
+                (priority, domain.to_owned())
+            };
+            groups.entry((priority, label)).or_default().push(activity);
         }
-        let mut group_order: Vec<_> = groups.into_iter().collect();
-        let domain_order = |domain: &str| match domain {
-            "Dev" => 0,
-            "Music" => 1,
-            "AI · HomeLab" => 2,
-            _ => 3,
-        };
-        group_order.sort_by(|a, b| domain_order(a.0).cmp(&domain_order(b.0)).then(a.0.cmp(b.0)));
         let mut active = v_flex().w_full().min_w_0().pb_2();
-        for (domain, mut rows) in group_order {
-            // Keep the current project visible even when the group is compact.
+        for ((_, label), mut rows) in groups {
+            // Keep the current context visible even when the group is compact.
             // Stable sorting preserves recency among the other projects.
             rows.sort_by_key(|row| current_unit != Some(row.unit.path.as_str()));
             active = active.child(
@@ -713,11 +726,21 @@ impl Reader {
                     .text_size(px(10.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(tokens.text_muted)
-                    .child(domain.to_owned())
-                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(label.clone()),
+                    )
                     .child(rows.len().to_string()),
             );
-            let key = format!("domain-{domain}");
+            let key = if view.managed {
+                format!("active-group-{label}")
+            } else {
+                format!("domain-{label}")
+            };
             let shown = if self.sidebar.now_expanded.contains(&key) {
                 rows.len()
             } else {
@@ -768,7 +791,11 @@ impl Reader {
                     .py_2()
                     .text_size(px(11.))
                     .text_color(tokens.text_muted)
-                    .child("No project activity this week"),
+                    .child(if view.managed {
+                        "No context activity this week"
+                    } else {
+                        "No project activity this week"
+                    }),
             );
         }
         if view.older > 0 {
@@ -804,22 +831,24 @@ impl Reader {
             }
             let more = format!("more-{}", period.label);
             let shown = if self.sidebar.now_expanded.contains(&more) {
-                period.places.len()
+                period.groups.len()
             } else {
                 8
             };
-            for place in period.places.iter().take(shown) {
-                let key = format!("place-{}-{}", period.label, place.path);
-                let title = place
-                    .path
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&place.path)
-                    .to_owned();
+            for group in period.groups.iter().take(shown) {
+                let (key, title) = if let Some(path) = &group.legacy_path {
+                    (
+                        format!("place-{}-{path}", period.label),
+                        path.rsplit('/').next().unwrap_or(path).to_owned(),
+                    )
+                } else {
+                    let title = group.group.label();
+                    (format!("change-group-{}-{title}", period.label), title)
+                };
                 changes =
-                    changes.child(self.now_heading(key.clone(), title, place.count, true, cx));
+                    changes.child(self.now_heading(key.clone(), title, group.count, true, cx));
                 if self.sidebar.now_expanded.contains(&key) {
-                    for row in &place.rows {
+                    for row in &group.rows {
                         let title = if row.count > 1 {
                             format!("{} · {} files", row.title, row.count)
                         } else {
@@ -831,20 +860,26 @@ impl Reader {
                             format!(
                                 "{} · {}",
                                 self.workbench_time(row.modified),
-                                location(&place.path)
+                                location(group.legacy_path.as_deref().unwrap_or_else(|| {
+                                    row.path.rsplit_once('/').map_or("", |(parent, _)| parent)
+                                }))
                             ),
                             cx,
                         ));
                     }
                 }
             }
-            if period.places.len() > shown {
+            if period.groups.len() > shown {
                 let reader = reader.clone();
                 changes = changes.child(
                     Button::new(SharedString::from(more.clone()))
                         .ghost()
                         .small()
-                        .label(format!("+{} places", period.places.len() - shown))
+                        .label(format!(
+                            "+{} {}",
+                            period.groups.len() - shown,
+                            if view.managed { "groups" } else { "places" }
+                        ))
                         .on_click(move |_, _, cx| {
                             let _ = reader
                                 .update(cx, |this, cx| this.toggle_now_section(&more, true, cx));
@@ -1023,12 +1058,19 @@ mod tests {
         let (reader, visual, _temp) = fixture(cx);
         let now = reader_sidebar::now();
         let mut index = Index::default();
-        index.set_units(vec![Unit {
-            path: "Dev/Projects/App".into(),
-            title: "App".into(),
-            manager: true,
-            ..Default::default()
-        }]);
+        index.set_units(
+            std::iter::once(Unit {
+                path: "Dev/Projects/App".into(),
+                title: "App".into(),
+                manager: true,
+                ..Default::default()
+            })
+            .chain((0..60).map(|i| Unit {
+                path: format!("Dev/Projects/Project{i:02}"),
+                ..Default::default()
+            }))
+            .collect(),
+        );
         index.replace("Dev/Projects/App/Note 090.md", "", now - 100);
         for i in 0..60 {
             index.replace(
@@ -1254,7 +1296,11 @@ mod tests {
         let before_time = std::fs::metadata(&note).unwrap().modified().unwrap();
         let mut index = Index::default();
         let now = reader_sidebar::now();
-        index.replace("Dev/Projects/App/Plan.md", "", now);
+        index.replace(
+            "Dev/Projects/App/@index.md",
+            "---\ntype: project\n---\n",
+            now,
+        );
         index.refresh(
             now,
             now.saturating_sub(1000),
@@ -1365,7 +1411,7 @@ mod tests {
         batch.refresh(now, midnight, yesterday);
         let cost = start.elapsed();
         diagnostic_println!("WORKBENCH_LIVE notes={} active7={} older14={} today={} places={} full_ms={:.3} batch20_ms={:.3}", sources.len(), index.view.active.len(), index.view.older,
-            index.view.days[0].count, index.view.days[0].places.len(), full.as_secs_f64()*1000., cost.as_secs_f64()*1000.);
+            index.view.days[0].count, index.view.days[0].groups.len(), full.as_secs_f64()*1000., cost.as_secs_f64()*1000.);
         for activity in &index.view.active {
             diagnostic_println!("ACTIVE {}", activity.unit.path);
         }

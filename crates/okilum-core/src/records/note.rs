@@ -29,11 +29,11 @@ pub(crate) fn project(schema: &FieldSchema, source: Source<'_>) -> NoteRecord {
         findings: Vec::new(),
     };
 
-    if path.para {
+    if path.legacy {
         row.finding(
             "fields/legacy-path",
             "layer",
-            "PARA path has no lifecycle fields",
+            "Legacy path has no lifecycle fields",
         );
     }
     let raw = properties::frontmatter_block(&text).map(properties::parse_for_records);

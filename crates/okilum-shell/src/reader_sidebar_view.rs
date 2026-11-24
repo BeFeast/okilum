@@ -640,7 +640,11 @@ impl Reader {
                 .tree_source
                 .as_ref()
                 .is_some_and(|source| source.root == self.vault.root);
-            self.tree.refresh(&self.vault_root, &self.vault.entries);
+            self.tree.refresh_with_folders(
+                &self.vault_root,
+                &self.vault.entries,
+                self.vault.folders().clone(),
+            );
             self.tree_sticky.clear();
             self.tree_earlier_roots.clear();
             self.tree_source = Some(self.vault.clone());

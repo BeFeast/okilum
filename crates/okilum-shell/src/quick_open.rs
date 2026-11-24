@@ -287,6 +287,13 @@ pub(super) fn result_location(vault_name: &str, path: &str) -> String {
     }
 }
 
+fn exact_note_fragment(query: &str) -> Option<(&str, &str)> {
+    let (path, fragment) = query.split_once('#')?;
+    let path = path.trim();
+    let fragment = fragment.trim();
+    (path.to_ascii_lowercase().ends_with(".md") && !fragment.is_empty()).then_some((path, fragment))
+}
+
 /// The folder a content-search result lives in, as breadcrumb-style text
 /// (#654). Empty for a note at the vault root.
 fn result_folder(path: &str) -> String {
@@ -1099,24 +1106,37 @@ impl Reader {
                     .filter(|note| filter.admits(&note.path))
                     .cloned()
                     .collect();
-                let rows = okilum_core::quick_open::search_named_first(
-                    &files,
-                    &titles,
-                    &vault.aliases(),
-                    &query,
-                    &recent,
-                    &first,
-                    100,
-                )
-                .into_iter()
-                .map(|note| SearchHit {
-                    path: note.path,
-                    title: note.title,
-                    score: 0.,
-                    snippet_html: String::new(),
-                    display_snippet: None,
-                })
-                .collect();
+                let exact_fragment = vault
+                    .folders()
+                    .layout()
+                    .and_then(|_| exact_note_fragment(&query));
+                let found = if let Some((path, _)) = exact_fragment {
+                    let exact = files
+                        .iter()
+                        .find(|note| note.path == query)
+                        .or_else(|| files.iter().find(|note| note.path == path));
+                    exact.cloned().into_iter().collect()
+                } else {
+                    okilum_core::quick_open::search_named_first_by(
+                        &files,
+                        &titles,
+                        &vault.aliases(),
+                        &query,
+                        &recent,
+                        |path| vault.folders().project_contains(&first, path),
+                        100,
+                    )
+                };
+                let rows = found
+                    .into_iter()
+                    .map(|note| SearchHit {
+                        path: note.path,
+                        title: note.title,
+                        score: 0.,
+                        snippet_html: String::new(),
+                        display_snippet: None,
+                    })
+                    .collect();
                 Ok((rows, String::new()))
             };
             result.map(|(mut rows, message)| {
@@ -1327,8 +1347,15 @@ impl Reader {
         } else {
             None
         };
+        let fragment = if self.quick_open.full_text || self.vault.folders().layout().is_none() {
+            None
+        } else {
+            exact_note_fragment(&self.quick_open.result_query)
+                .filter(|(path, _)| *path == hit.path)
+                .map(|(_, fragment)| fragment.to_owned())
+        };
         self.close_quick_open(window, cx);
-        self.open_note(&hit.path, jump.as_deref(), window, cx);
+        self.open_note_at(&hit.path, jump.as_deref(), fragment.as_deref(), window, cx);
     }
 
     /// The Agent files chip (#1589): a toggle in the palette's title line, so

@@ -55,6 +55,7 @@ impl Clone for Vault {
             unreadable: self.unreadable.clone(),
             cloud_placeholders: self.cloud_placeholders.clone(),
             root: self.root.clone(),
+            folders: self.folders.clone(),
             notes: self.notes.clone(),
             entries: self.entries.clone(),
             suffix_map: self.suffix_map.clone(),

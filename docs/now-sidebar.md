@@ -21,24 +21,27 @@ it never reveals a new row. The mode persists per vault in application state.
 Single-folder viewers and project mode retain their existing tree surface.
 
 Now keeps the In progress, Changes and Pinned section headers visible, with
-counts and collapse controls. In progress groups compact, single-line project
-rows by domain (Dev, Music, AI / HomeLab, then remaining domains). Each group
-initially shows four projects and an expandable +N preview. The current project
-is retained in that compact set and highlighted; the current pinned note is also
-highlighted. Rows use short project names, a status dot, meaningful-file activity
-or recency, and M only when discovery has an actual manager binding. Document
-headings do not rename projects. Paths stay in tooltips and Tree reveal.
+counts and collapse controls. In a vault with a lifecycle layout summary in
+`.okilum/vault.json`, In progress groups compact context rows by the
+typed record's area, kind and status. Each group initially shows four contexts
+and an expandable +N preview. The current context stays in that compact set and
+is highlighted. Rows use short names, a status dot, note activity or recency,
+and M for a bound manager. Context declarations use a typed project or area
+note, a project manifest, or an index explicitly declaring a legacy project.
 
-The older 14-day tail starts collapsed. Changes are grouped by day and place;
-Pinned uses the existing pin list. A fixed footer shows the file count and an
-explicit Tree shortcut. Local freshness says `live · snapshot HH:MM`; network
-freshness says `NFS · snapshot HH:MM`. Both offer Rescan and a compact action menu.
-Project candidates come from manifest
-discovery and children of Projects; terminal status/lifecycle values exclude a
-unit from activity. Source mtime determines recency. Shims, transcripts,
-dot-directories, resource forks, Pokutan, archive and operational bookkeeping
-do not become activity. Fifty or more edits within ten minutes in a place are
-represented as one batch row. Each day initially lists at most eight places.
+The older 14-day tail starts collapsed. Changes are grouped by day and then by
+the same three fields on each note. Both sections display `—` for each missing
+field. Changes includes notes under any ordinary folder, even when their
+records have no lifecycle fields. Shims, hidden dot-directories, resource
+forks, schema and operational bookkeeping stay outside activity. Fifty or more
+edits within ten minutes in the same context or parent folder become a batch
+row in their group. Each day initially shows at most eight groups.
+
+Pinned uses the existing pin list. A fixed footer shows the file count and a
+Tree shortcut. Freshness says `live · snapshot HH:MM` for local vaults and
+`NFS · snapshot HH:MM` for network vaults. Both offer Rescan and an actions
+menu. A terminal context stays in Changes when recent, and leaves In progress.
+A vault without a layout summary keeps its original domain and place groups.
 
 The projection uses accepted source snapshots on background workers. Incremental
 batches update its input rows; publication is debounced for 500 ms and guarded

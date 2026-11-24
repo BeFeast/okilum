@@ -2511,6 +2511,22 @@ pub fn run_cli(args: &[String]) -> Result<()> {
             okilum_core::source::WriteBoundary::Unmanaged
         },
     };
+    if managed {
+        use okilum_core::{vault_conventions::Folders, vault_descriptor::ContextLayer};
+        let folders = Folders::load(&config.root);
+        ensure!(
+            !folders.layout_unavailable(),
+            "Managed vault layout metadata is unavailable"
+        );
+        if let Some(layout) = folders.layout() {
+            ensure!(
+                layout
+                    .context(&config.records_dir)
+                    .is_some_and(|path| path.layer == ContextLayer::State),
+                "Bind --records-dir to an existing context in the managed vault's state directory"
+            );
+        }
+    }
     let address: std::net::SocketAddr = required("--listen")?.parse()?;
     ensure!(
         address.ip().is_loopback(),

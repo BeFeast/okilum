@@ -34,6 +34,12 @@ It offers Reveal in Finder / Explorer or Show in folder. When an original is
 retained, the receipt counts both files and names the converted image used by
 the note. Existing in-vault links do not claim a new saved attachment (#1622).
 
+Attachment placement uses Obsidian's `attachmentFolderPath` from
+`.obsidian/app.json` when set. A vault with a lifecycle layout summary in
+`.okilum/vault.json` uses the note's folder when Obsidian supplies no usable
+folder. Vaults without a layout summary retain the existing attachment
+folders and the legacy Markdown asset classification.
+
 Before merge, native acceptance must cover both paste and import into an
 isolated real vault, matching the disk file with the saved note link, and Undo
 and Redo without losing image bytes. Unit/GPUI tests supplement that gate.

@@ -17,7 +17,7 @@ pub(crate) struct Published {
 
 /// The same accepted Markdown source bank used by the Reader and Now.
 pub(crate) fn load(vault: &Vault, snapshot: &Snapshot) -> Index {
-    let projection = FieldSchema::load(&vault.root)
+    let projection = FieldSchema::load_with_folders(&vault.root, vault.folders())
         .context("Could not load the view field contract in @Schema")
         .map(|schema| Arc::new(Projection::from_snapshot(Arc::new(schema), snapshot)))
         .map_err(|error| format!("{error:#}"));

@@ -183,12 +183,24 @@ impl FieldSchema {
     ];
 
     pub fn load(vault_root: &Path) -> Result<Self> {
+        let folders = crate::vault_conventions::Folders::load(vault_root);
+        Self::load_with_folders(vault_root, &folders)
+    }
+
+    pub fn load_with_folders(
+        vault_root: &Path,
+        folders: &crate::vault_conventions::Folders,
+    ) -> Result<Self> {
+        ensure!(
+            !folders.layout_unavailable(),
+            "Vault layout metadata is unavailable"
+        );
         let directory = vault_root.join("@Schema");
         ensure!(
             !fs::symlink_metadata(&directory)?.is_symlink(),
             "@Schema is a symlink"
         );
-        Self::from_documents(|name| {
+        Self::from_documents_with_layout(folders.layout(), |name| {
             let path = directory.join(name);
             ensure!(
                 fs::symlink_metadata(&path)?.is_file(),
@@ -200,7 +212,14 @@ impl FieldSchema {
 
     /// Load from canonical contract documents supplied by a vault reader.
     /// References are confined to filenames in the same schema directory.
-    pub fn from_documents(mut read: impl FnMut(&str) -> Result<String>) -> Result<Self> {
+    pub fn from_documents(read: impl FnMut(&str) -> Result<String>) -> Result<Self> {
+        Self::from_documents_with_layout(None, read)
+    }
+
+    fn from_documents_with_layout(
+        descriptor: Option<&crate::vault_descriptor::Layout>,
+        mut read: impl FnMut(&str) -> Result<String>,
+    ) -> Result<Self> {
         let schema: Contract =
             serde_yaml::from_str(&read("fields.yaml")?).context("fields.yaml")?;
         ensure!(
@@ -213,17 +232,24 @@ impl FieldSchema {
             read,
             docs: BTreeMap::new(),
         };
-        let templates = refs.resolve(&schema.path_projection.templates_from)?;
-        let layout = Layout::compile(&templates, &refs.resolve("layout.yaml#domains")?)?;
+        let layout = match descriptor {
+            Some(layout) => Layout::from_descriptor(layout)?,
+            None => Layout::compile(
+                &refs.resolve(&schema.path_projection.templates_from)?,
+                &refs.resolve("layout.yaml#domains")?,
+            )?,
+        };
         let include = globset(std::iter::once(schema.scope.include))?;
         let ignore = strings(&refs.resolve("frontmatter-schema.yaml#ignore_globs")?)?;
+        let views_root = descriptor.map_or("@views", |layout| &layout.roots.views);
+        let generated = format!("{}/out/**", globset::escape(views_root));
         let exclude = globset(
             schema
                 .scope
                 .exclude
                 .into_iter()
                 .chain(ignore)
-                .chain(["@views/out/**".into(), "@Schema/**".into()]),
+                .chain([generated, "@Schema/**".into()]),
         )?;
         let patterns = schema
             .fields

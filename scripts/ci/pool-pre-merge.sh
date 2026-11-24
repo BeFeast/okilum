@@ -37,6 +37,7 @@ export CARGO_NET_OFFLINE=true
 pool_phase "Check formatting" cargo fmt --check
 pool_phase "Prepare isolated Python test dependencies" pool_prepare_python
 pool_phase "Verify agent helper controls" bash -c '
+    python3 scripts/agent/check-vault-layout.py &&
     python3 -m unittest discover -s scripts/ci -p test_agent_checks.py &&
     python3 -m unittest discover -s scripts/ci -p test_test_group.py
 '

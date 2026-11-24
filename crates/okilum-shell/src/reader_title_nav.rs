@@ -205,7 +205,7 @@ impl Reader {
         // an `@` entry but still one of them (#2940).
         let shown = |path: &str| {
             in_folder(path, &folder)
-                && !okilum_core::vault_conventions::markdown_asset(path)
+                && !self.vault.folders().markdown_asset(path)
                 && (!self.tree.hidden_by_preference(path)
                     || (agent_files
                         && okilum_core::agent_imports::is_agent_document(path)

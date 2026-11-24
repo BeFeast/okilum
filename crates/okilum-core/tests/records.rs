@@ -50,7 +50,14 @@ fn projects_fixture_types_links_and_coverage() {
     assert_eq!(legacy.fields["status"], Value::String("active".into()));
     assert_eq!(legacy.fields.get("layer"), None);
     assert!(Projection::missing([legacy, hygiene], "layer").contains(&legacy.path.as_str()));
-    assert_eq!(projection.legacy_paths().count(), 3);
+    assert_eq!(
+        projection.legacy_paths().collect::<Vec<_>>(),
+        [
+            "Areas/HomeLab/Network.md",
+            "Projects/Okilum Legacy/Notes.md",
+            "Resources/Guides/Git tips.md"
+        ]
+    );
 
     let runbook = projection.note("state/homelab/backups/runbook.md").unwrap();
     assert_eq!(runbook.fields["layer"], Value::String("state".into()));

@@ -9,18 +9,14 @@ use crate::vault::{EntryKind, Note, VaultEntry};
 pub fn inventory(notes: impl IntoIterator<Item = Note>, entries: &[VaultEntry]) -> Vec<Note> {
     let mut inventory: Vec<Note> = notes
         .into_iter()
-        .filter(|note| {
-            !crate::vault::service_path(std::path::Path::new(&note.path))
-                && !crate::vault_conventions::asset_content(&note.path)
-        })
+        .filter(|note| !crate::vault::service_path(std::path::Path::new(&note.path)))
         .collect();
     inventory.extend(
         entries
             .iter()
             .filter(|entry| {
                 entry.kind == EntryKind::Attachment
-                    && !(crate::vault_conventions::asset_content(&entry.path)
-                        && entry.path.to_ascii_lowercase().ends_with(".md"))
+                    && !entry.markdown_document()
                     && !crate::vault::service_path(std::path::Path::new(&entry.path))
             })
             .map(|entry| Note {
@@ -164,6 +160,19 @@ pub fn search_named_first(
                 .strip_prefix(first)
                 .is_some_and(|rest| rest.starts_with('/'))
     };
+    search_named_first_by(notes, titles, aliases, query, recent, inside, limit)
+}
+
+/// Rank matching notes from a caller's contextual scope before other results.
+pub fn search_named_first_by(
+    notes: &[Note],
+    titles: &HashMap<String, String>,
+    aliases: &std::collections::BTreeMap<String, Vec<String>>,
+    query: &str,
+    recent: &[String],
+    inside: impl Fn(&str) -> bool,
+    limit: usize,
+) -> Vec<Note> {
     let query = query.trim().to_lowercase();
     let mut matches: Vec<_> = notes
         .iter()
@@ -191,12 +200,11 @@ pub fn search_named_first(
                 .rposition(|p| p == &note.path)
                 .map(|i| i + 1)
                 .unwrap_or(0);
-            Some((note, score, recency))
+            Some((note, score, recency, inside(&note.path)))
         })
         .collect();
     matches.sort_by(|a, b| {
-        inside(&b.0.path)
-            .cmp(&inside(&a.0.path))
+        b.3.cmp(&a.3)
             .then(b.1.cmp(&a.1))
             .then(b.2.cmp(&a.2))
             .then(is_markdown(&b.0.path).cmp(&is_markdown(&a.0.path)))
@@ -205,7 +213,7 @@ pub fn search_named_first(
     matches
         .into_iter()
         .take(limit)
-        .map(|(note, _, _)| note.clone())
+        .map(|(note, _, _, _)| note.clone())
         .collect()
 }
 
@@ -255,6 +263,42 @@ pub fn matched_text(html: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn project_ranking_keeps_the_same_context_across_state_and_log() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/lifecycle-vault");
+        let folders = crate::vault_conventions::Folders::load(&root);
+        let paths = [
+            "log/health/other/decisions/Plan.md",
+            "state/health/sleep/Plan.md",
+            "log/health/sleep/decisions/Plan.md",
+        ];
+        let notes = paths.map(|path| Note {
+            path: path.into(),
+            title: "Plan".into(),
+        });
+        let aliases = paths
+            .iter()
+            .map(|path| ((*path).into(), vec!["Evening marker".into()]))
+            .collect();
+        let found = search_named_first_by(
+            &notes,
+            &HashMap::new(),
+            &aliases,
+            "evening marker",
+            &[],
+            |path| folders.project_contains("state/health/sleep", path),
+            3,
+        );
+        assert_eq!(
+            found
+                .iter()
+                .map(|note| note.path.as_str())
+                .collect::<Vec<_>>(),
+            [paths[2], paths[1], paths[0]]
+        );
+    }
+
     #[test]
     fn issue1587_shims_require_only_a_local_agents_import() {
         for source in [

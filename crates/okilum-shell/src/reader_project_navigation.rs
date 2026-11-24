@@ -535,10 +535,11 @@ impl Reader {
         if navigation.discovery.projects.is_empty() {
             return Vec::new();
         }
-        let mut model = PickerModel::new(
+        let mut model = PickerModel::new_with_folders(
             self.vault_root.clone(),
             navigation.discovery.clone(),
             self.recent_project_folders(),
+            self.vault.folders().clone(),
         );
         model.set_query(query);
         let mut seen = std::collections::BTreeSet::new();
@@ -1203,7 +1204,11 @@ impl Reader {
         if let Some(saved) = self.project_navigation.saved.take() {
             self.tree = saved.tree;
             // Refresh inventory while retaining the original expansion/cursor.
-            self.tree.refresh(&self.vault_root, &self.vault.entries);
+            self.tree.refresh_with_folders(
+                &self.vault_root,
+                &self.vault.entries,
+                self.vault.folders().clone(),
+            );
             self.tree_revealed = self.selected_file().to_owned();
             self.panels = saved.panels;
             self.panel_widths = saved.widths;
@@ -1282,10 +1287,11 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<ProjectsPicker> {
-        let model = PickerModel::new(
+        let model = PickerModel::new_with_folders(
             self.vault_root.clone(),
             self.project_navigation.discovery.clone(),
             self.recent_project_folders(),
+            self.vault.folders().clone(),
         );
         let picker = cx.new(|cx| ProjectsPicker::new(model, presentation, window, cx));
         cx.subscribe_in(&picker, window, |this, _, event: &Selected, window, cx| {

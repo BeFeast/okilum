@@ -18,6 +18,7 @@ suite() {
 }
 
 suite 'Rust formatting' cargo fmt --check
+suite 'Vault layout literals' python3 scripts/agent/check-vault-layout.py
 suite 'Workspace clippy' cargo clippy --workspace --all-targets --locked -- -D warnings
 # Census the complete shared --workspace selection, retaining all targets and
 # existing platform/Log exclusions. Exact shards keep parent verdicts complete.

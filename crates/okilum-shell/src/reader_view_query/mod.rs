@@ -186,7 +186,7 @@ pub(super) fn render(
     cx: &mut Context<Reader>,
 ) -> Option<AnyElement> {
     let path = reader.selected_file();
-    if reader.single_file || !path.starts_with("@views/") || path.starts_with("@views/out/") {
+    if reader.single_file || !reader.vault.folders().view_source(path) {
         return None;
     }
     let cache = window.use_keyed_state(

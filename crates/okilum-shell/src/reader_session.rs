@@ -454,13 +454,13 @@ fn update(
             changes.archive_cutover(),
         );
     }
-    published.view_query = Some(reader_view_query::update_index(
+    let view_query = reader_view_query::update_index(
         published.view_query.take(),
         &state.vault,
         &state.snapshot,
         &batch,
         &note_changes,
-    ));
+    );
     published.reconciled = false;
     let mut tasks = (*published.tasks).clone();
     for path in &batch.removed {
@@ -548,10 +548,12 @@ fn update(
     reader_workbench::update_index(
         &mut workbench,
         &state.snapshot,
+        &view_query,
         &batch.removed,
         &batch.changed,
     );
     published.workbench = Arc::new(workbench);
+    published.view_query = Some(view_query);
     #[cfg(any(unix, windows))]
     {
         published.candidates = Some(state.candidates.clone());

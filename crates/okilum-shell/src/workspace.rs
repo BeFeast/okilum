@@ -65,9 +65,11 @@ fn validate_identity(identity: &Value) -> Result<(), String> {
         && identity["root"]
             .as_str()
             .is_some_and(|s| s.starts_with('/'))
-        && identity["records_dir"]
-            .as_str()
-            .is_some_and(|s| !s.is_empty())
+        && identity["records_dir"].as_str().is_some_and(|s| {
+            !s.contains('\\')
+                && s.split('/')
+                    .all(|part| !part.is_empty() && !matches!(part, "." | ".."))
+        })
         && identity["managed"] == true;
     if valid {
         Ok(())

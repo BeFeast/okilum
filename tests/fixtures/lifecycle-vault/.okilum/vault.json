@@ -1,0 +1,21 @@
+{
+  "name": "Lifecycle fixture",
+  "layout": {
+    "schema_version": 1,
+    "managed_by": "gardener",
+    "contract": "@Schema/layout.yaml",
+    "roots": {
+      "inbox": "inbox",
+      "sources": "sources",
+      "knowledge": "knowledge",
+      "state": "state",
+      "log": "log",
+      "views": "@views"
+    },
+    "domains": [
+      {"id": "dev", "name": "Dev", "path": "state/dev"},
+      {"id": "health", "name": "Health", "path": "state/health"}
+    ],
+    "generated_at": "2026-11-24T08:00:00Z"
+  }
+}

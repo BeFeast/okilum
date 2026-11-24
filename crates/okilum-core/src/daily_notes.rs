@@ -11,7 +11,7 @@ use time::OffsetDateTime;
 pub const DEFAULT_FORMAT: &str = "YYYY-MM-DD";
 /// Where daily notes go when no folder is set, in Okilum or in Obsidian's
 /// settings. Never the vault root (#3182): created on first use.
-pub const DEFAULT_FOLDER: &str = "Daily";
+pub const DEFAULT_FOLDER: &str = crate::vault_conventions::LEGACY_DAILY_FOLDER;
 /// What a later press the same day appends when no entry template is set:
 /// a heading with the local time (#3182).
 pub const DEFAULT_ENTRY: &str = "## {{time:HH:mm}}\n";

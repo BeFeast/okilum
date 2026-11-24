@@ -663,8 +663,7 @@ impl Reader {
             .recent
             .iter()
             .filter(|(rel, _)| {
-                !self.tree.hidden_by_preference(rel)
-                    && !okilum_core::vault_conventions::markdown_asset(rel)
+                !self.tree.hidden_by_preference(rel) && !self.vault.folders().markdown_asset(rel)
             })
             .peekable();
         let has_recent = recent_notes.peek().is_some();

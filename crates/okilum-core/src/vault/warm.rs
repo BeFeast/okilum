@@ -212,6 +212,8 @@ struct Source {
 pub struct Snapshot {
     schema: u32,
     root: PathBuf,
+    #[serde(default)]
+    folders: crate::vault_conventions::Folders,
     pub id: String,
     entries: Vec<VaultEntry>,
     links: HashMap<String, Vec<Backlink>>,
@@ -273,6 +275,8 @@ fn cached_availability(vault: &Vault) -> Vec<CachedUnreadable> {
 pub struct StartupSnapshot {
     schema: u32,
     root: PathBuf,
+    #[serde(default)]
+    folders: crate::vault_conventions::Folders,
     entries: Vec<VaultEntry>,
     // Sorted so an unchanged manifest serialises to identical bytes.
     #[serde(serialize_with = "sorted_links")]
@@ -387,16 +391,18 @@ fn validate_aliases(entries: &[VaultEntry], aliases: &BTreeMap<String, Vec<Strin
 
 fn cached_vault(
     root: &Path,
+    folders: &crate::vault_conventions::Folders,
     entries: &[VaultEntry],
     links: &HashMap<String, Vec<Backlink>>,
     aliases: &BTreeMap<String, Vec<String>>,
     unreadable: &[CachedUnreadable],
 ) -> Vault {
-    let mut vault = Vault::from_note_paths(
+    let mut vault = Vault::from_markdown_entries(
         entries
             .iter()
             .filter(|entry| entry.markdown_document())
-            .map(|entry| entry.path.clone()),
+            .cloned(),
+        std::sync::Arc::new(folders.clone()),
     );
     vault.root = root.to_path_buf();
     vault.entries = entries.to_vec();
@@ -512,6 +518,7 @@ impl StartupSnapshot {
             return Ok(Self {
                 schema: SCHEMA,
                 root: snapshot.root.clone(),
+                folders: snapshot.folders.clone(),
                 entries: snapshot.entries.clone(),
                 links: snapshot.links.clone(),
                 aliases: snapshot.aliases.clone(),
@@ -575,6 +582,7 @@ impl StartupSnapshot {
     pub fn vault(&self) -> Vault {
         let mut vault = cached_vault(
             &self.root,
+            &self.folders,
             &self.entries,
             &self.links,
             &self.aliases,
@@ -814,9 +822,14 @@ impl Snapshot {
         Ok(snapshot)
     }
 
+    pub(crate) fn folders(&self) -> &crate::vault_conventions::Folders {
+        &self.folders
+    }
+
     pub fn vault(&self) -> Vault {
         cached_vault(
             &self.root,
+            &self.folders,
             &self.entries,
             &self.links,
             &self.aliases,
@@ -858,10 +871,19 @@ impl Snapshot {
     }
 
     pub fn source_paths(&self) -> impl Iterator<Item = &str> {
-        self.sources
-            .keys()
-            .map(String::as_str)
-            .filter(|path| !crate::vault_conventions::asset_content(path))
+        self.entries
+            .iter()
+            .filter(|entry| {
+                entry.kind == EntryKind::Markdown && self.sources.contains_key(&entry.path)
+            })
+            .map(|entry| entry.path.as_str())
+    }
+
+    pub fn is_note_source(&self, path: &str) -> bool {
+        self.entries
+            .binary_search_by(|entry| entry.path.as_str().cmp(path))
+            .is_ok_and(|index| self.entries[index].kind == EntryKind::Markdown)
+            && self.sources.contains_key(path)
     }
 
     pub fn sources(&self) -> Result<HashMap<String, Vec<u8>>> {
@@ -1280,8 +1302,10 @@ fn finish_reconcile(
             }
         }
     }
+    // Classification can change the searchable notes with identical source
+    // bytes. A graph and search generation built under another profile is stale.
     let bounded = !force_read
-        && previous.is_some()
+        && previous.is_some_and(|old| old.folders == **vault.folders())
         && affected.len() + topology.len() < crate::watch::BULK_THRESHOLD;
     if bounded && !topology.is_empty() {
         let candidates = crate::link_candidates::CandidateIndex::from_snapshot(previous.unwrap());
@@ -1316,6 +1340,7 @@ fn finish_reconcile(
             && stats.graph_reused
             && content_unchanged
             && old.root == canonical
+            && old.folders == **vault.folders()
             && old.entries == vault.entries
             && old.unreadable == unreadable
             && old
@@ -1327,6 +1352,7 @@ fn finish_reconcile(
     let snapshot = Snapshot {
         schema: SCHEMA,
         root: canonical,
+        folders: vault.folders().as_ref().clone(),
         id: unchanged.map_or_else(|| uuid::Uuid::new_v4().to_string(), |old| old.id.clone()),
         entries: vault.entries.clone(),
         links: vault.backlink_map.clone(),
@@ -1368,6 +1394,7 @@ pub fn save_provisional(
     let startup = StartupSnapshot {
         schema: SCHEMA,
         root: snapshot.root.clone(),
+        folders: snapshot.folders.clone(),
         entries: snapshot.entries.clone(),
         links: snapshot.links.clone(),
         aliases: snapshot.aliases.clone(),

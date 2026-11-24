@@ -1,4 +1,5 @@
-//! Read current lifecycle paths using the templates in layout.yaml.
+//! Project lifecycle paths described by the vault.
+use crate::{vault_conventions, vault_descriptor};
 use anyhow::{bail, ensure, Context, Result};
 use regex::Regex;
 use serde::Deserialize;
@@ -10,6 +11,7 @@ use time::{Date, Month};
 pub(super) struct Layout {
     templates: Vec<(String, Regex)>,
     domains: BTreeMap<String, String>,
+    legacy_domains: Vec<String>,
 }
 
 #[derive(Default)]
@@ -22,7 +24,7 @@ pub(super) struct PathFields<'a> {
     pub date: Option<Date>,
     pub domain_root: bool,
     pub context_root: bool,
-    pub para: bool,
+    pub legacy: bool,
 }
 
 #[derive(Deserialize)]
@@ -37,11 +39,65 @@ impl Layout {
             serde_yaml::from_value(domains.clone()).context("layout domains")?;
         let domains: BTreeMap<_, _> = domains.into_iter().map(|d| (d.dir, d.area)).collect();
         let templates: BTreeMap<String, String> = serde_yaml::from_value(templates.clone())?;
+        Self::build(templates, domains)
+    }
+
+    pub fn from_descriptor(layout: &vault_descriptor::Layout) -> Result<Self> {
+        let roots = &layout.roots;
+        let templates = [
+            ("inbox", format!("{}/{{rest}}", roots.inbox)),
+            (
+                "sources",
+                format!(
+                    "{}/{{channel}}/{{yyyy}}/{{mm}}/{{dd}}/{{rest}}",
+                    roots.sources
+                ),
+            ),
+            ("knowledge", format!("{}/{{practice}}.md", roots.knowledge)),
+            (
+                "state",
+                format!("{}/{{domain}}/{{context}}/{{rest}}", roots.state),
+            ),
+            (
+                "log",
+                format!(
+                    "{}/{{domain}}/{{context}}/{{kind}}/{{date}}-{{slug}}.md",
+                    roots.log
+                ),
+            ),
+            ("views", format!("{}/{{rest}}", roots.views)),
+            ("schema", "@Schema/{rest}".into()),
+        ]
+        .map(|(layer, template)| (layer.to_owned(), template))
+        .into();
+        let domains = layout
+            .domains
+            .iter()
+            .flat_map(|domain| {
+                let state = vault_descriptor::suffix(&domain.path, &roots.state)
+                    .filter(|path| !path.contains('/'));
+                std::iter::once(domain.id.as_str())
+                    .chain(state)
+                    .map(|id| (id.to_owned(), domain.name.clone()))
+            })
+            .collect();
+        Self::build(templates, domains)
+    }
+
+    fn build(
+        templates: BTreeMap<String, String>,
+        domains: BTreeMap<String, String>,
+    ) -> Result<Self> {
         let templates = templates
             .into_iter()
             .map(|(layer, template)| Ok((layer.clone(), template_regex(&layer, &template)?)))
             .collect::<Result<_>>()?;
-        Ok(Self { templates, domains })
+        let legacy_domains = domains.values().cloned().collect();
+        Ok(Self {
+            templates,
+            domains,
+            legacy_domains,
+        })
     }
 
     pub fn project<'a>(&'a self, path: &'a str) -> PathFields<'a> {
@@ -79,18 +135,18 @@ impl Layout {
                 context_root: layer == "state"
                     && context.is_some()
                     && grab("rest").is_some_and(|rest| !rest.contains('/')),
-                para: false,
+                legacy: false,
             };
         }
         let mut parts = path.split('/');
         let first = parts.next().unwrap_or_default();
-        let bucket = |part| matches!(part, "Projects" | "Areas" | "Resources" | "Archive");
-        let para = bucket(first)
-            || first == "Daily"
-            || (self.domains.values().any(|name| name == first)
-                && parts.next().is_some_and(bucket));
+        let profile = vault_conventions::legacy();
+        let bucket = |name| profile.bucket_exact(name) || profile.archive_bucket_exact(name);
         PathFields {
-            para,
+            legacy: bucket(first)
+                || first == vault_conventions::LEGACY_DAILY_FOLDER
+                || (self.legacy_domains.iter().any(|name| name == first)
+                    && parts.next().is_some_and(bucket)),
             ..PathFields::default()
         }
     }

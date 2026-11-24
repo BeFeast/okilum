@@ -215,6 +215,9 @@ fn snapshot_record(
     snapshot: &Snapshot,
     path: &str,
 ) -> Option<(String, Arc<NoteRecord>)> {
+    if !snapshot.is_note_source(path) {
+        return None;
+    }
     let bytes = snapshot.source_bytes(path)?;
     let mtime = snapshot
         .source_revision(path)

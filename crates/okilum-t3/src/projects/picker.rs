@@ -1,6 +1,8 @@
 //! Shared presentation model for the title-bar picker and command palette.
 //! Discovery, manifest parsing and live manager checks stay in `projects`.
 use super::{Discovery, Kind, Manager, Project, Status};
+use okilum_core::vault_conventions::Folders;
+use std::sync::Arc;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Component, Path, PathBuf},
@@ -152,6 +154,7 @@ pub struct Group {
 
 pub struct PickerModel {
     vault: PathBuf,
+    folders: Arc<Folders>,
     projects: Vec<Project>,
     errors: Vec<(PathBuf, String)>,
     query: String,
@@ -164,8 +167,19 @@ impl PickerModel {
     /// `recent` is most-recent-first, scoped to this vault. It records confirmed
     /// opens, not mere selection requests. The host owns preference persistence.
     pub fn new(vault: PathBuf, discovery: Discovery, recent: Vec<PathBuf>) -> Self {
+        let folders = Folders::load(&vault);
+        Self::new_with_folders(vault, discovery, recent, folders)
+    }
+
+    pub fn new_with_folders(
+        vault: PathBuf,
+        discovery: Discovery,
+        recent: Vec<PathBuf>,
+        folders: Arc<Folders>,
+    ) -> Self {
         let mut model = Self {
             vault,
+            folders,
             projects: Vec::new(),
             errors: Vec::new(),
             query: String::new(),
@@ -182,7 +196,7 @@ impl PickerModel {
         self.projects.clear();
         let mut seen = BTreeSet::new();
         for project in discovery.projects {
-            if domain(&self.vault, &project.folder).is_none() {
+            if domain(&self.vault, &self.folders, &project.folder).is_none() {
                 self.errors
                     .push((project.folder, "Project is outside this vault".into()));
             } else if seen.insert(project.folder.clone()) {
@@ -339,7 +353,7 @@ impl PickerModel {
                 continue;
             }
             result
-                .entry(domain(&self.vault, folder).unwrap_or_else(|| "Vault".into()))
+                .entry(domain(&self.vault, &self.folders, folder).unwrap_or_else(|| "Vault".into()))
                 .or_default()
                 .push(Problem {
                     folder: folder.clone(),
@@ -358,7 +372,7 @@ impl PickerModel {
                 folder: project.folder.clone(),
             },
             project: project.clone(),
-            domain: domain(&self.vault, &project.folder).expect("validated project"),
+            domain: domain(&self.vault, &self.folders, &project.folder).expect("validated project"),
             location,
             manager: self.indicator(project),
             manager_detail: self.manager_detail(&project.folder),
@@ -389,7 +403,9 @@ impl PickerModel {
         let mut domains = BTreeMap::<String, Vec<&Project>>::new();
         for project in self.projects.iter().filter(|p| self.matches(p)) {
             domains
-                .entry(domain(&self.vault, &project.folder).expect("validated project"))
+                .entry(
+                    domain(&self.vault, &self.folders, &project.folder).expect("validated project"),
+                )
                 .or_default()
                 .push(project);
         }
@@ -423,15 +439,24 @@ impl PickerModel {
     }
 }
 
-/// `Project.folder` is already obtained from its `ops/project.yaml` by discovery;
-/// use its first vault-relative component, never infer a kind or PARA category.
-fn domain(vault: &Path, folder: &Path) -> Option<String> {
+/// Manifest discovery owns project identity. The descriptor supplies the area label.
+fn domain(vault: &Path, folders: &Folders, folder: &Path) -> Option<String> {
     let relative = folder.strip_prefix(vault).ok()?;
     if relative
         .components()
         .any(|c| !matches!(c, Component::Normal(_)))
     {
         return None;
+    }
+    if !folders.is_legacy() {
+        let path = okilum_core::vault::note_path(relative);
+        return Some(
+            folders
+                .layout()
+                .and_then(|layout| layout.area_for_path(&path))
+                .unwrap_or("—")
+                .into(),
+        );
     }
     match relative.components().next() {
         Some(Component::Normal(name)) => Some(name.to_string_lossy().into_owned()),

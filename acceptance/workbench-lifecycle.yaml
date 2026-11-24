@@ -1,0 +1,62 @@
+# Open the capture in Tree, then switch to Now and read the lifecycle groups.
+vault: tests/fixtures/lifecycle-vault
+open: inbox/Capture.md
+mtime:
+  inbox/Capture.md: 0
+  sources/web/2026/11/24/Reference.md: 0
+  knowledge/evening-light.md: 0
+  state/health/sleep/@index.md: 0
+  log/health/sleep/decisions/2026-11-24-lights-out.md: 0
+  log/health/sleep/final/Retired.md: 0
+  state/health/sleep/Archive/2026-11-24-lights-out.md: 0
+  sources/video/2026/11/24/summary.md: 0
+  sources/video/2026/11/24/transcript.md: 0
+appearance: light
+rig:
+  persistent_pointer: true
+preferences:
+  note_open_mode: read
+region: [265, 85, 950, 550]
+ready_text: Lifecycle entry
+steps:
+  - id: now-open
+    click: [243, 69]
+    wait: 1.5
+    text: Rescan
+    region: [0, 45, 279, 690]
+  - id: active-project-group
+    text_order: [Health, project, active]
+    region: [0, 45, 279, 690]
+    text_absent: Projects
+  - id: decision-group
+    click: [75, 665]
+    wait: 0.7
+    text: decisions
+    region: [0, 45, 279, 690]
+  - id: updated-status
+    vault_replace:
+      path: state/health/sleep/@index.md
+      before: 'status: active'
+      after: 'status: parked'
+    text: parked
+    region: [0, 110, 279, 150]
+  - id: quick-open-alias
+    keys: [k]
+    mods: [ctrl]
+    wait: 0.5
+  - id: find-physical-log-note
+    keys: [e, v, e, n, i, n, g, m, a, r, k, e, r]
+    wait: 0.9
+    text: Choose a bedtime
+    text_absent: Active state note
+    region: [285, 48, 780, 320]
+  - id: open-log-result
+    keys: [Return]
+    wait: 0.7
+    text: Choose a bedtime
+  - id: reveal-log-result
+    keys: [l]
+    mods: [ctrl, shift]
+    wait: 0.7
+    text: decisions
+    region: [0, 45, 279, 690]

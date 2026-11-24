@@ -589,6 +589,7 @@ pub struct Vault {
     /// Metadata-only availability state. Never a read error or a download request.
     pub cloud_placeholders: Vec<PathBuf>,
     pub root: PathBuf,
+    folders: std::sync::Arc<crate::vault_conventions::Folders>,
     pub notes: Vec<Note>,
     pub entries: Vec<VaultEntry>,
     /// Every segment-boundary suffix of a note's path (lowercased, without the
@@ -622,11 +623,16 @@ pub struct Vault {
 }
 
 impl Vault {
+    pub fn folders(&self) -> &std::sync::Arc<crate::vault_conventions::Folders> {
+        &self.folders
+    }
+
     /// Worker-only equality of the published graph, excluding memoized OS
     /// lookups. Source bytes live in Snapshot, never in this inventory.
     fn same_inventory(&self, other: &Self) -> bool {
         self.root == other.root
             && self.single_file == other.single_file
+            && self.folders == other.folders
             && self.inventory_complete == other.inventory_complete
             && self.inventory_scanned == other.inventory_scanned
             && self.unreadable == other.unreadable
@@ -805,6 +811,7 @@ impl Vault {
         checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
         walker: impl IntoIterator<Item = walkdir::Result<walkdir::DirEntry>>,
     ) -> Result<Vault> {
+        let folders = crate::vault_conventions::Folders::load(root);
         let mut inventory_complete = true;
         let mut unreadable = Vec::new();
         let mut cloud_placeholders = Vec::new();
@@ -868,7 +875,7 @@ impl Vault {
             if ext == "md" {
                 entries.push(VaultEntry {
                     path: rel.clone(),
-                    kind: if crate::vault_conventions::asset_content(&rel) {
+                    kind: if folders.asset_content(&rel) {
                         EntryKind::Attachment
                     } else {
                         EntryKind::Markdown
@@ -892,7 +899,7 @@ impl Vault {
                         .push(rel.clone());
                 }
                 path_map.insert(key.to_string(), rel.clone());
-                if crate::vault_conventions::asset_content(&rel) {
+                if folders.asset_content(&rel) {
                     let name = path
                         .file_name()
                         .unwrap_or_default()
@@ -936,6 +943,7 @@ impl Vault {
             unreadable,
             cloud_placeholders,
             root: root.to_path_buf(),
+            folders,
             notes,
             entries,
             suffix_map,
@@ -998,13 +1006,13 @@ impl Vault {
             self.non_directory_paths.insert(path.to_lowercase());
             self.entries.push(VaultEntry {
                 path: path.into(),
-                kind: if crate::vault_conventions::asset_content(path) {
+                kind: if self.folders.asset_content(path) {
                     EntryKind::Attachment
                 } else {
                     EntryKind::Markdown
                 },
             });
-            if !crate::vault_conventions::asset_content(path) {
+            if !self.folders.asset_content(path) {
                 self.notes.push(Note {
                     path: path.into(),
                     title: Path::new(path)
@@ -1027,7 +1035,7 @@ impl Vault {
             self.entries.sort_by(|a, b| a.path.cmp(&b.path));
             self.notes.sort_by(|a, b| a.path.cmp(&b.path));
         }
-        if crate::vault_conventions::asset_content(path) {
+        if self.folders.asset_content(path) {
             self.refresh_attachment_name(path);
         }
         self.rebuild_alias_map();
@@ -1118,6 +1126,24 @@ impl Vault {
 
     /// Build only note identity from an already accepted inventory; performs no I/O.
     pub fn from_note_paths(paths: impl IntoIterator<Item = String>) -> Self {
+        let folders = crate::vault_conventions::defaults().clone();
+        Self::from_markdown_entries(
+            paths.into_iter().map(|path| {
+                let kind = if folders.asset_content(&path) {
+                    EntryKind::Attachment
+                } else {
+                    EntryKind::Markdown
+                };
+                VaultEntry { path, kind }
+            }),
+            folders.clone(),
+        )
+    }
+
+    fn from_markdown_entries(
+        entries: impl IntoIterator<Item = VaultEntry>,
+        folders: std::sync::Arc<crate::vault_conventions::Folders>,
+    ) -> Self {
         let mut vault = Self {
             single_file: false,
             publication: Default::default(),
@@ -1127,6 +1153,7 @@ impl Vault {
             unreadable: Vec::new(),
             cloud_placeholders: Vec::new(),
             root: PathBuf::new(),
+            folders,
             notes: Vec::new(),
             entries: Vec::new(),
             suffix_map: HashMap::new(),
@@ -1142,8 +1169,9 @@ impl Vault {
             graph_os_paths: Default::default(),
             attachment_index: Default::default(),
         };
-        for path in paths {
-            if service_path(Path::new(&path)) {
+        for entry in entries {
+            let path = &entry.path;
+            if service_path(Path::new(path)) {
                 continue;
             }
             let key = path.to_lowercase();
@@ -1157,20 +1185,13 @@ impl Vault {
                     .push(path.clone());
             }
             vault.path_map.insert(key.to_owned(), path.clone());
-            vault.entries.push(VaultEntry {
-                path: path.clone(),
-                kind: if crate::vault_conventions::asset_content(&path) {
-                    EntryKind::Attachment
-                } else {
-                    EntryKind::Markdown
-                },
-            });
-            if !crate::vault_conventions::asset_content(&path) {
+            if entry.kind == EntryKind::Markdown {
                 vault.notes.push(Note {
-                    title: Self::title_of(&path),
-                    path,
+                    title: Self::title_of(path),
+                    path: path.clone(),
                 });
             }
+            vault.entries.push(entry);
         }
         vault.notes.sort_by(|a, b| a.path.cmp(&b.path));
         for candidates in vault.suffix_map.values_mut() {

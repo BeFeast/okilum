@@ -1,5 +1,5 @@
 //! Rebuildable sidebar projection over accepted Markdown snapshots; no filesystem IO.
-use crate::vault::warm::Snapshot;
+use crate::{vault::warm::Snapshot, vault_conventions::Folders};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -29,24 +29,24 @@ struct Note {
 pub struct Index {
     notes: BTreeMap<String, Note>,
     rows: Vec<Project>,
+    folders: Folders,
 }
+/// Archive classification for callers with paths but no vault inventory.
 pub fn archived(path: &str) -> bool {
-    path.split('/').any(|segment| {
-        let name = segment
-            .trim_start_matches(|c: char| c.is_ascii_digit() || matches!(c, '.' | '-' | ' '))
-            .to_lowercase();
-        matches!(name.as_str(), "archive" | "архив")
-    })
+    crate::vault_conventions::defaults().archived(path)
 }
+
 fn visible(path: &str) -> bool {
-    !archived(path)
-        && !path.split('/').any(|p| {
-            p.starts_with('.') || (p.starts_with('@') && !crate::vault_conventions::index_name(p))
-        })
+    !path.split('/').any(|p| {
+        p.starts_with('.') || (p.starts_with('@') && !crate::vault_conventions::index_name(p))
+    })
 }
 impl Index {
     pub fn from_snapshot(snapshot: &Snapshot) -> Self {
-        let mut index = Self::default();
+        let mut index = Self {
+            folders: snapshot.folders().clone(),
+            ..Self::default()
+        };
         for path in snapshot.source_paths() {
             index.replace_snapshot(snapshot, path);
         }
@@ -54,7 +54,11 @@ impl Index {
         index
     }
     pub fn replace_snapshot(&mut self, snapshot: &Snapshot, path: &str) {
-        if let Some(source) = snapshot.source(path) {
+        if let Some(source) = snapshot
+            .is_note_source(path)
+            .then(|| snapshot.source(path))
+            .flatten()
+        {
             let modified = snapshot
                 .source_revision(path)
                 .map_or(0, |r| r.modified_nanoseconds());
@@ -67,7 +71,7 @@ impl Index {
         self.notes.remove(path);
     }
     pub fn replace(&mut self, path: &str, source: &str, modified: u128) {
-        if archived(path) || crate::vault_conventions::asset_content(path) {
+        if self.folders.archived(path) || self.folders.asset_content(path) {
             self.remove(path);
             return;
         }
@@ -92,12 +96,16 @@ impl Index {
                     _ => Status::Other,
                 };
                 let first = folder.split('/').next().unwrap_or(folder);
-                let domain = (folder.contains('/')
-                    && !matches!(
-                        first.to_lowercase().as_str(),
-                        "projects" | "areas" | "resources"
-                    ))
-                .then(|| first.to_owned());
+                let domain = scalar("area")
+                    .filter(|area| !area.trim().is_empty())
+                    .or_else(|| match self.folders.layout() {
+                        Some(layout) => layout.area_for_path(path),
+                        None => (self.folders.is_legacy()
+                            && folder.contains('/')
+                            && !self.folders.legacy_bucket(first))
+                        .then_some(first),
+                    })
+                    .map(str::to_owned);
                 Some(Project {
                     path: path.into(),
                     title: scalar("title")

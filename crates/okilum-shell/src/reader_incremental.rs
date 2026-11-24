@@ -147,7 +147,7 @@ impl Reader {
             let projects = Arc::new(projects);
             let view_query = reader_view_query::update_index(view_query, &state.vault, &state.snapshot, &batch, &worker_changes);
             let mut workbench = (*workbench).clone();
-            reader_workbench::update_index(&mut workbench, &state.snapshot, &batch.removed, &view_paths);
+            reader_workbench::update_index(&mut workbench, &state.snapshot, &view_query, &batch.removed, &view_paths);
             let workbench = Arc::new(workbench);
             let mut tasks_changed = false;
             for path in &batch.removed { tasks_changed |= next_tasks.remove(path); }

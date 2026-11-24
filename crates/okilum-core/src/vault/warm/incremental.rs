@@ -205,9 +205,7 @@ impl State {
                                 directories.insert(name.clone(), false);
                             }
                             EntryKind::Attachment => {
-                                if name.to_ascii_lowercase().ends_with(".md")
-                                    && crate::vault_conventions::asset_content(name)
-                                {
+                                if self.vault.folders().markdown_asset(name) {
                                     changes.removed.insert(name.clone());
                                 } else {
                                     attachments.insert(name.clone(), false);
@@ -319,9 +317,7 @@ impl State {
                             pending.insert(name.clone());
                         }
                         EntryKind::Attachment => {
-                            if name.to_ascii_lowercase().ends_with(".md")
-                                && crate::vault_conventions::asset_content(name)
-                            {
+                            if self.vault.folders().markdown_asset(name) {
                                 changes.removed.insert(name.clone());
                             } else {
                                 attachments.insert(name.clone(), false);
