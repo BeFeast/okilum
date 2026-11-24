@@ -1,8 +1,14 @@
 //! Virtual sidebar from a vault-authored tree or the built-in domain list.
 use super::*;
 use gpui_component::menu::{ContextMenuExt as _, PopupMenuItem};
-use okilum_core::{records::Projection, vault::warm::Snapshot, vault_descriptor::Layout, view};
+use okilum_core::{
+    records::Projection,
+    vault::{warm::Snapshot, EntryKind},
+    vault_descriptor::Layout,
+    view,
+};
 use reader_sidebar::LeftMode;
+use std::collections::BTreeMap;
 
 pub(super) type Published = Option<Result<Arc<Tree>, String>>;
 
@@ -26,6 +32,8 @@ enum Target {
         bindings: Option<reader_view_query::Bindings>,
     },
     Note(String),
+    /// A file that is not a note: it opens in the file preview.
+    File(String),
 }
 
 pub(super) fn build(
@@ -68,30 +76,169 @@ fn domain_template(vault: &Vault) -> Result<view::ViewDoc, String> {
     view::parse(view::builtin::DOMAIN_PATH, &source).map_err(|findings| findings[0].message.clone())
 }
 
+/// The built-in Areas groups the vault by its declared domains. Layout only
+/// groups: it never hides a file. Each domain expands into its folder on
+/// disk, and «All files» lists the whole vault as the Tree does.
 fn build_builtin_tree(layout: &Layout, vault: &Vault) -> Result<Tree, String> {
     let template = domain_template(vault)?;
-    let rows = view::builtin::sidebar_domains(layout, &template)
-        .enumerate()
-        .map(|(index, domain)| Row {
+    let listing = Listing::new(&vault.entries);
+    let mut rows = Vec::new();
+    for (declared, domain) in layout
+        .domains
+        .iter()
+        .zip(view::builtin::sidebar_domains(layout, &template))
+    {
+        let index = rows.len();
+        rows.push(Row {
             label: domain.label.clone(),
             depth: 0,
             target: Target::Branch {
                 key: domain.key.clone(),
-                count: None,
-                end: index + 1,
+                count: Some(listing.count(&declared.path)),
+                end: 0,
                 bindings: Some(reader_view_query::Bindings {
-                    key: domain.key,
+                    key: domain.key.clone(),
                     label: domain.label,
                     args: domain.args,
                 }),
             },
-        })
-        .collect();
+        });
+        listing.append(&mut rows, &declared.path, 1, &domain.key);
+        close_branch(&mut rows, index);
+    }
+    let index = rows.len();
+    rows.push(Row {
+        label: ALL_FILES.into(),
+        depth: 0,
+        target: Target::Branch {
+            key: ALL_FILES_KEY.into(),
+            count: Some(listing.count("")),
+            end: 0,
+            bindings: None,
+        },
+    });
+    listing.append(&mut rows, "", 1, ALL_FILES_KEY);
+    close_branch(&mut rows, index);
     Ok(Tree {
         rows,
         template: Some(template.path().to_owned()),
         notice: None,
     })
+}
+
+const ALL_FILES: &str = "All files";
+const ALL_FILES_KEY: &str = "builtin-sidebar/@all-files";
+
+fn close_branch(rows: &mut [Row], index: usize) {
+    let len = rows.len();
+    if let Target::Branch { end, .. } = &mut rows[index].target {
+        *end = len;
+    }
+}
+
+/// The vault's folders and files as the Tree lists them: `@`/`.` items stay
+/// out unless they are a folder's index note, folders come first, then names
+/// without letter case. Every other inventory entry is listed.
+struct Listing {
+    children: BTreeMap<String, Vec<(String, EntryKind)>>,
+    counts: BTreeMap<String, usize>,
+}
+
+impl Listing {
+    fn new(entries: &[okilum_core::vault::VaultEntry]) -> Self {
+        let shown = |path: &str| {
+            let (parent, name) = path.rsplit_once('/').unwrap_or(("", path));
+            !okilum_core::vault_conventions::hidden(parent)
+                && (!okilum_core::vault_conventions::hidden(name)
+                    || okilum_core::vault_conventions::index_name(name))
+        };
+        let mut kinds = BTreeMap::new();
+        let mut counts = BTreeMap::<String, usize>::new();
+        for entry in entries.iter().filter(|entry| shown(&entry.path)) {
+            kinds.insert(entry.path.clone(), entry.kind);
+            // Folders the inventory implies are listed even without an entry.
+            let mut folder = entry.path.as_str();
+            while let Some((parent, _)) = folder.rsplit_once('/') {
+                kinds
+                    .entry(parent.to_owned())
+                    .or_insert(EntryKind::Directory);
+                folder = parent;
+            }
+            if entry.kind != EntryKind::Directory {
+                *counts.entry(String::new()).or_default() += 1;
+                let mut folder = entry.path.as_str();
+                while let Some((parent, _)) = folder.rsplit_once('/') {
+                    *counts.entry(parent.to_owned()).or_default() += 1;
+                    folder = parent;
+                }
+            }
+        }
+        let mut children = BTreeMap::<String, Vec<(String, EntryKind)>>::new();
+        for (path, kind) in kinds {
+            let parent = path.rsplit_once('/').map_or("", |(parent, _)| parent);
+            children
+                .entry(parent.to_owned())
+                .or_default()
+                .push((path, kind));
+        }
+        for list in children.values_mut() {
+            list.sort_by_cached_key(|(path, kind)| {
+                let label = label_of(path, *kind);
+                (
+                    !okilum_core::vault_conventions::index_name(path),
+                    *kind != EntryKind::Directory,
+                    label.to_lowercase(),
+                    label,
+                    path.clone(),
+                )
+            });
+        }
+        Self { children, counts }
+    }
+
+    fn count(&self, folder: &str) -> usize {
+        self.counts.get(folder).copied().unwrap_or(0)
+    }
+
+    fn append(&self, rows: &mut Vec<Row>, folder: &str, depth: usize, group: &str) {
+        for (path, kind) in self.children.get(folder).into_iter().flatten() {
+            let label = label_of(path, *kind);
+            match kind {
+                EntryKind::Directory => {
+                    let index = rows.len();
+                    rows.push(Row {
+                        label,
+                        depth,
+                        target: Target::Branch {
+                            key: format!("{group}::{path}"),
+                            count: Some(self.count(path)),
+                            end: 0,
+                            bindings: None,
+                        },
+                    });
+                    self.append(rows, path, depth + 1, group);
+                    close_branch(rows, index);
+                }
+                EntryKind::Markdown => rows.push(Row {
+                    label,
+                    depth,
+                    target: Target::Note(path.clone()),
+                }),
+                EntryKind::Attachment => rows.push(Row {
+                    label,
+                    depth,
+                    target: Target::File(path.clone()),
+                }),
+            }
+        }
+    }
+}
+
+fn label_of(path: &str, kind: EntryKind) -> String {
+    match kind {
+        EntryKind::Markdown => Vault::title_of(path),
+        _ => path.rsplit('/').next().unwrap_or(path).to_owned(),
+    }
 }
 
 fn build_tree(
@@ -258,7 +405,9 @@ impl Reader {
                     let row = &tree.rows[position.0];
                     let is_current = match &row.target {
                         Target::Branch { key, .. } => selected.as_ref() == Some(key),
-                        Target::Note(path) => selected.is_none() && current == *path,
+                        Target::Note(path) | Target::File(path) => {
+                            selected.is_none() && current == *path
+                        }
                     };
                     area_row(
                         row,
@@ -384,7 +533,8 @@ fn area_row(
                 })
                 .into_any_element()
         }
-        Target::Note(path) => {
+        Target::Note(path) | Target::File(path) => {
+            let note = matches!(row.target, Target::Note(_));
             let open = reader.clone();
             let reveal = reader.clone();
             let open_path = path.clone();
@@ -392,14 +542,22 @@ fn area_row(
             element
                 .child(div().w(px(14.)).flex_none())
                 .child(
-                    Icon::new(IconName::FileText)
-                        .small()
-                        .text_color(colors.text_muted),
+                    Icon::new(if note {
+                        IconName::FileText
+                    } else {
+                        IconName::File
+                    })
+                    .small()
+                    .text_color(colors.text_muted),
                 )
                 .child(label)
                 .on_click(move |_, window, cx| {
                     with_areas(&open, epoch, cx, |reader, cx| {
-                        reader.open_note(&open_path, None, window, cx);
+                        if note {
+                            reader.open_note(&open_path, None, window, cx);
+                        } else {
+                            reader.preview_file(&open_path, window, cx);
+                        }
                     })
                 })
                 .context_menu(move |menu, _, _| {
@@ -437,4 +595,86 @@ fn toggle_branch(reader: &mut Reader, key: &str, cx: &mut Context<Reader>) {
     }
     reader.save_sidebar(cx);
     cx.notify();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+    use okilum_core::vault::VaultEntry;
+
+    fn entry(path: &str, kind: EntryKind) -> VaultEntry {
+        VaultEntry {
+            path: path.into(),
+            kind,
+        }
+    }
+
+    fn listed(listing: &Listing, folder: &str) -> Vec<(String, usize)> {
+        let mut rows = Vec::new();
+        listing.append(&mut rows, folder, 1, "group");
+        rows.into_iter()
+            .map(|row| {
+                let path = match row.target {
+                    Target::Branch { key, .. } => key.trim_start_matches("group::").to_owned(),
+                    Target::Note(path) | Target::File(path) => path,
+                };
+                (path, row.depth)
+            })
+            .collect()
+    }
+
+    /// Every file the Tree shows by default is reachable under All files,
+    /// including folders the inventory only implies; a domain lists its own
+    /// folder. `@`/`.` items stay out, as in the Tree, except index notes.
+    #[test]
+    fn layout_groups_but_every_file_stays_listed() {
+        let entries = [
+            entry("inbox", EntryKind::Directory),
+            entry("inbox/Capture.md", EntryKind::Markdown),
+            entry("state", EntryKind::Directory),
+            entry("state/dev", EntryKind::Directory),
+            entry("state/dev/@index.md", EntryKind::Markdown),
+            entry("state/dev/AGENTS.md", EntryKind::Markdown),
+            entry("state/dev/okilum/plan.md", EntryKind::Markdown),
+            entry("sources/files/diagram.png", EntryKind::Attachment),
+            entry("@views/questions.md", EntryKind::Markdown),
+            entry("Root note.md", EntryKind::Markdown),
+        ];
+        let listing = Listing::new(&entries);
+        let all: Vec<_> = listed(&listing, "");
+        let paths: Vec<_> = all.iter().map(|(path, _)| path.as_str()).collect();
+        assert_eq!(
+            paths,
+            [
+                "inbox",
+                "inbox/Capture.md",
+                "sources",
+                "sources/files",
+                "sources/files/diagram.png",
+                "state",
+                "state/dev",
+                "state/dev/@index.md",
+                "state/dev/okilum",
+                "state/dev/okilum/plan.md",
+                "state/dev/AGENTS.md",
+                "Root note.md",
+            ]
+        );
+        assert_eq!(listing.count(""), 6, "all shown files");
+        assert_eq!(listing.count("state/dev"), 3);
+        assert_eq!(
+            listed(&listing, "state/dev"),
+            [
+                ("state/dev/@index.md".into(), 1),
+                ("state/dev/okilum".into(), 1),
+                ("state/dev/okilum/plan.md".into(), 2),
+                ("state/dev/AGENTS.md".into(), 1),
+            ]
+        );
+        assert!(
+            listed(&listing, "state/sap").is_empty(),
+            "missing domain folder"
+        );
+    }
 }

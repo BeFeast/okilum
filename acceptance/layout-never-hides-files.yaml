@@ -1,0 +1,94 @@
+# The gardener's Grove layout block (roots, domains, nested_roots) on a
+# Grove-shaped vault. Layout may group the sidebar but never hide a file:
+# Areas lists the domains, each expands into its folder on disk, and
+# All files lists the whole vault as the Tree does. Before the fix Areas
+# showed only the domain names.
+open: state/dev/okilum/assistant/state.md
+appearance: light
+preferences:
+  note_open_mode: read
+rig:
+  persistent_pointer: true
+region: [300, 90, 800, 540]
+ready_text: Assistant state
+wait_for_vault: 60
+generate:
+  - {path: .obsidian/app.json, kind: text, text: "{}"}
+  - {path: AGENTS.md, kind: text, text: "# Agents\n"}
+  - {path: "@Index.md", kind: text, text: "# Index\n"}
+  - {path: inbox/Capture.md, kind: text, text: "# Capture\n"}
+  - {path: knowledge/Evening light.md, kind: text, text: "# Evening light\n"}
+  - {path: sources/files/2026/11/24/legacy/runbooks/sample-unit/readme.md, kind: text, text: "# Sample unit\n"}
+  - {path: log/dev/okilum/specs/2026-11-24-vault-self-description.md, kind: text, text: "# Vault self-description\n"}
+  - {path: "@views/questions.md", kind: text, text: "# Questions\n"}
+  - {path: state/ai/@index.md, kind: text, text: "# AI\n"}
+  - {path: state/dev/@index.md, kind: text, text: "# Dev\n"}
+  - {path: state/dev/AGENTS.md, kind: text, text: "# Dev agents\n"}
+  - {path: state/dev/okilum/@index.md, kind: text, text: "---\nkind: project\nstatus: active\n---\n# Okilum\n"}
+  - {path: state/dev/okilum/assistant/state.md, kind: text, text: "# Assistant state\n\nLiving notes.\n"}
+  - {path: state/dev/sample-app/ops/bootstrap-artifacts/repo-seed/seed.md, kind: text, text: "# Seed\n"}
+  - {path: state/dev/sample-app/plan.md, kind: text, text: "# Sample app plan\n"}
+  - {path: state/life/family/Obsidian Vaults/notes/home.md, kind: text, text: "# Notes home\n"}
+  - {path: state/life/shopping.md, kind: text, text: "# Shopping\n"}
+  - {path: state/health/sleep.md, kind: text, text: "# Sleep\n"}
+  - path: .okilum/vault.json
+    kind: text
+    text: |
+      {
+        "version": 1,
+        "name": "Main Brain",
+        "layout": {
+          "schema_version": 1,
+          "managed_by": "gardener",
+          "contract": "@Schema/layout.yaml",
+          "roots": {"inbox": "inbox", "sources": "sources", "knowledge": "knowledge", "state": "state", "log": "log", "views": "@views"},
+          "domains": [
+            {"id": "ai", "name": "AI", "path": "state/ai"},
+            {"id": "business", "name": "Business", "path": "state/business"},
+            {"id": "dev", "name": "Dev", "path": "state/dev"},
+            {"id": "finance", "name": "Finance", "path": "state/finance"},
+            {"id": "health", "name": "Health", "path": "state/health"},
+            {"id": "homelab", "name": "HomeLab", "path": "state/homelab"},
+            {"id": "life", "name": "Life", "path": "state/life"},
+            {"id": "music", "name": "Music", "path": "state/music"},
+            {"id": "sap", "name": "SAP", "path": "state/sap"},
+            {"id": "video", "name": "Video", "path": "state/video"}
+          ],
+          "nested_roots": [
+            {"path": "sources/files/2026/11/24/legacy/runbooks/sample-unit", "kind": "unit", "tree_sha256": "fce8a85ced92ca85e21c2c05caed1e071db04e2ad7493a4470b6a397d2b79a01", "files": 14},
+            {"path": "state/dev/sample-app/ops/bootstrap-artifacts/repo-seed", "kind": "unit", "tree_sha256": "76b15a48cc80b200c82315924c6b7c66472f7e59f8be173327c94b9d1ea66776", "files": 6},
+            {"path": "state/life/family/Obsidian Vaults/Life", "kind": "vault", "tree_sha256": "61d39e1f73f665b48c142de791739b363958e155db7f0552f180b93ad9dd74fc", "files": 4},
+            {"path": "state/life/family/Obsidian Vaults/notes", "kind": "vault", "tree_sha256": "5b58c960dfa2ccdb7acc77a36d643674d8aec21defd3401de7f494ccbf91539b", "files": 78}
+          ],
+          "generated_at": "2026-11-24T10:27:59Z"
+        },
+        "lifecycle": {"state": "active"}
+      }
+steps:
+  - id: tree-unchanged
+    wait: 2
+    region: [0, 125, 280, 400]
+    text_order: [inbox, knowledge, log, sources, state]
+  - id: areas-domains
+    hover: [159, 110]
+    click: [159, 110]
+    wait: 2
+    region: [0, 130, 280, 600]
+    text_order: [Business, Dev, Finance, Health, HomeLab, Life, Music, SAP, Video, files]
+  - id: all-files
+    hover: [18, 424]
+    click: [18, 424]
+    wait: 1.5
+    region: [0, 130, 280, 600]
+    text_order: [Video, files, inbox, knowledge, log, sources, state]
+  - id: domain-folders
+    hover: [18, 200]
+    click: [18, 200]
+    wait: 1.5
+    region: [0, 130, 280, 600]
+    text_order: [Business, okilum, sample-app, AGENTS, Finance]
+  - id: open-domain-file
+    hover: [70, 312]
+    click: [70, 312]
+    wait: 2
+    text: Dev agents
