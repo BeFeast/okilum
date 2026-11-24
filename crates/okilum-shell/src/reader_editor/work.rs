@@ -40,6 +40,15 @@ impl Drop for Scope {
         }
     }
 }
+/// Runs `f` with every open scope suspended. An App update flushes its
+/// effects, and in tests that flush draws dirty windows: a scope around the
+/// update would charge a whole frame to the caller.
+pub(crate) fn unscoped<R>(f: impl FnOnce() -> R) -> R {
+    let depth = DEPTH.with(|d| d.replace(0));
+    let result = f();
+    DEPTH.with(|d| d.set(depth));
+    result
+}
 pub(crate) fn inspect(bytes: usize) {
     if DEPTH.with(|d| d.get()) == 0 {
         return;

@@ -189,27 +189,39 @@ impl Reader {
             // A superseded or orphaned completion still owns a whole index.
             // Keep it outside the UI update until acceptance is established.
             let mut publication = Some((index, labels));
-            let _ = this.update(cx, |this, cx| {
-                if this.vault_root == root
-                    && this.watcher_generation == generation
-                    && this.workbench_pending == pending
-                {
-                    if this.sidebar.initialize_now() {
-                        this.save_sidebar(cx);
+            let mut publish = |cx: &mut gpui::AsyncApp| {
+                this.update(cx, |this, cx| {
+                    // Measure this completion's own work. The test-support
+                    // flush after the update redraws dirty windows; that frame
+                    // belongs to whoever measures rendering, not to this
+                    // publication (it inflated #2405's autosave accounting).
+                    #[cfg(test)]
+                    let _work = reader_editor::work::scope();
+                    if this.vault_root == root
+                        && this.watcher_generation == generation
+                        && this.workbench_pending == pending
+                    {
+                        if this.sidebar.initialize_now() {
+                            this.save_sidebar(cx);
+                        }
+                        let (index, labels) = publication.take().unwrap();
+                        // This is the delayed owner of the previous published
+                        // index; releasing it also walks vault-sized metadata.
+                        let retired = (
+                            this.workbench_ready.replace(index),
+                            std::mem::replace(&mut this.workbench_times, labels),
+                        );
+                        cx.background_executor()
+                            .spawn(async move { drop(retired) })
+                            .detach();
+                        cx.notify();
                     }
-                    let (index, labels) = publication.take().unwrap();
-                    // This is the delayed owner of the previous published
-                    // index; releasing it also walks vault-sized metadata.
-                    let retired = (
-                        this.workbench_ready.replace(index),
-                        std::mem::replace(&mut this.workbench_times, labels),
-                    );
-                    cx.background_executor()
-                        .spawn(async move { drop(retired) })
-                        .detach();
-                    cx.notify();
-                }
-            });
+                })
+            };
+            #[cfg(test)]
+            let _ = reader_editor::work::unscoped(|| publish(cx));
+            #[cfg(not(test))]
+            let _ = publish(cx);
             cx.background_executor()
                 .spawn(async move { drop(publication) })
                 .detach();
