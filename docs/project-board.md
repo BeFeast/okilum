@@ -526,9 +526,11 @@ project, including through symlinks. Older reader builds may reject a new Board
 with no stage note until this fix reaches their channel; this does not rewrite
 existing Board bindings or create placeholder notes.
 
-Registry Current task remains one issue number (`2020`, `#2020`, inline code) or
-blank/dash. A compound queue/PR/history value is not guessed into a current task.
-Its diagnostic names the actual registry file, physical line, role and exact cell,
+Registry Current task is one issue number (`2020`, `#2020`, inline code), blank/dash,
+or free-form prose. A cell with letters is a description: the executor row stays, no
+issue is linked and nothing is guessed from it. A cell made only of digits and `#`
+that is not exactly one positive number (`#2020 #2026`, `#0`) is an error. Its
+diagnostic names the actual registry file, physical line, role and exact cell,
 and explains where to move the additional prose. Registry diagnostics do not
 become a missing-project or repository error.
 
@@ -558,3 +560,13 @@ The optional bundled video and matching [website guide](help/board/README.md)
 show the complete workflow from a named production build with cursor/captions
 and canonical before/after evidence. Help itself never connects a Manager,
 requests repository data or writes project files.
+
+## Registry thread ids
+
+The Manager and executor tables read the leading inline-code token of the Thread
+cell as the row's id (`mcp:<id>`, a T3 UUID, or `thread:project:<id>:<id>`);
+everything after it is prose. A row whose Thread cell starts with `—` registers
+no thread for that role. A section may repeat the role table (a machine-read
+mirror): Manager rows naming the same thread are one role, rotation rewrites all
+of them, and Manager rows naming different threads stay ambiguous: the project
+appears as a discovery problem row naming both lines and ids.

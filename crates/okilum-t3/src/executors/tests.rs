@@ -88,7 +88,6 @@ fn current_registry_not_history_or_parent_ids_defines_ownership() {
 fn malformed_ambiguous_duplicate_or_historical_only_registries_fail_explicitly() {
     for bad in [
         REGISTRY.replace("`mcp:missing`", "`mcp:ui`"),
-        REGISTRY.replace("`mcp:ui` description", "`mcp:ui` `mcp:second`"),
         REGISTRY.replace("| Manager |", "| Other |"),
         REGISTRY.replace("## Текущие threads (21.10)", "## History"),
         format!("{REGISTRY}\n## Current threads\n{REGISTRY}"),
@@ -141,7 +140,7 @@ fn optional_current_task_is_stable_and_old_registry_columns_remain_supported() {
         .executors
         .iter()
         .all(|entry| entry.current_task.is_none()));
-    for invalid in ["#0", "#1860 #1859", "unknown"] {
+    for invalid in ["#0", "#1860 #1859", "#"] {
         assert!(Registry::parse(&source.replace("#1860", invalid)).is_err());
     }
     assert!(Registry::parse(&source.replace(
@@ -153,12 +152,12 @@ fn optional_current_task_is_stable_and_old_registry_columns_remain_supported() {
 
 #[test]
 fn malformed_current_task_reports_file_line_role_and_exact_value_without_guessing() {
-    let source="## Current threads\n\n| Role | Thread | Current task |\n|---|---|---|\n| Manager | `mcp:manager` | |\n| UI | `mcp:ui` | #2020 PR #2026; #2001 main ownership |\n";
+    let source="## Current threads\n\n| Role | Thread | Current task |\n|---|---|---|\n| Manager | `mcp:manager` | |\n| UI | `mcp:ui` | #2020 #2026 |\n";
     let error = format!("{:#}", Registry::parse(source).unwrap_err());
     assert!(
         error.contains("ops/thread-ids.md:6")
             && error.contains("UI")
-            && error.contains("#2020 PR #2026; #2001 main ownership"),
+            && error.contains("#2020 #2026"),
         "{error}"
     );
     assert!(error.contains("another column"));
@@ -168,8 +167,12 @@ fn malformed_current_task_reports_file_line_role_and_exact_value_without_guessin
         ("2020", Some(2020)),
         ("—", None),
         ("", None),
+        // Prose never links (or guesses) an issue and never hides the row.
+        ("#2020 PR #2026; #2001 main ownership", None),
+        ("Issue #825: looper через PipeWire", None),
+        ("unknown", None),
     ] {
-        let valid = source.replace("#2020 PR #2026; #2001 main ownership", value);
+        let valid = source.replace("#2020 #2026", value);
         assert_eq!(
             Registry::parse(&valid).unwrap().executors[0].current_task,
             expected
@@ -186,7 +189,6 @@ fn link_only_or_ambiguous_thread_ids_name_file_physical_line_role_and_repair() {
         for cell in [
             "[Thread](t3-thread://env/mcp:thread)",
             "[Thread](`mcp:thread`)",
-            "`mcp:one` `mcp:two`",
             "`mcp:`",
             "`mcp:unclosed",
             "`mcp:two words`",
@@ -255,4 +257,69 @@ fn decisions_and_explicit_references_never_establish_executor_ownership() {
     }
     // Existing free-form executor roles remain valid without a Kind column.
     assert_eq!(Registry::parse(REGISTRY).unwrap().executors.len(), 2);
+}
+
+#[test]
+fn identical_manager_rows_are_one_role_and_differing_ones_stay_ambiguous() {
+    // Canonical table plus a machine-read mirror in the same section.
+    let mirrored = format!(
+        "{REGISTRY_BASE}\nMirror of the table above.\n\n| Роль | Thread | С | Project |\n|---|---|---|---|\n| Manager | `mcp:launch:aaaa` · [Synthetic — manager](t3-thread://v2/env/mcp:launch:aaaa), `codex` | 2026-01-01 | Brain |\n"
+    );
+    let registry = Registry::parse(&mirrored).unwrap();
+    assert_eq!(registry.manager, "mcp:launch:aaaa");
+    assert_eq!(
+        registry
+            .executors
+            .iter()
+            .map(|e| e.role.as_str())
+            .collect::<Vec<_>>(),
+        ["Bugs owner"]
+    );
+    let differing = mirrored.replace(
+        "| Manager | `mcp:launch:aaaa` ·",
+        "| Manager | `mcp:launch:bbbb` ·",
+    );
+    let error = format!("{:#}", Registry::parse(&differing).unwrap_err());
+    assert!(
+        error.contains("Manager rows name different threads"),
+        "{error}"
+    );
+}
+
+const REGISTRY_BASE: &str = "# Synthetic registry\n\n## Текущие threads (01.01)\n\n| Роль | Thread | С | Project | Worktree | Current task |\n|---|---|---|---|---|---|\n| Manager | `mcp:launch:aaaa` «Synthetic — manager», `codex / model-x` (medium) | 2026-01-01 | Brain | — | Daily run, questions |\n| Bugs owner | `mcp:launch:cccc` «Owner — bugs», `claude-model-y` | 2026-01-01 | Code | root | uncommitted integration, green main |\n";
+
+#[test]
+fn prose_after_the_leading_id_and_lane_ids_do_not_hide_executors() {
+    let source = "# Synthetic\n\n## Текущие threads (snapshot)\n\n| Роль | Thread | С | Project | Worktree | Current task |\n|---|---|---|---|---|---|\n| Manager | `00000000-1111-2222-3333-444444444444` «Synthetic — Oleg», `claudeAgent` / `claude-model-y`; since 02.11 — see `notes/x.md` | 02.11 | Brain `aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee` | — | daily: stable, triage |\n| Lane bugs & main | `thread:project:11111111-2222-3333-4444-555555555555:66666666-7777-8888-9999-000000000000` «goal bugs: red main», Codex `model-x`; started 05.11 | 05.11 | Code | `/work/w-1` | standing lane: red main |\n| Lane Board | `thread:project:11111111-2222-3333-4444-555555555555:aaaaaaaa-0000-1111-2222-333333333333` «goal board», Codex | 05.11 | Code | own worktree | Board epic [#2529](https://example.invalid/2529) |\n| Lane Mac | — not yet: the goal is queued; see `devctl goal list` | 05.11 | Code | own worktree | Mac epic [#2516](https://example.invalid/2516) |\n\n**Note.** Rows above are a snapshot.\n";
+    let registry = Registry::parse(source).unwrap();
+    assert_eq!(registry.manager, "00000000-1111-2222-3333-444444444444");
+    assert_eq!(
+        registry
+            .executors
+            .iter()
+            .map(|e| (e.role.as_str(), e.thread_id.as_str(), e.current_task))
+            .collect::<Vec<_>>(),
+        [
+            (
+                "Lane bugs & main",
+                "thread:project:11111111-2222-3333-4444-555555555555:66666666-7777-8888-9999-000000000000",
+                None
+            ),
+            (
+                "Lane Board",
+                "thread:project:11111111-2222-3333-4444-555555555555:aaaaaaaa-0000-1111-2222-333333333333",
+                None
+            ),
+        ]
+    );
+    // Later inline code that is not a thread id never replaces the leading id,
+    // and a leading token that is not a thread id is still an explicit error.
+    let error =
+        Registry::parse(&source.replace("`00000000-1111-2222-3333-444444444444`", "`claudeAgent`"))
+            .unwrap_err()
+            .to_string();
+    assert!(
+        error.contains("Manager") && error.contains("backticks"),
+        "{error}"
+    );
 }

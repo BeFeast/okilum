@@ -300,8 +300,8 @@ impl Project {
 
 /// The one source range used for both role reads and lossless replacements.
 /// Fenced examples cannot become operational registry rows.
-fn manager_cell(source: &str) -> Result<std::ops::Range<usize>> {
-    let mut found = None;
+fn manager_cells(source: &str) -> Result<Vec<std::ops::Range<usize>>> {
+    let mut found = Vec::new();
     let mut fenced = false;
     let mut offset = 0;
     for line in source.split_inclusive('\n') {
@@ -310,64 +310,105 @@ fn manager_cell(source: &str) -> Result<std::ops::Range<usize>> {
         } else if !fenced && line.trim_start().starts_with('|') {
             let pipes: Vec<_> = line.match_indices('|').map(|(index, _)| index).collect();
             if pipes.len() >= 2 && line[pipes[0] + 1..pipes[1]].trim() == "Manager" {
-                ensure!(
-                    found.is_none(),
-                    "more than one Manager role; no thread selected"
-                );
                 let end = pipes.get(2).context("Manager row has no thread cell")?;
-                found = Some(offset + pipes[1] + 1..offset + end);
+                found.push(offset + pipes[1] + 1..offset + end);
             }
         }
         offset += line.len();
     }
-    found.context("Manager role is missing from thread-ids.md")
+    ensure!(
+        !found.is_empty(),
+        "Manager role is missing from thread-ids.md"
+    );
+    Ok(found)
 }
 
 /// Exact role + leading inline-code id; links and historical IDs elsewhere in
-/// the cell cannot select a thread. Duplicate roles are explicit ambiguity.
+/// the cell cannot select a thread. Several Manager rows (for example a
+/// machine-read mirror table) are one role when they all name the same
+/// thread; differing threads are explicit ambiguity and select nothing.
 pub fn manager_role(registry: &str) -> Result<Manager> {
-    let range = manager_cell(registry)?;
-    let line = registry[..range.start]
-        .bytes()
-        .filter(|byte| *byte == b'\n')
-        .count()
-        + 1;
-    let cell = registry[range].trim();
-    if cell == "— (not started)" {
-        return Ok(Manager::NotStarted);
+    let mut selected: Option<(usize, Manager)> = None;
+    for range in manager_cells(registry)? {
+        let line = registry[..range.start]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count()
+            + 1;
+        let cell = registry[range].trim();
+        let manager = if cell == "— (not started)" {
+            Manager::NotStarted
+        } else {
+            let parse = || -> Result<Manager> {
+                let value = cell
+                    .strip_prefix('`')
+                    .context("Manager cell must start with an inline-code thread id")?;
+                let (id, _) = value
+                    .split_once('`')
+                    .context("unterminated Manager thread id")?;
+                Ok(Manager::Thread(thread_id(id)?))
+            };
+            parse().with_context(|| {
+                format!(
+                    "Manager row, line {line}: start the thread cell with the current thread ID in backticks, then any title or link. Expected: | Manager | `mcp:<thread-id>` … |"
+                )
+            })?
+        };
+        match &selected {
+            None => selected = Some((line, manager)),
+            Some((_, first)) if *first == manager => {}
+            Some((first_line, first)) => anyhow::bail!(
+                "more than one Manager role; no thread selected: line {first_line} names {}, line {line} names {}. Keep one thread ID in every Manager row",
+                describe_manager(first),
+                describe_manager(&manager)
+            ),
+        }
     }
-    let parse = || -> Result<Manager> {
-        let value = cell
-            .strip_prefix('`')
-            .context("Manager cell must start with an inline-code thread id")?;
-        let (id, _) = value
-            .split_once('`')
-            .context("unterminated Manager thread id")?;
-        Ok(Manager::Thread(thread_id(id)?))
-    };
-    parse().with_context(|| {
-        format!(
-            "Manager row, line {line}: start the thread cell with the current thread ID in backticks, then any title or link. Expected: | Manager | `mcp:<thread-id>` … |"
-        )
-    })
+    selected
+        .map(|(_, manager)| manager)
+        .context("Manager role is missing from thread-ids.md")
 }
 
-/// Replace only the current Manager cell, preserving all unrelated source bytes.
+fn describe_manager(manager: &Manager) -> String {
+    match manager {
+        Manager::Thread(id) => format!("`{id}`"),
+        Manager::NotStarted => "not started".to_owned(),
+    }
+}
+
+/// Replace every current Manager cell (all name the same thread), preserving
+/// all unrelated source bytes.
 pub fn register_manager(source: &str, expected: &Manager, id: &str) -> Result<String> {
     thread_id(id)?;
     ensure!(
         &manager_role(source)? == expected,
         "Manager role changed; retain the created thread and reconcile explicitly"
     );
-    let cell = manager_cell(source)?;
     let mut updated = source.to_owned();
-    updated.replace_range(cell, &format!(" `{id}` "));
+    for cell in manager_cells(source)?.into_iter().rev() {
+        updated.replace_range(cell, &format!(" `{id}` "));
+    }
     Ok(updated)
+}
+
+/// Whether an inline-code token is shaped like a T3 thread id: an `mcp:` or
+/// `thread:` namespaced id, or a bare UUID. Other inline code in a cell
+/// (model names, paths, commands) is prose.
+pub(crate) fn looks_like_thread_id(token: &str) -> bool {
+    let uuid = token.len() == 36
+        && token.bytes().enumerate().all(|(i, byte)| {
+            if matches!(i, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        });
+    token.starts_with("mcp:") || token.starts_with("thread:") || uuid
 }
 
 /// T3 UI UUIDs and namespaced MCP ids, including `mcp:launch:<hex>`.
 /// Each namespace segment is nonempty and contains only route-safe characters.
-fn thread_id(id: &str) -> Result<String> {
+pub(crate) fn thread_id(id: &str) -> Result<String> {
     let suffix = id.strip_prefix("mcp:").unwrap_or(id);
     ensure!(
         !suffix.is_empty()
@@ -700,6 +741,63 @@ mod tests {
         ] {
             assert!(manager_role(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn identical_manager_rows_are_one_role_and_differing_ones_are_reported() {
+        let mirrored = "| Роль | Thread |\n|---|---|\n| Manager | `mcp:launch:aaaa` «Synthetic» |\n| UI | `mcp:ui` |\n\nMirror:\n\n| Роль | Thread | С |\n|---|---|---|\n| Manager | `mcp:launch:aaaa` · [Synthetic](t3-thread://v2/env/mcp:launch:aaaa), `codex` | 01.01 |\n";
+        assert_eq!(
+            manager_role(mirrored).unwrap(),
+            Manager::Thread("mcp:launch:aaaa".into())
+        );
+        // A rotation rewrites every Manager row, so the mirror cannot go stale.
+        let rotated = register_manager(
+            mirrored,
+            &Manager::Thread("mcp:launch:aaaa".into()),
+            "mcp:launch:bbbb",
+        )
+        .unwrap();
+        assert!(!rotated.contains("mcp:launch:aaaa"), "{rotated}");
+        assert_eq!(
+            manager_role(&rotated).unwrap(),
+            Manager::Thread("mcp:launch:bbbb".into())
+        );
+        let differing = mirrored.replace(
+            "| Manager | `mcp:launch:aaaa` ·",
+            "| Manager | `mcp:launch:zzzz` ·",
+        );
+        let error = format!("{:#}", manager_role(&differing).unwrap_err());
+        for required in [
+            "more than one Manager role",
+            "line 3",
+            "line 10",
+            "`mcp:launch:aaaa`",
+            "`mcp:launch:zzzz`",
+        ] {
+            assert!(error.contains(required), "{required}: {error}");
+        }
+        // A project with differing Manager rows is a visible discovery problem row.
+        let fixture =
+            std::env::temp_dir().join(format!("okilum-manager-dup-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(fixture.join("P/ops")).unwrap();
+        std::fs::write(
+            fixture.join("P/ops/project.yaml"),
+            "name: P\nkind: knowledge\n",
+        )
+        .unwrap();
+        std::fs::write(fixture.join("P/ops/thread-ids.md"), mirrored).unwrap();
+        assert_eq!(discover(&fixture).projects.len(), 1);
+        std::fs::write(fixture.join("P/ops/thread-ids.md"), &differing).unwrap();
+        let discovered = discover(&fixture);
+        assert!(discovered.projects.is_empty());
+        assert!(
+            discovered.errors[0]
+                .1
+                .contains("more than one Manager role"),
+            "{:?}",
+            discovered.errors
+        );
+        std::fs::remove_dir_all(fixture).unwrap();
     }
 
     #[test]

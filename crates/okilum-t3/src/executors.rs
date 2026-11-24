@@ -97,23 +97,30 @@ impl Registry {
             .map(|(i, _)| i)
             .collect::<Vec<_>>();
         ensure!(
-            tables.len() == 1,
-            "{file}:{}: expected one table beginning | Role | Thread |",
+            !tables.is_empty(),
+            "{file}:{}: expected a table beginning | Role | Thread |",
             sections[0] + 1
         );
-        let header = cells(section[tables[0]]);
-        let task_column = header.iter().position(|cell| *cell == "Current task");
-        let kind_column = header.iter().position(|cell| *cell == "Kind");
         let mut roles = BTreeSet::new();
         let mut manager = None;
         let mut manager_line = 0;
         let mut references = BTreeSet::new();
         let mut executors = Vec::new();
         let mut ids = BTreeSet::new();
-        for (offset, line) in section.iter().enumerate().skip(tables[0] + 1) {
-            if !line.trim().starts_with('|') {
-                break;
-            }
+        // A section may repeat the role table (for example a machine-read
+        // mirror of the same rows); every table is read with its own header.
+        let rows = tables.iter().flat_map(|&table| {
+            let header = cells(section[table]);
+            let task_column = header.iter().position(|cell| *cell == "Current task");
+            let kind_column = header.iter().position(|cell| *cell == "Kind");
+            section
+                .iter()
+                .enumerate()
+                .skip(table + 1)
+                .take_while(|(_, line)| line.trim().starts_with('|'))
+                .map(move |(offset, line)| (offset, line, task_column, kind_column))
+        });
+        for (offset, line, task_column, kind_column) in rows {
             let row = cells(line);
             if row
                 .iter()
@@ -138,25 +145,26 @@ impl Registry {
                 "manager" if is_manager => false,
                 _ => anyhow::bail!("{file}:{line_number}: role {:?}: expected Kind `manager` for Manager, or `executor` / `reference` for other rows", row[0]),
             };
-            let leading = row[1]
+            // An explicit "no thread yet" cell (em dash first, as in the
+            // Manager `— (not started)` form) registers nothing for the role.
+            if row[1].starts_with('—') {
+                continue;
+            }
+            // The role's id is the leading inline-code token. Anything after
+            // it (title, link, model names, other inline code) is prose.
+            let id = row[1]
                 .strip_prefix('`')
                 .and_then(|value| value.split_once('`'))
-                .map(|(id, _)| id);
-            let values = row[1]
-                .split('`')
-                .enumerate()
-                .filter(|(i, _)| i % 2 == 1)
-                .map(|(_, s)| s)
-                .filter(|s| s.starts_with("mcp:"))
-                .collect::<Vec<_>>();
-            ensure!(
-                values.len() == 1
-                    && leading == values.first().copied()
-                    && values[0].len() > 4
-                    && !values[0].chars().any(char::is_whitespace),
-                "{file}:{line_number}: role {:?}: start the Thread cell with exactly one inline ID in backticks, `mcp:<id>`; put the title or Markdown link after it", row[0]
-            );
-            let id = values[0].to_owned();
+                .map(|(id, _)| id)
+                .filter(|id| crate::projects::looks_like_thread_id(id))
+                .and_then(|id| crate::projects::thread_id(id).ok());
+            let Some(id) = id else {
+                anyhow::bail!("{file}:{line_number}: role {:?}: start the Thread cell with the thread ID in backticks, `mcp:<id>` (or a T3 UUID, or `thread:project:<id>:<id>`); put the title or Markdown link after it", row[0]);
+            };
+            if is_manager && manager.as_ref() == Some(&id) {
+                // The same Manager thread repeated (mirror table): one role.
+                continue;
+            }
             ensure!(
                 ids.insert(id.clone()),
                 "{file}:{line_number}: role {:?}: duplicate thread ID in executor registry",
@@ -166,7 +174,7 @@ impl Registry {
                 manager_line = line_number;
                 ensure!(
                     manager.replace(id).is_none(),
-                    "{file}:{line_number}: multiple Manager rows; keep exactly one"
+                    "{file}:{line_number}: multiple Manager rows name different threads; keep one thread ID in every Manager row"
                 );
             } else if reference {
                 references.insert(id);
@@ -186,6 +194,13 @@ impl Registry {
                         let raw=value.trim();
                         let value=raw.trim_matches('`');
                         if value.is_empty() || value == "—" || value == "-" {
+                            return Ok(None);
+                        }
+                        // A free-form description (any letters) names no issue to
+                        // link: the row stays, nothing is guessed from prose.
+                        // Anything made only of digits and `#` must still be
+                        // exactly one valid issue number.
+                        if value.chars().any(char::is_alphabetic) {
                             return Ok(None);
                         }
                         let number = value
