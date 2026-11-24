@@ -590,9 +590,7 @@ mod tests {
         }
         INJECT_NO_VOLUME_TRASH.with(|value| value.set(true));
         let _reset = Reset;
-        let error = move_to_trash(root, Path::new("Parent"))
-            .err()
-            .expect("folder refused");
+        let error = move_to_trash(root, Path::new("Parent")).expect_err("folder refused");
         assert!(
             error.to_string().contains("contains a separate vault"),
             "{error:#}"
@@ -636,9 +634,7 @@ mod tests {
         INJECT_NO_VOLUME_TRASH.with(|value| value.set(true));
         let _reset = Reset;
         for path in ["Archive vault/Note.md", "Archive vault"] {
-            let error = move_to_trash(root, Path::new(path))
-                .err()
-                .expect("archive refused");
+            let error = move_to_trash(root, Path::new(path)).expect_err("archive refused");
             assert!(error.to_string().contains("read-only archive"), "{error:#}");
         }
         assert_eq!(

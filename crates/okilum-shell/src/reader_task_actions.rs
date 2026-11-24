@@ -117,6 +117,7 @@ impl Reader {
 
     /// Apply a declarative view `check` action through the same revision-bound,
     /// FileEditor-locked safe-save and Undo toast path as Tasks dashboards.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn apply_view_task_check(
         &mut self,
         index: Arc<Index>,
