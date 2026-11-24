@@ -17,6 +17,79 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent.parent
+MAX_STDOUT_BYTES = 4096
+
+
+def _utf8_tail(text, max_bytes):
+    if max_bytes <= 0 or not text:
+        return ''
+    raw = text.encode('utf-8')
+    if len(raw) <= max_bytes:
+        return text
+    sliced = raw[-max_bytes:]
+    idx = 0
+    while idx < len(sliced) and (sliced[idx] & 0xC0) == 0x80:
+        idx += 1
+    decoded = sliced[idx:].decode('utf-8', 'replace')
+    nl = decoded.find('\n')
+    if 0 <= nl < len(decoded) - 1:
+        return decoded[nl + 1:]
+    return decoded
+
+
+def _read_tail_text(path, tail_bytes=65536):
+    if not path.is_file():
+        return ''
+    size = path.stat().st_size
+    with path.open('rb') as fh:
+        if size > tail_bytes:
+            fh.seek(-tail_bytes, os.SEEK_END)
+        data = fh.read()
+    idx = 0
+    while idx < len(data) and (data[idx] & 0xC0) == 0x80:
+        idx += 1
+    return data[idx:].decode('utf-8', 'replace')
+
+
+def format_verify_summary(scenario, exit_code, wall_seconds, output_dir, log_path, max_bytes=MAX_STDOUT_BYTES):
+    status = 'PASS' if exit_code == 0 else 'FAIL'
+    lines = [
+        f'verify: scenario={scenario} status={status} exit_code={exit_code} wall_seconds={wall_seconds}',
+        f'log={log_path}',
+        f'Evidence: {output_dir}',
+    ]
+    result_path = output_dir / 'result.json'
+    if result_path.is_file():
+        try:
+            res = json.loads(result_path.read_text(encoding='utf-8'))
+            summary_parts = [
+                f'passed={res.get("passed")}',
+                f'host={res.get("host", "-")}',
+                f'verify_seconds={res.get("verify_seconds", "-")}',
+            ]
+            if res.get('error'):
+                summary_parts.append(f'error={res["error"]}')
+            lines.append('result: ' + ' '.join(summary_parts))
+        except (OSError, json.JSONDecodeError):
+            pass
+    header = '\n'.join(lines) + '\n'
+    header_bytes = len(header.encode('utf-8'))
+    if header_bytes >= max_bytes:
+        raw = header.encode('utf-8')[:max_bytes]
+        while raw and (raw[-1] & 0xC0) == 0x80:
+            raw = raw[:-1]
+        return raw.decode('utf-8', 'ignore')
+    if exit_code == 0:
+        return header
+    tail_raw = _read_tail_text(log_path)
+    if not tail_raw:
+        return header
+    marker = '... [tail of verify.log]\n'
+    budget = max_bytes - header_bytes - len(marker.encode('utf-8'))
+    if budget <= 0:
+        return header
+    tail = _utf8_tail(tail_raw, budget)
+    return header + marker + tail
 
 
 def command(*args, **kwargs):
@@ -752,22 +825,37 @@ def main():
             'status': capture('git', '-C', ROOT, 'status', '--short'),
         }, indent=2) + '\n')
         start = time.monotonic()
-        completed = subprocess.run(['okilum-slot', 'run', '--owner', 'acceptance-verify',
-                               '--label', f'verify-{args.scenario}', '--require-host',
-                               os.environ.get('OKILUM_VERIFY_HOST', 'okilum-dev'),
-                               '--env', f'OKILUM_SOURCE_COMMIT={revision}',
-                               '--mem', os.environ.get('OKILUM_VERIFY_MEM_GB', '6'),
-                               *incremental_env(),
-                               '--source-dir', str(ROOT), '--receipt', str(args.output / 'slot.json'),
-                               '--', 'python3', 'scripts/verify.py', args.scenario,
-                               '--in-slot', '--output', str(args.output),
-                               *(['--measure-incremental'] if args.measure_incremental else []),
-                               *(['--live-cutover'] if args.live_cutover else [])], cwd=ROOT,
-                              env=dict(os.environ, OKILUM_SOURCE_COMMIT=revision))
-        (args.output / 'command.json').write_text(json.dumps({
-            'wall_seconds': round(time.monotonic() - start, 3), 'exit_code': completed.returncode,
-        }, indent=2) + '\n')
-        print(f'Evidence: {args.output}', flush=True)
+        cmd = ['okilum-slot', 'run', '--owner', 'acceptance-verify',
+               '--label', f'verify-{args.scenario}', '--require-host',
+               os.environ.get('OKILUM_VERIFY_HOST', 'okilum-dev'),
+               '--env', f'OKILUM_SOURCE_COMMIT={revision}',
+               '--mem', os.environ.get('OKILUM_VERIFY_MEM_GB', '6'),
+               *incremental_env(),
+               '--source-dir', str(ROOT), '--receipt', str(args.output / 'slot.json'),
+               '--', 'python3', 'scripts/verify.py', args.scenario,
+               '--in-slot', '--output', str(args.output),
+               *(['--measure-incremental'] if args.measure_incremental else []),
+               *(['--live-cutover'] if args.live_cutover else [])]
+        env = dict(os.environ, OKILUM_SOURCE_COMMIT=revision)
+        log_path = args.output / 'verify.log'
+        if os.environ.get('OKILUM_VERIFY_RAW_OUTPUT') == '1':
+            completed = subprocess.run(cmd, cwd=ROOT, env=env)
+            wall_seconds = round(time.monotonic() - start, 3)
+            (args.output / 'command.json').write_text(json.dumps({
+                'wall_seconds': wall_seconds, 'exit_code': completed.returncode,
+            }, indent=2) + '\n')
+            print(f'Evidence: {args.output}', flush=True)
+        else:
+            with log_path.open('w', encoding='utf-8', errors='replace') as log_fh:
+                completed = subprocess.run(cmd, cwd=ROOT, env=env, stdout=log_fh, stderr=subprocess.STDOUT)
+            wall_seconds = round(time.monotonic() - start, 3)
+            (args.output / 'command.json').write_text(json.dumps({
+                'wall_seconds': wall_seconds, 'exit_code': completed.returncode,
+            }, indent=2) + '\n')
+            sys.stdout.write(format_verify_summary(
+                args.scenario, completed.returncode, wall_seconds, args.output, log_path
+            ))
+            sys.stdout.flush()
         return 0 if completed.returncode == 0 else 1
     start = time.monotonic()
     result = {'scenario': args.scenario, 'host': socket.gethostname(), 'passed': False}
