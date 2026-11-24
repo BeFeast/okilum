@@ -680,6 +680,8 @@ fn parse_decorations(json: Option<&serde_json::Value>) -> gpui_base::text::TextD
         bold: json.get("bold").and_then(|v| gradient(v, 90.)),
         // #3151: a theme's `em` colour, e.g. Obsidianite's purple italics.
         italic: json.get("italic").and_then(|v| color(v, "color")),
+        // Filled from the Reader palette's `highlight`, not a theme slot.
+        highlight: None,
     }
 }
 

@@ -1,0 +1,430 @@
+diff --git a/crates/base/src/text/decorations.rs b/crates/base/src/text/decorations.rs
+index 86eca7c7..9b6ff694 100644
+--- a/crates/base/src/text/decorations.rs
++++ b/crates/base/src/text/decorations.rs
+@@ -302,6 +302,9 @@ pub struct TextDecorations {
+     /// (Obsidianite's `em`). An italic span is its own font run, so one run
+     /// colour adds no font-run split and no reshaping.
+     pub italic: Option<Hsla>,
++    /// The background of highlighted (`<mark>`, `==x==`) text whose source
++    /// names no colour of its own.
++    pub highlight: Option<Hsla>,
+ }
+ 
+ impl TextDecorations {
+diff --git a/crates/base/src/text/format/html.rs b/crates/base/src/text/format/html.rs
+index 810063c0..96b72231 100644
+--- a/crates/base/src/text/format/html.rs
++++ b/crates/base/src/text/format/html.rs
+@@ -347,21 +347,22 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &Rc<Node>) {
+             local_name!("strong") | local_name!("b") => {
+                 merge_children_with_mark(node, paragraph, Some(TextMark::default().bold()));
+             }
+-            local_name!("del") | local_name!("s") => {
++            local_name!("del") | local_name!("s") | local_name!("strike") => {
+                 merge_children_with_mark(
+                     node,
+                     paragraph,
+                     Some(TextMark::default().strikethrough()),
+                 );
+             }
+-            local_name!("u") => {
++            local_name!("u") | local_name!("ins") => {
+                 merge_children_with_mark(node, paragraph, Some(TextMark::default().underline()));
+             }
+-            local_name!("code") => {
++            // A key or sample output reads as code, as Obsidian draws `<kbd>`.
++            local_name!("code") | local_name!("kbd") | local_name!("samp") => {
+                 merge_children_with_mark(node, paragraph, Some(TextMark::default().code()));
+             }
+             local_name!("mark") => {
+-                let color = mark_color(&attrs).unwrap_or_else(|| gpui::rgb(0xfef08a).into());
++                let color = mark_color(&attrs).unwrap_or_else(node::default_highlight);
+                 merge_children_with_mark(
+                     node,
+                     paragraph,
+diff --git a/crates/base/src/text/format/markdown.rs b/crates/base/src/text/format/markdown.rs
+index b52aba59..baa5cbde 100644
+--- a/crates/base/src/text/format/markdown.rs
++++ b/crates/base/src/text/format/markdown.rs
+@@ -401,9 +401,7 @@ fn parse_table_row(table: &mut Table, node: &mdast::TableRow, cx: &mut NodeConte
+ 
+ fn parse_table_cell(row: &mut node::TableRow, node: &mdast::TableCell, cx: &mut NodeContext) {
+     let mut paragraph = Paragraph::default();
+-    node.children.iter().for_each(|c| {
+-        parse_paragraph(&mut paragraph, c, cx);
+-    });
++    parse_inline_children(&mut paragraph, &node.children, cx);
+     let table_cell = node::TableCell {
+         children: paragraph,
+         ..Default::default()
+@@ -456,11 +454,11 @@ fn merge_children_with_mark(
+     let mut merged_text = String::new();
+     let mut merged_marks = Vec::new();
+ 
+-    for child in children {
+-        let mut child_paragraph = Paragraph::default();
+-        let child_text = parse_paragraph(&mut child_paragraph, child, cx);
+-        text.push_str(&child_text);
+-
++    // One pass over all children, so inline raw HTML tags among them
++    // (`**a <u>b</u> c**`) see their partners.
++    let mut child_paragraph = Paragraph::default();
++    text.push_str(&parse_inline_children(&mut child_paragraph, children, cx));
++    {
+         for node in child_paragraph.children {
+             let merged_offset = merged_text.len();
+             merged_text.push_str(&node.text);
+@@ -520,6 +518,118 @@ fn append_inline_html_blocks(paragraph: &mut Paragraph, blocks: Vec<BlockNode>)
+     Some(text)
+ }
+ 
++/// One inline raw HTML tag that markdown-rs hands over as its own `Html` node.
++///
++/// markdown-rs splits `a <b>bold</b> c` into `Text`, `Html("<b>")`, `Text`,
++/// `Html("</b>")`, `Text`. Parsed alone, a lone open tag yields nothing, so
++/// the formatting was lost; [`parse_inline_children`] keeps these tags on a
++/// stack instead.
++enum InlineHtmlTag {
++    Open { name: String, mark: TextMark },
++    Close { name: String },
++}
++
++/// Inline elements whose open and close tags are tracked across siblings.
++/// Elements without a [`TextMark`] equivalent (`sub`, `sup`, `span`, ...) are
++/// tracked too, so their tags are consumed and their text kept plain.
++const INLINE_HTML_ELEMENTS: &[&str] = &[
++    "a", "abbr", "b", "cite", "code", "del", "dfn", "em", "font", "i", "ins", "kbd", "mark", "q",
++    "s", "samp", "small", "span", "strike", "strong", "sub", "sup", "time", "u", "var",
++];
++
++fn inline_html_tag(value: &str, cx: &mut NodeContext) -> Option<InlineHtmlTag> {
++    let tag = value.trim();
++    let inner = tag.strip_prefix('<')?.strip_suffix('>')?;
++    let (closing, inner) = match inner.strip_prefix('/') {
++        Some(rest) => (true, rest),
++        None => (false, inner),
++    };
++    let name_len = inner
++        .find(|c: char| !c.is_ascii_alphanumeric())
++        .unwrap_or(inner.len());
++    let name = inner[..name_len].to_ascii_lowercase();
++    if !INLINE_HTML_ELEMENTS.contains(&name.as_str()) {
++        return None;
++    }
++    let rest = &inner[name_len..];
++    if closing {
++        return rest
++            .trim()
++            .is_empty()
++            .then_some(InlineHtmlTag::Close { name });
++    }
++    if !(rest.is_empty() || rest.starts_with(char::is_whitespace)) || rest.ends_with('/') {
++        return None;
++    }
++    // Let the HTML parser map the element and its attributes (`href`, a
++    // `<mark>` colour) to a mark, on a placeholder character it wraps.
++    const PROBE: char = '\u{E000}';
++    let fragment = format!("{tag}{PROBE}</{name}>");
++    let blocks = super::html::parse(&fragment, cx).ok()?.blocks;
++    let mut probe = Paragraph::default();
++    append_inline_html_blocks(&mut probe, Arc::unwrap_or_clone(blocks))?;
++    let mut mark = TextMark::default();
++    for node in &probe.children {
++        if let Some(at) = node.text.find(PROBE) {
++            for (range, node_mark) in &node.marks {
++                if range.start <= at && at < range.end {
++                    mark.merge(node_mark.clone());
++                }
++            }
++            break;
++        }
++    }
++    Some(InlineHtmlTag::Open { name, mark })
++}
++
++/// Parse the inline `children` of one container (paragraph, heading, table
++/// cell, emphasis, link) into `paragraph`, applying inline raw HTML tags
++/// among them to the siblings they enclose. A tag left open ends with its
++/// container, as in HTML; an unmatched close tag is dropped.
++fn parse_inline_children(
++    paragraph: &mut Paragraph,
++    children: &[mdast::Node],
++    cx: &mut NodeContext,
++) -> String {
++    let mut text = String::new();
++    let mut open: Vec<(String, TextMark)> = Vec::new();
++    for child in children {
++        if let Node::Html(html) = child
++            && let Some(tag) = inline_html_tag(&html.value, cx)
++        {
++            if let Some(span) = new_span(html.position.clone(), cx) {
++                paragraph.set_span(span);
++            }
++            match tag {
++                InlineHtmlTag::Open { name, mark } => open.push((name, mark)),
++                InlineHtmlTag::Close { name } => {
++                    if let Some(at) = open.iter().rposition(|(open, _)| *open == name) {
++                        open.remove(at);
++                    }
++                }
++            }
++            continue;
++        }
++        let mark = open
++            .iter()
++            .fold(TextMark::default(), |mut acc, (_, mark)| {
++                acc.merge(mark.clone());
++                acc
++            });
++        if mark == TextMark::default() {
++            text.push_str(&parse_paragraph(paragraph, child, cx));
++        } else {
++            text.push_str(&merge_children_with_mark(
++                paragraph,
++                std::slice::from_ref(child),
++                mark,
++                cx,
++            ));
++        }
++    }
++    text
++}
++
+ /// Whether the paragraph's last inline node is a line break (hard break or
+ /// inline `<br>`), so the next text starts a new visual line.
+ fn ends_with_break(paragraph: &Paragraph) -> bool {
+@@ -547,9 +657,7 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &mdast::Node, cx: &mut NodeC
+ 
+     match node {
+         Node::Paragraph(val) => {
+-            val.children.iter().for_each(|c| {
+-                text.push_str(&parse_paragraph(paragraph, c, cx));
+-            });
++            text = parse_inline_children(paragraph, &val.children, cx);
+         }
+         Node::Text(val) => {
+             // A CommonMark *soft* break lives inside this value as a plain
+@@ -738,9 +846,7 @@ fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockN
+         Node::Root(_) => unreachable!("node::Root should be handled separately"),
+         Node::Paragraph(val) => {
+             let mut paragraph = Paragraph::default();
+-            val.children.iter().for_each(|c| {
+-                parse_paragraph(&mut paragraph, c, cx);
+-            });
++            parse_inline_children(&mut paragraph, &val.children, cx);
+             // A `<br>` that ends a paragraph does not add an empty last line,
+             // as in HTML; two of them still leave one.
+             if paragraph.children.len() > 1 && ends_with_break(&paragraph) {
+@@ -817,9 +923,7 @@ fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockN
+         }
+         Node::Heading(val) => {
+             let mut paragraph = Paragraph::default();
+-            val.children.iter().for_each(|c| {
+-                parse_paragraph(&mut paragraph, c, cx);
+-            });
++            parse_inline_children(&mut paragraph, &val.children, cx);
+ 
+             BlockNode::Heading {
+                 level: val.depth,
+@@ -912,9 +1016,7 @@ fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockN
+                 },
+             )]));
+ 
+-            def.children.iter().for_each(|c| {
+-                parse_paragraph(&mut paragraph, c, cx);
+-            });
++            parse_inline_children(&mut paragraph, &def.children, cx);
+             paragraph.span = new_span(def.position, cx);
+             BlockNode::Paragraph(paragraph)
+         }
+@@ -1106,6 +1208,127 @@ mod tests {
+         );
+     }
+ 
++    /// The merged mark over the first occurrence of `needle` in a paragraph.
++    fn mark_at(paragraph: &Paragraph, needle: &str) -> TextMark {
++        let text = paragraph.text();
++        let at = text
++            .find(needle)
++            .unwrap_or_else(|| panic!("{needle:?} not in {text:?}"));
++        let mut offset = 0;
++        let mut mark = TextMark::default();
++        for node in &paragraph.children {
++            let len = node.text.len();
++            if (offset..offset + len).contains(&at) {
++                for (range, node_mark) in &node.marks {
++                    if range.contains(&(at - offset)) {
++                        mark.merge(node_mark.clone());
++                    }
++                }
++                break;
++            }
++            offset += len;
++        }
++        mark
++    }
++
++    fn first_paragraph(source: &str) -> Paragraph {
++        let mut cx = NodeContext::default();
++        let document = parse(source, &mut cx).unwrap();
++        let BlockNode::Paragraph(paragraph) = &document.blocks[0] else {
++            panic!("expected paragraph for {source:?}");
++        };
++        paragraph.clone()
++    }
++
++    /// markdown-rs hands `<b>` and `</b>` over as separate `Html` nodes; the
++    /// text between them takes the element's mark.
++    #[test]
++    fn test_inline_html_tags_mark_the_text_between_them() {
++        let paragraph = first_paragraph(
++            "a <b>bold</b> <strong>strong</strong> <i>it</i> <u>under</u> \
++             <kbd>Ctrl</kbd> <s>gone</s> <strike>former</strike> <sup>2</sup> \
++             <mark>hi</mark> <a href=\"https://example.com\" title=\"T\">site</a> z",
++        );
++        assert_eq!(
++            paragraph.text(),
++            "a bold strong it under Ctrl gone former 2 hi site z"
++        );
++        assert!(mark_at(&paragraph, "bold").bold);
++        assert!(mark_at(&paragraph, "strong").bold);
++        assert!(mark_at(&paragraph, "it").italic);
++        assert!(mark_at(&paragraph, "under").underline);
++        assert!(mark_at(&paragraph, "Ctrl").code);
++        assert!(mark_at(&paragraph, "gone").strikethrough);
++        assert!(mark_at(&paragraph, "former").strikethrough);
++        assert_eq!(mark_at(&paragraph, "2"), TextMark::default());
++        assert_eq!(
++            mark_at(&paragraph, "hi").highlight,
++            Some(node::default_highlight())
++        );
++        let link = mark_at(&paragraph, "site").link.expect("link mark");
++        assert_eq!(link.url.as_ref(), "https://example.com");
++        assert_eq!(link.title.as_deref(), Some("T"));
++        assert_eq!(mark_at(&paragraph, "z"), TextMark::default());
++        assert_eq!(mark_at(&paragraph, "a "), TextMark::default());
++    }
++
++    /// Tags nest with Markdown emphasis in both directions, and a `<mark>`
++    /// keeps an explicit colour.
++    #[test]
++    fn test_inline_html_tags_nest_with_markdown_marks() {
++        let paragraph = first_paragraph(
++            "**bold <mark>both</mark> bold** <u>a *b* c</u> \
++             <mark style=\"background-color: #ff0000\">red</mark>",
++        );
++        let both = mark_at(&paragraph, "both");
++        assert!(both.bold);
++        assert_eq!(both.highlight, Some(node::default_highlight()));
++        assert!(mark_at(&paragraph, "bold").bold);
++        assert_eq!(mark_at(&paragraph, "bold").highlight, None);
++        let b = mark_at(&paragraph, "b ");
++        assert!(b.underline && b.italic);
++        assert!(mark_at(&paragraph, " c ").underline);
++        let red: gpui::Hsla = gpui::rgb(0xff0000).into();
++        assert_eq!(mark_at(&paragraph, "red").highlight, Some(red));
++    }
++
++    /// An unclosed tag ends with its paragraph; a stray close tag is dropped.
++    #[test]
++    fn test_inline_html_unbalanced_tags() {
++        let paragraph = first_paragraph("a </i>b <b>c");
++        assert_eq!(paragraph.text(), "a b c");
++        assert!(!mark_at(&paragraph, "b").italic);
++        assert!(mark_at(&paragraph, "c").bold);
++
++        let next = first_paragraph("x <b>y\n\nz");
++        assert!(mark_at(&next, "y").bold);
++        let mut cx = NodeContext::default();
++        let document = parse("x <b>y\n\nz", &mut cx).unwrap();
++        let BlockNode::Paragraph(second) = &document.blocks[1] else {
++            panic!("expected second paragraph");
++        };
++        assert!(!mark_at(second, "z").bold);
++    }
++
++    /// Table cells and headings track tags too.
++    #[test]
++    fn test_inline_html_tags_in_table_cells_and_headings() {
++        let mut cx = NodeContext::default();
++        let document = parse("| a |\n| - |\n| <mark>x</mark> <b>y</b> |", &mut cx).unwrap();
++        let BlockNode::Table(table) = &document.blocks[0] else {
++            panic!("expected table");
++        };
++        let cell = &table.children[1].children[0].children;
++        assert!(mark_at(cell, "x").highlight.is_some());
++        assert!(mark_at(cell, "y").bold);
++
++        let document = parse("# a <u>b</u>", &mut cx).unwrap();
++        let BlockNode::Heading { children, .. } = &document.blocks[0] else {
++            panic!("expected heading");
++        };
++        assert!(mark_at(children, "b").underline);
++    }
++
+     #[test]
+     fn test_inline_html_image_stays_in_markdown_paragraph() {
+         let mut cx = NodeContext::default();
+diff --git a/crates/base/src/text/node.rs b/crates/base/src/text/node.rs
+index dbd66c0b..65d0e6b6 100644
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -399,6 +399,12 @@ pub struct LinkMark {
+     pub title: Option<SharedString>,
+ }
+ 
++/// The background of `<mark>` text whose source names no colour. A theme
++/// replaces it through [`super::TextDecorations::highlight`] at paint time.
++pub fn default_highlight() -> Hsla {
++    gpui::rgb(0xfef08a).into()
++}
++
+ #[derive(Debug, Default, Clone, PartialEq)]
+ pub struct TextMark {
+     pub bold: bool,
+@@ -1808,7 +1814,11 @@ fn mark_highlight(mark: &TextMark, node_cx: &NodeContext) -> InlineHighlight {
+         font_family = node_cx.style.inline_code_font_family().cloned();
+     }
+     if let Some(color) = mark.highlight {
+-        highlight.background_color = Some(color);
++        let themed = node_cx.style.decorations().highlight;
++        highlight.background_color = Some(match themed {
++            Some(themed) if color == default_highlight() => themed,
++            _ => color,
++        });
+     }
+     InlineHighlight {
+         style: highlight,
+@@ -3250,6 +3260,31 @@ mod tests {
+         assert_ne!(color(TextMark::default().italic().code(), &themed), Some(purple));
+     }
+ 
++    /// Highlight slot: `<mark>` without a colour of its own takes the
++    /// theme's highlight; an explicit colour and an unthemed view keep theirs.
++    #[test]
++    fn highlight_slot_colours_default_marks_only() {
++        let pink: Hsla = gpui::rgb(0xf4569d).into();
++        let red: Hsla = gpui::rgb(0xff0000).into();
++        let themed = NodeContext {
++            style: TextViewStyle::default().with_decorations(crate::text::TextDecorations {
++                highlight: Some(pink),
++                ..Default::default()
++            }),
++            ..Default::default()
++        };
++        let background =
++            |mark: TextMark, node_cx: &NodeContext| mark_highlight(&mark, node_cx).style.background_color;
++        let default_mark = TextMark::default().highlight(default_highlight());
++        assert_eq!(background(default_mark.clone(), &themed), Some(pink));
++        assert_eq!(
++            background(default_mark, &NodeContext::default()),
++            Some(default_highlight())
++        );
++        assert_eq!(background(TextMark::default().highlight(red), &themed), Some(red));
++        assert_eq!(background(TextMark::default().bold(), &themed), None);
++    }
++
+     /// Table columns are sized from shaped text, so a column of inline code
+     /// has to be measured in the code family. Measured in the body font, the
+     /// wide-mono test font makes `col_w` come out at half the rendered width.

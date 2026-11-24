@@ -33,8 +33,13 @@ pub(super) fn reader_text_style(theme: &Theme) -> TextViewStyle {
     // One scale and one colour per level for Reader and Live Preview
     // (#1076, #3147, #3153).
     .heading_font_size(|level, base| base * source_presentation::heading_scale(level))
-    // Theme decoration slots, shared with Live Preview (#3154).
-    .decorations(tokens.decorations);
+    // Theme decoration slots, shared with Live Preview (#3154). `==x==`
+    // reaches the renderer as inline `<mark>`, which takes the theme's
+    // translucent highlight wherever it sits: in bold, links, table cells.
+    .decorations(gpui_base::text::TextDecorations {
+        highlight: Some(tokens.highlight),
+        ..tokens.decorations
+    });
     for (level, color) in (1u8..).zip(tokens.headings) {
         style = style.heading_level_color(level, color);
     }
@@ -55,19 +60,6 @@ struct LocalImages {
     offset: usize,
     images: Vec<LocalImage>,
     caption: String,
-}
-
-fn mdast_text(node: &markdown_ast::Node, out: &mut String) {
-    match node {
-        markdown_ast::Node::Text(t) => out.push_str(&t.value),
-        markdown_ast::Node::InlineCode(c) => out.push_str(&c.value),
-        _ => {}
-    }
-    if let Some(children) = node.children() {
-        for c in children {
-            mdast_text(c, out);
-        }
-    }
 }
 
 /// Payload for the custom "callout" block node (#46). An Obsidian callout is a
@@ -229,40 +221,6 @@ fn parse_embed(
         )
         .text(title)
         .markdown(cx.node_source(node).unwrap_or("").to_string()),
-    )
-}
-
-/// Parse a paragraph or heading that contains an inline `<mark>` into a
-/// `"highlight"` node. `None` for every other block, so plain paragraphs keep
-/// TextView's stock Markdown rendering.
-fn parse_highlight(
-    node: &markdown_ast::Node,
-    cx: &gpui_component::text::MarkdownParseContext<'_>,
-) -> Option<MarkdownNode> {
-    let children = match node {
-        markdown_ast::Node::Paragraph(p) => &p.children,
-        markdown_ast::Node::Heading(h) => &h.children,
-        _ => return None,
-    };
-    let has_mark = children.iter().any(|c| {
-        matches!(c, markdown_ast::Node::Html(h) if h.value.to_ascii_lowercase().starts_with("<mark"))
-    });
-    if !has_mark {
-        return None;
-    }
-    let source = cx.node_source(node)?;
-    // The `highlight` token is translucent, so it reads on every theme. It is
-    // resolved when the block is parsed; a theme switch applies on re-parse.
-    let color = brand::css_color(brand::reader_palette_current().highlight);
-    let html = okilum_core::render::block_html(source)
-        .replace("<mark>", &format!("<mark color=\"{color}\">"));
-    let mut text = String::new();
-    mdast_text(node, &mut text);
-    Some(
-        MarkdownNode::new("highlight", ())
-            .html_part("body", html)
-            .text(text)
-            .markdown(source.to_string()),
     )
 }
 
@@ -750,10 +708,6 @@ fn markdown_plugins_at(
                 cx,
             )))
             .into_any_element()
-    })
-    .markdown_block_parser(parse_highlight)
-    .markdown_block_renderer("highlight", move |node, _window, cx| {
-        node.render_part("body", |style| style, _window, cx)
     })
     .markdown_block_parser(reader_obsidian::parse_footnote)
     .markdown_block_renderer("footnote", move |node, window, cx| {

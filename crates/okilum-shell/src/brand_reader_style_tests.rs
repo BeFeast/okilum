@@ -68,10 +68,15 @@ fn selected_theme_drives_palette_and_native_tokens(cx: &mut gpui::TestAppContext
                 // #3153: per level, with `heading` as the fallback.
                 let levels = reader_palette_for_theme(t).headings;
                 assert_eq!(reader_text_style(t).heading_colors, levels.map(Some));
-                // #3154: the Reader draws the theme's decoration slots.
+                // #3154: the Reader draws the theme's decoration slots, and
+                // `<mark>` takes the theme's highlight (C3).
+                let reader = reader_palette_for_theme(t);
                 assert_eq!(
                     reader_text_style(t).decorations,
-                    reader_palette_for_theme(t).decorations
+                    gpui_base::text::TextDecorations {
+                        highlight: Some(reader.highlight),
+                        ..reader.decorations
+                    }
                 );
             }
         }

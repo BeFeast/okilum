@@ -1,0 +1,46 @@
+# C3/O1/O2 (markdown conformance 2026-11-24): inline raw HTML formatting.
+# markdown-rs hands `<b>` and `</b>` over as separate HTML nodes; the Reader
+# must still format the text between them. `==x==` becomes inline `<mark>`,
+# so a highlight inside bold and in a table cell is the same case. Light
+# Okilum theme: highlight #ffd00066 over white is yellow, `<kbd>` takes the
+# inline code background.
+appearance: light
+note: |
+  # Inline HTML
+
+  Plain <b>bold</b> and <u>under</u> and <kbd>Ctrl</kbd> and E=mc<sup>2</sup> end
+
+  **Strong words ==hi== more strong words**
+
+  | Column | Other |
+  | ------ | ----- |
+  | ==marked== | plain |
+region: [300, 60, 800, 600]
+ready_text: Plain
+steps:
+  - id: inline-html
+    text: Plain bold and under and Ctrl
+    text_absent: '<b>'
+    # `<kbd>Ctrl</kbd>` sits on the inline code background (#f6f7f8).
+    pixels:
+      region: [540, 192, 45, 24]
+      expression: 'r>0.955 && r<0.985 && b>=r ? 1 : 0'
+      min: 250
+      max: 1080
+  - id: highlight-in-bold
+    text: Strong words hi more strong words
+    # `**… ==hi== …**`: highlight (#ffd00066 over white, about #ffee99)
+    # inside the bold line; text fringes are excluded by the band.
+    pixels:
+      region: [361, 226, 300, 28]
+      expression: 'r>0.97 && g>0.88 && g<0.97 && b>0.5 && b<0.68 ? 1 : 0'
+      min: 100
+      max: 2000
+  - id: highlight-in-table-cell
+    text: marked
+    # `| ==marked== |`: yellow highlight inside the table cell.
+    pixels:
+      region: [363, 296, 358, 28]
+      expression: 'r>0.97 && g>0.88 && g<0.97 && b>0.5 && b<0.68 ? 1 : 0'
+      min: 200
+      max: 3000
