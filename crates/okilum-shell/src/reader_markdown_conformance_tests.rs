@@ -28,10 +28,10 @@ use std::collections::BTreeMap;
 
 /// Pinned results; see the module docs. The gap matrix behind these numbers
 /// is `Dev/Areas/okilum/specs/2026-11-24-markdown-conformance.md`.
-const PINNED_COMMONMARK_PASS: usize = 590;
-const PINNED_GFM_PASS: usize = 609;
+const PINNED_COMMONMARK_PASS: usize = 605;
+const PINNED_GFM_PASS: usize = 624;
 const PINNED_OBSIDIAN_GAPS: usize = 2;
-const PINNED_EXTRA_GAPS: usize = 7;
+const PINNED_EXTRA_GAPS: usize = 5;
 
 const COMMONMARK: &str =
     include_str!("../../okilum-core/tests/fixtures/markdown-spec/commonmark-0.31.2.json");

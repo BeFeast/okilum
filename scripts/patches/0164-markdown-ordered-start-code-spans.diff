@@ -1,0 +1,525 @@
+diff --git a/crates/base/src/text/document.rs b/crates/base/src/text/document.rs
+index f7ac9b38..6b34fa26 100644
+--- a/crates/base/src/text/document.rs
++++ b/crates/base/src/text/document.rs
+@@ -33,6 +33,8 @@ pub(crate) struct NodeRenderOptions {
+     pub(crate) in_list: bool,
+     pub(crate) todo: bool,
+     pub(crate) ordered: bool,
++    /// Number of the first item of the ordered list being rendered.
++    pub(crate) list_start: u32,
+     pub(crate) depth: usize,
+     pub(crate) is_last: bool,
+ }
+diff --git a/crates/base/src/text/format/html.rs b/crates/base/src/text/format/html.rs
+index 0638874d..78813efd 100644
+--- a/crates/base/src/text/format/html.rs
++++ b/crates/base/src/text/format/html.rs
+@@ -516,6 +516,7 @@ fn parse_node(
+                 Some(BlockNode::List {
+                     children,
+                     ordered,
++                    start: None,
+                     span: None,
+                 })
+             }
+diff --git a/crates/base/src/text/format/markdown.rs b/crates/base/src/text/format/markdown.rs
+index 4f819f1a..d453aae2 100644
+--- a/crates/base/src/text/format/markdown.rs
++++ b/crates/base/src/text/format/markdown.rs
+@@ -88,11 +88,57 @@ fn exact_code_content(source: &str, code: &mdast::Code) -> String {
+     value
+ }
+ 
++/// Line endings inside an inline code span become spaces, and one space is
++/// stripped from each end when both ends are spaces and the span is not all
++/// spaces (CommonMark 0.31.2, code spans).
++///
++/// markdown-rs does the padding strip but only for literal spaces, so a span
++/// whose edge is a line ending (`` `\nfoo\n` ``) keeps its newlines and its
++/// padding. The raw span in `source` tells which edges markdown-rs already
++/// stripped, so a span is never stripped twice.
++fn normalize_inline_code(node: &mut Node, source: &str) {
++    if let Node::InlineCode(code) = node {
++        if let Some(value) = inline_code_value(source, code) {
++            code.value = value;
++        }
++        return;
++    }
++    if let Some(children) = node.children_mut() {
++        for child in children {
++            normalize_inline_code(child, source);
++        }
++    }
++}
++
++fn inline_code_value(source: &str, code: &mdast::InlineCode) -> Option<String> {
++    let position = code.position.as_ref()?;
++    let span = source.get(position.start.offset..position.end.offset)?;
++    let ticks = span.bytes().take_while(|b| *b == b'`').count();
++    let raw = span.get(ticks..span.len().checked_sub(ticks)?)?;
++    if !raw.contains(['\n', '\r']) {
++        return None;
++    }
++    let flatten = |text: &str| text.replace("\r\n", " ").replace(['\n', '\r'], " ");
++    let padded = |text: &str| {
++        text.starts_with(' ') && text.ends_with(' ') && text.bytes().any(|b| b != b' ')
++    };
++    let mut value = flatten(&code.value);
++    let stripped_by_parser = raw.len() > 2 && padded(raw);
++    if !stripped_by_parser && padded(&flatten(raw)) {
++        value.remove(0);
++        value.pop();
++    }
++    Some(value)
++}
++
+ /// Parse Markdown into a tree of nodes.
+ pub(crate) fn parse(source: &str, cx: &mut NodeContext) -> Result<ParsedDocument, SharedString> {
+     let options = cx.markdown_extensions.parse_options();
+     to_mdast(source, &options)
+-        .map(|n| ast_to_document(source, n, cx))
++        .map(|mut n| {
++            normalize_inline_code(&mut n, source);
++            ast_to_document(source, n, cx)
++        })
+         .map_err(|e| e.to_string().into())
+ }
+ 
+@@ -722,6 +768,7 @@ fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockN
+                 .collect();
+             BlockNode::List {
+                 ordered: list.ordered,
++                start: list.start,
+                 children,
+                 span: new_span(list.position, cx),
+             }
+@@ -1361,4 +1408,104 @@ mod tests {
+             })
+         );
+     }
++
++    fn list_of(source: &str) -> (bool, Option<u32>) {
++        let mut cx = NodeContext::default();
++        let document = parse(source, &mut cx).unwrap();
++        let BlockNode::List { ordered, start, .. } = &document.blocks[0]
++        else {
++            panic!("expected list for {source:?}, got {:?}", document.blocks[0]);
++        };
++        (*ordered, *start)
++    }
++
++    /// An ordered list keeps the number of its first item (CommonMark: `<ol start>`).
++    #[test]
++    fn test_ordered_list_keeps_start_number() {
++        assert_eq!(list_of("3. three\n4. four"), (true, Some(3)));
++        assert_eq!(list_of("1. one\n2. two"), (true, Some(1)));
++        assert_eq!(list_of("0. zero\n1. one"), (true, Some(0)));
++        assert_eq!(list_of("- a\n- b").1, None);
++    }
++
++    fn code_span(source: &str) -> String {
++        let mut cx = NodeContext::default();
++        let document = parse(source, &mut cx).unwrap();
++        let BlockNode::Paragraph(paragraph) = &document.blocks[0] else {
++            panic!("expected paragraph for {source:?}");
++        };
++        paragraph
++            .children
++            .iter()
++            .find(|node| node.marks.iter().any(|(_, mark)| mark.code))
++            .map(|node| node.text.to_string())
++            .unwrap_or_default()
++    }
++
++    /// CommonMark code spans: line endings become spaces, then one space is
++    /// stripped from each end when both ends are spaces and not all are
++    /// (spec examples 335-337, 121, 640, 641 and the padding examples).
++    #[test]
++    fn test_code_span_line_endings_become_spaces() {
++        assert_eq!(code_span("`code\nspan`"), "code span");
++        assert_eq!(code_span("`code\r\nspan`"), "code span");
++        assert_eq!(code_span("``\nfoo\nbar  \nbaz\n``"), "foo bar   baz");
++        assert_eq!(code_span("``\nfoo \n``"), "foo ");
++        assert_eq!(code_span("`foo   bar \nbaz`"), "foo   bar  baz");
++        // The parser already strips literal padding; it is not stripped twice.
++        assert_eq!(code_span("` a `"), "a");
++        assert_eq!(code_span("`  a\nb  `"), " a b ");
++        assert_eq!(code_span("` \nfoo\n `"), " foo ");
++        assert_eq!(code_span("` `"), " ");
++        assert_eq!(code_span("`\n`\n`"), " ");
++    }
++
++    /// Code spans nested in emphasis, links and list items are normalised too.
++    #[test]
++    fn test_code_span_in_nested_inlines() {
++        let mut cx = NodeContext::default();
++        let document = parse("*a `x\ny` b* [`p\nq`](u)", &mut cx).unwrap();
++        assert_eq!(paragraph_texts(&document.blocks[0]).concat(), "a x y b p q");
++        let document = parse("- item `x\ny`", &mut cx).unwrap();
++        let BlockNode::List { children, .. } = &document.blocks[0] else {
++            panic!("expected list");
++        };
++        let BlockNode::ListItem { children, .. } = &children[0] else {
++            panic!("expected item");
++        };
++        assert_eq!(paragraph_texts(&children[0]).concat(), "item x y");
++    }
++
++    fn code_block_texts(source: &str) -> (String, String) {
++        fn find(block: &BlockNode) -> Option<(String, String)> {
++            match block {
++                BlockNode::CodeBlock(code) => Some((
++                    code.code().to_string(),
++                    code.copy_code().map(|c| c.to_string()).unwrap_or_default(),
++                )),
++                BlockNode::List { children, .. }
++                | BlockNode::ListItem { children, .. }
++                | BlockNode::Root { children, .. } => children.iter().find_map(find),
++                _ => None,
++            }
++        }
++        let mut cx = NodeContext::default();
++        let document = parse(source, &mut cx).unwrap();
++        document.blocks.iter().find_map(find).expect("code block")
++    }
++
++    /// A fenced block keeps every blank line before its closing fence, in the
++    /// document root and inside a list item (CommonMark example 318). Display
++    /// text omits the terminal line ending; the copied text has it.
++    #[test]
++    fn test_fenced_code_keeps_trailing_blank_lines() {
++        for (source, shown, copied) in [
++            ("```\nb\n\n\n```\n", "b\n\n", "b\n\n\n"),
++            ("- a\n- ```\n  b\n\n\n  ```\n- c\n", "b\n\n", "b\n\n\n"),
++            ("```\nb\n```\n", "b", "b\n"),
++        ] {
++            let (code, copy) = code_block_texts(source);
++            assert_eq!((code.as_str(), copy.as_str()), (shown, copied), "{source:?}");
++        }
++    }
+ }
+diff --git a/crates/base/src/text/node.rs b/crates/base/src/text/node.rs
+index 5114d430..41f59b61 100644
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -60,6 +60,8 @@ pub(crate) enum BlockNode {
+         /// Only contains ListItem, others will be ignored
+         children: Vec<BlockNode>,
+         ordered: bool,
++        /// Number of the first item of an ordered list; `None` counts from 1.
++        start: Option<u32>,
+         span: Option<Span>,
+     },
+     ListItem {
+@@ -187,12 +189,20 @@ impl BlockNode {
+                 }
+             }
+             BlockNode::List {
+-                children, ordered, ..
++                children,
++                ordered,
++                start,
++                ..
+             } => {
+                 if matches!(kind, BlockTextKind::SelectedSource) {
+                     // Reconstruct the list source, indenting nested lists and
+                     // restoring list markers and task-list checkboxes.
+-                    text.push_str(&list_selected_source(children, *ordered, ""));
++                    text.push_str(&list_selected_source(
++                        children,
++                        *ordered,
++                        start.unwrap_or(1),
++                        "",
++                    ));
+                 } else {
+                     text.push_str(&Self::children_text(children, kind));
+                 }
+@@ -720,7 +730,12 @@ fn table_selected_source(table: &Table) -> String {
+ /// and sub-list lines align under the item text. Items with no selected content
+ /// are skipped but still consume an ordered number, so the remaining items keep
+ /// their original numbering.
+-fn list_selected_source(children: &[BlockNode], ordered: bool, indent: &str) -> String {
++fn list_selected_source(
++    children: &[BlockNode],
++    ordered: bool,
++    start: u32,
++    indent: &str,
++) -> String {
+     let mut out = String::new();
+     let mut item_ix = 0usize;
+ 
+@@ -735,7 +750,7 @@ fn list_selected_source(children: &[BlockNode], ordered: bool, indent: &str) ->
+         };
+ 
+         let marker = if ordered {
+-            format!("{}. ", item_ix + 1)
++            format!("{}. ", start as usize + item_ix)
+         } else {
+             "- ".to_string()
+         };
+@@ -754,12 +769,14 @@ fn list_selected_source(children: &[BlockNode], ordered: bool, indent: &str) ->
+             if let BlockNode::List {
+                 children: sub_children,
+                 ordered: sub_ordered,
++                start: sub_start,
+                 ..
+             } = sub
+             {
+                 nested.push_str(&list_selected_source(
+                     sub_children,
+                     *sub_ordered,
++                    sub_start.unwrap_or(1),
+                     &child_indent,
+                 ));
+             } else {
+@@ -2261,13 +2278,16 @@ impl BlockNode {
+                     .join("\n")
+             }
+             BlockNode::List {
+-                children, ordered, ..
++                children,
++                ordered,
++                start,
++                ..
+             } => children
+                 .iter()
+                 .enumerate()
+                 .map(|(i, child)| {
+                     let prefix = if *ordered {
+-                        format!("{}. ", i + 1)
++                        format!("{}. ", start.unwrap_or(1) as usize + i)
+                     } else {
+                         "- ".to_string()
+                     };
+@@ -2352,7 +2372,12 @@ impl BlockNode {
+             .items_start()
+             .content_start()
+             .when(!options.todo && checked.is_none(), |this| {
+-                this.child(list_item_prefix(ix, options.ordered, options.depth))
++                this.child(list_item_prefix(
++                    ix,
++                    options.ordered,
++                    options.depth,
++                    options.list_start,
++                ))
+             })
+             .when_some(checked, |this, checked| {
+                 // Todo list checkbox
+@@ -3066,7 +3091,10 @@ impl BlockNode {
+                 .into_any_element()
+             }
+             BlockNode::List {
+-                children, ordered, ..
++                children,
++                ordered,
++                start,
++                ..
+             } => v_flex()
+                 .id((if *ordered { "ol" } else { "ul" }, ix))
+                 // Nested wrappers already contribute one rem per list level.
+@@ -3088,6 +3116,7 @@ impl BlockNode {
+                             NodeRenderOptions {
+                                 ix,
+                                 ordered: *ordered,
++                                list_start: start.unwrap_or(1),
+                                 ..options
+                             },
+                             node_cx,
+@@ -3450,6 +3479,7 @@ mod tests {
+     fn unordered_list_selected_source_prefixes_dash() {
+         let list = BlockNode::List {
+             ordered: false,
++            start: None,
+             span: None,
+             children: vec![
+                 BlockNode::ListItem {
+@@ -3472,10 +3502,32 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn ordered_list_selected_source_starts_at_list_start() {
++        let item = |text: &str| BlockNode::ListItem {
++            children: vec![BlockNode::Paragraph(selected_paragraph(text))],
++            spread: false,
++            checked: None,
++            span: None,
++        };
++        let list = BlockNode::List {
++            ordered: true,
++            start: Some(3),
++            span: None,
++            children: vec![item("three"), item("four")],
++        };
++        assert_eq!(
++            list.selected_text(SelectionFormat::Source),
++            "3. three\n4. four\n"
++        );
++        assert_eq!(list.to_markdown(), "3. three\n4. four");
++    }
++
+     #[test]
+     fn ordered_list_selected_source_prefixes_numbers() {
+         let list = BlockNode::List {
+             ordered: true,
++            start: None,
+             span: None,
+             children: vec![
+                 BlockNode::ListItem {
+@@ -3505,6 +3557,7 @@ mod tests {
+         // - two
+         let nested = BlockNode::List {
+             ordered: false,
++            start: None,
+             span: None,
+             children: vec![BlockNode::ListItem {
+                 children: vec![BlockNode::Paragraph(selected_paragraph("nested"))],
+@@ -3515,6 +3568,7 @@ mod tests {
+         };
+         let list = BlockNode::List {
+             ordered: false,
++            start: None,
+             span: None,
+             children: vec![
+                 BlockNode::ListItem {
+@@ -3541,6 +3595,7 @@ mod tests {
+     fn task_list_selected_source_restores_checkboxes() {
+         let list = BlockNode::List {
+             ordered: false,
++            start: None,
+             span: None,
+             children: vec![
+                 BlockNode::ListItem {
+@@ -3832,6 +3887,7 @@ mod tests {
+                 BlockNode::Paragraph(selected_paragraph("start")),
+                 BlockNode::List {
+                     ordered: true,
++                    start: None,
+                     children: vec![],
+                     span: Some(Span {
+                         start: list_start,
+@@ -3974,6 +4030,7 @@ mod tests {
+                 selected_code_block("let x = 1;\n", Some("rust")),
+                 BlockNode::List {
+                     ordered: true,
++                    start: None,
+                     span: None,
+                     children: vec![
+                         BlockNode::ListItem {
+diff --git a/crates/base/src/text/render_model.rs b/crates/base/src/text/render_model.rs
+index d8527520..fa55060e 100644
+--- a/crates/base/src/text/render_model.rs
++++ b/crates/base/src/text/render_model.rs
+@@ -58,14 +58,23 @@ fn write_block(out: &mut String, block: &BlockNode, cx: &NodeContext, tight: boo
+             out.push_str("</blockquote>\n");
+         }
+         BlockNode::List {
+-            children, ordered, ..
++            children,
++            ordered,
++            start,
++            ..
+         } => {
++            match (*ordered, start) {
++                (true, Some(start)) if *start != 1 => {
++                    out.push_str(&format!("<ol start=\"{start}\">\n"))
++                }
++                (true, _) => out.push_str("<ol>\n"),
++                (false, _) => out.push_str("<ul>\n"),
++            }
+             // The node model keeps `spread` per item only; a list is loose
+             // when any of its items is.
+             let loose = children
+                 .iter()
+                 .any(|item| matches!(item, BlockNode::ListItem { spread: true, .. }));
+-            out.push_str(if *ordered { "<ol>\n" } else { "<ul>\n" });
+             for child in children {
+                 write_block(out, child, cx, !loose);
+             }
+@@ -92,7 +101,14 @@ fn write_block(out: &mut String, block: &BlockNode, cx: &NodeContext, tight: boo
+                 }
+                 _ => out.push_str("<pre><code>"),
+             }
+-            out.push_str(&escape(&code.code()));
++            // A block keeps its content without the terminal line ending
++            // (`CodeBlock::code`); HTML's `<pre>` text ends with it, so write
++            // it back or a block's last blank line would be lost.
++            let text = code.code();
++            out.push_str(&escape(&text));
++            if !text.is_empty() {
++                out.push('\n');
++            }
+             out.push_str("</code></pre>\n");
+         }
+         BlockNode::Custom(node) => {
+diff --git a/crates/base/src/text/utils.rs b/crates/base/src/text/utils.rs
+index 39e7eb12..8b416666 100644
+--- a/crates/base/src/text/utils.rs
++++ b/crates/base/src/text/utils.rs
+@@ -5,12 +5,16 @@ const NUMBERED_PREFIXES_2: &str = "abcdefghijklmnopqrstuvwxyz";
+ 
+ const BULLETS: [&str; 5] = ["•", "◦", "▪", "‣", "⁃"];
+ 
+-/// Returns the prefix for a list item.
+-pub(super) fn list_item_prefix(ix: usize, ordered: bool, depth: usize) -> String {
++/// Returns the prefix for a list item. `start` is the number of the list's
++/// first item (1 unless the source says otherwise).
++pub(super) fn list_item_prefix(ix: usize, ordered: bool, depth: usize, start: u32) -> String {
+     if ordered {
++        let number = start as usize + ix;
+         if depth == 0 {
+-            return format!("{}. ", ix + 1);
++            return format!("{}. ", number);
+         }
++        // Nested lists count in letters: A for 1, B for 2, ...
++        let ix = number.saturating_sub(1);
+ 
+         if depth == 1 {
+             return format!(
+@@ -80,22 +84,28 @@ mod tests {
+ 
+     #[test]
+     fn test_list_item_prefix() {
+-        assert_eq!(list_item_prefix(0, true, 0), "1. ");
+-        assert_eq!(list_item_prefix(1, true, 0), "2. ");
+-        assert_eq!(list_item_prefix(2, true, 0), "3. ");
+-        assert_eq!(list_item_prefix(10, true, 0), "11. ");
+-        assert_eq!(list_item_prefix(0, true, 1), "A. ");
+-        assert_eq!(list_item_prefix(1, true, 1), "B. ");
+-        assert_eq!(list_item_prefix(2, true, 1), "C. ");
+-        assert_eq!(list_item_prefix(0, true, 2), "a. ");
+-        assert_eq!(list_item_prefix(1, true, 2), "b. ");
+-        assert_eq!(list_item_prefix(6, true, 2), "g. ");
+-        assert_eq!(list_item_prefix(0, true, 1), "A. ");
+-        assert_eq!(list_item_prefix(0, true, 2), "a. ");
+-        assert_eq!(list_item_prefix(0, false, 0), "• ");
+-        assert_eq!(list_item_prefix(0, false, 1), "◦ ");
+-        assert_eq!(list_item_prefix(0, false, 2), "▪ ");
+-        assert_eq!(list_item_prefix(0, false, 3), "‣ ");
+-        assert_eq!(list_item_prefix(0, false, 4), "⁃ ");
++        assert_eq!(list_item_prefix(0, true, 0, 1), "1. ");
++        assert_eq!(list_item_prefix(1, true, 0, 1), "2. ");
++        assert_eq!(list_item_prefix(2, true, 0, 1), "3. ");
++        assert_eq!(list_item_prefix(10, true, 0, 1), "11. ");
++        assert_eq!(list_item_prefix(0, true, 1, 1), "A. ");
++        assert_eq!(list_item_prefix(1, true, 1, 1), "B. ");
++        assert_eq!(list_item_prefix(2, true, 1, 1), "C. ");
++        assert_eq!(list_item_prefix(0, true, 2, 1), "a. ");
++        assert_eq!(list_item_prefix(1, true, 2, 1), "b. ");
++        assert_eq!(list_item_prefix(6, true, 2, 1), "g. ");
++        assert_eq!(list_item_prefix(0, true, 1, 1), "A. ");
++        assert_eq!(list_item_prefix(0, true, 2, 1), "a. ");
++        assert_eq!(list_item_prefix(0, false, 0, 1), "• ");
++        assert_eq!(list_item_prefix(0, false, 1, 1), "◦ ");
++        assert_eq!(list_item_prefix(0, false, 2, 1), "▪ ");
++        assert_eq!(list_item_prefix(0, false, 3, 1), "‣ ");
++        assert_eq!(list_item_prefix(0, false, 4, 1), "⁃ ");
++        // A list that starts at 3 counts on from there, in numbers and letters.
++        assert_eq!(list_item_prefix(0, true, 0, 3), "3. ");
++        assert_eq!(list_item_prefix(1, true, 0, 3), "4. ");
++        assert_eq!(list_item_prefix(0, true, 0, 0), "0. ");
++        assert_eq!(list_item_prefix(1, true, 1, 3), "D. ");
++        assert_eq!(list_item_prefix(0, true, 2, 3), "c. ");
+     }
+ }
