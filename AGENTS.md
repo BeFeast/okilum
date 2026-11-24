@@ -133,6 +133,9 @@ Fixture vaults and file ages:
 - `mtime: {<vault-relative path>: <days_ago>}` sets file mtimes after the copy and
   generation. The runner stats each file, fails on a mismatch, prints a `verify: mtime` line
   and records `vault_mtimes` in `result.json`.
+- `vault_read_only: true` makes the finished vault read-only like an archive
+  (`chmod a-w`: files 0444, folders 0555) and records `vault_read_only` in `result.json`
+  (`acceptance/vault-rename-read-only.yaml`).
 
 Word geometry:
 

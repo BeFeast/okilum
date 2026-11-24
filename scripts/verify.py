@@ -631,6 +631,15 @@ def run(args, scenario, output, result):
                                    for i, path in enumerate(numbered_paths(spec))))
         rebase_jsonl_dates(vault, scenario.get('jsonl_latest_days_ago', {}))
         apply_mtimes(vault, scenario.get('mtime', {}), result)
+        if scenario.get('vault_read_only'):
+            # Like an archived vault after `chmod -R a-w`: every file and folder.
+            for directory, _, files in os.walk(vault, topdown=False):
+                for name in files:
+                    (Path(directory) / name).chmod(0o444)
+                Path(directory).chmod(0o555)
+            require(not os.access(vault / '.okilum', os.W_OK) and not os.access(vault, os.W_OK),
+                    'The read-only fixture vault is writable')
+            result['vault_read_only'] = True
         for step in scenario['steps']:
             if 'text' in step:
                 for name, mtime in result.get('vault_mtimes', {}).items():

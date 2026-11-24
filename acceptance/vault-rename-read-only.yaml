@@ -1,0 +1,45 @@
+# A read-only archive vault (chmod a-w, `read_only: true` as on the archived
+# Brain): Rename vault explains up front that the name cannot change, and an
+# attempt leaves the name as it was. Before the fix the attempt failed silently.
+appearance: light
+note: |
+  # Archive note
+
+  The quick brown fox reads an archive.
+region: [300, 90, 800, 540]
+ready_text: quick brown fox
+vault_read_only: true
+rig:
+  persistent_pointer: true
+generate:
+  - path: .okilum/vault.json
+    kind: text
+    text: '{"version": 1, "name": "Old Brain", "read_only": true}'
+steps:
+  - id: open-settings
+    keys: [comma]
+    mods: [ctrl]
+    wait: 2
+    region: [292, 100, 782, 545]
+    text: Settings
+  - id: vaults
+    hover: [350, 306]
+    click: [350, 306]
+    wait: 2
+    region: [490, 220, 560, 60]
+    text_order: [Old Brain, Rename]
+  - id: rename-explained
+    hover: [960, 255]
+    click: [960, 255]
+    wait: 1.5
+    region: [292, 100, 782, 545]
+    text_order: [Rename vault, read-only]
+  - id: rename-attempt
+    type: Renamed vault
+    keys: [Return]
+    wait: 1.5
+    region: [292, 100, 782, 545]
+    text_order: [Rename vault, read-only, not changed]
+  - id: name-unchanged
+    region: [0, 50, 280, 40]
+    text: Old Brain
