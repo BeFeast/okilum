@@ -397,12 +397,15 @@ fn analyze_block_mapping(
             block_scalar_indent = None;
         }
 
-        if open_quote.is_some() || flow_depth > 0 {
+        if open_quote.is_some() {
             let Some(cur) = current_entry else {
                 return Err("Frontmatter is not a plain block mapping".into());
             };
             entries[cur].has_continuation_lines = true;
             scan_yaml_fragment(raw, &mut open_quote, &mut flow_depth, false)?;
+            if flow_depth > 0 {
+                return Err("Multi-line flow collections in frontmatter are not supported".into());
+            }
             continue;
         }
 
@@ -420,11 +423,14 @@ fn analyze_block_mapping(
 
         if indent > 0 {
             let Some(cur) = current_entry else {
-                return Err("Frontmatter is not a plain top-level block mapping".into());
+                return Err("Frontmatter keys are indented; edit the note directly".into());
             };
             entries[cur].has_continuation_lines = true;
             let starts_block =
                 scan_indented_line(trimmed_start, indent, &mut open_quote, &mut flow_depth)?;
+            if flow_depth > 0 {
+                return Err("Multi-line flow collections in frontmatter are not supported".into());
+            }
             if starts_block {
                 block_scalar_indent = Some(indent);
             }
@@ -467,6 +473,9 @@ fn analyze_block_mapping(
         let after_colon = &raw[colon_rel + 1..];
         let is_block_scalar_header =
             scan_value_after_colon(after_colon, &mut open_quote, &mut flow_depth)?;
+        if flow_depth > 0 {
+            return Err("Multi-line flow collections in frontmatter are not supported".into());
+        }
         if is_block_scalar_header {
             block_scalar_indent = Some(0);
         }
@@ -1484,6 +1493,48 @@ mod tests {
                 "status",
             ),
             (
+                "multiline-flow-anchor-alias",
+                "state/dev/okilum/m4.md",
+                "---\nmeta: [\n  &a foo,\n  *a\n]\nstatus: active\n---\n# Body\n",
+                "status",
+            ),
+            (
+                "multiline-flow-anchor-only",
+                "state/dev/okilum/m5.md",
+                "---\nmeta: [\n  &a foo\n]\nstatus: active\n---\n# Body\n",
+                "status",
+            ),
+            (
+                "multiline-flow-tag",
+                "state/dev/okilum/m6.md",
+                "---\nmeta: [\n  !!str foo\n]\nstatus: active\n---\n# Body\n",
+                "status",
+            ),
+            (
+                "multiline-flow-map-anchor",
+                "state/dev/okilum/m7.md",
+                "---\nmeta: {\n  a:\n    &x 1\n}\nstatus: active\n---\n# Body\n",
+                "status",
+            ),
+            (
+                "multiline-flow-map-value-anchor",
+                "state/dev/okilum/m8.md",
+                "---\nmeta: {a:\n  &x 1}\nstatus: active\n---\n# Body\n",
+                "status",
+            ),
+            (
+                "multiline-flow-plain",
+                "state/dev/okilum/m9.md",
+                "---\nmeta: [\n  foo,\n  bar\n]\nstatus: active\n---\n# Body\n",
+                "status",
+            ),
+            (
+                "indented-root-mapping",
+                "state/dev/okilum/m10.md",
+                "---\n  type: project\n  status: active\n---\n# Body\n",
+                "status",
+            ),
+            (
                 "tag-target",
                 "state/dev/okilum/n.md",
                 "---\ntype: project\nstatus: !!str active\n---\n# Body\n",
@@ -1608,8 +1659,14 @@ mod tests {
                 "due" => "2026-12-15",
                 _ => unreachable!(),
             };
-            let res = write::apply(&root, &drafts, &schema, &target, field, value);
-            assert!(res.is_err(), "expected refusal for case '{label}'");
+            let err = write::apply(&root, &drafts, &schema, &target, field, value)
+                .expect_err(&format!("expected refusal for case '{label}'"));
+            if label == "indented-root-mapping" {
+                assert_eq!(
+                    err.to_string(),
+                    "Frontmatter keys are indented; edit the note directly"
+                );
+            }
             assert_eq!(
                 std::fs::read(&file).unwrap(),
                 content.as_bytes(),
