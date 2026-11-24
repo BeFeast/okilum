@@ -175,6 +175,46 @@ fn doc(body: &str) -> view::ViewDoc {
 }
 
 #[test]
+fn binds_authored_headings_and_reports_missing_title_parameters() {
+    let root = Path::new(FIXTURE);
+    let projection = projection(root, &[]);
+    let vault = Vault::scan(root).unwrap();
+    let ctx = RunContext::new(&projection, &vault, timestamp("2026-11-24T01:30:00+02:00"));
+    let doc = view::parse(
+        "@views/test.md",
+        r#"---
+type: view
+params: {subject: {type: text, default: "Rest & sleep"}}
+---
+# $subject
+
+## Notes for $subject and $missing
+```view
+from: notes
+show: list
+```
+"#,
+    )
+    .unwrap();
+    let result = view::run(&doc, &ctx);
+    assert_eq!(result.heading_labels["$subject"], "Rest & sleep");
+    assert_eq!(
+        result.heading_labels["Notes for $subject and $missing"],
+        "Notes for Rest & sleep and $missing"
+    );
+    assert_eq!(
+        result.sections[0].title,
+        "Notes for Rest & sleep and $missing"
+    );
+    assert!(result.findings.iter().any(|finding| {
+        finding.line == 7 && finding.message == "Unbound heading parameter '$missing'"
+    }));
+    let markdown = view::render_markdown(&result);
+    assert!(markdown.contains("# Rest \\& sleep"));
+    assert!(markdown.contains("## Notes for Rest \\& sleep and $missing"));
+}
+
+#[test]
 fn calendar_midnight_applies_to_typed_note_and_jsonl_timestamps() {
     let root = tempfile::tempdir().unwrap();
     fs::create_dir(root.path().join("@views")).unwrap();

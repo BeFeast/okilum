@@ -24,6 +24,10 @@ steps:
     click: [50, 200]
     region: [340, 128, 430, 58]
     text: Health
+  - id: bound-contents-title
+    region: [1095, 277, 250, 105]
+    text: Health
+    text_absent: $domain
   - id: sleep-tracking-row
     region: [363, 299, 112, 50]
     text: "Sleep\ntracking"

@@ -17,6 +17,7 @@ pub struct ViewDoc {
     pub(super) front_text: String,
     pub(super) blocks: Vec<SectionDoc>,
     pub(super) parts: Vec<Part>,
+    pub(super) headings: Vec<(usize, String, String)>,
 }
 
 impl ViewDoc {
@@ -318,6 +319,7 @@ pub fn parse(path: &str, source: &str) -> Result<ViewDoc, Vec<Finding>> {
     let root = parse_document(&arena, body, &crate::render::comrak_options());
     let mut blocks = Vec::new();
     let mut parts = Vec::new();
+    let mut headings = Vec::new();
     let mut heading = None;
     let mut prose_start = 0;
     for node in root.children() {
@@ -333,6 +335,11 @@ pub fn parse(path: &str, source: &str) -> Result<ViewDoc, Vec<Finding>> {
                         NodeValue::SoftBreak | NodeValue::LineBreak => title.push(' '),
                         _ => {}
                     }
+                }
+                let end = data.sourcepos.end.line.min(lines.len() - 1);
+                let markdown = &body[lines[start - 1]..lines[end]];
+                if markdown.contains('$') {
+                    headings.push((prefix + start, title.clone(), markdown.to_owned()));
                 }
                 heading = Some((start, title));
             }
@@ -388,6 +395,7 @@ pub fn parse(path: &str, source: &str) -> Result<ViewDoc, Vec<Finding>> {
         front_text: front.into(),
         blocks,
         parts,
+        headings,
     })
 }
 
@@ -561,7 +569,7 @@ fn scalar_arg(value: &Json) -> bool {
     value.is_string() || value.is_number()
 }
 
-fn name(text: &str) -> bool {
+pub(super) fn name(text: &str) -> bool {
     let mut bytes = text.bytes();
     bytes
         .next()

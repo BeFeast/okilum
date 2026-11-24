@@ -1165,6 +1165,16 @@ impl Reader {
                         };
                         let p = brand::palette(cx);
                         let target = heading.clone();
+                        let label = this
+                            .pane
+                            .query_navigation
+                            .active
+                            .borrow()
+                            .as_ref()
+                            .map_or(heading.text.as_str(), |query| {
+                                query.heading_label(&heading.text)
+                            })
+                            .to_owned();
                         let is_current = current == Some(ix);
                         let indent = f32::from(heading.level.saturating_sub(base)) * 12.;
                         div()
@@ -1193,7 +1203,7 @@ impl Reader {
                                 div()
                                     .debug_selector(move || format!("reader-outline-text-{ix}"))
                                     .text_ellipsis()
-                                    .child(heading.text.clone()),
+                                    .child(label),
                             )
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.open_outline_heading(target.clone(), window, cx);

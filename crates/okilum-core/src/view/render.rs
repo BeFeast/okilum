@@ -6,6 +6,18 @@ use super::{
 use serde_json::Value as Json;
 use std::fmt::Write;
 
+fn parameters(text: &str) -> impl Iterator<Item = (usize, &str)> {
+    text.match_indices('$').filter_map(|(pos, _)| {
+        let tail = &text[pos + 1..];
+        let len = tail
+            .bytes()
+            .take_while(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+            .count();
+        let name = &tail[..len];
+        super::parse::name(name).then_some((pos, name))
+    })
+}
+
 /// Stable JSON envelope. Struct member order keeps view_api at the front.
 pub fn render_json(result: &ViewResult) -> serde_json::Result<String> {
     let mut json = serde_json::to_string_pretty(result)?;
@@ -31,16 +43,8 @@ fn escape(text: &str) -> String {
 pub(super) fn substitute(text: &str, params: &Params, markdown: bool) -> String {
     let mut result = String::new();
     let mut start = 0;
-    for (pos, _) in text.match_indices('$') {
-        if pos < start {
-            continue;
-        }
-        let tail = &text[pos + 1..];
-        let len = tail
-            .bytes()
-            .take_while(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
-            .count();
-        let Some(value) = params.get(&tail[..len]) else {
+    for (pos, name) in parameters(text) {
+        let Some(value) = params.get(name) else {
             continue;
         };
         let value = bind::value_text(value);
@@ -50,10 +54,47 @@ pub(super) fn substitute(text: &str, params: &Params, markdown: bool) -> String 
         } else {
             result.push_str(&value);
         }
-        start = pos + 1 + len;
+        start = pos + 1 + name.len();
     }
     result.push_str(&text[start..]);
     result
+}
+
+pub(super) fn bind_headings(
+    doc: &super::ViewDoc,
+    params: &Params,
+    findings: &mut Vec<super::Finding>,
+) -> std::collections::BTreeMap<String, String> {
+    let mut labels = std::collections::BTreeMap::new();
+    for (line, title, markdown) in &doc.headings {
+        let mut missing = std::collections::BTreeSet::new();
+        let rendered = crate::prose::replace_in_prose(markdown, |chunk| {
+            missing.extend(
+                parameters(chunk)
+                    .map(|(_, name)| name)
+                    .filter(|name| !params.contains_key(*name))
+                    .map(str::to_owned),
+            );
+            substitute(chunk, params, true)
+        });
+        findings.extend(missing.into_iter().map(|name| super::Finding {
+            path: doc.path.clone(),
+            line: *line,
+            col: 1,
+            severity: super::Severity::Warning,
+            message: format!("Unbound heading parameter '${name}'"),
+        }));
+        if rendered != *markdown {
+            if let Some(heading) = crate::document_links::HeadingInventory::new(&rendered)
+                .entries
+                .into_iter()
+                .next()
+            {
+                labels.insert(title.clone(), heading.text);
+            }
+        }
+    }
+    labels
 }
 
 pub(super) fn substitute_parts(parts: &[Part], params: &Params) -> Vec<Part> {

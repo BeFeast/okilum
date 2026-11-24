@@ -27,9 +27,16 @@ pub(super) struct Navigation {
 pub(super) struct Content {
     pub text: Entity<TextViewState>,
     headings: Arc<[HeadingEntry]>,
+    heading_labels: Arc<BTreeMap<String, String>>,
 }
 
 impl Content {
+    pub(super) fn heading_label<'a>(&'a self, source: &'a str) -> &'a str {
+        self.heading_labels
+            .get(source)
+            .map_or(source, String::as_str)
+    }
+
     /// Source offsets still belong to the canonical note. Resolve its heading
     /// against the generated document before scrolling the visible list.
     pub(super) fn landing(
@@ -43,10 +50,11 @@ impl Content {
         let Some(heading) = source.iter().find(|h| h.target.block == position.item_ix) else {
             return Err("This source position has no heading in the query view.");
         };
+        let label = self.heading_label(&heading.text);
         let mut matches = self
             .headings
             .iter()
-            .filter(|entry| entry.text == heading.text && entry.level == heading.level);
+            .filter(|entry| entry.text == label && entry.level == heading.level);
         let first = matches.next();
         match (first, matches.next()) {
             (Some(target), None) => Ok(ListOffset {
@@ -101,7 +109,7 @@ fn evaluate(
     index: &Index,
     vault: &Vault,
     searcher: Option<&Searcher>,
-) -> Result<String, String> {
+) -> Result<(String, BTreeMap<String, String>), String> {
     let doc = view::parse(path, &request.source).map_err(|findings| {
         findings
             .into_iter()
@@ -111,7 +119,7 @@ fn evaluate(
     })?;
     let projection = match &index.projection {
         Ok(projection) => projection,
-        Err(error) => return Ok(markdown::unavailable(error)),
+        Err(error) => return Ok((markdown::unavailable(error), BTreeMap::new())),
     };
     let mut run = view::RunContext::new(projection, vault, chrono::Local::now().fixed_offset());
     run.generation = request.epoch;
@@ -119,7 +127,8 @@ fn evaluate(
     if let Some(bindings) = &request.bindings {
         run.args = bindings.args.clone();
     }
-    Ok(markdown::render(&view::run(&doc, &run)))
+    let result = view::run(&doc, &run);
+    Ok((markdown::render(&result), result.heading_labels))
 }
 
 pub(super) fn render(
@@ -170,7 +179,7 @@ pub(super) fn render(
         let worker = cx.background_executor().spawn(async move {
             let _lease = lease;
             evaluate(&input_path, &input, &index, &vault, searcher.as_deref())
-                .map(|markdown| (note_outline(&markdown), markdown))
+                .map(|(markdown, labels)| (note_outline(&markdown), markdown, labels))
         });
         let target = cache.downgrade();
         let task = cx.spawn_in(window, async move |reader, cx| {
@@ -182,7 +191,7 @@ pub(super) fn render(
                         return;
                     }
                     match output {
-                        Ok((headings, markdown)) => {
+                        Ok((headings, markdown, labels)) => {
                             cache.fallback = false;
                             let content = cache.content.get_or_insert_with(|| Content {
                                 text: cx.new(|cx| {
@@ -192,8 +201,10 @@ pub(super) fn render(
                                         .retain_selection_on_layout(true)
                                 }),
                                 headings: Arc::default(),
+                                heading_labels: Arc::default(),
                             });
                             content.headings = headings.into();
+                            content.heading_labels = Arc::new(labels);
                             content
                                 .text
                                 .update(cx, |state, cx| state.set_text(&markdown, cx));

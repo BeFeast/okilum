@@ -75,6 +75,8 @@ pub struct ViewResult {
     pub sections: Vec<Section>,
     #[serde(skip)]
     pub(super) parts: Vec<Part>,
+    #[serde(skip)]
+    pub heading_labels: BTreeMap<String, String>,
 }
 
 /// Presentation order, including Markdown between executable sections.
@@ -1011,6 +1013,7 @@ fn execute(doc: &ViewDoc, runner: &mut Runner<'_, '_>) -> ViewResult {
         findings: parse::front_checks(doc, schema),
         sections: Vec::new(),
         parts: Vec::new(),
+        heading_labels: BTreeMap::new(),
     };
     let template = if let Some(target) = &doc.front.extends {
         let template = runner.resolve(doc, target).and_then(|path| {
@@ -1061,7 +1064,9 @@ fn execute(doc: &ViewDoc, runner: &mut Runner<'_, '_>) -> ViewResult {
         .iter()
         .map(|(key, value)| (key.clone(), value.to_json(ctx.vault, &doc.path)))
         .collect();
+    result.heading_labels = super::render::bind_headings(doc, &vars, &mut result.findings);
     if template.is_some() {
+        super::render::bind_headings(definition, &vars, &mut result.findings);
         result
             .parts
             .extend(super::render::substitute_parts(&doc.parts, &vars));
