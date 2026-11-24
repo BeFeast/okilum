@@ -1,0 +1,91 @@
+# Open a depth-two graph from the seed note, check its three nodes and an edge,
+# then follow a node to its source note.
+vault: crates/okilum-core/tests/fixtures/views
+open: "@views/health.md"
+appearance: dark
+preferences:
+  theme: obsidianite
+  note_open_mode: read
+rig:
+  persistent_pointer: true
+region: [265, 90, 840, 645]
+ready_text: Health
+steps:
+  - id: seed-links
+    vault_replace:
+      path: knowledge/sleep-hygiene.md
+      before: normalises to Health.
+      after: |
+        normalises to Health.
+
+        [[state/dev/common/conventions]] and [[state/dev/tasker/roadmap]].
+  - id: second-hop
+    vault_replace:
+      path: state/dev/common/conventions.md
+      before: See the
+      after: |
+        [[state/dev/okilum/roadmap]]
+
+        See the
+  - id: third-hop
+    vault_replace:
+      path: state/dev/okilum/roadmap.md
+      before: 2. Project records as views.
+      after: |
+        2. Project records as views.
+
+        [[knowledge/rust-error-handling]]
+  - id: graph-nodes
+    vault_replace:
+      path: "@views/health.md"
+      before: |
+        extends: "[[@views/domain]]"
+        args: {domain: Health}
+        ---
+      after: |
+        ---
+        ## References
+
+        ```view
+        from: notes
+        links: {from: "[[knowledge/sleep-hygiene]]", depth: 2}
+        sort: path
+        cols: [title]
+        show: graph
+        ```
+    text: References
+    pixels:
+      region: [340, 170, 510, 120]
+      expression: 'r<0.25 && g>0.5 && b>0.65 ? 1 : 0'
+      min: 280
+      max: 350
+  - id: conventions-node
+    pixels:
+      region: [362, 188, 25, 24]
+      expression: 'r<0.25 && g>0.5 && b>0.65 ? 1 : 0'
+      min: 70
+      max: 105
+  - id: okilum-node
+    pixels:
+      region: [528, 188, 25, 24]
+      expression: 'r<0.25 && g>0.5 && b>0.65 ? 1 : 0'
+      min: 70
+      max: 105
+  - id: tasker-node
+    pixels:
+      region: [694, 188, 25, 24]
+      expression: 'r<0.25 && g>0.5 && b>0.65 ? 1 : 0'
+      min: 70
+      max: 105
+  - id: graph-edge
+    pixels:
+      region: [495, 170, 20, 120]
+      expression: 'r<0.25 && g>0.5 && b>0.65 ? 1 : 0'
+      min: 18
+      max: 65
+  - id: ambiguous-link
+    text_order: [Ambiguous link, state/dev/okilum/roadmap.md, state/dev/tasker/roadmap.md]
+    text_absent: Rust error handling
+  - id: open-source
+    click: [574, 199]
+    text: Project records as views

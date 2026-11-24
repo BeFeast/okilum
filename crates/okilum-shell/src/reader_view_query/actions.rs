@@ -24,6 +24,7 @@ struct ActionBlock {
     cols: Vec<String>,
     rows: Vec<ActionRow>,
     groups: Vec<DisplayGroup>,
+    graph: Option<graph::Graph>,
 }
 
 pub(super) struct DisplayGroup {
@@ -111,6 +112,19 @@ impl Blocks {
             cols: section.cols.clone(),
             rows,
             groups: Vec::new(),
+            graph: None,
+        });
+        index
+    }
+
+    pub(super) fn push_graph(&mut self, graph: graph::Graph) -> usize {
+        let index = self.items.len();
+        self.items.push(ActionBlock {
+            show: Show::Graph,
+            cols: Vec::new(),
+            rows: Vec::new(),
+            groups: Vec::new(),
+            graph: Some(graph),
         });
         index
     }
@@ -408,6 +422,10 @@ fn render_block(
         Show::Timeline => {
             Some(timeline::render(&block.groups, &block.rows, &render).into_any_element())
         }
+        Show::Graph => block
+            .graph
+            .as_ref()
+            .map(|graph| graph.render(reader, root, cx).into_any_element()),
         _ => None,
     };
     if let Some(display) = display {

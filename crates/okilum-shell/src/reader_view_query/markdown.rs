@@ -1,8 +1,9 @@
-use super::actions;
+use super::{actions, graph};
 use okilum_core::{
     records::Projection,
     tasks::Index as TasksIndex,
     view::{Finding, Row, Section, Show, Status, ViewPart, ViewResult},
+    Vault,
 };
 use serde_json::Value;
 use std::{fmt::Write, sync::Arc};
@@ -161,12 +162,17 @@ fn diagnostics(out: &mut String, findings: &[Finding]) {
     }
 }
 
+struct DisplayData<'a> {
+    projection: &'a Projection,
+    tasks: Option<&'a Arc<TasksIndex>>,
+    vault: &'a Vault,
+}
+
 fn section(
     out: &mut String,
     section: &Section,
     heading: &str,
-    projection: &Projection,
-    tasks: Option<&Arc<TasksIndex>>,
+    data: &DisplayData<'_>,
     blocks: &mut actions::Blocks,
 ) {
     if !heading.is_empty() {
@@ -184,17 +190,24 @@ fn section(
     if let Some(time) = section.snapshot_clock() {
         writeln!(out, "> snapshot {time}\n").unwrap();
     }
-    if let Some(label) = match section.show {
-        Show::Graph => Some("Graph"),
-        Show::Tree => Some("Tree"),
-        _ => None,
-    } {
-        writeln!(out, "> {label} shown as table\n").unwrap();
+    if section.show == Show::Tree {
+        out.push_str("> Tree shown as table\n\n");
     }
     if section.rows.is_empty() && section.groups.is_empty() && !section.truncated {
         out.push_str("No results.\n\n");
     }
-    if matches!(section.show, Show::Board | Show::Timeline | Show::Cards) {
+    let DisplayData {
+        projection,
+        tasks,
+        vault,
+    } = *data;
+    if section.show == Show::Graph {
+        if !section.rows.is_empty() {
+            let index = blocks.push_graph(graph::Graph::build(section, projection, vault));
+            out.push_str(&blocks.fence(index));
+            out.push('\n');
+        }
+    } else if matches!(section.show, Show::Board | Show::Timeline | Show::Cards) {
         if !section.rows.is_empty() || !section.groups.is_empty() {
             let index = blocks.push_display(section, projection, tasks);
             out.push_str(&blocks.fence(index));
@@ -253,10 +266,16 @@ fn section(
 pub(super) fn render(
     result: &ViewResult,
     projection: &Projection,
+    vault: &Vault,
     tasks: Option<&Arc<TasksIndex>>,
 ) -> (String, actions::Blocks) {
     let mut markdown = String::new();
     let mut blocks = actions::Blocks::new();
+    let data = DisplayData {
+        projection,
+        tasks,
+        vault,
+    };
     diagnostics(&mut markdown, &result.findings);
     for part in result.parts() {
         match part {
@@ -265,14 +284,7 @@ pub(super) fn render(
                 heading,
                 section: output,
             } => {
-                section(
-                    &mut markdown,
-                    output,
-                    heading,
-                    projection,
-                    tasks,
-                    &mut blocks,
-                );
+                section(&mut markdown, output, heading, &data, &mut blocks);
             }
         }
     }

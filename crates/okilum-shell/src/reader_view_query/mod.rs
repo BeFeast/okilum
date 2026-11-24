@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 mod actions;
 mod board;
 mod cards;
+mod graph;
 mod index;
 mod markdown;
 mod timeline;
@@ -164,7 +165,7 @@ fn evaluate(
         run.args = bindings.args.clone();
     }
     let result = view::run(&doc, &run);
-    let (markdown, blocks) = markdown::render(&result, projection, request.tasks.as_ref());
+    let (markdown, blocks) = markdown::render(&result, projection, vault, request.tasks.as_ref());
     Ok(Evaluated {
         markdown,
         labels: result.heading_labels,
