@@ -1326,10 +1326,22 @@ mod tests {
             folder.join("B/C.md"),
             "the document is in Recent"
         );
-        // A document that is gone fails visibly; it is not replaced by `B`.
+        // A document that is gone reopens its window in the original mode
+        // with no file selected (#3267): still the folder `A`, never `B`,
+        // and never a vault.
         std::fs::remove_file(folder.join("B").join("C.md")).unwrap();
         let (_, _, selected) = history(Ok(state)).unwrap();
-        assert!(selected.unwrap().1.is_err());
+        let (root, intent) = selected.unwrap();
+        assert_eq!(root, folder);
+        assert_eq!(
+            intent.unwrap(),
+            reader_open::OpenIntent {
+                root: folder.clone(),
+                single_file: true,
+                note: None,
+                created_note: false,
+            }
+        );
     }
 
     /// #3124, end to end: whether the window set was saved (Quit, macOS
