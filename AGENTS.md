@@ -134,6 +134,15 @@ Fixture vaults and file ages:
   generation. The runner stats each file, fails on a mismatch, prints a `verify: mtime` line
   and records `vault_mtimes` in `result.json`.
 
+Word geometry:
+
+- `layout:` on a step is a list of `{a, b, axis, min, max, more_than, less_than}` rules
+  over Tesseract word boxes (`a`/`b` are single words, first exact match). The gap is
+  `top(b) - top(a)` on `axis: y` (default) or `left(b) - right(a)` on `axis: x`, in
+  screenshot pixels. `more_than`/`less_than: {a, b, axis, by}` compare it with another
+  pair's gap, so a rule like "one empty line more than a paragraph break" does not hard-code
+  font metrics. `result.json` records every gap (`acceptance/markdown-breaks.yaml`).
+
 10. Run affected scenarios before pushing; during the direct-session experiment this own smoke replaces the daytime PR/CI gate.
 
 ## Merge gate

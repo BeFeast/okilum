@@ -147,6 +147,58 @@ def text(path, region):
                    capture_output=True).stdout.decode()
 
 
+
+def words(path, region):
+    """OCR words with their boxes in screenshot pixels: [{text, left, top, right, bottom}]."""
+    x, y, width, height = region
+    image = command('convert', path, '-crop', f'{width}x{height}+{x}+{y}',
+                    '+repage', '-resize', '200%', 'png:-', capture_output=True).stdout
+    tsv = command('tesseract', 'stdin', 'stdout', '--psm', '6', 'tsv', input=image,
+                  capture_output=True).stdout.decode()
+    found = []
+    for row in tsv.splitlines()[1:]:
+        cols = row.split('\t')
+        if len(cols) < 12 or not cols[11].strip():
+            continue
+        left, top, w, h = (int(v) // 2 for v in cols[6:10])
+        found.append({'text': cols[11].strip(), 'left': x + left, 'top': y + top,
+                      'right': x + left + w, 'bottom': y + top + h})
+    return found
+
+
+def word_gap(found, rule):
+    """Distance from word `a` to word `b` (first exact OCR match each): on `axis: y`
+    (default) top(b) - top(a), on `axis: x` left(b) - right(a)."""
+    def box(name):
+        match = next((w for w in found if w['text'].strip('.,:;') == name), None)
+        require(match is not None, {'layout_missing_word': name, 'words': [w['text'] for w in found]})
+        return match
+    a, b = box(rule['a']), box(rule['b'])
+    return b['left'] - a['right'] if rule.get('axis', 'y') == 'x' else b['top'] - a['top']
+
+
+def check_layout(found, rules, check):
+    """`layout:` rules over OCR boxes: {a, b, axis, min, max, more_than, less_than}.
+    `more_than`/`less_than` are {a, b, axis, by}: the gap must be at least
+    control + by (default 1), or below control + by (default 0)."""
+    check['layout'] = []
+    for rule in rules:
+        gap = word_gap(found, rule)
+        entry = {'a': rule['a'], 'b': rule['b'], 'axis': rule.get('axis', 'y'), 'gap': gap}
+        check['layout'].append(entry)
+        if 'min' in rule:
+            require(gap >= rule['min'], check)
+        if 'max' in rule:
+            require(gap <= rule['max'], check)
+        if 'more_than' in rule:
+            base = word_gap(found, rule['more_than'])
+            entry['control_gap'] = base
+            require(gap >= base + rule['more_than'].get('by', 1), check)
+        if 'less_than' in rule:
+            base = word_gap(found, rule['less_than'])
+            entry['control_gap_less'] = base
+            require(gap < base + rule['less_than'].get('by', 0), check)
+
 SENTENCES = (
     'The river carried the morning light past the old stone bridge and into the quiet harbor.',
     'Mara opened her notebook and recorded the small changes that another traveler might overlook.',
@@ -724,6 +776,9 @@ def run(args, scenario, output, result):
                                     pos = found + len(needle)
                             if step.get('declared_tree_roots'):
                                 check_declared_tree_roots(vault, check['text'], check)
+                        if 'layout' in step:
+                            check_layout(words(shot, step.get('region', scenario['region'])),
+                                         step['layout'], check)
                         if 'max_ms' not in step and 'pixels' in step:
                             rule = step['pixels']
                             check['pixels'] = pixels(shot, rule['region'], rule['expression'])

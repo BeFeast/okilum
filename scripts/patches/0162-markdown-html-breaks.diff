@@ -1,0 +1,174 @@
+diff --git a/crates/base/src/text/format/html.rs b/crates/base/src/text/format/html.rs
+index 55dc5fcc..0638874d 100644
+--- a/crates/base/src/text/format/html.rs
++++ b/crates/base/src/text/format/html.rs
+@@ -664,6 +664,19 @@ fn consume_paragraph(children: &mut Vec<BlockNode>, paragraph: &mut Paragraph) {
+     if paragraph.is_empty() {
+         return;
+     }
++    // Whitespace between block-level elements (the line endings between
++    // `<br />` lines, `<p>`s or `<div>`s) collapses away in HTML; it is not an
++    // empty paragraph. U+00A0 (`&nbsp;`) is not HTML whitespace and stays.
++    if paragraph.children.iter().all(|node| {
++        node.image.is_none()
++            && node
++                .text
++                .chars()
++                .all(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0c'))
++    }) {
++        paragraph.take();
++        return;
++    }
+ 
+     children.push(BlockNode::Paragraph(paragraph.take()));
+ }
+diff --git a/crates/base/src/text/format/markdown.rs b/crates/base/src/text/format/markdown.rs
+index a23a6b44..4f819f1a 100644
+--- a/crates/base/src/text/format/markdown.rs
++++ b/crates/base/src/text/format/markdown.rs
+@@ -474,6 +474,15 @@ fn append_inline_html_blocks(paragraph: &mut Paragraph, blocks: Vec<BlockNode>)
+     Some(text)
+ }
+ 
++/// Whether the paragraph's last inline node is a line break (hard break or
++/// inline `<br>`), so the next text starts a new visual line.
++fn ends_with_break(paragraph: &Paragraph) -> bool {
++    paragraph
++        .children
++        .last()
++        .is_some_and(|node| node.image.is_none() && node.text.as_ref() == "\n")
++}
++
+ fn parse_paragraph(paragraph: &mut Paragraph, node: &mdast::Node, cx: &mut NodeContext) -> String {
+     let span = node.position().map(|pos| Span {
+         start: cx.offset + pos.start.offset,
+@@ -509,6 +518,12 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &mdast::Node, cx: &mut NodeC
+             // the CR with the newline: dropping only the newline would strand
+             // the CR in the middle of the reflowed line.
+             text = val.value.replace("\r\n", " ").replace(['\n', '\r'], " ");
++            // After a break the next visual line starts here. A soft break
++            // that follows an inline `<br>` became a space above; like HTML,
++            // whitespace does not indent the new line.
++            if ends_with_break(paragraph) {
++                text = text.trim_start_matches([' ', '\t']).to_string();
++            }
+             paragraph.push_str(&text)
+         }
+         Node::Emphasis(val) => {
+@@ -680,6 +695,11 @@ fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockN
+             val.children.iter().for_each(|c| {
+                 parse_paragraph(&mut paragraph, c, cx);
+             });
++            // A `<br>` that ends a paragraph does not add an empty last line,
++            // as in HTML; two of them still leave one.
++            if paragraph.children.len() > 1 && ends_with_break(&paragraph) {
++                paragraph.children.pop();
++            }
+             paragraph.span = new_span(val.position, cx);
+             BlockNode::Paragraph(paragraph)
+         }
+@@ -1160,6 +1180,85 @@ mod tests {
+         }
+     }
+ 
++    fn paragraph_texts(block: &BlockNode) -> Vec<String> {
++        let BlockNode::Paragraph(paragraph) = block else {
++            panic!("expected paragraph, got {block:?}");
++        };
++        paragraph
++            .children
++            .iter()
++            .map(|child| child.text.to_string())
++            .collect()
++    }
++
++    /// Inline `<br>`, `<br/>` and `<br />` break the line like a hard break;
++    /// the soft line ending after one does not indent the next line (#3259).
++    #[test]
++    fn test_inline_html_breaks_start_unindented_lines() {
++        let mut cx = NodeContext::default();
++        let document = parse("a<br>b<br/>c<br />\nd", &mut cx).unwrap();
++        assert_eq!(
++            paragraph_texts(&document.blocks[0]).concat(),
++            "a\nb\nc\nd"
++        );
++    }
++
++    /// A break that ends a paragraph adds no empty last line; two leave one.
++    #[test]
++    fn test_trailing_break_adds_no_empty_line() {
++        for (source, text) in [
++            ("a<br>", "a"),
++            ("a<br><br>", "a\n"),
++            ("<br>a", "\na"),
++        ] {
++            let mut cx = NodeContext::default();
++            let document = parse(source, &mut cx).unwrap();
++            assert_eq!(
++                paragraph_texts(&document.blocks[0]).concat(),
++                text,
++                "source: {source:?}"
++            );
++        }
++    }
++
++    /// `<br />` lines between paragraphs are one break block each, without
++    /// empty paragraphs for the line endings between them (#3259).
++    #[test]
++    fn test_html_block_breaks_are_one_line_each() {
++        fn leaves<'a>(block: &'a BlockNode, out: &mut Vec<&'a BlockNode>) {
++            match block {
++                BlockNode::Root { children, .. } => {
++                    children.iter().for_each(|child| leaves(child, out))
++                }
++                _ => out.push(block),
++            }
++        }
++        let mut cx = NodeContext::default();
++        let document = parse("a\n\n<br />\n<br />\n<br />\n\nb", &mut cx).unwrap();
++        assert_eq!(document.blocks.len(), 3);
++        let mut html = Vec::new();
++        leaves(&document.blocks[1], &mut html);
++        assert_eq!(html.len(), 3, "{:?}", document.blocks[1]);
++        assert!(
++            html.iter()
++                .all(|block| matches!(block, BlockNode::Break { html: true, .. })),
++            "{html:?}"
++        );
++    }
++
++    /// `&nbsp;` decodes to U+00A0 and is kept: a paragraph of it alone is an
++    /// empty line, and runs of it do not collapse.
++    #[test]
++    fn test_nbsp_entity_is_kept() {
++        let mut cx = NodeContext::default();
++        let document = parse("&nbsp;\n\na&nbsp;&nbsp;b &amp; c", &mut cx).unwrap();
++        assert_eq!(paragraph_texts(&document.blocks[0]).concat(), "\u{a0}");
++        assert_eq!(
++            paragraph_texts(&document.blocks[1]).concat(),
++            "a\u{a0}\u{a0}b & c"
++        );
++    }
++
+     #[derive(Debug, Clone, PartialEq)]
+     struct Ticker {
+         symbol: String,
+diff --git a/crates/base/src/text/node.rs b/crates/base/src/text/node.rs
+index 2fd1fc6d..5114d430 100644
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -3162,7 +3162,13 @@ impl BlockNode {
+                         .into_any_element(),
+                 })
+                 .into_any_element(),
+-            BlockNode::Break { .. } => div().id("break").into_any_element(),
++            // A `<br>` between blocks (an HTML block of its own) is one empty
++            // line, as in HTML: a no-break space gives it the line height of
++            // the surrounding text. Inline breaks never get here.
++            BlockNode::Break { .. } => div()
++                .id(("break", ix))
++                .child("\u{a0}")
++                .into_any_element(),
+             BlockNode::Unknown { .. } | BlockNode::Definition { .. } => div().into_any_element(),
+             _ => {
+                 if cfg!(debug_assertions) {

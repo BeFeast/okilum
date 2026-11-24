@@ -1,0 +1,29 @@
+# #3259: every Markdown way to break a line or add vertical space renders.
+# Hard breaks (two trailing spaces, backslash) and inline <br>, <br/>, <br />
+# start a new line inside the paragraph; a paragraph of &nbsp; alone, and each
+# <br> on its own line between paragraphs, adds one empty line; entities
+# decode and &nbsp; does not collapse. The note is a quoted string so the
+# trailing spaces survive editors. Bravo -> Charlie is the plain paragraph gap.
+note: "Alpha trailing spaces  \nBravo after spaces\n\nCharlie backslash\\\nDelta after backslash\n\nEcho tag<br>Foxtrot after tag<br/>Golf after slash<br />Hotel after spaced slash\n\nPapa&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Quebec Romeo &amp; Sierra Tango\n\nJuliet before entity\n\n&nbsp;\n\nKilo after entity\n\nLima before tag\n\n<br>\n\nMike after tag\n\n<br />\n<br />\n<br />\n\nNovember after three tags\n"
+region: [300, 60, 800, 700]
+ready_text: Alpha
+steps:
+  - id: markdown-breaks
+    text: Romeo & Sierra
+    text_absent: '&amp;'
+    layout:
+      # Each hard or HTML break starts a new line of the same paragraph:
+      # below the previous line, closer than a paragraph break.
+      - {a: Alpha, b: Bravo, min: 12, less_than: {a: Bravo, b: Charlie}}
+      - {a: Charlie, b: Delta, min: 12, less_than: {a: Bravo, b: Charlie}}
+      - {a: Echo, b: Foxtrot, min: 12, less_than: {a: Bravo, b: Charlie}}
+      - {a: Foxtrot, b: Golf, min: 12, less_than: {a: Bravo, b: Charlie}}
+      - {a: Golf, b: Hotel, min: 12, less_than: {a: Bravo, b: Charlie}}
+      # &nbsp; does not collapse: six of them are wider than one space.
+      - {a: Papa, b: Quebec, axis: x, more_than: {a: Sierra, b: Tango, axis: x, by: 10}}
+      # A paragraph of &nbsp; alone, or one <br> line, is one empty line more
+      # than a paragraph break.
+      - {a: Juliet, b: Kilo, more_than: {a: Bravo, b: Charlie, by: 12}, less_than: {a: Bravo, b: Charlie, by: 45}}
+      - {a: Lima, b: Mike, more_than: {a: Bravo, b: Charlie, by: 12}, less_than: {a: Bravo, b: Charlie, by: 45}}
+      # Three <br /> lines are three empty lines (#3259's own note).
+      - {a: Mike, b: November, more_than: {a: Bravo, b: Charlie, by: 60}, less_than: {a: Bravo, b: Charlie, by: 100}}
