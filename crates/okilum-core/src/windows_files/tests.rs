@@ -503,6 +503,62 @@ fn windows_save_cloud_tags_allow_resident_files_without_path_redirection() {
 }
 
 #[test]
+fn windows_vault_mutation_admits_resident_cloud_folders_and_refuses_redirection() {
+    // OneDrive/iCloud folders inside a vault carry CLOUD tags, also when
+    // their contents are not downloaded; structural changes must accept them.
+    for variant in 0..=15 {
+        let tag = IO_REPARSE_TAG_CLOUD | (variant << 12);
+        for state in [
+            0,
+            FILE_ATTRIBUTE_OFFLINE,
+            FILE_ATTRIBUTE_RECALL_ON_OPEN,
+            FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS,
+        ] {
+            assert!(real_directory(
+                FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT | state,
+                tag
+            ));
+        }
+    }
+    assert!(real_directory(FILE_ATTRIBUTE_DIRECTORY, 0));
+    // Symbolic links, junctions and unknown tags stay refused.
+    for tag in [0xA000000C, 0xA0000003, 0x80000021] {
+        assert!(!real_directory(
+            FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT,
+            tag
+        ));
+    }
+
+    // Native controls through the mutation preflight: a plain folder passes,
+    // a junction (no privilege needed) is still refused with the folder text.
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let outside = root.join("outside");
+    let vault = root.join("vault");
+    fs::create_dir_all(vault.join("Plain")).unwrap();
+    fs::create_dir(&outside).unwrap();
+    // Join per component: cmd.exe reads a "/Junction" suffix as a switch.
+    let status = std::process::Command::new("cmd.exe")
+        .args(["/C", "mklink", "/J"])
+        .arg(vault.join("Junction"))
+        .arg(&outside)
+        .status()
+        .unwrap();
+    assert!(status.success(), "native junction positive control");
+    assert!(is_real_directory(&vault.join("Plain")).unwrap());
+    assert!(!is_real_directory(&vault.join("Junction")).unwrap());
+    crate::vault_mutation::validate_directories(&vault, Path::new("Plain"), false).unwrap();
+    let error =
+        crate::vault_mutation::validate_directories(&vault, Path::new("Junction/New"), true)
+            .unwrap_err();
+    assert!(
+        error.to_string().contains("Choose a real folder"),
+        "{error:#}"
+    );
+    fs::remove_dir(vault.join("Junction")).unwrap();
+}
+
+#[test]
 fn windows_save_last_moment_symlink_cannot_modify_its_target() {
     let (temp, directory) = fixture();
     let path = temp.path().join("note.md");

@@ -113,21 +113,26 @@ pub fn information(file: &File) -> Result<Information> {
         identity: file_identity(file)?,
     })
 }
+fn attribute_tag(file: &File) -> Result<FILE_ATTRIBUTE_TAG_INFO> {
+    let mut tag = FILE_ATTRIBUTE_TAG_INFO::default();
+    // File owns the handle for the complete call; tag has the required layout.
+    ensure!(
+        unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                FileAttributeTagInfo,
+                (&mut tag as *mut FILE_ATTRIBUTE_TAG_INFO).cast(),
+                std::mem::size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
+            )
+        } != 0,
+        "Read reparse identity: {}",
+        std::io::Error::last_os_error()
+    );
+    Ok(tag)
+}
 fn plain(info: &BY_HANDLE_FILE_INFORMATION, directory: bool, file: &File) -> Result<()> {
     if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        let mut tag = FILE_ATTRIBUTE_TAG_INFO::default();
-        ensure!(
-            unsafe {
-                GetFileInformationByHandleEx(
-                    file.as_raw_handle(),
-                    FileAttributeTagInfo,
-                    (&mut tag as *mut FILE_ATTRIBUTE_TAG_INFO).cast(),
-                    std::mem::size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
-                )
-            } != 0,
-            "Read reparse identity: {}",
-            std::io::Error::last_os_error()
-        );
+        let tag = attribute_tag(file)?;
         // Hydrated FileProvider files are reparse points too, but CLOUD tags
         // never redirect a name. Reject symlinks, junctions and unknown tags;
         // permit only resident cloud files, without initiating a download.
@@ -156,6 +161,26 @@ fn resident_cloud(tag: u32, attributes: u32, directory: bool) -> bool {
                     | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
                     | FILE_ATTRIBUTE_RECALL_ON_OPEN)
                 == 0)
+}
+/// Reparse rule for folders in structural vault changes (move, create,
+/// trash): the same as saves. A resident OneDrive/iCloud folder carries a
+/// CLOUD tag that never redirects a name, so it stays a real folder; symlinks,
+/// junctions and unknown tags do not.
+pub(crate) fn real_directory(attributes: u32, tag: u32) -> bool {
+    attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0 || resident_cloud(tag, attributes, true)
+}
+/// Apply [`real_directory`] to `path` itself, without following it.
+pub(crate) fn is_real_directory(path: &Path) -> Result<bool> {
+    let file = retry(|| {
+        OpenOptions::new()
+            .access_mode(FILE_READ_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+    })?;
+    let tag = attribute_tag(&file)?;
+    Ok(tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0
+        && real_directory(tag.FileAttributes, tag.ReparseTag))
 }
 pub(crate) fn open_regular(path: &Path) -> Result<(File, Information)> {
     let file = retry(|| {

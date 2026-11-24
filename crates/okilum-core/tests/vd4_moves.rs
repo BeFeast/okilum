@@ -41,3 +41,48 @@ fn vd4_review_folder_move_refuses_subtrees_containing_a_nested_root() {
     assert!(root.join("Parent/Archive/Note.md").is_file());
     assert!(!root.join(to).exists());
 }
+
+#[test]
+fn vd4_review_blank_nested_vault_names_fall_back_to_the_folder() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/lifecycle-vault");
+    let mut descriptor = okilum_core::vault_descriptor::read(&fixture).unwrap();
+    let hash = "0".repeat(64);
+    descriptor["layout"]["nested_roots"] = serde_json::json!([
+        {"path":"Declared","kind":"vault","name":"","tree_sha256":hash,"files":1},
+        {"path":"Spaced","kind":"vault","name":" \t ","tree_sha256":hash,"files":1},
+        {"path":"Named","kind":"vault","name":"Team notes","tree_sha256":hash,"files":1}
+    ]);
+    fs::create_dir(root.join(".okilum")).unwrap();
+    fs::write(
+        okilum_core::vault_descriptor::path(root),
+        serde_json::to_vec(&descriptor).unwrap(),
+    )
+    .unwrap();
+    for folder in ["Declared", "Spaced", "Named", "Own/.okilum"] {
+        fs::create_dir_all(root.join(folder)).unwrap();
+    }
+    fs::write(
+        okilum_core::vault_descriptor::path(&root.join("Own")),
+        r#"{"name":"   "}"#,
+    )
+    .unwrap();
+    for (folder, name) in [
+        ("Declared", "Declared"),
+        ("Spaced", "Spaced"),
+        ("Own", "Own"),
+        // Positive control: a real declared name is still shown.
+        ("Named", "Team notes"),
+    ] {
+        let error = okilum_core::vault_mutation::check_relocation(root, Path::new(folder))
+            .err()
+            .unwrap_or_else(|| panic!("{folder} must be refused"));
+        assert_eq!(
+            error.to_string(),
+            format!("The selected folder is a separate vault \"{name}\""),
+            "{folder}"
+        );
+    }
+}

@@ -34,8 +34,11 @@ fn ensure_real_directory(path: &Path, metadata: &fs::Metadata) -> Result<()> {
     {
         use std::os::windows::fs::MetadataExt;
         use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        // A resident OneDrive/iCloud folder is a reparse point that does not
+        // redirect; apply the save rule instead of refusing every tag.
         ensure!(
-            metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0,
+            metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
+                || crate::windows_files::is_real_directory(path)?,
             "Choose a real folder, not a symbolic link or reparse point: {}",
             path.display()
         );
@@ -86,16 +89,17 @@ pub fn check_relocation(root: &Path, relative: &Path) -> Result<()> {
         let declared =
             vault_descriptor::boundary_at(root, &boundaries, &path).map(|(_, kind)| kind);
         if archive || descriptor || obsidian_marker || declared.is_some() {
-            let folder_name = directory.file_name().unwrap_or_default().to_string_lossy();
             let (kind, name) = match declared {
                 Some(NestedBoundary::Vault(name)) => ("vault", name.clone()),
-                Some(NestedBoundary::Unit) if !archive => ("unit", folder_name.into_owned()),
-                _ => {
-                    let name = vault_descriptor::read(directory)
-                        .and_then(|descriptor| descriptor.get("name")?.as_str().map(str::to_owned))
-                        .unwrap_or_else(|| folder_name.into_owned());
-                    ("vault", name)
-                }
+                Some(NestedBoundary::Unit) if !archive => (
+                    "unit",
+                    directory
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                _ => ("vault", vault_descriptor::own_name(directory)),
             };
             let action = if directory == source {
                 "The selected folder is"

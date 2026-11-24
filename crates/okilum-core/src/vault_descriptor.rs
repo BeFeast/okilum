@@ -133,12 +133,10 @@ pub(crate) fn declared_boundaries(root: &Path) -> NestedBoundaries {
         .iter()
         .map(|entry| {
             let boundary = match entry.kind {
-                NestedKind::Vault => NestedBoundary::Vault(
-                    entry
-                        .name
-                        .clone()
-                        .unwrap_or_else(|| folder_name(Path::new(&entry.path))),
-                ),
+                NestedKind::Vault => NestedBoundary::Vault(display_name(
+                    entry.name.as_deref(),
+                    Path::new(&entry.path),
+                )),
                 NestedKind::Unit => NestedBoundary::Unit,
             };
             (entry.path.clone(), boundary)
@@ -151,13 +149,23 @@ pub fn boundary_marker(directory: &Path) -> bool {
 }
 
 pub fn marked_boundary(directory: &Path) -> Option<NestedBoundary> {
-    boundary_marker(directory).then(|| {
-        let name = read(directory)
-            .and_then(|descriptor| descriptor.get("name")?.as_str().map(str::to_owned))
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| folder_name(directory));
-        NestedBoundary::Vault(name)
-    })
+    boundary_marker(directory).then(|| NestedBoundary::Vault(own_name(directory)))
+}
+
+/// The name a nested vault shows: its own `vault.json` name, else the folder.
+pub fn own_name(directory: &Path) -> String {
+    let descriptor = read(directory);
+    let name = descriptor
+        .as_ref()
+        .and_then(|descriptor| descriptor.get("name")?.as_str());
+    display_name(name, directory)
+}
+
+/// A blank or whitespace-only name counts as absent: show the folder name.
+fn display_name(name: Option<&str>, directory: &Path) -> String {
+    name.filter(|name| !name.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| folder_name(directory))
 }
 
 fn folder_name(directory: &Path) -> String {
@@ -386,6 +394,37 @@ mod tests {
             panic!("A malformed optional field must not disable the layout");
         };
         assert!(layout.nested_roots.is_empty());
+    }
+
+    #[test]
+    fn vd4_review_blank_nested_names_show_the_folder_name() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join(DIRECTORY)).unwrap();
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/lifecycle-vault");
+        let mut descriptor = read(&fixture).unwrap();
+        let hash = "0".repeat(64);
+        descriptor["layout"]["nested_roots"] = serde_json::json!([
+            {"path":"Blank","kind":"vault","name":"","tree_sha256":hash,"files":1},
+            {"path":"Deep/Spaced","kind":"vault","name":"  ","tree_sha256":hash,"files":1},
+            {"path":"Named","kind":"vault","name":"Team","tree_sha256":hash,"files":1}
+        ]);
+        std::fs::write(path(root.path()), serde_json::to_vec(&descriptor).unwrap()).unwrap();
+        let boundaries = declared_boundaries(root.path());
+        assert_eq!(boundaries["Blank"], NestedBoundary::Vault("Blank".into()));
+        assert_eq!(
+            boundaries["Deep/Spaced"],
+            NestedBoundary::Vault("Spaced".into())
+        );
+        assert_eq!(boundaries["Named"], NestedBoundary::Vault("Team".into()));
+
+        let nested = root.path().join("Own");
+        std::fs::create_dir_all(nested.join(DIRECTORY)).unwrap();
+        std::fs::write(path(&nested), r#"{"name":" \t "}"#).unwrap();
+        assert_eq!(
+            marked_boundary(&nested),
+            Some(NestedBoundary::Vault("Own".into()))
+        );
     }
 
     #[test]
