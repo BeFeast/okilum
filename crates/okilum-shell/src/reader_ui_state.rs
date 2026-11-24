@@ -408,12 +408,7 @@ impl Reader {
             recent_expanded: self.recent_expanded,
             properties_open: self.pane.properties_open,
             hidden_properties: self.pane.show_hidden_properties,
-            note: self
-                .pane
-                .file_preview
-                .as_ref()
-                .filter(|p| p.log.is_some() || reader_delimited::previewable(&p.rel))
-                .map_or_else(|| self.pane.current_rel.clone(), |p| p.rel.clone()),
+            note: self.selected_file().to_owned(),
             history,
             history_index: self.pane.navigation.history_ix,
             position: position.into(),

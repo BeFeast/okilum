@@ -1,0 +1,48 @@
+# Open an image and a ZIP from a vault. Quitting and relaunching must
+# return to the same viewer. Removing the saved ZIP while closed shows the
+# vault start page on the next launch.
+vault: tests/fixtures/restore-last-viewed-media
+note: |
+  # Restore control
+
+  The Markdown control is ready.
+appearance: light
+preferences:
+  note_open_mode: read
+region: [260, 50, 1106, 680]
+ready_text: Markdown control is ready
+wait_for_vault: 20
+steps:
+  - id: find-image
+    keys: [k]
+    mods: [ctrl]
+  - id: search-image
+    type: Emerald
+  - id: open-image
+    keys: [Return]
+    wait: 1
+    pixels: &image
+      region: [280, 110, 1086, 620]
+      expression: 'g>0.7&&r<0.2&&b<0.3?1:0'
+      min: 9000
+      max: 700000
+  - id: restore-image
+    restart: true
+    pixels: *image
+  - id: find-archive
+    keys: [k]
+    mods: [ctrl]
+  - id: search-archive
+    type: Bundle.zip
+  - id: open-archive
+    keys: [Return]
+    wait: 1
+    text: ArchiveWitness.txt
+  - id: restore-archive
+    restart: session
+    text: ArchiveWitness.txt
+  - id: missing-archive
+    restart: session
+    vault_remove: Bundle.zip
+    text: Create a note or pick up where you left off
+    text_absent: couldn’t be opened

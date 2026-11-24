@@ -150,10 +150,9 @@ fn prepare_first_with_ui_notes(
         paths
     };
     let mut event = prepare_first_with_last_document(opts, cancel, |root| {
-        let ui_note = notes.get(root).filter(|note| !note.is_empty());
-        let saved = match ui_note {
-            Some(note) if root.join(note).is_file() => Some(note.clone()),
-            _ => match directory {
+        let saved = match notes.get(root) {
+            Some(note) => Some(note.clone()),
+            None => match directory {
                 Some(directory) => {
                     let (document, notice) =
                         reader_history::ReadingHistory::last_document_or_recover(directory, root)?;
@@ -168,18 +167,14 @@ fn prepare_first_with_ui_notes(
             .chain(saved.iter().cloned())
             .collect();
         let plan = resolve_moves(root, paths);
-        let unresolved = ui_note
-            .map(String::as_str)
-            .or(saved.as_deref())
-            .filter(|note| plan.uncertain(note));
+        let unresolved = saved.as_deref().filter(|note| plan.uncertain(note));
         if let Some(path) = unresolved {
             recovery_notice = Some(format!("{path} (moved?)"));
             moves = Some(plan);
             return Ok(Some(String::new()));
         }
-        let document = ui_note
-            .and_then(|note| plan.target(note).map(str::to_owned))
-            .or_else(|| saved.map(|note| plan.target(&note).map_or(note.clone(), str::to_owned)))
+        let document = saved
+            .map(|note| plan.target(&note).map_or(note.clone(), str::to_owned))
             .or_else(|| {
                 let (cutover, _) = plan.import.as_deref()?;
                 let note = notes.get(&cutover.archive).cloned().or_else(|| {
@@ -391,7 +386,8 @@ fn prepare_first_existing_document(
     }
     if quick_file
         && canonical_path.is_file()
-        && reader_delimited::previewable(&canonical_path.to_string_lossy())
+        && (reader_delimited::previewable(&canonical_path.to_string_lossy())
+            || (root.is_some() && opens_as_file(&canonical_path.to_string_lossy())))
     {
         return prepare_plain_file(&canonical_path, root, cancel);
     }
@@ -469,7 +465,7 @@ fn prepare_first_existing_document(
         .diagnostics
         .as_ref()
         .map(|trace| trace.phase("primary_path_validation"));
-    let intent = if cached_primary {
+    let mut intent = if cached_primary {
         reader_open::OpenIntent::validate_cached(
             &canonical_path,
             root,
@@ -504,27 +500,25 @@ fn prepare_first_existing_document(
             }
             None
         }
+        None if opts.note.as_deref() == Some("") => Some(String::new()),
         None => {
-            let saved = last_document(&intent.root)?;
-            let explicitly_empty = saved.as_deref() == Some("");
-            let hint = saved
-                .filter(|hint| !hint.is_empty())
-                // Logs are only remembered by the quick viewer.
-                .filter(|hint| !okilum_core::log::is_log_path(Path::new(hint)))
-                .filter(|hint| !reader_delimited::previewable(hint))
-                .filter(|hint| !opens_as_file(hint))
-                .and_then(|hint| {
-                    let path = intent.root.join(&hint);
-                    let validated = if snapshot.as_ref().and_then(|s| s.source(&hint)).is_some() {
-                        reader_open::OpenIntent::validate_cached(&path, Some(&intent.root), None)
-                    } else {
-                        reader_open::OpenIntent::validate(&path, Some(&intent.root), None)
-                    };
-                    validated.ok().and_then(|validated| validated.note)
-                });
+            let saved =
+                last_document(&intent.root)?.filter(|hint| reader_ui_state::valid_note(hint));
+            let show_start_page = saved
+                .as_deref()
+                .is_some_and(|hint| hint.is_empty() || !intent.root.join(hint).is_file());
+            let hint = saved.filter(|hint| !hint.is_empty()).and_then(|hint| {
+                let path = intent.root.join(&hint);
+                let validated = if snapshot.as_ref().and_then(|s| s.source(&hint)).is_some() {
+                    reader_open::OpenIntent::validate_cached(&path, Some(&intent.root), None)
+                } else {
+                    reader_open::OpenIntent::validate(&path, Some(&intent.root), None)
+                };
+                validated.ok().and_then(|validated| validated.note)
+            });
             match hint {
                 Some(note) => Some(note),
-                None if explicitly_empty => Some(String::new()),
+                None if show_start_page => Some(String::new()),
                 // A folder with no notes opens as an empty vault, inviting
                 // the first note; unreadable Markdown stays a failure (#1123).
                 None => match Vault::discover(&intent.root, &mut || cancel.check())? {
@@ -551,6 +545,7 @@ fn prepare_first_existing_document(
     // publishes an empty one and opens the file in its viewer (#1080).
     let selected = selected.map(|rel| {
         if opens_as_file(&rel) {
+            intent.note = Some(rel);
             String::new()
         } else {
             rel
@@ -2464,7 +2459,7 @@ impl Reader {
                 cx.background_executor()
                     .spawn(async move {
                         let _cache_lease = cache_lease;
-                        if !document.is_empty() {
+                        if !document.is_empty() && !opens_as_file(&document) {
                             if let Some(base) = cache {
                                 let started = std::time::Instant::now();
                                 let cached = validate_external_cache(&base, &root).and_then(|_| {
@@ -2488,7 +2483,7 @@ impl Reader {
                 if let Err(error) = result {
                     let _ = this.update(cx, |this, cx| {
                         if this.vault_root == requested_root
-                            && this.pane.current_rel == requested_document
+                            && this.selected_file() == requested_document
                         {
                             this.link_notice =
                                 Some(format!("Reading history could not be saved: {error:#}").into());
@@ -2559,26 +2554,18 @@ impl Reader {
     }
 
     pub(crate) fn record_usable_document(&mut self, cx: &Context<Self>) {
-        if !self.document_ready()
-            || !matches!(
-                self.pane.content.read(cx).preparation_status(),
-                Some(Ok(()))
-            )
+        if self.pane.file_preview.is_none()
+            && (!self.document_ready()
+                || !matches!(
+                    self.pane.content.read(cx).preparation_status(),
+                    Some(Ok(()))
+                ))
         {
             return;
         }
-        // A log in the quick viewer is the document to restore (#602).
-        let document = match &self.pane.file_preview {
-            Some(preview)
-                if preview.log.is_some() || reader_delimited::previewable(&preview.rel) =>
-            {
-                preview.rel.clone()
-            }
-            _ => self.pane.current_rel.clone(),
-        };
         let identity = (
             self.vault_root.clone(),
-            document,
+            self.selected_file().to_owned(),
             self.pane.navigation.generation,
         );
         if self.pane.last_recorded_document.as_ref() == Some(&identity) {
@@ -6771,7 +6758,7 @@ mod tests {
         else {
             panic!("first")
         };
-        assert_eq!(document.unwrap().0, "first.md");
+        assert_eq!(document.unwrap().0, "");
         let explicit = Opts {
             note: Some("absent.md".into()),
             ..opts
@@ -6808,17 +6795,32 @@ mod tests {
         assert!(!intent.single_file);
         assert_eq!(intent.note.as_deref(), Some("qa.zip"));
         assert_eq!(document.unwrap().0, "");
-        // A remembered archive is not restored as a note either; the vault falls back.
+        // The remembered archive uses the same preview path as the explicit open.
         let vault = Opts { note: None, ..opts };
-        let Event::First { document, .. } =
-            prepare_first_with_last_document(&vault, &Cancellation::default(), |_| {
-                Ok(Some("qa.zip".into()))
-            })
-            .unwrap()
+        let Event::First {
+            intent, document, ..
+        } = prepare_first_with_last_document(&vault, &Cancellation::default(), |_| {
+            Ok(Some("qa.zip".into()))
+        })
+        .unwrap()
         else {
             panic!("first")
         };
-        assert_eq!(document.unwrap().0, "first.md");
+        assert_eq!(intent.note.as_deref(), Some("qa.zip"));
+        assert_eq!(document.unwrap().0, "");
+
+        std::fs::remove_file(root.join("qa.zip")).unwrap();
+        let Event::First {
+            intent, document, ..
+        } = prepare_first_with_last_document(&vault, &Cancellation::default(), |_| {
+            Ok(Some("qa.zip".into()))
+        })
+        .unwrap()
+        else {
+            panic!("first")
+        };
+        assert_eq!(intent.note, None);
+        assert_eq!(document.unwrap().0, "");
         std::fs::remove_dir_all(root).unwrap();
     }
 

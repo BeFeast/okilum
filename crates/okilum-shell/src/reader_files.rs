@@ -654,9 +654,9 @@ impl Reader {
                     self.discover_source_recovery(cx);
                 }
                 self.show_window_title(Some(self.selected_title()), window, cx);
-                if log || reader_delimited::previewable(rel) {
-                    self.record_usable_document(cx);
-                } else {
+                self.record_usable_document(cx);
+                reader_open_windows::record_soon(cx);
+                if !log && !reader_delimited::previewable(rel) {
                     self.focus_handle.focus(window, cx);
                 }
                 // A code view is read-only: Reader shortcuts keep working (#998).

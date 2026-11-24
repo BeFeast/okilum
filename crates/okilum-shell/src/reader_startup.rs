@@ -307,6 +307,16 @@ fn history(
             )),
             // The recorded root is the folder the window was opened with; a
             // document in a subfolder keeps it (#3124). Not a vault either way.
+            Ok(Some(note))
+                if matches!(root.join(&note).try_exists(), Ok(false)) && root.is_dir() =>
+            {
+                Ok(reader_open::OpenIntent {
+                    root: root.clone(),
+                    single_file: true,
+                    note: None,
+                    created_note: false,
+                })
+            }
             Ok(Some(note)) => {
                 reader_open::OpenIntent::validate(&root.join(note), Some(&root), None).map(
                     |intent| reader_open::OpenIntent {
@@ -380,8 +390,12 @@ fn restorable_windows(
                 if let Some(target) = plans.get(&root).and_then(|plan| plan.target(&note)) {
                     return Some(target.to_owned());
                 }
-                // A missing quick file must fail visibly, never become a vault.
-                (single_file || root.join(&note).is_file()).then_some(note)
+                if root.join(&note).is_file() {
+                    Some(note)
+                } else {
+                    // Keep the window in its original mode with no selected file.
+                    (!single_file).then(String::new)
+                }
             });
             ((root, note), single_file)
         })

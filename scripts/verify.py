@@ -301,6 +301,12 @@ def create_vault_text(vault, spec):
         stream.write(spec['source'])
 
 
+def remove_vault_file(vault, relative):
+    target = vault / relative
+    require(target.resolve().is_relative_to(vault), f'Path must stay inside the vault: {relative}')
+    target.unlink()
+
+
 def condition(path, rule, default_region):
     """Does the screenshot satisfy a step's `text` and/or `pixels` rule? (ok, details)"""
     details, ok = {}, True
@@ -501,8 +507,8 @@ def run(args, scenario, output, result):
         proc = None
         try:
             with (output / 'app.log').open('w') as log:
-                def launch(note, restore=False):
-                    argv = [binary, '--index-dir', str(root / ('index-grove' if restore else 'index'))]
+                def launch(note, *, restore=False, cutover=False):
+                    argv = [binary, '--index-dir', str(root / ('index-grove' if cutover else 'index'))]
                     if not restore:
                         argv.extend(['--vault', str(vault)])
                     if note is not None:
@@ -571,6 +577,8 @@ def run(args, scenario, output, result):
                             rig.keys('q', mods=['ctrl'])
                             require(proc.wait(timeout=15) == 0, 'App did not exit cleanly')
                             proc = None
+                        if 'vault_remove' in step:
+                            remove_vault_file(vault, step['vault_remove'])
                         if 'vault_move' in step:
                             move_vault_fixture(vault, step['vault_move'])
                         if 'cutover' in step:
@@ -579,10 +587,12 @@ def run(args, scenario, output, result):
                             rig.close()
                             rig = Rig(root, 1366, input_methods=None, **rig_options)
                             rig.env['OKILUM_STATE_DIR'] = str(state)
-                            proc = launch(None, restore='cutover' in step)
+                            cutover = 'cutover' in step
+                            proc = launch(None, restore=cutover or step['restart'] == 'session',
+                                          cutover=cutover)
                         time.sleep(step.get('wait', .4))
                         rig.shot(shot)
-                        if set(step) & {'vault_replace', 'vault_create', 'vault_move', 'cutover', 'restart'}:
+                        if set(step) & {'vault_replace', 'vault_create', 'vault_remove', 'vault_move', 'cutover', 'restart'}:
                             deadline = time.monotonic() + 10
                             while time.monotonic() < deadline and not condition(shot, step, scenario['region'])[0]:
                                 require(proc.poll() is None, f'App exited: {proc.returncode}')
