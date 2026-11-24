@@ -1,0 +1,233 @@
+diff --git a/crates/base/src/text/format/html.rs b/crates/base/src/text/format/html.rs
+index 78813efd..810063c0 100644
+--- a/crates/base/src/text/format/html.rs
++++ b/crates/base/src/text/format/html.rs
+@@ -517,6 +517,7 @@ fn parse_node(
+                     children,
+                     ordered,
+                     start: None,
++                    spread: false,
+                     span: None,
+                 })
+             }
+diff --git a/crates/base/src/text/format/markdown.rs b/crates/base/src/text/format/markdown.rs
+index d453aae2..b52aba59 100644
+--- a/crates/base/src/text/format/markdown.rs
++++ b/crates/base/src/text/format/markdown.rs
+@@ -761,6 +761,13 @@ fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockN
+             }
+         }
+         Node::List(list) => {
++            // CommonMark: a list is loose when blank lines separate its items
++            // or the blocks inside any item.
++            let spread = list.spread
++                || list
++                    .children
++                    .iter()
++                    .any(|item| matches!(item, Node::ListItem(item) if item.spread));
+             let children = list
+                 .children
+                 .into_iter()
+@@ -769,6 +776,7 @@ fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockN
+             BlockNode::List {
+                 ordered: list.ordered,
+                 start: list.start,
++                spread,
+                 children,
+                 span: new_span(list.position, cx),
+             }
+@@ -1409,25 +1417,42 @@ mod tests {
+         );
+     }
+ 
+-    fn list_of(source: &str) -> (bool, Option<u32>) {
++    fn list_of(source: &str) -> (bool, Option<u32>, bool) {
+         let mut cx = NodeContext::default();
+         let document = parse(source, &mut cx).unwrap();
+-        let BlockNode::List { ordered, start, .. } = &document.blocks[0]
++        let BlockNode::List {
++            ordered,
++            start,
++            spread,
++            ..
++        } = &document.blocks[0]
+         else {
+             panic!("expected list for {source:?}, got {:?}", document.blocks[0]);
+         };
+-        (*ordered, *start)
++        (*ordered, *start, *spread)
+     }
+ 
+     /// An ordered list keeps the number of its first item (CommonMark: `<ol start>`).
+     #[test]
+     fn test_ordered_list_keeps_start_number() {
+-        assert_eq!(list_of("3. three\n4. four"), (true, Some(3)));
+-        assert_eq!(list_of("1. one\n2. two"), (true, Some(1)));
+-        assert_eq!(list_of("0. zero\n1. one"), (true, Some(0)));
++        assert_eq!(list_of("3. three\n4. four"), (true, Some(3), false));
++        assert_eq!(list_of("1. one\n2. two"), (true, Some(1), false));
++        assert_eq!(list_of("0. zero\n1. one"), (true, Some(0), false));
+         assert_eq!(list_of("- a\n- b").1, None);
+     }
+ 
++    /// A list is loose when a blank line separates its items, or the blocks
++    /// inside one item; otherwise it is tight.
++    #[test]
++    fn test_list_spread_is_loose_list() {
++        assert!(!list_of("- a\n- b").2);
++        assert!(list_of("- a\n\n- b").2);
++        assert!(list_of("1. a\n\n2. b").2);
++        assert!(list_of("- a\n\n  b\n- c").2);
++        // A nested list does not loosen its parent.
++        assert!(!list_of("- a\n  - b\n- c").2);
++    }
++
+     fn code_span(source: &str) -> String {
+         let mut cx = NodeContext::default();
+         let document = parse(source, &mut cx).unwrap();
+diff --git a/crates/base/src/text/node.rs b/crates/base/src/text/node.rs
+index 41f59b61..dbd66c0b 100644
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -62,6 +62,9 @@ pub(crate) enum BlockNode {
+         ordered: bool,
+         /// Number of the first item of an ordered list; `None` counts from 1.
+         start: Option<u32>,
++        /// A loose list: items are separated by a blank line (or contain
++        /// blank-separated blocks), so they get paragraph spacing.
++        spread: bool,
+         span: Option<Span>,
+     },
+     ListItem {
+@@ -3094,6 +3097,7 @@ impl BlockNode {
+                 children,
+                 ordered,
+                 start,
++                spread,
+                 ..
+             } => v_flex()
+                 .id((if *ordered { "ol" } else { "ul" }, ix))
+@@ -3107,10 +3111,11 @@ impl BlockNode {
+                 .children({
+                     let mut items = Vec::with_capacity(children.len());
+                     let mut item_index = 0;
++                    let last_ix = children.len().saturating_sub(1);
+                     for (ix, item) in children.into_iter().enumerate() {
+                         let is_item = item.is_list_item();
+ 
+-                        items.push(Self::render_list_item(
++                        let rendered = Self::render_list_item(
+                             item,
+                             item_index,
+                             NodeRenderOptions {
+@@ -3122,7 +3127,18 @@ impl BlockNode {
+                             node_cx,
+                             window,
+                             cx,
+-                        ));
++                        );
++                        // A loose list separates its items like paragraphs.
++                        items.push(if *spread && ix != last_ix {
++                            div()
++                                .w_full()
++                                .min_w_0()
++                                .pb(node_cx.style.paragraph_gap())
++                                .child(rendered)
++                                .into_any_element()
++                        } else {
++                            rendered
++                        });
+ 
+                         if is_item {
+                             item_index += 1;
+@@ -3480,6 +3496,7 @@ mod tests {
+         let list = BlockNode::List {
+             ordered: false,
+             start: None,
++            spread: false,
+             span: None,
+             children: vec![
+                 BlockNode::ListItem {
+@@ -3513,6 +3530,7 @@ mod tests {
+         let list = BlockNode::List {
+             ordered: true,
+             start: Some(3),
++            spread: false,
+             span: None,
+             children: vec![item("three"), item("four")],
+         };
+@@ -3528,6 +3546,7 @@ mod tests {
+         let list = BlockNode::List {
+             ordered: true,
+             start: None,
++            spread: false,
+             span: None,
+             children: vec![
+                 BlockNode::ListItem {
+@@ -3558,6 +3577,7 @@ mod tests {
+         let nested = BlockNode::List {
+             ordered: false,
+             start: None,
++            spread: false,
+             span: None,
+             children: vec![BlockNode::ListItem {
+                 children: vec![BlockNode::Paragraph(selected_paragraph("nested"))],
+@@ -3569,6 +3589,7 @@ mod tests {
+         let list = BlockNode::List {
+             ordered: false,
+             start: None,
++            spread: false,
+             span: None,
+             children: vec![
+                 BlockNode::ListItem {
+@@ -3596,6 +3617,7 @@ mod tests {
+         let list = BlockNode::List {
+             ordered: false,
+             start: None,
++            spread: false,
+             span: None,
+             children: vec![
+                 BlockNode::ListItem {
+@@ -3888,6 +3910,7 @@ mod tests {
+                 BlockNode::List {
+                     ordered: true,
+                     start: None,
++                    spread: false,
+                     children: vec![],
+                     span: Some(Span {
+                         start: list_start,
+@@ -4031,6 +4054,7 @@ mod tests {
+                 BlockNode::List {
+                     ordered: true,
+                     start: None,
++                    spread: false,
+                     span: None,
+                     children: vec![
+                         BlockNode::ListItem {
+diff --git a/crates/base/src/text/render_model.rs b/crates/base/src/text/render_model.rs
+index fa55060e..7e559eec 100644
+--- a/crates/base/src/text/render_model.rs
++++ b/crates/base/src/text/render_model.rs
+@@ -61,6 +61,7 @@ fn write_block(out: &mut String, block: &BlockNode, cx: &NodeContext, tight: boo
+             children,
+             ordered,
+             start,
++            spread,
+             ..
+         } => {
+             match (*ordered, start) {
+@@ -70,13 +71,8 @@ fn write_block(out: &mut String, block: &BlockNode, cx: &NodeContext, tight: boo
+                 (true, _) => out.push_str("<ol>\n"),
+                 (false, _) => out.push_str("<ul>\n"),
+             }
+-            // The node model keeps `spread` per item only; a list is loose
+-            // when any of its items is.
+-            let loose = children
+-                .iter()
+-                .any(|item| matches!(item, BlockNode::ListItem { spread: true, .. }));
+             for child in children {
+-                write_block(out, child, cx, !loose);
++                write_block(out, child, cx, !*spread);
+             }
+             out.push_str(if *ordered { "</ol>\n" } else { "</ul>\n" });
+         }

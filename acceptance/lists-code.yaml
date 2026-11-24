@@ -1,6 +1,9 @@
-# #3260 (C1, C4, C10): ordered lists keep their start number, a code span
-# split across a line ending stays on one line, and a fenced block keeps its
-# trailing blank lines. `3. three` starts a list at 3. In "golf\nhotel" the line ending
+# #3260 (C1, C2, C4, C10): ordered lists keep their start number, a blank line
+# between items makes a loose list, a code span split across a line ending
+# stays on one line, and a fenced block keeps its trailing blank lines.
+# Sierra/Tango is a loose list, Victor/Whiskey the tight control
+# (a different bullet starts a new list): the loose gap is one paragraph gap
+# larger. `3. three` starts a list at 3. In "golf\nhotel" the line ending
 # inside the code span becomes a space (CommonMark). Zulu has two trailing
 # blank lines, Quebec none: two more lines of code (20 px each) before the
 # next paragraph, at the root and in a list item (Mike).
@@ -12,6 +15,8 @@ steps:
     text: '3. three'
     text_absent: '1. three'
     layout:
+      # Loose list: more space between items than the tight control list.
+      - {a: Sierra, b: Tango, more_than: {a: Victor, b: Whiskey, by: 8}}
       # The code span stays on one line: golf and hotel share a baseline.
       - {a: golf, b: hotel, min: -4, max: 4}
       # Trailing blank lines of a fence are kept: two lines of ~20 px.
