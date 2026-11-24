@@ -1,0 +1,289 @@
+diff --git a/crates/base/src/text/mod.rs b/crates/base/src/text/mod.rs
+index d67ce059..1fcabb22 100644
+--- a/crates/base/src/text/mod.rs
++++ b/crates/base/src/text/mod.rs
+@@ -7,6 +7,7 @@ mod inline_geometry;
+ mod link_pointer;
+ mod markdown_ext;
+ mod node;
++mod render_model;
+ pub(crate) mod selection;
+ mod selection_adapter;
+ mod state;
+diff --git a/crates/base/src/text/render_model.rs b/crates/base/src/text/render_model.rs
+new file mode 100644
+index 00000000..d8527520
+--- /dev/null
++++ b/crates/base/src/text/render_model.rs
+@@ -0,0 +1,224 @@
++//! The node tree a `TextView` draws, written out as plain HTML.
++//!
++//! For conformance tests: it shows what the view renders after Markdown
++//! parsing *and* the conversion into blocks and inline runs, with the custom
++//! parsers the view was configured with. It is not a display or export path,
++//! and its HTML is only as rich as the node model.
++
++use super::{
++    document::ParsedDocument,
++    node::{BlockNode, ColumnumnAlign, NodeContext, Paragraph, TextMark},
++};
++
++/// Write a parsed document's blocks as HTML; see the module docs.
++pub(crate) fn document_html(document: &ParsedDocument, cx: &NodeContext) -> String {
++    let mut out = String::new();
++    for block in document.blocks.iter() {
++        write_block(&mut out, block, cx, false);
++    }
++    out
++}
++
++fn escape(text: &str) -> String {
++    text.replace('&', "&amp;")
++        .replace('<', "&lt;")
++        .replace('>', "&gt;")
++        .replace('"', "&quot;")
++}
++
++fn write_block(out: &mut String, block: &BlockNode, cx: &NodeContext, tight: bool) {
++    match block {
++        BlockNode::Root { children, .. } => {
++            for child in children {
++                write_block(out, child, cx, tight);
++            }
++        }
++        BlockNode::Paragraph(paragraph) => {
++            if tight {
++                write_inline(out, paragraph, cx);
++                out.push('\n');
++            } else {
++                out.push_str("<p>");
++                write_inline(out, paragraph, cx);
++                out.push_str("</p>\n");
++            }
++        }
++        BlockNode::Heading {
++            level, children, ..
++        } => {
++            out.push_str(&format!("<h{level}>"));
++            write_inline(out, children, cx);
++            out.push_str(&format!("</h{level}>\n"));
++        }
++        BlockNode::Blockquote { children, .. } => {
++            out.push_str("<blockquote>\n");
++            for child in children {
++                write_block(out, child, cx, false);
++            }
++            out.push_str("</blockquote>\n");
++        }
++        BlockNode::List {
++            children, ordered, ..
++        } => {
++            // The node model keeps `spread` per item only; a list is loose
++            // when any of its items is.
++            let loose = children
++                .iter()
++                .any(|item| matches!(item, BlockNode::ListItem { spread: true, .. }));
++            out.push_str(if *ordered { "<ol>\n" } else { "<ul>\n" });
++            for child in children {
++                write_block(out, child, cx, !loose);
++            }
++            out.push_str(if *ordered { "</ol>\n" } else { "</ul>\n" });
++        }
++        BlockNode::ListItem {
++            children, checked, ..
++        } => {
++            out.push_str("<li>");
++            match checked {
++                Some(true) => out.push_str("<input checked=\"\" disabled=\"\" type=\"checkbox\" /> "),
++                Some(false) => out.push_str("<input disabled=\"\" type=\"checkbox\" /> "),
++                None => {}
++            }
++            for child in children {
++                write_block(out, child, cx, tight);
++            }
++            out.push_str("</li>\n");
++        }
++        BlockNode::CodeBlock(code) => {
++            match code.lang() {
++                Some(lang) if !lang.is_empty() => {
++                    out.push_str(&format!("<pre><code class=\"language-{}\">", escape(&lang)))
++                }
++                _ => out.push_str("<pre><code>"),
++            }
++            out.push_str(&escape(&code.code()));
++            out.push_str("</code></pre>\n");
++        }
++        BlockNode::Custom(node) => {
++            out.push_str(&format!("<x-{}>", node.name()));
++            if node.parts.is_empty() {
++                out.push_str(&escape(node.as_text()));
++            } else {
++                let mut node = node.clone();
++                node.prepare_parts(cx);
++                for part in &node.parts {
++                    for block in part.document.blocks.iter() {
++                        write_block(out, block, cx, false);
++                    }
++                }
++            }
++            out.push_str(&format!("</x-{}>\n", node.name()));
++        }
++        BlockNode::Table(table) => {
++            out.push_str("<table>\n");
++            for (row_ix, row) in table.children.iter().enumerate() {
++                let cell = if row_ix == 0 { "th" } else { "td" };
++                if row_ix == 0 {
++                    out.push_str("<thead>\n");
++                } else if row_ix == 1 {
++                    out.push_str("<tbody>\n");
++                }
++                out.push_str("<tr>\n");
++                for (column, value) in row.children.iter().enumerate() {
++                    let align = match table.column_aligns.get(column) {
++                        Some(ColumnumnAlign::Center) => " align=\"center\"",
++                        Some(ColumnumnAlign::Right) => " align=\"right\"",
++                        _ => "",
++                    };
++                    out.push_str(&format!("<{cell}{align}>"));
++                    write_inline(out, &value.children, cx);
++                    out.push_str(&format!("</{cell}>\n"));
++                }
++                out.push_str("</tr>\n");
++                if row_ix == 0 {
++                    out.push_str("</thead>\n");
++                }
++            }
++            if table.children.len() > 1 {
++                out.push_str("</tbody>\n");
++            }
++            out.push_str("</table>\n");
++        }
++        BlockNode::Break { .. } => out.push_str("<br />\n"),
++        BlockNode::HorizontalRule { .. } => out.push_str("<hr />\n"),
++        BlockNode::Definition { .. } => {}
++        BlockNode::Unknown => out.push_str("<x-unknown></x-unknown>\n"),
++    }
++}
++
++/// Inline runs as nested tags, one group per stretch of identical marks.
++fn write_inline(out: &mut String, paragraph: &Paragraph, cx: &NodeContext) {
++    for node in &paragraph.children {
++        if let Some(image) = &node.image {
++            if let Some(link) = &image.link {
++                out.push_str(&format!("<a href=\"{}\">", escape(&link.url)));
++            }
++            out.push_str(&format!(
++                "<img src=\"{}\" alt=\"{}\"",
++                escape(&image.url.to_string()),
++                escape(image.alt.as_deref().unwrap_or(""))
++            ));
++            if let Some(title) = &image.title {
++                out.push_str(&format!(" title=\"{}\"", escape(title)));
++            }
++            out.push_str(" />");
++            if image.link.is_some() {
++                out.push_str("</a>");
++            }
++            continue;
++        }
++        let text = node.text.as_ref();
++        let mut cuts = vec![0, text.len()];
++        for (range, _) in &node.marks {
++            cuts.push(range.start.min(text.len()));
++            cuts.push(range.end.min(text.len()));
++        }
++        cuts.sort_unstable();
++        cuts.dedup();
++        for pair in cuts.windows(2) {
++            let (start, end) = (pair[0], pair[1]);
++            let Some(segment) = text.get(start..end) else {
++                continue;
++            };
++            let mut mark = TextMark::default();
++            for (range, m) in &node.marks {
++                if range.start <= start && end <= range.end {
++                    mark.merge(m.clone());
++                }
++            }
++            let mut close = Vec::new();
++            if let Some(link) = &mark.link {
++                let link = link
++                    .identifier
++                    .as_ref()
++                    .and_then(|id| cx.link_refs.get(id))
++                    .unwrap_or(link);
++                out.push_str(&format!("<a href=\"{}\"", escape(&link.url)));
++                if let Some(title) = &link.title {
++                    out.push_str(&format!(" title=\"{}\"", escape(title)));
++                }
++                out.push('>');
++                close.push("</a>");
++            }
++            for (on, open, end_tag) in [
++                (mark.bold, "<strong>", "</strong>"),
++                (mark.italic, "<em>", "</em>"),
++                (mark.strikethrough, "<del>", "</del>"),
++                (mark.underline, "<u>", "</u>"),
++                (mark.highlight.is_some(), "<mark>", "</mark>"),
++                (mark.code, "<code>", "</code>"),
++            ] {
++                if on {
++                    out.push_str(open);
++                    close.push(end_tag);
++                }
++            }
++            // A line break run: the renderer breaks the line on a newline.
++            out.push_str(&escape(segment).replace('\n', "<br />\n"));
++            for tag in close.iter().rev() {
++                out.push_str(tag);
++            }
++        }
++    }
++}
+diff --git a/crates/base/src/text/text_view.rs b/crates/base/src/text/text_view.rs
+index bc98dbac..07a4fa4d 100644
+--- a/crates/base/src/text/text_view.rs
++++ b/crates/base/src/text/text_view.rs
+@@ -576,6 +576,24 @@ impl TextView {
+         state.set_markdown_extensions(self.markdown_extensions.clone(), cx);
+     }
+ 
++    /// Parse this view's text the way rendering does, with its Markdown
++    /// extensions, and write the node tree as HTML (`text::render_model`).
++    /// For conformance tests; `None` without text or on a parse error.
++    #[doc(hidden)]
++    pub fn render_model_html(&self) -> Option<String> {
++        let text = self.text.as_ref()?;
++        let mut cx = crate::text::node::NodeContext {
++            markdown_extensions: self.markdown_extensions.clone(),
++            ..Default::default()
++        };
++        let document = match self.format.as_ref()? {
++            TextViewFormat::Markdown => crate::text::format::markdown::parse(text, &mut cx),
++            TextViewFormat::Html => crate::text::format::html::parse(text, &mut cx),
++        }
++        .ok()?;
++        Some(crate::text::render_model::document_html(&document, &cx))
++    }
++
+     /// Replace the Markdown extension registry.
+     pub fn markdown_extensions(mut self, extensions: MarkdownExtensions) -> Self {
+         self.markdown_extensions = Arc::new(extensions);
+diff --git a/crates/component/src/text/compat.rs b/crates/component/src/text/compat.rs
+index 516a312d..ba66b31e 100644
+--- a/crates/component/src/text/compat.rs
++++ b/crates/component/src/text/compat.rs
+@@ -159,6 +159,13 @@ impl TextView {
+         self.inner = self.inner.on_code_block_secondary_press(f);
+         self
+     }
++    /// The rendered node tree as HTML, for conformance tests
++    /// (`gpui_base::TextView::render_model_html`).
++    #[doc(hidden)]
++    pub fn render_model_html(&self) -> Option<String> {
++        self.inner.render_model_html()
++    }
++
+     /// Handles link clicks instead of opening the URL.
+     pub fn link_presentation<F>(mut self, f: F) -> Self
+     where

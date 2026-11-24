@@ -119,6 +119,8 @@ mod reader_manager_occlusion;
 mod reader_manager_panel;
 mod reader_manager_start;
 mod reader_markdown;
+#[cfg(test)]
+mod reader_markdown_conformance_tests;
 mod reader_media;
 mod reader_mermaid;
 #[cfg(any(unix, windows))]
