@@ -11,6 +11,11 @@ ready_text: Sleep hygiene
 steps:
   - id: areas-tab
     wait: 6
+    # Keep the example's dated entry in range as the rig clock advances.
+    vault_replace:
+      path: "@views/domain.md"
+      before: date >= today-30d
+      after: date >= 2026-11-01
     region: [10, 92, 205, 35]
     text: Areas
   - id: starts-in-tree
@@ -31,8 +36,9 @@ steps:
   - id: sleep-tracking-row
     region: [363, 299, 112, 50]
     text: "Sleep\ntracking"
-  - id: log-fallback
-    text: Timeline shown as table
+  - id: log-timeline
+    text_order: [decisions, Bedtime window]
+    text_absent: Timeline shown as table
   - id: expand-health
     click: [18, 200]
     region: [4, 207, 260, 60]

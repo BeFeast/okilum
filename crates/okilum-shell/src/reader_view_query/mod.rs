@@ -7,8 +7,11 @@ use okilum_core::view;
 use std::collections::BTreeMap;
 
 mod actions;
+mod board;
+mod cards;
 mod index;
 mod markdown;
+mod timeline;
 
 pub(super) use index::Index;
 pub(super) use index::{load as load_index, update as update_index};

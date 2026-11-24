@@ -190,9 +190,6 @@ fn section(
         writeln!(out, "> Snapshot {time}\n").unwrap();
     }
     if let Some(label) = match section.show {
-        Show::Board => Some("Board"),
-        Show::Timeline => Some("Timeline"),
-        Show::Cards => Some("Cards"),
         Show::Graph => Some("Graph"),
         Show::Tree => Some("Tree"),
         _ => None,
@@ -202,7 +199,13 @@ fn section(
     if section.rows.is_empty() && section.groups.is_empty() && !section.truncated {
         out.push_str("No results.\n\n");
     }
-    if section.groups.is_empty() {
+    if matches!(section.show, Show::Board | Show::Timeline | Show::Cards) {
+        if !section.rows.is_empty() || !section.groups.is_empty() {
+            let index = blocks.push_display(section, projection, tasks);
+            out.push_str(&blocks.fence(index));
+            out.push('\n');
+        }
+    } else if section.groups.is_empty() {
         if !section.rows.is_empty() {
             rows(out, section, &section.rows, projection, tasks, blocks);
         }

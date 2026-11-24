@@ -1,0 +1,38 @@
+# Dev projects are shown in adjacent columns according to their status.
+vault: crates/okilum-core/tests/fixtures/views
+open: "@views/health.md"
+appearance: light
+preferences:
+  note_open_mode: read
+region: [265, 90, 840, 645]
+ready_text: Health
+steps:
+  - id: open-project-board
+    vault_replace:
+      path: "@views/health.md"
+      before: |
+        extends: "[[@views/domain]]"
+        args: {domain: Health}
+        ---
+      after: |
+        title: Project board
+        ---
+        # Project board
+
+        ## Dev projects
+        ```view
+        from: notes
+        where: kind = project and area = Dev
+        group: status
+        order: {status: [active, parked, done]}
+        sort: title
+        cols: [title, context]
+        show: board
+        ```
+    text: Dev projects
+  - id: active-column
+    region: [350, 225, 190, 105]
+    text_order: [active, Okilum]
+  - id: parked-column
+    region: [550, 225, 195, 105]
+    text_order: [parked, Tasker]

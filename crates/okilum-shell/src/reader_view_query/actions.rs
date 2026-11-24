@@ -1,4 +1,4 @@
-//! Interactive row controls (`check` and `open: thread`) for declarative views.
+//! Native query blocks and their shared source navigation and explicit row controls.
 //! Writes stay on the revision-bound FileEditor + Undo path in `reader_task_actions`.
 use super::*;
 use gpui_component::checkbox::Checkbox;
@@ -8,6 +8,7 @@ use okilum_core::{
     view::{Row, Section, Show},
 };
 use serde_json::Value as Json;
+use std::ops::Range;
 
 const ROW_LABEL_LINE: Rems = Rems(1.25);
 const ACTION_FENCE_PREFIX: &str = "okilum-view-actions-";
@@ -22,9 +23,39 @@ struct ActionBlock {
     show: Show,
     cols: Vec<String>,
     rows: Vec<ActionRow>,
+    groups: Vec<DisplayGroup>,
 }
 
-struct ActionRow {
+pub(super) struct DisplayGroup {
+    label: String,
+    summary: String,
+    pub(super) rows: Range<usize>,
+}
+
+impl DisplayGroup {
+    pub(super) fn heading(&self, cx: &App) -> Div {
+        v_flex()
+            .gap_1()
+            .when(!self.label.is_empty(), |heading| {
+                heading.child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(self.label.clone()),
+                )
+            })
+            .when(!self.summary.is_empty(), |heading| {
+                heading.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(self.summary.clone()),
+                )
+            })
+    }
+}
+
+pub(super) struct ActionRow {
     path: String,
     line: Option<usize>,
     anchor: Option<String>,
@@ -34,6 +65,7 @@ struct ActionRow {
     check: Option<CheckAction>,
     thread: Option<String>,
     open_task: Option<IndexedTask>,
+    pub(super) date: Option<timeline::Date>,
 }
 
 #[derive(Clone)]
@@ -78,7 +110,63 @@ impl Blocks {
             show: section.show,
             cols: section.cols.clone(),
             rows,
+            groups: Vec::new(),
         });
+        index
+    }
+
+    pub(super) fn push_display(
+        &mut self,
+        section: &Section,
+        projection: &Projection,
+        tasks: Option<&Arc<TasksIndex>>,
+    ) -> usize {
+        let index = self.push(section, &section.rows, projection, tasks);
+        let mut offset = 0;
+        let mut groups: Vec<_> = section
+            .groups
+            .iter()
+            .map(|group| {
+                let end = offset + group.count.min(section.rows.len() - offset);
+                let rows = offset..end;
+                offset = end;
+                DisplayGroup {
+                    label: group
+                        .key
+                        .iter()
+                        .map(|key| {
+                            if key.is_null() {
+                                "(none)".into()
+                            } else {
+                                plain_value(key)
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" / "),
+                    summary: group
+                        .agg
+                        .iter()
+                        .map(|(name, value)| format!("{name} {}", plain_value(value)))
+                        .collect::<Vec<_>>()
+                        .join(" · "),
+                    rows,
+                }
+            })
+            .collect();
+        if groups.is_empty() {
+            groups.push(DisplayGroup {
+                label: String::new(),
+                summary: String::new(),
+                rows: 0..section.rows.len(),
+            });
+        }
+        let block = &mut self.items[index];
+        if block.show == Show::Timeline {
+            for group in &groups {
+                timeline::sort(&mut block.rows[group.rows.clone()]);
+            }
+        }
+        block.groups = groups;
         index
     }
 
@@ -189,9 +277,14 @@ fn build_row(
     projection: &Projection,
     tasks: Option<&Arc<TasksIndex>>,
 ) -> ActionRow {
+    let at = section
+        .at
+        .as_deref()
+        .filter(|_| section.show == Show::Timeline);
     let mut values: Vec<String> = section
         .cols
         .iter()
+        .filter(|key| Some(key.as_str()) != at)
         .filter_map(|key| row.fields.get(key))
         .map(plain_value)
         .filter(|cell| !cell.is_empty())
@@ -223,6 +316,7 @@ fn build_row(
         check,
         thread,
         open_task,
+        date: at.and_then(|key| timeline::Date::from_value(row.fields.get(key)?)),
     }
 }
 
@@ -291,6 +385,13 @@ fn render_block(
     root: &Path,
     cx: &App,
 ) -> AnyElement {
+    let render = RowRenderer {
+        nonce,
+        block_ix,
+        reader,
+        root,
+        cx,
+    };
     let muted = cx.theme().muted_foreground;
     let mut column = v_flex()
         .id(SharedString::from(format!(
@@ -298,8 +399,20 @@ fn render_block(
         )))
         .debug_selector(move || format!("view-action-block-{block_ix}"))
         .w_full()
+        .min_w_0()
         .gap_1()
         .py_1();
+    let display = match block.show {
+        Show::Board => Some(board::render(&block.groups, &block.rows, &render).into_any_element()),
+        Show::Cards => Some(cards::render(&block.groups, &block.rows, &render).into_any_element()),
+        Show::Timeline => {
+            Some(timeline::render(&block.groups, &block.rows, &render).into_any_element())
+        }
+        _ => None,
+    };
+    if let Some(display) = display {
+        return column.child(display).into_any_element();
+    }
     if block.show != Show::List && !block.cols.is_empty() {
         column = column.child(
             h_flex()
@@ -319,7 +432,35 @@ fn render_block(
                 })),
         );
     }
-    for (row_ix, row) in block.rows.iter().enumerate() {
+    column
+        .children(
+            block
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(row_ix, row)| render.row(row_ix, row, false)),
+        )
+        .into_any_element()
+}
+
+pub(super) struct RowRenderer<'a> {
+    nonce: &'a str,
+    block_ix: usize,
+    reader: &'a WeakEntity<Reader>,
+    root: &'a Path,
+    pub(super) cx: &'a App,
+}
+
+impl RowRenderer<'_> {
+    pub(super) fn row(&self, row_ix: usize, row: &ActionRow, stacked: bool) -> AnyElement {
+        let Self {
+            nonce,
+            block_ix,
+            reader,
+            root,
+            cx,
+        } = *self;
+        let muted = cx.theme().muted_foreground;
         let open_reader = reader.clone();
         let open_root = root.to_path_buf();
         let open_path = row.path.clone();
@@ -333,6 +474,7 @@ fn render_block(
             )))
             .debug_selector(move || format!("view-action-row-{block_ix}-{row_ix}"))
             .w_full()
+            .min_w_0()
             .min_h(px(30.))
             .gap_2()
             .items_center();
@@ -435,21 +577,24 @@ fn render_block(
                         .min_w_0()
                         .text_sm()
                         .line_height(ROW_LABEL_LINE)
+                        .when(stacked, |title| title.font_weight(FontWeight::SEMIBOLD))
                         .truncate()
                         .child(row.primary.clone()),
                 ),
             )
-            .children(row.meta.iter().map(|cell| {
-                div()
-                    .flex_shrink_0()
-                    .px_2()
-                    .py_0p5()
-                    .rounded_md()
-                    .text_xs()
-                    .text_color(muted)
-                    .bg(muted.opacity(0.08))
-                    .child(cell.clone())
-            }));
+            .when(!stacked, |line| {
+                line.children(row.meta.iter().map(|cell| {
+                    div()
+                        .flex_shrink_0()
+                        .px_2()
+                        .py_0p5()
+                        .rounded_md()
+                        .text_xs()
+                        .text_color(muted)
+                        .bg(muted.opacity(0.08))
+                        .child(cell.clone())
+                }))
+            });
 
         if let Some(thread_url) = &row.thread {
             let thread_reader = reader.clone();
@@ -482,9 +627,23 @@ fn render_block(
             );
         }
 
-        column = column.child(line);
+        if stacked && !row.meta.is_empty() {
+            v_flex()
+                .w_full()
+                .min_w_0()
+                .child(line)
+                .children(row.meta.iter().map(|cell| {
+                    div()
+                        .text_xs()
+                        .text_color(muted)
+                        .whitespace_normal()
+                        .child(cell.clone())
+                }))
+                .into_any_element()
+        } else {
+            line.into_any_element()
+        }
     }
-    column.into_any_element()
 }
 
 #[cfg(test)]
