@@ -290,6 +290,9 @@ pub(super) struct State {
     pub discovery: Discovery,
     pub status_managers: std::collections::BTreeMap<PathBuf, okilum_t3::projects::Manager>,
     pub statuses: std::collections::BTreeMap<PathBuf, okilum_t3::projects::Status>,
+    /// Latest T3 activity per project folder, from the same status sweep.
+    /// Empty while T3 cannot be read; Now then orders by folder activity.
+    pub activity: std::collections::BTreeMap<PathBuf, u64>,
     pub loading: bool,
     /// The T3 connections of the last status sweep, kept for icon writes.
     pub t3_gateways: Gateways,
@@ -599,9 +602,9 @@ impl Reader {
             if !current {
                 return;
             }
-            let statuses = cx
+            let (statuses, activity) = cx
                 .background_executor()
-                .spawn(async move { okilum_t3::projects::statuses(&projects, &gateways) })
+                .spawn(async move { okilum_t3::projects::observe(&projects, &gateways) })
                 .await;
             let _ = this.update_in_own_window(cx, |this, _, cx| {
                 if this.vault_root == vault
@@ -609,6 +612,7 @@ impl Reader {
                     && this.project_navigation.gateway_generation == gateway_generation
                 {
                     this.project_navigation.statuses = statuses;
+                    this.project_navigation.activity = activity;
                     this.project_navigation.status_managers = managers;
                     this.sync_projects_picker_statuses(cx);
                     cx.notify();

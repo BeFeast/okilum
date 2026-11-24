@@ -271,6 +271,7 @@ impl Reader {
             self.project_navigation.discovery = Default::default();
             self.project_navigation.t3_gateways.clear();
             self.project_navigation.statuses.clear();
+            self.project_navigation.activity.clear();
             self.project_navigation.status_managers.clear();
             self.waiting.cancel();
 

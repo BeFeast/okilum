@@ -1,6 +1,7 @@
 //! «Waiting for me» in Now (#2346): pending manager questions read from T3.
 //! Rows come only from T3's pending-request list of each project's bound
-//! manager thread, never from file times or activity. Reads run only while Now
+//! manager thread, never from file times or activity; activity only orders
+//! them, like the projects in progress. Reads run only while Now
 //! is enabled, are dropped when the vault, Now or a newer read supersedes them,
 //! and never write to the vault.
 use super::*;
@@ -305,6 +306,19 @@ impl Reader {
             .into_any_element()
     }
 
+    /// Waiting rows with the projects in progress first, in Now's activity
+    /// order; questions of parked or dormant projects stay listed, after the
+    /// rest. Stable sorts keep each project's own question order.
+    pub(super) fn ordered_waiting(&self) -> waiting::View {
+        let mut view = self.waiting.view();
+        let rank = self.now_rank();
+        view.rows.sort_by_key(|row| rank(&row.source.folder));
+        view.omitted.sort_by_key(|(source, _)| rank(&source.folder));
+        view.unavailable
+            .sort_by_key(|unavailable| rank(&unavailable.folder));
+        view
+    }
+
     /// The Waiting for me section, or nothing before the first read of this
     /// vault. Render performs no IO and no formatting of times.
     pub(super) fn render_now_waiting(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -312,7 +326,7 @@ impl Reader {
         if waiting.root != self.vault_root || (waiting.ledger.is_empty() && !waiting.checking()) {
             return None;
         }
-        let view = waiting.view();
+        let view = self.ordered_waiting();
         let mut status = Vec::new();
         if waiting.checking() {
             status.push("Checking managers…".to_owned());

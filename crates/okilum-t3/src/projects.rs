@@ -98,6 +98,21 @@ pub fn statuses(
     projects: &[Project],
     gateways: &std::collections::BTreeMap<String, std::sync::Arc<dyn crate::ManagerGateway>>,
 ) -> std::collections::BTreeMap<PathBuf, Status> {
+    observe(projects, gateways).0
+}
+
+/// [`statuses`] plus each project's latest T3 activity (Unix seconds): the
+/// newest `updatedAt` of its manager thread and of the threads that manager
+/// started, read from the same listing. A project whose listing failed or
+/// whose manager is not listed has no entry.
+pub fn observe(
+    projects: &[Project],
+    gateways: &std::collections::BTreeMap<String, std::sync::Arc<dyn crate::ManagerGateway>>,
+) -> (
+    std::collections::BTreeMap<PathBuf, Status>,
+    std::collections::BTreeMap<PathBuf, u64>,
+) {
+    let mut activity = std::collections::BTreeMap::new();
     let mut listings = std::collections::BTreeMap::<
         (String, String),
         std::result::Result<Vec<crate::ThreadSummary>, String>,
@@ -125,6 +140,11 @@ pub fn statuses(
                                     })?;
                                     gateway.list_threads(id).map_err(|e| e.to_string())
                                 });
+                        if let Ok(threads) = &*listing {
+                            if let Some(at) = thread_activity(threads, thread) {
+                                activity.insert(project.folder.clone(), at);
+                            }
+                        }
                         match listing {
                             Err(error) => Status::Unreachable(error.clone()),
                             Ok(threads) => match threads.iter().find(|t| &t.thread_id == thread) {
@@ -147,7 +167,22 @@ pub fn statuses(
         };
         result.insert(project.folder.clone(), state);
     }
-    result
+    (result, activity)
+}
+
+/// The newest `updatedAt` of `manager` and the threads it started.
+pub fn thread_activity(threads: &[crate::ThreadSummary], manager: &str) -> Option<u64> {
+    threads
+        .iter()
+        .filter(|thread| {
+            thread.thread_id == manager || thread.parent_thread_id.as_deref() == Some(manager)
+        })
+        .filter_map(|thread| {
+            chrono::DateTime::parse_from_rfc3339(&thread.updated_at)
+                .ok()
+                .and_then(|at| u64::try_from(at.timestamp()).ok())
+        })
+        .max()
 }
 
 impl Project {
@@ -523,6 +558,35 @@ pub fn manager_url(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thread_activity_is_the_newest_manager_or_child_update() {
+        let thread = |id: &str, parent: Option<&str>, at: &str| {
+            serde_json::from_value::<crate::ThreadSummary>(serde_json::json!({
+                "threadId": id, "title": "t", "status": "completed",
+                "latestRunId": null, "providerInstanceId": "p", "model": "m",
+                "runtimeMode": "full-access", "linkedPullRequest": null,
+                "pullRequests": null, "parentThreadId": parent, "updatedAt": at,
+            }))
+            .unwrap()
+        };
+        let threads = [
+            thread("mcp:manager", None, "2026-11-20T10:00:00Z"),
+            thread(
+                "mcp:child",
+                Some("mcp:manager"),
+                "2026-11-24T21:00:00+02:00",
+            ),
+            thread("mcp:other", None, "2026-11-25T00:00:00Z"),
+            thread("mcp:broken", Some("mcp:manager"), "not a time"),
+        ];
+        assert_eq!(
+            thread_activity(&threads, "mcp:manager"),
+            Some(1_795_546_800),
+            "the child's update is the newest; unrelated threads do not count"
+        );
+        assert_eq!(thread_activity(&threads, "mcp:missing"), None);
+    }
 
     #[test]
     fn service2772_registry_read_refuses_location_switch_instead_of_manifest_fallback() {

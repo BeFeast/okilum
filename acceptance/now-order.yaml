@@ -1,0 +1,127 @@
+# Now puts the projects with the newest activity first. Parked and dormant
+# projects sit in a collapsed «Other» group at the bottom, never at the top.
+# Context names are chosen so alphabetical order differs from activity order:
+# zinnia (today) > maple (1 day) > alder (3 days); birch is parked in its
+# manifest although edited today; cedar has had no activity for 20 days.
+vault: tests/fixtures/lifecycle-vault
+note: |
+  # Now order fixture
+
+  Projects are ordered by their latest activity.
+sidebar_state:
+  left_mode: now
+  now_enabled: true
+  now_collapsed: [changes, pins]
+generate:
+  - path: state/dev/alder/@index.md
+    kind: text
+    text: |
+      ---
+      kind: project
+      status: active
+      ---
+      # alder
+  - path: state/dev/alder/ops/project.toml
+    kind: text
+    text: |
+      slug = "alder"
+      kind = "knowledge"
+      status = "active"
+  - path: state/dev/birch/@index.md
+    kind: text
+    text: |
+      ---
+      kind: project
+      status: active
+      ---
+      # birch
+  - path: state/dev/birch/ops/project.toml
+    kind: text
+    text: |
+      slug = "birch"
+      kind = "knowledge"
+      status = "parked"
+  - path: state/dev/cedar/@index.md
+    kind: text
+    text: |
+      ---
+      kind: project
+      status: active
+      ---
+      # cedar
+  - path: state/dev/cedar/ops/project.toml
+    kind: text
+    text: |
+      slug = "cedar"
+      kind = "knowledge"
+      status = "active"
+  - path: state/dev/maple/@index.md
+    kind: text
+    text: |
+      ---
+      kind: project
+      status: active
+      ---
+      # maple
+  - path: state/dev/maple/ops/project.toml
+    kind: text
+    text: |
+      slug = "maple"
+      kind = "knowledge"
+      status = "active"
+  - path: state/dev/zinnia/@index.md
+    kind: text
+    text: |
+      ---
+      kind: project
+      status: active
+      ---
+      # zinnia
+  - path: state/dev/zinnia/ops/project.toml
+    kind: text
+    text: |
+      slug = "zinnia"
+      kind = "knowledge"
+      status = "active"
+mtime:
+  scenario.md: 30
+  inbox/Capture.md: 30
+  sources/web/2026/11/24/Reference.md: 30
+  knowledge/evening-light.md: 30
+  state/health/sleep/@index.md: 30
+  log/health/sleep/decisions/2026-11-24-lights-out.md: 30
+  log/health/sleep/final/Retired.md: 30
+  state/health/sleep/Archive/2026-11-24-lights-out.md: 30
+  sources/video/2026/11/24/summary.md: 30
+  sources/video/2026/11/24/transcript.md: 30
+  state/dev/zinnia/@index.md: 0
+  state/dev/birch/@index.md: 0
+  state/dev/maple/@index.md: 1
+  state/dev/alder/@index.md: 3
+  state/dev/cedar/@index.md: 20
+appearance: light
+rig:
+  persistent_pointer: true
+preferences:
+  note_open_mode: read
+region: [265, 85, 950, 550]
+ready_text: Now order fixture
+steps:
+  - id: now-open
+    wait: 1.5
+    text: Rescan
+    region: [0, 45, 279, 690]
+  - id: active-by-recency
+    region: [0, 90, 279, 420]
+    text_order: [IN PROGRESS, zinnia, maple, alder, OTHER]
+  - id: parked-not-in-progress
+    region: [0, 90, 279, 420]
+    text_absent: birch
+  - id: dormant-collapsed
+    region: [0, 90, 279, 420]
+    text_absent: cedar
+  - id: other-expanded
+    click: [60, 350]
+    wait: 0.7
+    region: [0, 90, 279, 500]
+    text_order: [alder, OTHER, birch, cedar]
