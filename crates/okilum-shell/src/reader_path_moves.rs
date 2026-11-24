@@ -26,7 +26,7 @@ pub(super) fn live_plan(
 ) -> Plan {
     let mut plan = resolve(&vault.root, directory, paths, Some(vault));
     if archive_cutover {
-        plan.handoff = Cutover::from_archive(&vault.root, &known_roots(directory)).map(Box::new);
+        plan.handoff = Cutover::from_archive(&vault.root, &known_roots(directory)).map(Arc::new);
     }
     plan
 }
@@ -107,31 +107,8 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if let Some(cutover) = &plan.handoff {
-            if let Some(target) = cutover.target(self.selected_file()) {
-                if self.pane.editing.is_none() {
-                    if let Some(grove) = reader_open::reader_of(&cutover.grove, cx)
-                        .and_then(|reader| reader.upgrade())
-                    {
-                        let archive_state = &self.sidebar;
-                        grove.update(cx, |reader, cx| {
-                            reader.import_archive_state(cutover, archive_state, cx);
-                        });
-                    }
-                    // The archive window stays available. Opening Grove uses
-                    // its own inventory, profile state and normal open guards.
-                    reader_open::finish_open(
-                        Ok(Opts {
-                            vault: Some(cutover.grove.clone()),
-                            note: Some(target.to_owned()),
-                            session_directory: self.session_directory.clone(),
-                            restore_workspace: true,
-                            ..Default::default()
-                        }),
-                        cx,
-                    );
-                }
-            }
+        if let Some(cutover) = plan.handoff.clone() {
+            self.follow_archive_cutover(cutover, cx);
         }
         self.remap_shortcuts(plan, cx);
         for path in &mut self.quick_open.recent {
@@ -182,6 +159,47 @@ impl Reader {
             self.link_notice = Some(format!("{} (moved?)", self.selected_file()).into());
         }
         followed
+    }
+
+    fn follow_archive_cutover(&self, cutover: Arc<Cutover>, cx: &mut Context<Self>) {
+        let from = self.selected_file().to_owned();
+        let Some(target) = cutover
+            .target(&from)
+            .filter(|_| self.pane.editing.is_none())
+        else {
+            return;
+        };
+        let opts = Opts {
+            vault: Some(cutover.grove.clone()),
+            note: Some(target.to_owned()),
+            session_directory: self.session_directory.clone(),
+            restore_workspace: true,
+            ..Default::default()
+        };
+        let source = cx.entity().downgrade();
+        // Both registry lookups and opening a window read the existing
+        // Readers. Run after release of the archive Reader's update lease.
+        cx.defer(move |cx| {
+            let Some(source) = source.upgrade() else {
+                return;
+            };
+            let reader = source.read(cx);
+            if reader.vault_root != cutover.archive
+                || reader.selected_file() != from
+                || reader.pane.editing.is_some()
+            {
+                return;
+            }
+            if let Some(grove) =
+                reader_open::reader_of(&cutover.grove, cx).and_then(|weak| weak.upgrade())
+            {
+                let archive_state = reader.sidebar.clone();
+                grove.update(cx, |reader, cx| {
+                    reader.import_archive_state(&cutover, &archive_state, cx);
+                });
+            }
+            reader_open::finish_open(Ok(opts), cx);
+        });
     }
 
     pub(super) fn open_archive_shortcut(&self, path: &str, cx: &mut Context<Self>) -> bool {

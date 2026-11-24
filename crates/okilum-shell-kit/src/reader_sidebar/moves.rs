@@ -39,7 +39,7 @@ pub(super) fn contained(root: &Path, relative: &str) -> bool {
 #[derive(Clone, Debug, Default)]
 pub struct Plan {
     pub import: Option<Box<(super::cutover::Cutover, State)>>,
-    pub handoff: Option<Box<super::cutover::Cutover>>,
+    pub handoff: Option<std::sync::Arc<super::cutover::Cutover>>,
     moved: BTreeMap<String, String>,
     uncertain: BTreeSet<String>,
     present: BTreeSet<String>,

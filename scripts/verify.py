@@ -556,7 +556,6 @@ def run(args, scenario, output, result):
                         if 'vault_move' in step:
                             move_vault_fixture(vault, step['vault_move'])
                         if 'cutover' in step:
-                            require(step.get('restart'), 'Cutover requires a restart')
                             vault = cutover_fixture(vault, step['cutover'])
                         if step.get('restart'):
                             rig.close()
@@ -565,7 +564,7 @@ def run(args, scenario, output, result):
                             proc = launch(None, restore='cutover' in step)
                         time.sleep(step.get('wait', .4))
                         rig.shot(shot)
-                        if set(step) & {'vault_replace', 'vault_create', 'vault_move', 'restart'}:
+                        if set(step) & {'vault_replace', 'vault_create', 'vault_move', 'cutover', 'restart'}:
                             deadline = time.monotonic() + 10
                             while time.monotonic() < deadline and not condition(shot, step, scenario['region'])[0]:
                                 require(proc.poll() is None, f'App exited: {proc.returncode}')
@@ -655,6 +654,8 @@ def main():
     parser.add_argument('--in-slot', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--binary', help='Use an already-built app for regression/bisect; skips build')
     parser.add_argument('--measure-incremental', action='store_true', help='Time a one-line shell change in the slot')
+    parser.add_argument('--live-cutover', action='store_true',
+                        help='Check the root switch with the archive window still open')
     args = parser.parse_args()
     if Path(args.scenario).name != args.scenario:
         parser.error('scenario must be an id, not a path')
@@ -663,7 +664,7 @@ def main():
     if args.output is None:
         base = Path.home() / 'work/qa-evidence'
         base.mkdir(parents=True, exist_ok=True)
-        args.output = Path(tempfile.mkdtemp(prefix=f'verify-{args.scenario}-', dir=base))
+        args.output = Path(tempfile.mkdtemp(prefix=f"verify-{args.scenario}{'-live-cutover' if args.live_cutover else ''}-", dir=base))
     args.output = args.output.resolve()
     if not args.in_slot and not args.binary and not args.output.is_relative_to(Path.home() / 'work/qa-evidence'):
         parser.error('Pool evidence must be under ~/work/qa-evidence so the pool returns it')
@@ -685,7 +686,8 @@ def main():
                                '--source-dir', str(ROOT), '--receipt', str(args.output / 'slot.json'),
                                '--', 'python3', 'scripts/verify.py', args.scenario,
                                '--in-slot', '--output', str(args.output),
-                               *(['--measure-incremental'] if args.measure_incremental else [])], cwd=ROOT,
+                               *(['--measure-incremental'] if args.measure_incremental else []),
+                               *(['--live-cutover'] if args.live_cutover else [])], cwd=ROOT,
                               env=dict(os.environ, OKILUM_SOURCE_COMMIT=revision))
         (args.output / 'command.json').write_text(json.dumps({
             'wall_seconds': round(time.monotonic() - start, 3), 'exit_code': completed.returncode,
@@ -698,6 +700,14 @@ def main():
         import yaml
         scenario = yaml.safe_load((ROOT / 'acceptance' / f'{args.scenario}.yaml').read_text())
         result['source_commit'] = os.environ.get('OKILUM_SOURCE_COMMIT')
+        if args.live_cutover:
+            cutover = next((step for step in scenario['steps'] if 'cutover' in step), None)
+            require(cutover is not None, 'The scenario must define a cutover step')
+            cutover.pop('restart', None)
+            cutover.pop('pixels', None)
+            cutover.update(text='cutover', region=[0, 70, 1366, 560])
+            scenario['steps'] = scenario['steps'][:scenario['steps'].index(cutover) + 1]
+            result['live_cutover'] = True
         run(args, scenario, args.output, result)
     except Exception as error:
         result['error'] = f'{type(error).__name__}: {error}'
