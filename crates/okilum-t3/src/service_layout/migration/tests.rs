@@ -1,5 +1,8 @@
 use super::*;
 
+const VAULT_JSON: &[u8] =
+    br#"{"version":1,"name":"Synthetic","future":true,"lifecycle":{"state":"active"}}"#;
+
 struct Fixture {
     _temp: tempfile::TempDir,
     context: PathBuf,
@@ -11,7 +14,9 @@ impl Fixture {
         let context = temp.path().join("Areas/work-system");
         fs::create_dir_all(context.join("ops/daily")).unwrap();
         fs::create_dir(context.join(".okilum")).unwrap();
-        fs::write(context.join(".okilum/vault.json"), b"existing settings").unwrap();
+        // A real descriptor: since the archive write boundary, an unparseable
+        // vault.json makes the lifecycle unverifiable and refuses every write.
+        fs::write(context.join(".okilum/vault.json"), VAULT_JSON).unwrap();
         fs::write(context.join("ops/project.yaml"), "# preserve this YAML and unknown fields\r\nname: Synthetic\r\nkind: knowledge\r\nfuture: {keep: true}\r\nt3:\r\n  schema_version: 1\r\n  environment: fixture\r\n  origin: https://t3.example\r\n  manager: {project_id: 'mcp:existing', thread_id: 'mcp:existing-manager', workspace_mode: local}\r\n").unwrap();
         fs::write(
             context.join("ops/board.toml"),
@@ -63,7 +68,7 @@ impl Fixture {
         );
         assert_eq!(
             fs::read(self.context.join(".okilum/vault.json")).unwrap(),
-            b"existing settings"
+            VAULT_JSON
         );
     }
 }
@@ -128,6 +133,36 @@ fn reviewed_apply_keeps_yaml_six_ids_dates_and_notes_then_explicit_rollback() {
         before.replace("name: changed\n").is_err(),
         "even a round-trip location switch invalidates old editors"
     );
+}
+
+#[test]
+fn archived_or_unverifiable_vault_refuses_apply_without_moving_files() {
+    for (descriptor, archive_root) in [
+        (
+            &br#"{"version":1,"lifecycle":{"state":"archive","read_only":true,"successor":"../grove"}}"#[..],
+            true,
+        ),
+        (&b"not json"[..], false),
+        (
+            &br#"{"version":1,"lifecycle":{"state":"active","successor":"../grove"}}"#[..],
+            false,
+        ),
+    ] {
+        let f = Fixture::new();
+        let plan = Plan::preview(&f.context).unwrap();
+        let (directory, expected) = if archive_root {
+            (f._temp.path().join(".okilum"), "read-only archive")
+        } else {
+            (f.context.join(".okilum"), "lifecycle cannot be verified")
+        };
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("vault.json"), descriptor).unwrap();
+        let error = format!("{:#}", plan.apply(true).unwrap_err());
+        assert!(error.contains(expected), "{error}");
+        assert!(f.context.join("ops/project.yaml").is_file());
+        assert!(!f.context.join(".okilum/project.yaml").exists());
+        assert!(pending(&f.context).unwrap().is_none());
+    }
 }
 
 #[test]
