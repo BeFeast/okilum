@@ -8,7 +8,7 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState},
-    v_flex, WindowExt,
+    v_flex, Disableable as _, WindowExt,
 };
 use std::{
     collections::BTreeMap,
@@ -236,9 +236,45 @@ pub(crate) fn stored(root: &Path, cx: &App) -> Option<String> {
     })
 }
 
+/// Why this vault's name cannot be saved here, before trying: the vault is
+/// an archive (its lifecycle, a top-level `read_only: true`) or the folder
+/// that holds the name file cannot be written. `None` when a write may work;
+/// the write itself still reports any other failure.
+pub(crate) fn read_only(root: &Path) -> Option<&'static str> {
+    use okilum_core::vault_descriptor::Lifecycle;
+    let flagged = Lifecycle::load(root) == Lifecycle::Archive
+        || okilum_core::vault_descriptor::read(root)
+            .is_some_and(|value| value.get("read_only") == Some(&serde_json::Value::Bool(true)));
+    let directory = root.join(DIRECTORY);
+    let folder = if directory.is_dir() {
+        directory.as_path()
+    } else {
+        root
+    };
+    let locked = |path: &Path| {
+        std::fs::metadata(path).is_ok_and(|metadata| metadata.permissions().readonly())
+    };
+    (flagged || locked(folder) || locked(&file(root)))
+        .then_some("This vault is read-only (archive), so its name can\u{2019}t be changed.")
+}
+
+const NOT_CHANGED: &str = "This vault is read-only (archive). The name was not changed.";
+
 /// Set or clear the display name. A blank name, or the folder name itself,
 /// clears it. It is written into the vault, and every window repaints.
+#[cfg(test)]
 pub(crate) fn set(root: &Path, name: &str, cx: &mut App) {
+    if let Err(message) = try_set(root, name, cx) {
+        diagnostic_error!("{message}");
+    }
+}
+
+/// [`set`], returning what to show when the name was not changed.
+fn try_set(root: &Path, name: &str, cx: &mut App) -> Result<(), String> {
+    // Every attempt in an archive says so, even one that names no change.
+    if read_only(root).is_some() {
+        return Err(NOT_CHANGED.into());
+    }
     let has_sync_name = cx
         .try_global::<Names>()
         .is_some_and(|names| names.sync_names.contains_key(root));
@@ -247,19 +283,11 @@ pub(crate) fn set(root: &Path, name: &str, cx: &mut App) {
         .filter(|name| has_sync_name || *name != folder_name(root))
         .or_else(|| has_sync_name.then(|| folder_name(root)));
     if stored(root, cx) == name {
-        return;
+        return Ok(());
     }
-    if let Err(error) = write(root, name.as_deref()) {
-        let message = format!("Cannot save the vault name: {error:#}");
-        diagnostic_error!("{message}");
-        if let Some(window) = cx.active_window() {
-            let _ = window.update(cx, |_, window, cx| {
-                crate::reader_toast::error(message, window, cx)
-            });
-        }
-        return;
-    }
+    write(root, name.as_deref()).map_err(|error| format!("The name was not changed: {error:#}"))?;
     adopt(root, name, cx);
+    Ok(())
 }
 
 /// The native window title: `Okilum — Note — Vault`, `Okilum — Vault`
@@ -317,18 +345,33 @@ pub(crate) fn open_rename(root: PathBuf, window: &mut Window, cx: &mut App) {
 fn open_rename_input(root: PathBuf, window: &mut Window, cx: &mut App) -> Entity<InputState> {
     let current = shown(&root, cx);
     let folder = folder_name(&root);
+    // Explained before any attempt; the controls stay off for an archive.
+    let locked = read_only(&root);
     let input = cx.new(|cx| {
         let mut input = InputState::new(window, cx).placeholder(folder.clone());
         input.set_value(current, window, cx);
         input
     });
+    // A failed save keeps the dialog open with the reason in it: the name
+    // was not changed, and the person sees why.
+    let failure = cx.new(|_| None::<SharedString>);
     let save = {
         let root = root.clone();
         let input = input.clone();
+        let failure = failure.clone();
         move |window: &mut Window, cx: &mut App| {
             let value = input.read(cx).value().to_string();
-            set(&root, &value, cx);
-            window.close_dialog(cx);
+            match try_set(&root, &value, cx) {
+                Ok(()) => window.close_dialog(cx),
+                Err(message) => {
+                    diagnostic_error!("Cannot save the vault name: {message}");
+                    failure.update(cx, |failure, cx| {
+                        *failure = Some(message.into());
+                        cx.notify();
+                    });
+                    window.refresh();
+                }
+            }
         }
     };
     let enter = save.clone();
@@ -345,23 +388,53 @@ fn open_rename_input(root: PathBuf, window: &mut Window, cx: &mut App) -> Entity
         let save = save.clone();
         let reset_input = input.clone();
         let reset_folder = folder.clone();
+        let failed = failure.read(cx).clone();
+        let palette = crate::brand::palette(cx);
+        let refused = failure.clone();
         dialog
             .title("Rename vault")
             .width(px(420.))
+            // Enter with the field off reaches the dialog itself: in an archive
+            // it reports the refusal instead of closing as if it had saved.
+            .on_ok(move |_, window, cx| {
+                if locked.is_none() {
+                    return true;
+                }
+                refused.update(cx, |failure, cx| {
+                    *failure = Some(NOT_CHANGED.into());
+                    cx.notify();
+                });
+                window.refresh();
+                false
+            })
             .child(
                 v_flex()
                     .gap_2()
                     .child(
-                        Input::new(&input),
+                        Input::new(&input).disabled(locked.is_some()),
                     )
                     .child(
                         div()
                             .text_sm()
-                            .text_color(crate::brand::palette(cx).text_muted)
+                            .text_color(palette.text_muted)
                             .child(format!(
                                 "Only Okilum shows this name. The folder stays \u{201c}{folder}\u{201d}, and links keep working."
                             )),
                     )
+                    .children(locked.filter(|_| failed.is_none()).map(|notice| {
+                        div()
+                            .debug_selector(|| "vault-rename-read-only".into())
+                            .text_sm()
+                            .text_color(palette.text)
+                            .child(notice)
+                    }))
+                    .children(failed.map(|message| {
+                        div()
+                            .debug_selector(|| "vault-rename-error".into())
+                            .text_sm()
+                            .text_color(palette.danger)
+                            .child(message)
+                    }))
                     .child(
                         h_flex()
                             .gap_2()
@@ -370,6 +443,7 @@ fn open_rename_input(root: PathBuf, window: &mut Window, cx: &mut App) -> Entity
                                 Button::new("vault-rename-reset")
                                     .ghost()
                                     .label("Use folder name")
+                                    .disabled(locked.is_some())
                                     .on_click(move |_, window, cx| {
                                         reset_input.update(cx, |input, cx| {
                                             input.set_value(reset_folder.clone(), window, cx)
@@ -380,6 +454,7 @@ fn open_rename_input(root: PathBuf, window: &mut Window, cx: &mut App) -> Entity
                                 Button::new("vault-rename-save")
                                     .primary()
                                     .label("Rename")
+                                    .disabled(locked.is_some())
                                     .on_click(move |_, window, cx| save(window, cx)),
                             ),
                     ),
@@ -609,6 +684,63 @@ mod tests {
             assert!(error.to_string().contains("changed"));
             assert_eq!(std::fs::read(file(root)).unwrap(), gardener);
             assert_eq!(std::fs::read_dir(&metadata).unwrap().count(), 1);
+        }
+    }
+
+    /// An archive (lifecycle or the top-level flag) and a folder without
+    /// write permission refuse the rename with a reason, and leave the
+    /// descriptor's bytes alone. A writable vault is the positive control.
+    #[gpui::test]
+    fn a_read_only_vault_reports_the_name_was_not_changed(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let cases: [(&str, &[u8], bool); 4] = [
+            (
+                "Archive",
+                br#"{"name":"Old","lifecycle":{"state":"archive","read_only":true}}"#,
+                false,
+            ),
+            ("Flagged", br#"{"name":"Old","read_only":true}"#, false),
+            ("Locked", br#"{"name":"Old"}"#, true),
+            ("Writable", br#"{"name":"Old"}"#, false),
+        ];
+        for (folder, bytes, chmod) in cases {
+            let root = fixture.path().join(folder);
+            std::fs::create_dir_all(root.join(DIRECTORY)).unwrap();
+            std::fs::write(file(&root), bytes).unwrap();
+            #[cfg(unix)]
+            if chmod {
+                use std::os::unix::fs::PermissionsExt as _;
+                for path in [file(&root), root.join(DIRECTORY), root.clone()] {
+                    let mode = if path.is_dir() { 0o555 } else { 0o444 };
+                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+                }
+            }
+            #[cfg(not(unix))]
+            if chmod {
+                continue;
+            }
+            let result = cx.update(|cx| try_set(&root, "New", cx));
+            if folder == "Writable" {
+                assert_eq!(result, Ok(()));
+                assert_eq!(read(&root).as_deref(), Some("New"));
+                assert_eq!(read_only(&root), None);
+                continue;
+            }
+            assert!(read_only(&root).is_some(), "{folder}: explained up front");
+            let message = result.unwrap_err();
+            assert!(
+                message.contains("read-only") && message.contains("not changed"),
+                "{folder}: {message}"
+            );
+            assert_eq!(std::fs::read(file(&root)).unwrap(), bytes, "{folder}");
+            #[cfg(unix)]
+            if chmod {
+                use std::os::unix::fs::PermissionsExt as _;
+                for path in [root.clone(), root.join(DIRECTORY)] {
+                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                        .unwrap();
+                }
+            }
         }
     }
 
