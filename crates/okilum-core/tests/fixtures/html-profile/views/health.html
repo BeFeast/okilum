@@ -1,0 +1,84 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="html_profile" content="1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src okilum-asset:; base-uri 'none'; form-action 'none'">
+<style>
+:root {
+  color-scheme: light dark;
+  --paper: #fff;
+  --text: #202124;
+  --muted: #5e6268;
+  --line: #d1d5db;
+  --panel: #f4f5f7;
+  --link: #174ea6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #181a1b;
+    --text: #e8eaed;
+    --muted: #b4b9bf;
+    --line: #4c5157;
+    --panel: #26292c;
+    --link: #a8c7fa;
+  }
+}
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--text);
+  font: 1rem/1.55 system-ui, sans-serif;
+  overflow-wrap: anywhere;
+}
+main { max-inline-size: 48rem; padding: 1rem; margin-inline: auto; }
+h1, h2, h3, h4, h5, h6 { line-height: 1.2; }
+a { color: var(--link); }
+[data-link-status] { color: var(--muted); text-decoration: underline dotted; }
+img { max-inline-size: 100%; block-size: auto; }
+pre, table, .math-display { overflow-x: auto; }
+pre, .callout, .note-embed { background: var(--panel); padding: .75rem; }
+code { font-size: .9rem; }
+blockquote { margin-inline: 0; padding-inline-start: .75rem; border-inline-start: .2rem solid var(--line); }
+.callout-title, summary { font-weight: 600; }
+.note-embed, .callout { margin-block: 1rem; }
+table { display: block; border-collapse: collapse; }
+td, th { border: 1px solid var(--line); padding: .25rem .5rem; }
+.math { font-family: math, serif; white-space: pre-wrap; }
+.math-display { display: block; text-align: center; }
+</style>
+</head>
+<body>
+<main>
+<p>snapshot <time datetime="2026-11-23T23:30:03Z">01:30</time></p>
+<section id="section-1" data-show="table">
+<h2>Projects</h2>
+<table>
+<thead><tr><th scope="col">title</th><th scope="col">context</th><th scope="col">idle</th><th scope="col">tasks_open</th><th scope="col">Source</th></tr></thead>
+<tbody>
+<tr><td>Sleep tracking</td><td>sleep-tracking</td><td>8</td><td>1</td><td><a href="okilum-note:state/health/sleep-tracking/index.md?revision=sha256%3Ab8cd2f0d479f85c9bec346bb84cefabed894c956ec5b12b70af06901293b71a5">state/health/sleep-tracking/index.md</a></td></tr>
+</tbody>
+</table>
+</section>
+<section id="section-2" data-show="table">
+<h2>Log</h2>
+<p>Timeline shown as table</p>
+<h3>decisions (1)</h3>
+<table>
+<thead><tr><th scope="col">title</th><th scope="col">Source</th></tr></thead>
+<tbody>
+<tr><td>Bedtime window 23:00–23:30</td><td><a href="okilum-note:log/health/sleep-tracking/decisions/2026-11-18-bedtime-window.md?revision=sha256%3A6aec0649974d64e993cae1448a70cedd659ec14c73ef38158e93813363a7ee72">log/health/sleep-tracking/decisions/2026-11-18-bedtime-window.md</a></td></tr>
+</tbody>
+</table>
+</section>
+<section id="section-3" data-show="list">
+<h2>Knowledge and sources</h2>
+<ul>
+<li>Sleep hygiene — <a href="okilum-note:knowledge/sleep-hygiene.md?revision=sha256%3A984a6b9a8eda4f2aa5cd80c2c15c57936ec5da271b0b09c1a19224e8b1ced54e">knowledge/sleep-hygiene.md</a></li>
+<li>Circadian light — <a href="okilum-note:sources/web/2026/11/12/circadian-light.md?revision=sha256%3Ad7fe156c3179d3dae385bc2133e0f6b699e13602d1bb121aafd0cfcb3642b01f">sources/web/2026/11/12/circadian-light.md</a></li>
+</ul>
+</section>
+</main>
+</body>
+</html>

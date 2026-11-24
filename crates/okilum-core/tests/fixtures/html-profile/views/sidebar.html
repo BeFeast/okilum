@@ -1,0 +1,101 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="html_profile" content="1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src okilum-asset:; base-uri 'none'; form-action 'none'">
+<style>
+:root {
+  color-scheme: light dark;
+  --paper: #fff;
+  --text: #202124;
+  --muted: #5e6268;
+  --line: #d1d5db;
+  --panel: #f4f5f7;
+  --link: #174ea6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #181a1b;
+    --text: #e8eaed;
+    --muted: #b4b9bf;
+    --line: #4c5157;
+    --panel: #26292c;
+    --link: #a8c7fa;
+  }
+}
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--text);
+  font: 1rem/1.55 system-ui, sans-serif;
+  overflow-wrap: anywhere;
+}
+main { max-inline-size: 48rem; padding: 1rem; margin-inline: auto; }
+h1, h2, h3, h4, h5, h6 { line-height: 1.2; }
+a { color: var(--link); }
+[data-link-status] { color: var(--muted); text-decoration: underline dotted; }
+img { max-inline-size: 100%; block-size: auto; }
+pre, table, .math-display { overflow-x: auto; }
+pre, .callout, .note-embed { background: var(--panel); padding: .75rem; }
+code { font-size: .9rem; }
+blockquote { margin-inline: 0; padding-inline-start: .75rem; border-inline-start: .2rem solid var(--line); }
+.callout-title, summary { font-weight: 600; }
+.note-embed, .callout { margin-block: 1rem; }
+table { display: block; border-collapse: collapse; }
+td, th { border: 1px solid var(--line); padding: .25rem .5rem; }
+.math { font-family: math, serif; white-space: pre-wrap; }
+.math-display { display: block; text-align: center; }
+</style>
+</head>
+<body>
+<main>
+<p>snapshot <time datetime="2026-11-23T23:30:03Z">01:30</time></p>
+<section id="section-1" data-show="table">
+<p>Tree shown as table</p>
+<table>
+<thead><tr><th scope="col">title</th><th scope="col">Source</th></tr></thead>
+<tbody>
+<tr><td>Agent context</td><td><a href="okilum-note:%40views/agent-context.md?revision=sha256%3Aa496311a61eaac4e0a4dc4d06ccca26fd6d2c0bbdd99498645f5841e95ada4f9">@views/agent-context.md</a></td></tr>
+<tr><td>Domain</td><td><a href="okilum-note:%40views/domain.md?revision=sha256%3A5699417a6e979638291bd2dcfb9143e24cb0c44dc5ec1998ad1f26e54eddf309">@views/domain.md</a></td></tr>
+<tr><td>health</td><td><a href="okilum-note:%40views/health.md?revision=sha256%3Acd57cf4f14a41449db77196db8120c6c97f99b3c8c73b5953adbf04eb7d14798">@views/health.md</a></td></tr>
+<tr><td>Okilum</td><td><a href="okilum-note:%40views/okilum.md?revision=sha256%3A44fb3956be530c5be1373769a81597fbaca69dc055c27e74ae64092f84ed9b1e">@views/okilum.md</a></td></tr>
+<tr><td>Waiting for Oleg</td><td><a href="okilum-note:%40views/questions.md?revision=sha256%3A24ea79e7c22184a98ce9bb70a44331f9c5e8d5016f78c0effdd25c0bda3a9172">@views/questions.md</a></td></tr>
+<tr><td>Areas</td><td><a href="okilum-note:%40views/sidebar.md?revision=sha256%3A428745c03983770adb31e5cc41bb2b5aacf012512cdb4e4aece449f1f2a90109">@views/sidebar.md</a></td></tr>
+<tr><td>What's new</td><td><a href="okilum-note:%40views/whats-new.md?revision=sha256%3Aaf57ce216164c5ad9c6bebcc127fd1d60c5da4e98fbfe30aff544fadbe316c79">@views/whats-new.md</a></td></tr>
+<tr><td>Network</td><td><a href="okilum-note:Areas/HomeLab/Network.md?revision=sha256%3A7459d1eb9a64bf715e5bdcc57de6f4fe5728710e26f3a65795eac513c788a6fb">Areas/HomeLab/Network.md</a></td></tr>
+<tr><td>Okilum legacy notes</td><td><a href="okilum-note:Projects/Okilum%20Legacy/Notes.md?revision=sha256%3Abce3c590329c3560548d0cd61bc045ed85df423ea32663a07352ef1bf6c833c6">Projects/Okilum Legacy/Notes.md</a></td></tr>
+<tr><td>Git tips</td><td><a href="okilum-note:Resources/Guides/Git%20tips.md?revision=sha256%3Aa260d44e3751a180a46ca8f70d32ec7f2ef508ece2c5f6c42e849af31106f16e">Resources/Guides/Git tips.md</a></td></tr>
+<tr><td>Idea dump</td><td><a href="okilum-note:inbox/2026-11-23-idea-dump.md?revision=sha256%3Ae3e68f95760f719bd8957235a31524ada3fd744c2bf4845fe0ff4fafc710f678">inbox/2026-11-23-idea-dump.md</a></td></tr>
+<tr><td>Rust error handling</td><td><a href="okilum-note:knowledge/rust-error-handling.md?revision=sha256%3A6343547da4bb0dd4e125bc3b6d4a1f9a627eac868376a394fe9897eb07689607">knowledge/rust-error-handling.md</a></td></tr>
+<tr><td>Sleep hygiene</td><td><a href="okilum-note:knowledge/sleep-hygiene.md?revision=sha256%3A984a6b9a8eda4f2aa5cd80c2c15c57936ec5da271b0b09c1a19224e8b1ced54e">knowledge/sleep-hygiene.md</a></td></tr>
+<tr><td>2026-11-23</td><td><a href="okilum-note:log/dev/okilum/daily/2026-11-23-daily.md?revision=sha256%3Ac2d94d0bbe345d6eea994c84868574d5e33e1ddaf8f20296c00d5784930ee20c">log/dev/okilum/daily/2026-11-23-daily.md</a></td></tr>
+<tr><td>The virtual tree replaces Now</td><td><a href="okilum-note:log/dev/okilum/decisions/2026-11-10-tree-replaces-now.md?revision=sha256%3Ae5ca8b4962d253dde503685c19976663a35a6318ce6d836fcc29b22e63392cc8">log/dev/okilum/decisions/2026-11-10-tree-replaces-now.md</a></td></tr>
+<tr><td>Declarative views live in the vault</td><td><a href="okilum-note:log/dev/okilum/decisions/2026-11-20-views-in-vault.md?revision=sha256%3Ac92cffe420e3091b5968abf0f2875bc96799618553f0a916c4884c25e2d62da2">log/dev/okilum/decisions/2026-11-20-views-in-vault.md</a></td></tr>
+<tr><td>near without the search service shows the snapshot</td><td><a href="okilum-note:log/dev/okilum/decisions/2026-11-24-near-snapshot-only.md?revision=sha256%3A04623a39dde3ddbf56a916ce334e35458e96bcb91f7981cecc0245ce4bac3e85">log/dev/okilum/decisions/2026-11-24-near-snapshot-only.md</a></td></tr>
+<tr><td>UI zoom handover</td><td><a href="okilum-note:log/dev/okilum/handovers/2026-11-22-ui-zoom.md?revision=sha256%3A6b6dc4de2e2c96116f504a9b23cb20d46e1a9bfd4f801dfd11dbe8a0dbda97d5">log/dev/okilum/handovers/2026-11-22-ui-zoom.md</a></td></tr>
+<tr><td>Views build spec</td><td><a href="okilum-note:log/dev/okilum/specs/2026-11-24-views.md?revision=sha256%3Ae83763429092fd3a0ac6100b82f62d8812dd763829a843a7b4a530fd8ddd1383">log/dev/okilum/specs/2026-11-24-views.md</a></td></tr>
+<tr><td>Tasker weekly</td><td><a href="okilum-note:log/dev/tasker/reports/2026-11-15-weekly.md?revision=sha256%3A020806f6e77ae1dd7597c04409bdd6b5a74d04222c16c6018c8725e74cdac504">log/dev/tasker/reports/2026-11-15-weekly.md</a></td></tr>
+<tr><td>Bedtime window 23:00–23:30</td><td><a href="okilum-note:log/health/sleep-tracking/decisions/2026-11-18-bedtime-window.md?revision=sha256%3A6aec0649974d64e993cae1448a70cedd659ec14c73ef38158e93813363a7ee72">log/health/sleep-tracking/decisions/2026-11-18-bedtime-window.md</a></td></tr>
+<tr><td>NAS full</td><td><a href="okilum-note:log/homelab/backups/incidents/2026-11-05-nas-full.md?revision=sha256%3A779b7b81da54ff4ea1e8a6453725db0f14345ec0e973bbf14398cc0a7ecd4a1b">log/homelab/backups/incidents/2026-11-05-nas-full.md</a></td></tr>
+<tr><td>Network audit</td><td><a href="okilum-note:log/homelab/common/reports/2026-10-20-network-audit.md?revision=sha256%3A932b0f7a7896193298234118adf47c67e9b4a7ac611eae3b7020e43bc94fdb78">log/homelab/common/reports/2026-10-20-network-audit.md</a></td></tr>
+<tr><td>GPUI talk summary</td><td><a href="okilum-note:sources/video/2026/11/21/gpui-talk.md?revision=sha256%3A72312f40e12a1a63e3a47227cad2c40ce0fb43cc126727d20f193f33e17adcaf">sources/video/2026/11/21/gpui-talk.md</a></td></tr>
+<tr><td>Circadian light</td><td><a href="okilum-note:sources/web/2026/11/12/circadian-light.md?revision=sha256%3Ad7fe156c3179d3dae385bc2133e0f6b699e13602d1bb121aafd0cfcb3642b01f">sources/web/2026/11/12/circadian-light.md</a></td></tr>
+<tr><td>Conventions</td><td><a href="okilum-note:state/dev/common/conventions.md?revision=sha256%3Aab425ad4dd35621e102eeda9aa1f431a8ad66a15849ac22cf09c8c1fa0e01c66">state/dev/common/conventions.md</a></td></tr>
+<tr><td>Okilum</td><td><a href="okilum-note:state/dev/okilum/index.md?revision=sha256%3A174d087b43dde0bcd99c8a26843630e956c40084bec0f00e006d6f7143b5e042">state/dev/okilum/index.md</a></td></tr>
+<tr><td>Waiting for Oleg — Okilum</td><td><a href="okilum-note:state/dev/okilum/questions.md?revision=sha256%3Af05449400d8aab0967eb4d7d6a0953c8cbce4144d12e96eedd5079e664a84bf2">state/dev/okilum/questions.md</a></td></tr>
+<tr><td>Okilum roadmap</td><td><a href="okilum-note:state/dev/okilum/roadmap.md?revision=sha256%3A34f7e03c939fe97c7e3f98cdc45869a437fe96137fc40737403ad4bfe31a23bb">state/dev/okilum/roadmap.md</a></td></tr>
+<tr><td>Tasker</td><td><a href="okilum-note:state/dev/tasker/index.md?revision=sha256%3A0b827cb8b6ce386e2e45f8e355727c2b8a7bcb8fa38a1f151f60d6bac34db6f7">state/dev/tasker/index.md</a></td></tr>
+<tr><td>Waiting for Oleg — Tasker</td><td><a href="okilum-note:state/dev/tasker/questions.md?revision=sha256%3Af36d4bdc082bd3a431b9f579c50def31dcf63c0c1c84738307bed1b438728fb0">state/dev/tasker/questions.md</a></td></tr>
+<tr><td>Tasker roadmap</td><td><a href="okilum-note:state/dev/tasker/roadmap.md?revision=sha256%3A5369162ddf9677d9203cd99fc6691b297850854d2df4bb3184e1ed82b7f7909c">state/dev/tasker/roadmap.md</a></td></tr>
+<tr><td>Budget 2027</td><td><a href="okilum-note:state/finance/budget/index.md?revision=sha256%3A6d8d2dfcfc3a5ed7e018e6028e8665f895920d7baedc36cd95821287096f5c6d">state/finance/budget/index.md</a></td></tr>
+<tr><td>Sleep tracking</td><td><a href="okilum-note:state/health/sleep-tracking/index.md?revision=sha256%3Ab8cd2f0d479f85c9bec346bb84cefabed894c956ec5b12b70af06901293b71a5">state/health/sleep-tracking/index.md</a></td></tr>
+<tr><td>Backups</td><td><a href="okilum-note:state/homelab/backups/index.md?revision=sha256%3A0ec76f2a0d73a77fc90e9c0e0aacd241cbad7a510b69663c2f7e04f839d42421">state/homelab/backups/index.md</a></td></tr>
+<tr><td>Backup restore runbook</td><td><a href="okilum-note:state/homelab/backups/runbook.md?revision=sha256%3A6dbb20eaa8f2e8017e3ffa13d753839e5bbe394dd42db1333c3410ac9ba25d95">state/homelab/backups/runbook.md</a></td></tr>
+</tbody>
+</table>
+</section>
+</main>
+</body>
+</html>

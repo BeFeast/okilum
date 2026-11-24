@@ -1,0 +1,84 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="html_profile" content="1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src okilum-asset:; base-uri 'none'; form-action 'none'">
+<style>
+:root {
+  color-scheme: light dark;
+  --paper: #fff;
+  --text: #202124;
+  --muted: #5e6268;
+  --line: #d1d5db;
+  --panel: #f4f5f7;
+  --link: #174ea6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #181a1b;
+    --text: #e8eaed;
+    --muted: #b4b9bf;
+    --line: #4c5157;
+    --panel: #26292c;
+    --link: #a8c7fa;
+  }
+}
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--text);
+  font: 1rem/1.55 system-ui, sans-serif;
+  overflow-wrap: anywhere;
+}
+main { max-inline-size: 48rem; padding: 1rem; margin-inline: auto; }
+h1, h2, h3, h4, h5, h6 { line-height: 1.2; }
+a { color: var(--link); }
+[data-link-status] { color: var(--muted); text-decoration: underline dotted; }
+img { max-inline-size: 100%; block-size: auto; }
+pre, table, .math-display { overflow-x: auto; }
+pre, .callout, .note-embed { background: var(--panel); padding: .75rem; }
+code { font-size: .9rem; }
+blockquote { margin-inline: 0; padding-inline-start: .75rem; border-inline-start: .2rem solid var(--line); }
+.callout-title, summary { font-weight: 600; }
+.note-embed, .callout { margin-block: 1rem; }
+table { display: block; border-collapse: collapse; }
+td, th { border: 1px solid var(--line); padding: .25rem .5rem; }
+.math { font-family: math, serif; white-space: pre-wrap; }
+.math-display { display: block; text-align: center; }
+</style>
+</head>
+<body>
+<main>
+<p>snapshot <time datetime="2026-11-23T23:30:03Z">01:30</time></p>
+<section id="section-1" data-show="list">
+<h3>2026-11-22 (10)</h3>
+<ul>
+<li>Rust error handling · Dev · knowledge — <a href="okilum-note:knowledge/rust-error-handling.md?revision=sha256%3A6343547da4bb0dd4e125bc3b6d4a1f9a627eac868376a394fe9897eb07689607">knowledge/rust-error-handling.md</a></li>
+<li>Sleep hygiene · Health · knowledge — <a href="okilum-note:knowledge/sleep-hygiene.md?revision=sha256%3A984a6b9a8eda4f2aa5cd80c2c15c57936ec5da271b0b09c1a19224e8b1ced54e">knowledge/sleep-hygiene.md</a></li>
+<li>Conventions · Dev · state — <a href="okilum-note:state/dev/common/conventions.md?revision=sha256%3Aab425ad4dd35621e102eeda9aa1f431a8ad66a15849ac22cf09c8c1fa0e01c66">state/dev/common/conventions.md</a></li>
+<li>Okilum · Dev · state — <a href="okilum-note:state/dev/okilum/index.md?revision=sha256%3A174d087b43dde0bcd99c8a26843630e956c40084bec0f00e006d6f7143b5e042">state/dev/okilum/index.md</a></li>
+<li>Waiting for Oleg — Okilum · Dev · state — <a href="okilum-note:state/dev/okilum/questions.md?revision=sha256%3Af05449400d8aab0967eb4d7d6a0953c8cbce4144d12e96eedd5079e664a84bf2">state/dev/okilum/questions.md</a></li>
+<li>Okilum roadmap · Dev · state — <a href="okilum-note:state/dev/okilum/roadmap.md?revision=sha256%3A34f7e03c939fe97c7e3f98cdc45869a437fe96137fc40737403ad4bfe31a23bb">state/dev/okilum/roadmap.md</a></li>
+<li>Budget 2027 · Finance · state — <a href="okilum-note:state/finance/budget/index.md?revision=sha256%3A6d8d2dfcfc3a5ed7e018e6028e8665f895920d7baedc36cd95821287096f5c6d">state/finance/budget/index.md</a></li>
+<li>Sleep tracking · Health · state — <a href="okilum-note:state/health/sleep-tracking/index.md?revision=sha256%3Ab8cd2f0d479f85c9bec346bb84cefabed894c956ec5b12b70af06901293b71a5">state/health/sleep-tracking/index.md</a></li>
+<li>Backups · HomeLab · state — <a href="okilum-note:state/homelab/backups/index.md?revision=sha256%3A0ec76f2a0d73a77fc90e9c0e0aacd241cbad7a510b69663c2f7e04f839d42421">state/homelab/backups/index.md</a></li>
+<li>Backup restore runbook · HomeLab · state — <a href="okilum-note:state/homelab/backups/runbook.md?revision=sha256%3A6dbb20eaa8f2e8017e3ffa13d753839e5bbe394dd42db1333c3410ac9ba25d95">state/homelab/backups/runbook.md</a></li>
+</ul>
+</section>
+<section id="section-2" data-show="log">
+<h2>What the gardener did</h2>
+<table>
+<thead><tr><th scope="col">field</th><th scope="col">level</th><th scope="col">msg</th><th scope="col">op</th><th scope="col">path</th><th scope="col">ts</th><th scope="col">Source</th></tr></thead>
+<tbody>
+<tr><td>area</td><td>info</td><td>area health -&gt; Health</td><td>normalize</td><td>knowledge/sleep-hygiene.md</td><td>2026-11-23T04:11:00+02:00</td><td><a href="okilum-note:%40views/changes.jsonl?revision=sha256%3Aa219c3280eb050e593c776de1f891a3c8fa59e736e0e696413495829ab6a15c8&amp;line=2">@views/changes.jsonl:2</a></td></tr>
+<tr><td>updated</td><td>info</td><td>filled updated from git</td><td>fill</td><td>state/dev/okilum/index.md</td><td>2026-11-23T04:10:00+02:00</td><td><a href="okilum-note:%40views/changes.jsonl?revision=sha256%3Aa219c3280eb050e593c776de1f891a3c8fa59e736e0e696413495829ab6a15c8&amp;line=1">@views/changes.jsonl:1</a></td></tr>
+<tr><td>layer</td><td>warn</td><td>stored layer knowledge disagrees with path state</td><td>conflict</td><td>state/homelab/backups/runbook.md</td><td>2026-11-22T04:10:00+02:00</td><td><a href="okilum-note:%40views/changes.jsonl?revision=sha256%3Aa219c3280eb050e593c776de1f891a3c8fa59e736e0e696413495829ab6a15c8&amp;line=3">@views/changes.jsonl:3</a></td></tr>
+<tr><td>layer</td><td>info</td><td>old-layout note: no derived fields</td><td>report</td><td>Projects/Okilum Legacy/Notes.md</td><td>2026-11-21T04:10:00+02:00</td><td><a href="okilum-note:%40views/changes.jsonl?revision=sha256%3Aa219c3280eb050e593c776de1f891a3c8fa59e736e0e696413495829ab6a15c8&amp;line=4">@views/changes.jsonl:4</a></td></tr>
+</tbody>
+</table>
+</section>
+</main>
+</body>
+</html>

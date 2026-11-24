@@ -1,0 +1,200 @@
+{
+  "snapshot_version": 1,
+  "generated_at": "2026-11-23T23:30:03Z",
+  "view_api": 0,
+  "view": {
+    "path": "@views/mobile-activity.md",
+    "rev": "sha256:f2f879d9f6ad4df5d7d0bb3f66c85e6bb85f38c8ea5b4f13b647350836677620",
+    "extends": null
+  },
+  "params": {},
+  "as_of": "2026-11-24T01:30:00+02:00",
+  "index": {
+    "by": "okilum-core 0.1.0",
+    "notes": 3,
+    "generation": 0
+  },
+  "findings": [
+    {
+      "path": "@views/mobile-activity.md",
+      "line": 2,
+      "col": 1,
+      "severity": "warning",
+      "message": "Example <diagnostic>"
+    }
+  ],
+  "sections": [
+    {
+      "id": "activity",
+      "title": "Recent activity",
+      "line": 7,
+      "show": "log",
+      "cols": [
+        "ts",
+        "level",
+        "msg",
+        "count",
+        "synced",
+        "related"
+      ],
+      "status": "ok",
+      "source": "live",
+      "snapshot_at": null,
+      "diagnostics": [],
+      "total": 1,
+      "truncated": false,
+      "groups": [],
+      "rows": [
+        {
+          "path": "@views/mobile-activity.jsonl",
+          "line": 1,
+          "anchor": null,
+          "rev": "sha256:9b3462815d4d00f830b90340ef974bc10070efa4ff3ba3c80dfa03e70b044668",
+          "group": [],
+          "fields": {
+            "ts": "2026-11-23T04:11:00+02:00",
+            "level": "info",
+            "msg": "Snapshot fixtures verified",
+            "count": 2,
+            "synced": true,
+            "related": [
+              {
+                "link": "Rust error handling",
+                "path": "knowledge/rust-error-handling.md"
+              },
+              {
+                "link": "Mobile",
+                "path": null,
+                "ambiguous": [
+                  "knowledge/mobile.md",
+                  "state/dev/mobile/index.md"
+                ]
+              }
+            ]
+          },
+          "actions": [
+            "open"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "related",
+      "title": "Related notes",
+      "line": 15,
+      "show": "list",
+      "cols": [
+        "title"
+      ],
+      "status": "degraded",
+      "source": "live",
+      "snapshot_at": null,
+      "diagnostics": [
+        {
+          "path": "@views/mobile-activity.md",
+          "line": 19,
+          "col": 1,
+          "severity": "warning",
+          "message": "near needs the search service"
+        }
+      ],
+      "total": 0,
+      "truncated": false,
+      "groups": [],
+      "rows": []
+    },
+    {
+      "id": "missing-feed",
+      "title": "Other activity",
+      "line": 23,
+      "show": "log",
+      "cols": [
+        "ts",
+        "msg"
+      ],
+      "status": "error",
+      "source": "live",
+      "snapshot_at": null,
+      "diagnostics": [
+        {
+          "path": "@views/mobile-activity.md",
+          "line": 25,
+          "col": 1,
+          "severity": "error",
+          "message": "Source '@views/missing-feed.jsonl' is unavailable in the publication"
+        }
+      ],
+      "total": 0,
+      "truncated": false,
+      "groups": [],
+      "rows": []
+    },
+    {
+      "id": "related",
+      "title": "Cached related notes <near>",
+      "line": 29,
+      "show": "sections",
+      "cols": [
+        "title",
+        "details.summary",
+        "details.score",
+        "details.object"
+      ],
+      "status": "ok",
+      "source": "snapshot",
+      "snapshot_at": "2026-08-02T08:27:00Z",
+      "diagnostics": [],
+      "total": 3,
+      "truncated": true,
+      "groups": [
+        {
+          "key": [
+            "first"
+          ],
+          "count": 2,
+          "agg": {
+            "count": 2
+          }
+        },
+        {
+          "key": [
+            "beyond budget"
+          ],
+          "count": 1,
+          "agg": {}
+        }
+      ],
+      "rows": [
+        {
+          "path": "knowledge/Report #1.md",
+          "line": 7,
+          "anchor": "Open Tasks",
+          "rev": "sha256:9b3462815d4d00f830b90340ef974bc10070efa4ff3ba3c80dfa03e70b044668",
+          "group": [
+            "first"
+          ],
+          "fields": {
+            "title": "A & B",
+            "checked": true,
+            "details.summary": "<b>exact</b>",
+            "details": {
+              "summary": "ignored",
+              "score": 0,
+              "object": {
+                "z": 1,
+                "link": "ordinary <object>",
+                "path": null,
+                "a": true
+              }
+            }
+          },
+          "actions": [
+            "open",
+            "check"
+          ],
+          "markdown": "[Sibling](./sibling.md#Next) ![Diagram](diagram.png)\n\n<script>alert(1)</script>"
+        }
+      ]
+    }
+  ]
+}
