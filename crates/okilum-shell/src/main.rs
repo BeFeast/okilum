@@ -1179,6 +1179,12 @@ fn main() {
     if _instance_lock.is_some() {
         app_footprint::install_appimage_desktop();
     }
+    #[cfg(target_os = "macos")]
+    if _instance_lock.is_some() {
+        if let Err(error) = okilum_shell_kit::macos_cli::install() {
+            diagnostic_error!("Cannot install the Okilum terminal command: {error}");
+        }
+    }
 
     let platform_phase = diagnostics.phase("platform_application");
     let clipboard = platform::managed_clipboard();

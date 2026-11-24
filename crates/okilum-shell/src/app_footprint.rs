@@ -7,6 +7,9 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+#[cfg(target_os = "macos")]
+use okilum_shell_kit::macos_cli;
+
 /// Prefix of the per-run full-text search sessions in the system temp dir.
 pub(crate) const SEARCH_SESSION_PREFIX: &str = "okilum-search-session-";
 /// Unsaved drafts are exported here before the app's state is removed.
@@ -936,6 +939,9 @@ pub(crate) fn uninstall_from_settings(window: &mut gpui::Window, cx: &mut gpui::
         .map(|p| p.display().to_string())
         .collect();
     items.push("Okilum's preferences, caches and saved window state".into());
+    if let Some(command) = macos_cli::owned_command() {
+        items.push(command.display().to_string());
+    }
     items.push("Okilum.app (moved to the Trash)".into());
     let vaults: BTreeSet<PathBuf> = state
         .as_deref()
@@ -993,6 +999,9 @@ pub(crate) fn uninstall_from_settings(window: &mut gpui::Window, cx: &mut gpui::
                         &std::env::temp_dir(),
                         &home.join("Documents"),
                     );
+                    if let Err(error) = macos_cli::remove() {
+                        diagnostic_error!("Cannot remove the Okilum terminal command: {error}");
+                    }
                     diagnostic_error!("Okilum uninstall: {report:?}");
                     let app = std::env::current_exe()
                         .ok()
@@ -2126,6 +2135,8 @@ mod tests {
         // Roots, crash dumps, the Velopack log folder, the Linux sync units,
         // the drafts export and the macOS home (all in the inventory).
         ("crates/okilum-shell/src/app_footprint.rs", 11),
+        // The macOS terminal command is removed separately as an owned file.
+        ("crates/okilum-shell-kit/src/macos_cli/mod.rs", 1),
         // Suggests ~/Downloads in the export dialog: the user picks the target.
         ("crates/okilum-shell/src/brain/context_ui.rs", 1),
         // Brain outboxes and profile: all under the `~/.config/okilum` root.

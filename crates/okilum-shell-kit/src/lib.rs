@@ -18,6 +18,8 @@ pub mod contextual_help;
 pub mod count_label;
 pub mod font_role;
 pub mod lucide;
+#[cfg(target_os = "macos")]
+pub mod macos_cli;
 pub mod new_project_dialog;
 pub mod note_paste_settings;
 pub mod project_avatar;

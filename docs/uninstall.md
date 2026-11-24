@@ -142,6 +142,11 @@ sudo pacman -Rns okilum     # the package
 
 ## macOS (`com.befeast.okilum`)
 
+On first launch from `/Applications/Okilum.app`, Okilum creates `~/.local/bin/okilum`
+if that name is free. The command uses the app at that path after Sprint or
+Sparkle replaces the bundle. If `~/.local/bin` is missing from your login shell's
+`PATH`, add `export PATH="$HOME/.local/bin:$PATH"` to your shell's login profile.
+
 Explicit native Sync acceptance uses `OKILUM_SYNC_QA_ROOT` with a separate
 `HOME` and absolute `OKILUM_STATE_DIR`. `initialize_native_sync_qa()` reads
 `HOME` only to validate that both Reader directories belong to the supplied
@@ -180,7 +185,8 @@ what goes and which vaults stay, then:
    folder as `Application Support/Okilum`, which holds Sync's retained
    identity; a symlinked root that leads there is never followed and stays as
    it is), `~/Library/Caches/okilum/`
-   (search index), `~/.config/okilum/` (Brain), `$TMPDIR/okilum-search-session-*`;
+   (search index), `~/.config/okilum/` (Brain), `$TMPDIR/okilum-search-session-*`,
+   and `~/.local/bin/okilum` if it carries Okilum's launcher ownership header;
 2. quits, and a detached cleanup waits for the process to exit, then removes:
    - preferences with `defaults delete <bundle id>` (cfprefsd caches them, so the
      plist alone is not enough) and `~/Library/Preferences/<id>.plist`;
