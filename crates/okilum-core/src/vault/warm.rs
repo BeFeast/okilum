@@ -10,7 +10,7 @@ use std::time::UNIX_EPOCH;
 
 // v3 adds alias identities and removes alias declarations from relationship edges.
 // v5 resolves links to non-Markdown files (#2905); old derived graphs must be rebuilt.
-const SCHEMA: u32 = 5;
+const SCHEMA: u32 = 6;
 const MAX_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -214,6 +214,7 @@ pub struct Snapshot {
     root: PathBuf,
     #[serde(default)]
     folders: crate::vault_conventions::Folders,
+    nested_boundaries: super::NestedBoundaries,
     pub id: String,
     entries: Vec<VaultEntry>,
     links: HashMap<String, Vec<Backlink>>,
@@ -277,6 +278,7 @@ pub struct StartupSnapshot {
     root: PathBuf,
     #[serde(default)]
     folders: crate::vault_conventions::Folders,
+    nested_boundaries: super::NestedBoundaries,
     entries: Vec<VaultEntry>,
     // Sorted so an unchanged manifest serialises to identical bytes.
     #[serde(serialize_with = "sorted_links")]
@@ -519,6 +521,7 @@ impl StartupSnapshot {
                 schema: SCHEMA,
                 root: snapshot.root.clone(),
                 folders: snapshot.folders.clone(),
+                nested_boundaries: snapshot.nested_boundaries.clone(),
                 entries: snapshot.entries.clone(),
                 links: snapshot.links.clone(),
                 aliases: snapshot.aliases.clone(),
@@ -588,6 +591,7 @@ impl StartupSnapshot {
             &self.aliases,
             &self.unreadable,
         );
+        vault.nested_boundaries = self.nested_boundaries.clone().into();
         if let Some((path, source)) = self.latest.as_ref().or(self.primary.as_ref()) {
             let absolute = self.root.join(path);
             vault
@@ -827,14 +831,16 @@ impl Snapshot {
     }
 
     pub fn vault(&self) -> Vault {
-        cached_vault(
+        let mut vault = cached_vault(
             &self.root,
             &self.folders,
             &self.entries,
             &self.links,
             &self.aliases,
             &self.unreadable,
-        )
+        );
+        vault.nested_boundaries = self.nested_boundaries.clone().into();
+        vault
     }
 
     pub fn invalidate_paths(&mut self, paths: &[String]) {
@@ -1305,7 +1311,9 @@ fn finish_reconcile(
     // Classification can change the searchable notes with identical source
     // bytes. A graph and search generation built under another profile is stale.
     let bounded = !force_read
-        && previous.is_some_and(|old| old.folders == **vault.folders())
+        && previous.is_some_and(|old| {
+            old.folders == **vault.folders() && old.nested_boundaries == *vault.nested_boundaries()
+        })
         && affected.len() + topology.len() < crate::watch::BULK_THRESHOLD;
     if bounded && !topology.is_empty() {
         let candidates = crate::link_candidates::CandidateIndex::from_snapshot(previous.unwrap());
@@ -1353,6 +1361,7 @@ fn finish_reconcile(
         schema: SCHEMA,
         root: canonical,
         folders: vault.folders().as_ref().clone(),
+        nested_boundaries: vault.nested_boundaries().clone(),
         id: unchanged.map_or_else(|| uuid::Uuid::new_v4().to_string(), |old| old.id.clone()),
         entries: vault.entries.clone(),
         links: vault.backlink_map.clone(),
@@ -1395,6 +1404,7 @@ pub fn save_provisional(
         schema: SCHEMA,
         root: snapshot.root.clone(),
         folders: snapshot.folders.clone(),
+        nested_boundaries: snapshot.nested_boundaries.clone(),
         entries: snapshot.entries.clone(),
         links: snapshot.links.clone(),
         aliases: snapshot.aliases.clone(),

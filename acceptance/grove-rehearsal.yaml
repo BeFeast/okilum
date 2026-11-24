@@ -1,16 +1,5 @@
-# On okilum-dev, rsync the rehearsal into a scratch directory under ~/work.
-# scripts/verify grove-rehearsal --binary "$OKILUM_BINARY" --scratch-vault "$GROVE_SCRATCH"
-# The runner stages its own copy before launching Okilum.
-#
-# The gate is expected to fail on the November 24 rehearsal. Assertions
-# stop at the first failure. The later steps document the remaining gates.
-#
-# Manual checks: grep the app log and trace vault-root filesystem probes for
-# Projects, Areas, Resources, Archive and _Assets. Under the descriptor's
-# nested_roots, check that all four vault folders use a vault icon, both units
-# use ordinary folder icons, and a view query for exact nested note paths
-# excludes all six roots while returning an outside control. The vault icons
-# and view boundary are known gaps (VD4).
+# Run on a rig host with --binary and --scratch-vault. The runner stages
+# an isolated copy and captures independent evidence for each named gate.
 open: state/ai/tools/vibe-coding/anthropic-patterns/cursor-rules-reference.md
 appearance: light
 preferences:
@@ -22,10 +11,15 @@ ready_text: Cursor Rules Reference
 # A cold launch can render the opening note before vault-wide queries are ready.
 wait_for_vault: 180
 steps:
+  - id: open-outer-note
+    gate: opens
+    text: Cursor Rules Reference
   - id: loaded-tree
+    gate: tree
     region: [0, 125, 275, 245]
     text_order: [log, sources, state]
   - id: quick-state-result
+    gate: quick-open
     keys: [k]
     mods: [ctrl]
     type: VibeCoding Glossary
@@ -33,10 +27,12 @@ steps:
     region: [364, 110, 640, 315]
     text_order: [VibeCoding Glossary, anthropic-patterns]
   - id: quick-state-open
+    gate: quick-open
     keys: [Return]
     wait: 1
     text: Development style
   - id: quick-log-result
+    gate: quick-open
     keys: [k]
     mods: [ctrl]
     type: Raspberry Pi Digest
@@ -44,43 +40,49 @@ steps:
     region: [364, 110, 640, 315]
     text_order: [Raspberry Pi Digest, homelab]
   - id: quick-log-open
+    gate: quick-open
     keys: [Return]
     wait: 1
     text: Auto-generated rollup
   - id: migrated-note-search
+    gate: links
     keys: [k]
     mods: [ctrl]
     type: log/ai/ai-agents-historical/final/Agents Network
     wait: 2
   - id: migrated-note-embed
+    gate: links
     keys: [Return]
     wait: 2
     text_order: [Agents Network, OpenClaw Fleet Network, Host Matrix]
   - id: migrated-wikilink
+    gate: links
     click: [720, 366]
     wait: 2
     text: AI Agent Fleet Network
   # Known failure. The rehearsal declares inbox and knowledge but omits
   # their directories. With hidden entries shown, the tree exposes four roots.
   - id: declared-tree
+    gate: tree
     click: [258, 108]
     region: [0, 126, 275, 350]
     text_order: ['@views', inbox, knowledge, log, sources, state]
   - id: workbench-open
+    gate: workbench
     click: [247, 68]
-    wait: 3
+    wait: 12
     region: [0, 45, 279, 690]
     text: Rescan
-  # Known failure. Changes has typed groups, but In Progress puts every
-  # rehearsal context in one unlabelled group.
   - id: workbench-kind-status
+    gate: workbench
     region: [0, 100, 279, 350]
     text_order: [IN PROGRESS, project, active]
   - id: tree-mode
     click: [184, 68]
-  # Known failure (VD4). The canonical state result is a positive control.
+  # The canonical state result is a positive control.
   # The duplicate from the nested vault must be absent.
   - id: nested-vault-quick-open
+    gate: nested-boundary
     keys: [k]
     mods: [ctrl]
     type: Python for C++ Devs
@@ -90,9 +92,10 @@ steps:
     text_absent: Obsidian Vaults
   - id: close-quick-open
     keys: [Escape, Escape]
-  # Known failure (VD4). The canonical log results are a positive control.
+  # The canonical log results are a positive control.
   # The matching note from the nested repo-seed unit must be absent.
   - id: nested-unit-search
+    gate: nested-boundary
     keys: [f]
     mods: [ctrl, shift]
     type: apertune-maestro-issue-wave
@@ -102,17 +105,37 @@ steps:
     text_absent: repo-seed
   - id: close-search
     keys: [Escape, Escape]
-  # Known failure. The rehearsal has no @views/sidebar.md (or other sidebar
-  # view definition), and the descriptor alone does not expose Areas.
   - id: areas-button
+    gate: areas
     region: [0, 46, 278, 80]
     text: Areas
   - id: areas
+    gate: areas
     click: [159, 110]
     region: [0, 130, 260, 595]
-    text_order: [AI, Business, Dev, Finance, Health, HomeLab, Life, Music, SAP, Video]
+    # Tesseract reads the adjacent uppercase I as a lowercase l in this row.
+    text_order: [Al, Business, Dev, Finance, Health, HomeLab, Life, Music, SAP, Video]
   - id: domain-view
+    gate: areas
     click: [43, 339]
     wait: 2
     region: [280, 90, 807, 625]
     text_order: [Music, Projects and contexts, Recent decisions]
+  - id: open-nested-folder-note
+    gate: nested-icon
+    reopen: state/life/ivan-pip/Pokutan/Obsidian Vaults/Life/To buy.md
+    wait: 8
+  - id: reveal-nested-folder
+    gate: nested-icon
+    keys: [l]
+    mods: [ctrl, shift]
+    wait: 2
+    region: [0, 125, 275, 615]
+    text_order: [Obsidian Vaults, Life, pokutan, pokutan-dev, pokutan-dev-palo]
+  - id: nested-vault-icons
+    gate: nested-icon
+    pixels:
+      region: [66, 125, 100, 615]
+      expression: "r<0.30 && g>0.33 && g<0.51 && b>0.86 ? 1 : 0"
+      min: 18
+      max: 450

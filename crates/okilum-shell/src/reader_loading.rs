@@ -8194,6 +8194,27 @@ fn quick_folder(
     previous: &[okilum_core::vault::VaultEntry],
     cancel: &Cancellation,
 ) -> Result<Vault> {
+    let (mut entries, warnings) = list_folder(root, folder, cancel)?;
+    entries.extend(
+        previous
+            .iter()
+            .filter(|entry| Path::new(&entry.path).parent() != Some(Path::new(folder)))
+            .cloned(),
+    );
+    let mut vault = quick_vault(root, entries);
+    vault.inventory_complete = warnings.is_empty();
+    vault.unreadable = warnings;
+    Ok(vault)
+}
+
+fn list_folder(
+    root: &Path,
+    folder: &str,
+    cancel: &Cancellation,
+) -> Result<(
+    Vec<okilum_core::vault::VaultEntry>,
+    Vec<okilum_core::vault::UnreadableEntry>,
+)> {
     use okilum_core::vault::{EntryKind, VaultEntry};
     anyhow::ensure!(
         Path::new(folder)
@@ -8206,11 +8227,7 @@ fn quick_folder(
     if directory != requested || !directory.starts_with(root) {
         bail!("Folder is outside the quick viewer root or redirects through a symlink");
     }
-    let mut entries: Vec<_> = previous
-        .iter()
-        .filter(|entry| Path::new(&entry.path).parent() != Some(Path::new(folder)))
-        .cloned()
-        .collect();
+    let mut entries = Vec::new();
     let mut warnings = Vec::new();
     for entry in std::fs::read_dir(directory)? {
         cancel.check()?;
@@ -8229,7 +8246,10 @@ fn quick_folder(
             });
             continue;
         };
-        let path = path.replace('\\', "/");
+        let path = okilum_core::vault::note_path(Path::new(path));
+        if okilum_core::vault::service_path(Path::new(&path)) {
+            continue;
+        }
         let kind = if kind.is_dir() {
             EntryKind::Directory
         } else if kind.is_file()
@@ -8246,10 +8266,7 @@ fn quick_folder(
         };
         entries.push(VaultEntry { path, kind });
     }
-    let mut vault = quick_vault(root, entries);
-    vault.inventory_complete = warnings.is_empty();
-    vault.unreadable = warnings;
-    Ok(vault)
+    Ok((entries, warnings))
 }
 
 fn quick_vault(root: &Path, mut entries: Vec<okilum_core::vault::VaultEntry>) -> Vault {
@@ -8311,6 +8328,93 @@ impl QuickFolderRefresh {
 }
 
 impl Reader {
+    /// Populate only the tree from explicit browsing. The outer vault's source
+    /// bank, resolver, Quick Open and projections retain their own inventory.
+    pub(super) fn load_nested_tree_folders(
+        &mut self,
+        folders: Vec<String>,
+        reveal: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let root = self.vault_root.clone();
+        let generation = self.watcher_generation;
+        let identity = Arc::new(());
+        for folder in &folders {
+            self.quick_folder_refreshes
+                .insert(folder.clone(), identity.clone());
+        }
+        cx.spawn(async move |this, cx| {
+            let browse_root = root.clone();
+            let results =
+                cx.background_executor()
+                    .spawn(async move {
+                        folders
+                            .into_iter()
+                            .map(|folder| {
+                                let result =
+                                    list_folder(&browse_root, &folder, &Cancellation::default())
+                                        .map(|(entries, _)| {
+                                            let markers = entries
+                                                .iter()
+                                                .filter(|entry| {
+                                                    entry.kind
+                                                        == okilum_core::vault::EntryKind::Directory
+                                                })
+                                                .filter_map(|entry| {
+                                                    okilum_core::vault_descriptor::marked_boundary(
+                                                        &browse_root.join(&entry.path),
+                                                    )
+                                                    .map(|boundary| (entry.path.clone(), boundary))
+                                                })
+                                                .collect();
+                                            (entries, markers)
+                                        });
+                                (folder, result)
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.vault_root != root
+                    || this.watcher_generation != generation
+                    || this.single_file
+                {
+                    return;
+                }
+                let mut updated = false;
+                for (folder, result) in results {
+                    if this.vault.nested_boundary(&folder).is_none()
+                        || !this
+                            .quick_folder_refreshes
+                            .get(&folder)
+                            .is_some_and(|active| Arc::ptr_eq(active, &identity))
+                    {
+                        continue;
+                    }
+                    this.quick_folder_refreshes.remove(&folder);
+                    match result {
+                        Ok((entries, markers)) => {
+                            this.tree.set_nested_listing(folder, entries, markers);
+                            updated = true;
+                        }
+                        Err(error) => {
+                            this.link_notice =
+                                Some(format!("Cannot list folder: {error:#}").into());
+                        }
+                    }
+                }
+                if updated {
+                    this.tree.refresh_from_vault(&root, &this.vault);
+                    if let Some(index) = reveal.as_deref().and_then(|path| this.tree.reveal(path)) {
+                        this.scroll_tree_to(index);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     pub(super) fn window_mode_label(&self) -> &'static str {
         if self.single_file {
             "Open folder as vault"

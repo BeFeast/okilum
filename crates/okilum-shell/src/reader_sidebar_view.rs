@@ -640,11 +640,7 @@ impl Reader {
                 .tree_source
                 .as_ref()
                 .is_some_and(|source| source.root == self.vault.root);
-            self.tree.refresh_with_folders(
-                &self.vault_root,
-                &self.vault.entries,
-                self.vault.folders().clone(),
-            );
+            self.tree.refresh_from_vault(&self.vault_root, &self.vault);
             self.tree_sticky.clear();
             self.tree_earlier_roots.clear();
             self.tree_source = Some(self.vault.clone());
@@ -756,13 +752,24 @@ impl Reader {
                     row.kind == okilum_core::vault::EntryKind::Directory && !row.expanded
                 })
             {
-                self.tree.toggle(path);
-                if self.single_file {
-                    self.load_quick_folder(path.to_owned(), cx);
-                }
+                self.expand_tree_folder(path, true, cx);
             }
             if let Some(ix) = self.tree.cursor_index() {
                 self.scroll_tree_to(ix);
+            }
+        } else if self.vault.nested_boundary(path).is_some() {
+            let folders = Path::new(path)
+                .ancestors()
+                .skip(1)
+                .map(okilum_core::vault::note_path)
+                .take_while(|folder| self.vault.nested_boundary(folder).is_some())
+                .collect::<Vec<_>>();
+            if !folders.is_empty() {
+                self.load_nested_tree_folders(
+                    folders.into_iter().rev().collect(),
+                    Some(path.to_owned()),
+                    cx,
+                );
             }
         }
         self.tree_focus.focus(window, cx);
@@ -789,12 +796,11 @@ impl Reader {
     pub(super) fn tree_key(&mut self, key: TreeKey, window: &mut Window, cx: &mut Context<Self>) {
         self.tree.clear_selection();
         let previous_cursor = self.tree.cursor.clone();
-        let lazy_folder =
-            if self.single_file && matches!(key, TreeKey::Right | TreeKey::ExpandSubtree) {
-                self.tree.cursor_folder()
-            } else {
-                None
-            };
+        let lazy_folder = if matches!(key, TreeKey::Right | TreeKey::ExpandSubtree) {
+            self.tree.cursor_folder()
+        } else {
+            None
+        };
         let tree = &mut self.tree;
         match key {
             TreeKey::Down => tree.step(1),
@@ -818,7 +824,7 @@ impl Reader {
             self.follow_tree_preview(window, cx);
         }
         if let Some(folder) = lazy_folder {
-            self.load_quick_folder(folder, cx);
+            self.load_tree_folder(folder, cx);
         }
         if let Some(ix) = self.tree.cursor_index() {
             self.scroll_tree_to(ix);
@@ -837,8 +843,8 @@ impl Reader {
         let tree = &mut self.tree;
         tree.cursor = Some(path.to_owned());
         tree.set_subtree(path, expand);
-        if self.single_file && expand {
-            self.load_quick_folder(path.to_owned(), cx);
+        if expand {
+            self.load_tree_folder(path.to_owned(), cx);
         }
         self.tree_focus.focus(window, cx);
         cx.notify();
@@ -874,11 +880,16 @@ impl Reader {
     /// open note stays expanded, and the note is selected; a folder's index
     /// note selects its folder unless it was opened from its own row (#1512).
     pub(super) fn focus_current_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_file().is_empty() {
+        let current = self.selected_file().to_owned();
+        if current.is_empty() {
             return;
         }
         self.sync_tree();
-        if !self.tree.can_reveal(self.selected_file()) {
+        if !self.tree.can_reveal(&current) {
+            if self.vault.nested_boundary(&current).is_some() {
+                self.tree.collapse_all();
+                self.reveal_in_tree(&current, window, cx);
+            }
             return;
         }
         self.resizing_panel = None;
@@ -892,7 +903,6 @@ impl Reader {
         {
             self.save_sidebar(cx);
         }
-        let current = self.selected_file().to_owned();
         let ix = self.tree.focus(&current);
         if let Some(ix) = self.select_index_folder(&current, ix) {
             self.scroll_tree_to(ix);
@@ -1006,8 +1016,16 @@ impl Reader {
 
     fn expand_tree_folder(&mut self, path: &str, expand: bool, cx: &mut Context<Self>) {
         self.tree.set_expanded(path, expand);
-        if self.single_file && expand {
-            self.load_quick_folder(path.to_owned(), cx);
+        if expand {
+            self.load_tree_folder(path.to_owned(), cx);
+        }
+    }
+
+    fn load_tree_folder(&mut self, folder: String, cx: &mut Context<Self>) {
+        if self.single_file {
+            self.load_quick_folder(folder, cx);
+        } else if self.vault.nested_boundary(&folder).is_some() {
+            self.load_nested_tree_folders(vec![folder], None, cx);
         }
     }
 
@@ -1392,7 +1410,7 @@ impl Reader {
         let act = Rc::new(act);
         #[cfg(any(unix, windows))]
         let drag_root = self.vault_root.clone();
-        let render_row = Rc::new(move |item: SideItem, ix: usize| {
+        let render_row = Rc::new(move |item: SideItem, ix: usize, cx: &App| {
             let entity = entity.clone();
             let act = act.clone();
             let row_base = tree_row_base;
@@ -1660,14 +1678,22 @@ impl Reader {
                         .into_any_element()
                 }
                 SideItem::Tree(row) => {
+                    use okilum_core::vault_descriptor::NestedBoundary;
                     let directory = row.kind == EntryKind::Directory;
                     let is_selected = selection.contains(&row.path);
                     let is_current =
                         is_selected || (selection.len() < 2 && row.path == tree_current);
                     let is_cursor = cursor.as_ref() == Some(&row.path);
                     let label = row.label.clone();
+                    let vault_name = match &row.nested_boundary {
+                        Some(NestedBoundary::Vault(name)) => Some(name),
+                        _ => None,
+                    };
                     let icon = match row.kind {
-                        EntryKind::Directory if row.depth == 0 => None,
+                        EntryKind::Directory if vault_name.is_some() => None,
+                        EntryKind::Directory if row.depth == 0 && row.nested_boundary.is_none() => {
+                            None
+                        }
                         EntryKind::Directory if row.expanded => Some(IconName::FolderOpen),
                         EntryKind::Directory => Some(IconName::Folder),
                         // The folder's index note has its own glyph (#1512).
@@ -1717,7 +1743,9 @@ impl Reader {
                         .group(group.clone())
                         .pl(px(4. + row.depth as f32 * 14.))
                         .tooltip({
-                            let path = if row.agent_shim {
+                            let path = if let Some(name) = vault_name {
+                                format!("Separate vault “{name}”\n{}", row.path)
+                            } else if row.agent_shim {
                                 format!("{}\nAGENTS.md import shim", row.path)
                             } else {
                                 row.path.clone()
@@ -1785,6 +1813,7 @@ impl Reader {
                         .when_some(icon, |d, icon| {
                             d.child(Icon::new(icon).small().text_color(p.text_muted))
                         })
+                        .when(vault_name.is_some(), |d| d.child(brand::logo(14., cx)))
                         .child(
                             div()
                                 .flex_1()
@@ -1981,9 +2010,9 @@ impl Reader {
             let list = uniform_list(
                 SharedString::from("sidebar-body-Folders"),
                 count,
-                move |range: std::ops::Range<usize>, _, _| {
+                move |range: std::ops::Range<usize>, _, cx| {
                     range
-                        .map(|ix| render(rows[ix].clone(), ix))
+                        .map(|ix| render(rows[ix].clone(), ix, cx))
                         .collect::<Vec<_>>()
                 },
             );

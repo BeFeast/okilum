@@ -86,11 +86,22 @@ impl State {
         checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
     ) -> Result<Topology> {
         let mut changes = input.clone();
+        changes
+            .changed
+            .retain(|path| self.vault.nested_boundary(path).is_none());
+        changes
+            .removed
+            .retain(|path| self.vault.nested_boundary(path).is_none());
+        changes.directories.retain(|path| {
+            self.vault
+                .nested_boundary(path)
+                .is_none_or(|(root, _)| root == path)
+        });
         let mut directories = BTreeMap::new();
         let mut attachments = BTreeMap::new();
         // Existing save batches need no cloned inventory lookup or directory I/O.
-        if input.directories.is_empty()
-            && input.changed.iter().all(|path| {
+        if changes.directories.is_empty()
+            && changes.changed.iter().all(|path| {
                 Path::new(path)
                     .ancestors()
                     .skip(1)
@@ -118,9 +129,9 @@ impl State {
                 .or_default()
                 .push((name, kind));
         }
-        let mut pending = input.directories.clone();
+        let mut pending = changes.directories.clone();
         // A known mutation may create validated ancestors without a watcher.
-        for path in input.changed.iter().chain(&input.directories) {
+        for path in changes.changed.iter().chain(&changes.directories) {
             ensure!(
                 path.is_empty() || relative(path),
                 "Invalid topology identity"
@@ -150,6 +161,17 @@ impl State {
             );
             checkpoint("Checking changed folders", visited.len())?;
             let absolute = self.vault.root.join(&path);
+            if self.vault.nested_boundary(&path).is_some() {
+                ensure!(
+                    absolute.is_dir() == known.contains_key(&path),
+                    "Changed nested root requires reconciliation"
+                );
+                continue;
+            }
+            ensure!(
+                path.is_empty() || !crate::vault_descriptor::boundary_marker(&absolute),
+                "New nested root requires reconciliation"
+            );
             ensure!(
                 path.is_empty()
                     || known.contains_key(&path)
@@ -260,6 +282,13 @@ impl State {
                     continue;
                 }
                 if kind.is_dir() {
+                    if self.vault.nested_boundary(&child).is_some() {
+                        ensure!(
+                            known.contains_key(&child),
+                            "New nested root requires reconciliation"
+                        );
+                        continue;
+                    }
                     ensure!(
                         known
                             .get(&child)

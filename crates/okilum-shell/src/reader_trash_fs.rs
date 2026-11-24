@@ -94,7 +94,7 @@ pub fn stamp(_path: &Path, meta: &fs::Metadata) -> (u64, u64, u64, i64, i64) {
 }
 
 pub fn move_to_trash(root: &Path, relative: &Path) -> Result<Trashed> {
-    let _admission = okilum_write_authority::operation(root)?;
+    let _scope = okilum_write_authority::Authority::for_root(root)?;
     let root = root.canonicalize()?;
     let (source_parent, source_name) = parent(&root, relative)?;
     let source = root.join(relative);
@@ -103,6 +103,12 @@ pub fn move_to_trash(root: &Path, relative: &Path) -> Result<Trashed> {
         metadata.is_file() || metadata.is_dir(),
         "Choose a regular file or folder, not a symbolic link"
     );
+    let directory = if metadata.is_dir() {
+        &source
+    } else {
+        source.parent().context("Missing source folder")?
+    };
+    let _admission = okilum_write_authority::operation_for_directory(directory)?;
     move_with_system(&root, relative, &source_parent, &source_name, || {
         #[cfg(test)]
         if INJECT_NO_VOLUME_TRASH.with(|v| v.get()) {
@@ -565,6 +571,34 @@ fn system_trash(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn nested_archive_refuses_trash_for_both_note_and_archive_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir(root.join("Archive vault")).unwrap();
+        fs::write(root.join("Archive vault/.brain-read-only"), "").unwrap();
+        fs::write(root.join("Archive vault/Note.md"), b"original").unwrap();
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                INJECT_NO_VOLUME_TRASH.with(|value| value.set(false));
+            }
+        }
+        INJECT_NO_VOLUME_TRASH.with(|value| value.set(true));
+        let _reset = Reset;
+        for path in ["Archive vault/Note.md", "Archive vault"] {
+            let error = move_to_trash(root, Path::new(path))
+                .err()
+                .expect("archive refused");
+            assert!(error.to_string().contains("read-only archive"), "{error:#}");
+        }
+        assert_eq!(
+            fs::read(root.join("Archive vault/Note.md")).unwrap(),
+            b"original"
+        );
+        assert!(!root.join(".trash").exists());
+    }
+
     #[test]
     fn unsupported_flags_trash_and_restore_files_and_folders_without_clobber() {
         for error in [rustix::io::Errno::NOTSUP, rustix::io::Errno::INVAL] {

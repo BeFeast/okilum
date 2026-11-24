@@ -508,6 +508,7 @@ mod tests {
                     index: false,
                     agent_rules: None,
                     agent_shim: false,
+                    nested_boundary: None,
                 })
             })
             .collect();

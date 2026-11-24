@@ -250,7 +250,8 @@ impl<'a, F: FnMut(&str) -> Result<TargetSnapshot, String>> LinkPreparation<'a, F
         }
         [relative, path.trim_start_matches('/').to_owned()].iter().all(|p| {
             let p = if wiki && !p.to_lowercase().ends_with(".md") { format!("{p}.md") } else { p.clone() };
-            matches!(std::fs::symlink_metadata(self.vault.root.join(p)), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+            self.vault.crosses_nested_boundary(Path::new(&p), from)
+                || matches!(std::fs::symlink_metadata(self.vault.root.join(p)), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
         })
     }
 

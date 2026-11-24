@@ -1,6 +1,7 @@
 //! Read-only access to the vault's self-description.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
 pub use okilum_write_authority::vault_descriptor::{parse, read_bytes, Lifecycle, DIRECTORY, FILE};
@@ -23,6 +24,76 @@ pub struct Layout {
     pub generated_at: String,
     /// Optional explicit placement for pasted attachments.
     pub attachments: Option<String>,
+    #[serde(default)]
+    pub nested_roots: Vec<NestedRoot>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct NestedRoot {
+    pub path: String,
+    pub kind: NestedKind,
+    pub tree_sha256: String,
+    pub files: u64,
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NestedKind {
+    Vault,
+    Unit,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub enum NestedBoundary {
+    Vault(String),
+    Unit,
+}
+
+pub type NestedBoundaries = BTreeMap<String, NestedBoundary>;
+
+pub(crate) fn declared_boundaries(root: &Path) -> NestedBoundaries {
+    let LayoutState::Managed(layout) = LayoutState::load(root) else {
+        return BTreeMap::new();
+    };
+    layout
+        .nested_roots
+        .iter()
+        .map(|entry| {
+            let boundary = match entry.kind {
+                NestedKind::Vault => NestedBoundary::Vault(
+                    entry
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| folder_name(Path::new(&entry.path))),
+                ),
+                NestedKind::Unit => NestedBoundary::Unit,
+            };
+            (entry.path.clone(), boundary)
+        })
+        .collect()
+}
+
+pub fn boundary_marker(directory: &Path) -> bool {
+    path(directory).is_file() || directory.join(".obsidian").is_dir()
+}
+
+pub fn marked_boundary(directory: &Path) -> Option<NestedBoundary> {
+    boundary_marker(directory).then(|| {
+        let name = read(directory)
+            .and_then(|descriptor| descriptor.get("name")?.as_str().map(str::to_owned))
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| folder_name(directory));
+        NestedBoundary::Vault(name)
+    })
+}
+
+fn folder_name(directory: &Path) -> String {
+    directory
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -105,6 +176,29 @@ impl Layout {
             || chrono::DateTime::parse_from_rfc3339(&self.generated_at).is_err()
             || !self.roots.all().into_iter().all(relative)
         {
+            return false;
+        }
+        let mut nested_paths = std::collections::BTreeSet::new();
+        if !self.nested_roots.iter().all(|entry| {
+            !entry.path.contains('\\')
+                && entry
+                    .path
+                    .split('/')
+                    .all(|part| !part.is_empty() && !matches!(part, "." | ".."))
+                && Path::new(&entry.path)
+                    .components()
+                    .all(|part| matches!(part, Component::Normal(_)))
+                && entry.tree_sha256.len() == 64
+                && entry
+                    .tree_sha256
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                && entry
+                    .name
+                    .as_ref()
+                    .is_none_or(|name| !name.trim().is_empty())
+                && nested_paths.insert(&entry.path)
+        }) {
             return false;
         }
         let mut ids = std::collections::BTreeSet::new();

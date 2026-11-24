@@ -55,6 +55,7 @@ impl Clone for Vault {
             unreadable: self.unreadable.clone(),
             cloud_placeholders: self.cloud_placeholders.clone(),
             root: self.root.clone(),
+            nested_boundaries: self.nested_boundaries.clone(),
             folders: self.folders.clone(),
             notes: self.notes.clone(),
             entries: self.entries.clone(),
@@ -203,6 +204,9 @@ impl Vault {
         }
         if let Some(path) = self.path_map.get(key) {
             return Resolution::Resolved { path: path.clone() };
+        }
+        if self.indexed_nested_path(key) {
+            return Resolution::Unresolved;
         }
         match aliases.get(key).or_else(|| self.suffix_map.get(key)) {
             None => Resolution::Unresolved,

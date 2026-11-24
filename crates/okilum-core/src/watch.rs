@@ -374,6 +374,12 @@ impl VaultWatcher {
                     self.pending.language_policy = true;
                     relevant = true;
                 }
+                if relative.ends_with(".okilum/vault.json")
+                    || (relative != Path::new(".obsidian") && relative.ends_with(".obsidian"))
+                {
+                    self.pending.rescan = true;
+                    relevant = true;
+                }
                 if crate::vault::service_path(relative)
                     || p.file_name()
                         .is_some_and(|name| name.to_string_lossy().starts_with(".okilum-save-"))

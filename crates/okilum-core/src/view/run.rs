@@ -375,7 +375,7 @@ impl Runner<'_, '_> {
     fn jsonl(&self, authored_path: &str) -> Result<Vec<Input>, String> {
         let path = parse::normalized_path(authored_path);
         let schema = self.ctx.projection.schema();
-        if schema.excludes(&path) {
+        if schema.excludes(&path) || self.ctx.vault.nested_boundary(&path).is_some() {
             return Ok(vec![]);
         }
         let source = self.read(&path, MAX_JSONL_BYTES)?;

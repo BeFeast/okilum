@@ -1,0 +1,136 @@
+# Open an outer lifecycle note. Search for a shared title and body, then browse
+# the nested folders directly. Only the outer note belongs to the query results.
+vault: tests/fixtures/lifecycle-vault
+open: inbox/Capture.md
+appearance: light
+preferences:
+  note_open_mode: read
+rig:
+  persistent_pointer: true
+region: [335, 128, 700, 650]
+ready_text: Lifecycle entry
+wait_for_vault: 45
+generate:
+  - path: .okilum/vault.json
+    kind: text
+    text: |
+      {
+        "name": "Lifecycle fixture",
+        "layout": {
+          "schema_version": 1,
+          "managed_by": "gardener",
+          "contract": "@Schema/layout.yaml",
+          "roots": {"inbox":"inbox","sources":"sources","knowledge":"knowledge","state":"state","log":"log","views":"@views"},
+          "domains": [],
+          "generated_at": "2026-11-24T08:00:00Z",
+          "nested_roots": [
+            {"path":"Amber Vault","kind":"vault","name":"Amber Library","files":1,"tree_sha256":"0000000000000000000000000000000000000000000000000000000000000000"},
+            {"path":"Cedar Unit","kind":"unit","files":1,"tree_sha256":"0000000000000000000000000000000000000000000000000000000000000000"}
+          ]
+        }
+      }
+  - path: "Amber Vault/Boundary Amber.md"
+    kind: text
+    text: "# Amber sample\n\nLantern specimen"
+  - path: "Birch Vault/Boundary Birch.md"
+    kind: text
+    text: "# Birch sample\n\nLantern specimen"
+  - path: Birch Vault/.obsidian/app.json
+    kind: text
+    text: "{}"
+  - path: "Cedar Unit/Boundary Cedar.md"
+    kind: text
+    text: "# Cedar sample\n\nLantern specimen"
+  - path: "inbox/Boundary Control.md"
+    kind: text
+    text: "# Boundary Control\n\nLantern specimen"
+  - path: inbox/.okilum/project.toml
+    kind: text
+    text: 'name = "Inbox"'
+steps:
+  - id: quick-open-outer-only
+    keys: [k]
+    mods: [ctrl]
+    type: Boundary
+    wait: 2
+    region: [364, 110, 640, 315]
+    text: Boundary Control
+    text_absent: Amber sample
+  - id: quick-open-marker
+    region: [364, 110, 640, 380]
+    text_absent: Birch sample
+  - id: quick-open-unit
+    region: [364, 110, 640, 380]
+    text_absent: Cedar sample
+  - id: close-quick-open
+    keys: [Escape, Escape]
+  - id: search-outer-only
+    keys: [f]
+    mods: [ctrl, shift]
+    type: Lantern specimen
+    wait: 3
+    region: [364, 110, 640, 380]
+    text: Boundary Control
+    text_absent: Amber sample
+  - id: search-marker
+    region: [364, 110, 640, 380]
+    text_absent: Birch sample
+  - id: search-unit
+    region: [364, 110, 640, 380]
+    text_absent: Cedar sample
+  - id: close-search
+    keys: [Escape, Escape]
+  - id: nested-folders
+    region: [0, 130, 265, 330]
+    text_order: [Amber Vault, Birch Vault, Cedar Unit]
+  - id: declared-vault-icon
+    pixels:
+      region: [25, 166, 17, 20]
+      expression: "r<0.30 && g>0.33 && g<0.51 && b>0.86 ? 1 : 0"
+      min: 8
+      max: 100
+  - id: marked-vault-icon
+    pixels:
+      region: [25, 194, 17, 20]
+      expression: "r<0.30 && g>0.33 && g<0.51 && b>0.86 ? 1 : 0"
+      min: 8
+      max: 100
+  - id: unit-has-no-vault-icon
+    pixels:
+      region: [25, 222, 17, 20]
+      expression: "r<0.30 && g>0.33 && g<0.51 && b>0.86 ? 1 : 0"
+      min: 0
+      max: 0
+  - id: nested-vault-tooltip
+    hover: [80, 176]
+    wait: 1.5
+    region: [0, 178, 440, 135]
+    text_order: [Separate vault, Amber Library]
+  - id: expand-declared-vault
+    click: [15, 176]
+    hover: [380, 100]
+    wait: 1
+    region: [0, 188, 265, 35]
+    text: Boundary Amber
+  - id: open-nested-note
+    click: [119, 204]
+    wait: 1
+    text_order: [Amber sample, Lantern specimen]
+  - id: quick-open-after-browsing
+    keys: [k]
+    mods: [ctrl]
+    type: Boundary
+    wait: 2
+    region: [364, 110, 640, 315]
+    text: Boundary Control
+    text_absent: Amber sample
+  - id: reopen-nested-note
+    reopen: Amber Vault/Boundary Amber.md
+    wait: 3
+    text: Amber sample
+  - id: reveal-nested-note
+    keys: [l]
+    mods: [ctrl, shift]
+    wait: 1
+    region: [0, 156, 265, 83]
+    text_order: [Amber Vault, Boundary Amber, Birch Vault]

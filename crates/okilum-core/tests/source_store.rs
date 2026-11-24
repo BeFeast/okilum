@@ -44,6 +44,28 @@ fn request(id: u32, path: &str, revision: Option<String>, bytes: &[u8]) -> Sourc
 }
 
 #[test]
+fn nested_archive_refuses_source_write_and_retains_proposal() {
+    let f = Fixture::new();
+    fs::create_dir_all(f.root.join("Archive vault/.okilum")).unwrap();
+    fs::write(
+        f.root.join("Archive vault/.okilum/vault.json"),
+        r#"{"lifecycle":{"state":"archive","read_only":true}}"#,
+    )
+    .unwrap();
+    let path = "Archive vault/Note.md";
+    fs::write(f.root.join(path), b"original").unwrap();
+    let store = f.store(WriteBoundary::Managed);
+    let revision = store.read(path).unwrap().revision;
+    let proposed = request(1, path, Some(revision), b"replacement");
+    let error = store.write(proposed.clone()).unwrap_err();
+    assert!(error.to_string().contains("read-only archive"), "{error}");
+    assert_eq!(fs::read(f.root.join(path)).unwrap(), b"original");
+    let saved = store.recovery_record(&proposed.operation_id).unwrap();
+    assert_eq!(saved.request, proposed);
+    assert!(saved.receipt.is_none());
+}
+
+#[test]
 fn exact_bytes_survive_create_read_update_and_restart() {
     let f = Fixture::new();
     let store = f.store(WriteBoundary::Managed);

@@ -520,6 +520,26 @@ impl Reader {
             self.refresh_quick_folders(changes, window, cx);
             return;
         }
+        let nested_folders: Vec<_> = self
+            .tree
+            .nested_listing_folders()
+            .filter(|folder| {
+                changes.rescan
+                    || changes
+                        .directories
+                        .iter()
+                        .any(|hint| Path::new(folder).starts_with(hint))
+                    || changes
+                        .changed
+                        .iter()
+                        .chain(&changes.removed)
+                        .any(|path| Path::new(path).parent() == Some(Path::new(folder)))
+            })
+            .map(str::to_owned)
+            .collect();
+        if !nested_folders.is_empty() {
+            self.load_nested_tree_folders(nested_folders, None, cx);
+        }
         if !changes.is_empty()
             && !changes.rescan
             && !changes.bulk_topology()

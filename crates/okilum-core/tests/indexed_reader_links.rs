@@ -247,3 +247,127 @@ fn single_file_sibling_verification_keeps_the_original_rendered_url_actionable()
         Some("okilum://open/sibling.md")
     );
 }
+
+#[test]
+fn nested_boundary_stops_source_reads_links_projection_and_incremental_updates(
+) -> anyhow::Result<()> {
+    use okilum_core::records::{FieldSchema, Projection};
+    use okilum_core::vault::{warm, Resolution};
+    use okilum_core::vault_descriptor::{self, NestedBoundary};
+    use okilum_core::view::{self, RunContext};
+    use std::{fs, path::Path, sync::Arc};
+
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().canonicalize()?;
+    for folder in [
+        "Declared",
+        "Marked/.obsidian",
+        "Archive/.okilum",
+        "Unit",
+        "Service/.okilum",
+        ".okilum",
+        "@Schema",
+    ] {
+        fs::create_dir_all(root.join(folder))?;
+    }
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/lifecycle-vault");
+    let mut descriptor = vault_descriptor::read(&fixture).unwrap();
+    let hash = "0".repeat(64);
+    descriptor["layout"]["nested_roots"] = serde_json::json!([
+        {"path":"Declared","kind":"vault","name":"Declared name","tree_sha256":hash,"files":1},
+        {"path":"Unit","kind":"unit","tree_sha256":hash,"files":1},
+        {"path":"Declared/Inner","kind":"vault","name":"Inner name","tree_sha256":hash,"files":1}
+    ]);
+    fs::write(
+        vault_descriptor::path(&root),
+        serde_json::to_vec(&descriptor)?,
+    )?;
+    fs::write(
+        vault_descriptor::path(&root.join("Archive")),
+        r#"{"name":"Archived name"}"#,
+    )?;
+    for schema in ["fields.yaml", "frontmatter-schema.yaml", "tags.yaml"] {
+        let path = Path::new("@Schema").join(schema);
+        fs::copy(fixture.join(&path), root.join(&path))?;
+    }
+    for folder in ["Declared", "Marked", "Archive", "Unit", "Service"] {
+        fs::write(root.join(folder).join("Note.md"), format!("# {folder}"))?;
+    }
+    fs::write(
+        root.join("Control.md"),
+        "[[Declared/Note]]\n[Note](Unit/Note.md)",
+    )?;
+    fs::write(root.join("Unit/Attachment.txt"), "Opaque bytes")?;
+    fs::write(root.join("Unit/Events.jsonl"), "{\"event\":\"nested\"}\n")?;
+    fs::write(root.join("Events.jsonl"), "{\"event\":\"outer\"}\n")?;
+    let (vault, snapshot, _) =
+        warm::reconcile_with_reader(&root, None, false, &mut |_, _| Ok(()), &mut |path| {
+            assert!(
+                path == root.join("Control.md") || path == root.join("Service/Note.md"),
+                "unexpected read of {}",
+                path.display()
+            );
+            fs::read(path)
+        })?;
+    assert_eq!(vault.resolve("Declared/Note"), Resolution::Unresolved);
+    assert_eq!(vault.resolve("Note").path(), Some("Service/Note.md"));
+    assert_eq!(
+        vault.resolve_markdown("Unit/Note.md", "Control.md"),
+        Resolution::Unresolved
+    );
+    assert_eq!(
+        document_links::resolve("Unit/Attachment.txt", false, &vault, "Control.md").status,
+        "unresolved"
+    );
+    assert_eq!(vault.read_note("Marked/Note.md")?, "# Marked");
+    assert_eq!(
+        vault.nested_boundary("Declared/Inner/Note.md"),
+        Some((
+            "Declared/Inner",
+            &NestedBoundary::Vault("Inner name".into())
+        ))
+    );
+    assert_eq!(
+        vault.nested_boundaries().get("Archive"),
+        Some(&NestedBoundary::Vault("Archived name".into()))
+    );
+    assert_eq!(
+        vault.nested_boundaries().get("Unit"),
+        Some(&NestedBoundary::Unit)
+    );
+    let schema = FieldSchema::load_with_folders(&root, vault.folders())?;
+    let projection = Projection::from_snapshot(Arc::new(schema), &snapshot);
+    assert_eq!(
+        projection
+            .notes()
+            .map(|note| note.path.as_str())
+            .collect::<Vec<_>>(),
+        ["Control.md", "Service/Note.md"]
+    );
+    let view = view::parse(
+        "@views/Test.md",
+        "---\ntype: view\n---\n```view\nfrom: Unit/Events.jsonl\nshow: log\n```\n```view\nfrom: Events.jsonl\nshow: log\n```\n",
+    )
+    .expect("valid nested and outer JSONL queries");
+    let now = chrono::DateTime::parse_from_rfc3339("2026-11-24T12:00:00Z")?;
+    let result = view::run(&view, &RunContext::new(&projection, &vault, now));
+    assert_eq!(result.sections[0].total, 0);
+    assert_eq!(result.sections[1].total, 1);
+    assert_eq!(
+        snapshot.vault().nested_boundaries(),
+        vault.nested_boundaries()
+    );
+
+    let mut worker = warm::incremental::State::new(vault, snapshot);
+    let mut changes = okilum_core::Changes::default();
+    changes.changed.insert("Unit/New.md".to_owned());
+    changes.directories.insert("Unit".to_owned());
+    fs::write(root.join("Unit/New.md"), "not an outer note")?;
+    let batch = worker.apply_with_reader(&changes, &mut |_, _| Ok(()), &mut |_| {
+        panic!("nested source was read")
+    })?;
+    assert!(batch.changed.is_empty());
+    assert!(worker.vault.resolve("Unit/New").path().is_none());
+    Ok(())
+}

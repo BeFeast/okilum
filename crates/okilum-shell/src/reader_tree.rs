@@ -1,5 +1,6 @@
 //! Derived, per-Reader folder browsing. No filesystem I/O or document bodies.
 use okilum_core::vault::{EntryKind, VaultEntry};
+use okilum_core::vault_descriptor::{NestedBoundaries, NestedBoundary};
 use std::collections::HashMap;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -25,6 +26,7 @@ pub struct Row {
     /// Exact direct-child rules identity, independent of row visibility.
     pub agent_rules: Option<String>,
     pub agent_shim: bool,
+    pub nested_boundary: Option<NestedBoundary>,
 }
 
 /// Ancestors already scrolled out above the first visible row. Paths retain
@@ -62,6 +64,8 @@ pub struct Tree {
     titles: Arc<HashMap<String, String>>,
     /// File stems are the default; note titles are an explicit app preference.
     note_titles: bool,
+    nested_listings: BTreeMap<String, (Vec<VaultEntry>, NestedBoundaries)>,
+    nested_boundaries: NestedBoundaries,
 }
 
 impl Tree {
@@ -239,6 +243,12 @@ impl Tree {
         entries: &[VaultEntry],
         folders: Arc<okilum_core::vault_conventions::Folders>,
     ) {
+        self.set_root(root);
+        self.folders = folders;
+        self.replace_entries(entries);
+    }
+
+    fn set_root(&mut self, root: &Path) {
         if self.root != root {
             *self = Self {
                 note_titles: self.note_titles,
@@ -246,7 +256,9 @@ impl Tree {
             };
             self.root = root.to_path_buf();
         }
-        self.folders = folders;
+    }
+
+    fn replace_entries(&mut self, entries: &[VaultEntry]) {
         self.children.clear();
         self.kinds.clear();
         // Hidden items are kept and filtered at flatten time, so a reveal or
@@ -312,6 +324,66 @@ impl Tree {
             self.cursor = None;
         }
         self.flatten();
+    }
+
+    pub(crate) fn refresh_from_vault(&mut self, root: &Path, vault: &okilum_core::Vault) {
+        self.set_root(root);
+        self.folders = vault.folders().clone();
+        self.nested_boundaries = vault.nested_boundaries().clone();
+        if self.nested_listings.is_empty() {
+            self.replace_entries(&vault.entries);
+            return;
+        }
+        let visible_boundaries: Vec<_> = vault
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                (entry.kind == EntryKind::Directory
+                    && vault.nested_boundaries().contains_key(&entry.path))
+                .then_some(Path::new(&entry.path))
+            })
+            .collect();
+        self.nested_listings.retain(|folder, _| {
+            visible_boundaries
+                .iter()
+                .any(|boundary| Path::new(folder).starts_with(boundary))
+        });
+        let mut entries = vault.entries.clone();
+        for (children, markers) in self.nested_listings.values() {
+            entries.extend(children.iter().cloned());
+            for (path, marker) in markers {
+                self.nested_boundaries
+                    .entry(path.clone())
+                    .or_insert_with(|| marker.clone());
+            }
+        }
+        self.replace_entries(&entries);
+    }
+
+    pub(crate) fn set_nested_listing(
+        &mut self,
+        folder: String,
+        entries: Vec<VaultEntry>,
+        markers: NestedBoundaries,
+    ) {
+        self.nested_listings.retain(|path, _| {
+            Path::new(path)
+                .strip_prefix(&folder)
+                .ok()
+                .is_none_or(|suffix| {
+                    suffix.components().next().is_none_or(|first| {
+                        let child = Path::new(&folder).join(first.as_os_str());
+                        entries.iter().any(|entry| {
+                            entry.kind == EntryKind::Directory && Path::new(&entry.path) == child
+                        })
+                    })
+                })
+        });
+        self.nested_listings.insert(folder, (entries, markers));
+    }
+
+    pub(crate) fn nested_listing_folders(&self) -> impl Iterator<Item = &str> {
+        self.nested_listings.keys().map(String::as_str)
     }
 
     /// Titles are an existing source projection; never read files while browsing.
@@ -424,6 +496,11 @@ impl Tree {
                             .then(|| self.rules_of(&path))
                             .flatten(),
                         agent_shim: self.agent_shims.contains(&path),
+                        nested_boundary: self
+                            .nested_boundaries
+                            .get(&path)
+                            .filter(|_| kind == EntryKind::Directory)
+                            .cloned(),
                         label: tree_label(&path, kind, self.note_titles, &self.titles),
                         expanded: self.expanded.contains(&path),
                         kind,

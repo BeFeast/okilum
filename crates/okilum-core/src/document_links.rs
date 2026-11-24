@@ -421,6 +421,14 @@ fn attachment(target: &str, wiki: bool, vault: &Vault, from: &str) -> Option<Res
     };
     let mut existing = false;
     for candidate in lookups {
+        if candidate
+            .strip_prefix(&root)
+            .ok()
+            .is_some_and(|relative| vault.crosses_nested_boundary(relative, from))
+        {
+            existing = true;
+            break;
+        }
         // Only lexical absence permits redirecting to a root/suffix namesake.
         // Dangling symlinks, denied paths and non-directory ancestors count as occupied.
         match crate::open_diagnostics::fs(|| std::fs::symlink_metadata(&candidate)) {
@@ -428,14 +436,18 @@ fn attachment(target: &str, wiki: bool, vault: &Vault, from: &str) -> Option<Res
             _ => existing = true,
         }
         if let Ok(candidate) = crate::open_diagnostics::fs(|| candidate.canonicalize()) {
-            if crate::open_diagnostics::fs(|| candidate.is_file()) && candidate.starts_with(&root) {
-                candidates.push(
-                    candidate
-                        .strip_prefix(&root)
-                        .ok()?
-                        .to_string_lossy()
-                        .replace(std::path::MAIN_SEPARATOR, "/"),
-                );
+            if let Ok(relative) = candidate.strip_prefix(&root) {
+                if !vault.crosses_nested_boundary(relative, from)
+                    && crate::open_diagnostics::fs(|| candidate.is_file())
+                {
+                    candidates.push(
+                        candidate
+                            .strip_prefix(&root)
+                            .ok()?
+                            .to_string_lossy()
+                            .replace(std::path::MAIN_SEPARATOR, "/"),
+                    );
+                }
             }
         }
         break;

@@ -1,4 +1,5 @@
 use crate::prose::prose_spans;
+use crate::vault_descriptor::{self, NestedBoundaries};
 use anyhow::{Context, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -589,6 +590,7 @@ pub struct Vault {
     /// Metadata-only availability state. Never a read error or a download request.
     pub cloud_placeholders: Vec<PathBuf>,
     pub root: PathBuf,
+    nested_boundaries: std::sync::Arc<NestedBoundaries>,
     folders: std::sync::Arc<crate::vault_conventions::Folders>,
     pub notes: Vec<Note>,
     pub entries: Vec<VaultEntry>,
@@ -632,6 +634,7 @@ impl Vault {
     fn same_inventory(&self, other: &Self) -> bool {
         self.root == other.root
             && self.single_file == other.single_file
+            && self.nested_boundaries == other.nested_boundaries
             && self.folders == other.folders
             && self.inventory_complete == other.inventory_complete
             && self.inventory_scanned == other.inventory_scanned
@@ -797,13 +800,40 @@ impl Vault {
         // A bad root is a failed open, not an empty successful inventory.
         std::fs::read_dir(root)
             .with_context(|| format!("Read vault directory {}", root.display()))?;
-        Self::scan_metadata_entries(
+        let mut boundaries = vault_descriptor::declared_boundaries(root);
+        let mut walk = WalkDir::new(root).into_iter();
+        let mut vault = Self::scan_metadata_entries(
             root,
             checkpoint,
-            WalkDir::new(root).into_iter().filter_entry(|e| {
-                e.depth() == 0 || !service_path(e.path().strip_prefix(root).unwrap_or(e.path()))
+            std::iter::from_fn(|| loop {
+                let item = walk.next()?;
+                let Ok(entry) = &item else { return Some(item) };
+                if entry.depth() > 0 {
+                    let relative = entry.path().strip_prefix(root).unwrap_or(entry.path());
+                    if service_path(relative) {
+                        if entry.file_type().is_dir() {
+                            walk.skip_current_dir();
+                        }
+                        continue;
+                    }
+                    if entry.file_type().is_dir() {
+                        let key = note_path(relative);
+                        if !boundaries.contains_key(&key) {
+                            if let Some(boundary) = vault_descriptor::marked_boundary(entry.path())
+                            {
+                                boundaries.insert(key.clone(), boundary);
+                            }
+                        }
+                        if boundaries.contains_key(&key) {
+                            walk.skip_current_dir();
+                        }
+                    }
+                }
+                return Some(item);
             }),
-        )
+        )?;
+        vault.nested_boundaries = boundaries.into();
+        Ok(vault)
     }
 
     fn scan_metadata_entries(
@@ -943,6 +973,7 @@ impl Vault {
             unreadable,
             cloud_placeholders,
             root: root.to_path_buf(),
+            nested_boundaries: Default::default(),
             folders,
             notes,
             entries,
@@ -1153,6 +1184,7 @@ impl Vault {
             unreadable: Vec::new(),
             cloud_placeholders: Vec::new(),
             root: PathBuf::new(),
+            nested_boundaries: Default::default(),
             folders,
             notes: Vec::new(),
             entries: Vec::new(),
@@ -1204,6 +1236,9 @@ impl Vault {
     /// Publish a successfully created canonical note before watcher delivery.
     /// Updates only identity; the watcher still owns derived content/backlinks.
     pub fn register_created_note(&mut self, path: &str) {
+        if self.nested_boundary(path).is_some() {
+            return;
+        }
         self.freeze_publication();
         self.set_note_identity(&note_path(Path::new(path)), true);
     }
@@ -1211,6 +1246,9 @@ impl Vault {
     /// Publish a completed local directory creation, including any new parents,
     /// before a lazy folder refresh replaces the visible tree (#1823).
     pub fn register_created_directory(&mut self, path: &str) {
+        if self.nested_boundary(path).is_some() {
+            return;
+        }
         self.freeze_publication();
         self.invalidate_attachment_index();
         for directory in Path::new(path)
@@ -1247,8 +1285,14 @@ impl Vault {
     pub fn discover(root: &Path, checkpoint: &mut impl FnMut() -> Result<()>) -> Result<Discovery> {
         let mut skipped = false;
         let mut cloud_pending = false;
+        let boundaries = vault_descriptor::declared_boundaries(root);
         for entry in WalkDir::new(root).into_iter().filter_entry(|e| {
-            e.depth() == 0 || !service_path(e.path().strip_prefix(root).unwrap_or(e.path()))
+            let relative = e.path().strip_prefix(root).unwrap_or(e.path());
+            e.depth() == 0
+                || (!service_path(relative)
+                    && (!e.file_type().is_dir()
+                        || (!boundaries.contains_key(&note_path(relative))
+                            && !vault_descriptor::boundary_marker(e.path()))))
         }) {
             checkpoint()?;
             let Ok(entry) = entry else {
@@ -1288,6 +1332,52 @@ impl Vault {
         self.entries
             .iter()
             .filter(|entry| entry.markdown_document())
+    }
+
+    pub fn nested_boundaries(&self) -> &NestedBoundaries {
+        &self.nested_boundaries
+    }
+
+    /// Resolve a browsing path against the nearest enclosing boundary.
+    pub fn nested_boundary(&self, path: &str) -> Option<(&str, &vault_descriptor::NestedBoundary)> {
+        if self.nested_boundaries.is_empty() {
+            return None;
+        }
+        let mut candidate = path;
+        loop {
+            if let Some((root, boundary)) = self.nested_boundaries.get_key_value(candidate) {
+                return Some((root, boundary));
+            }
+            candidate = candidate.rsplit_once('/')?.0;
+        }
+    }
+
+    pub(crate) fn crosses_nested_boundary(&self, relative: &Path, from: &str) -> bool {
+        if self.nested_boundaries.is_empty() {
+            return false;
+        }
+        let mut normalized = PathBuf::new();
+        for part in relative.components() {
+            match part {
+                std::path::Component::Normal(name) => normalized.push(name),
+                std::path::Component::ParentDir => {
+                    if !normalized.pop() {
+                        return true;
+                    }
+                }
+                std::path::Component::CurDir => {}
+                _ => return true,
+            }
+        }
+        self.nested_boundary(&note_path(&normalized))
+            .map(|(root, _)| root)
+            != self.nested_boundary(from).map(|(root, _)| root)
+    }
+
+    fn indexed_nested_path(&self, lowercase_path: &str) -> bool {
+        self.nested_boundaries
+            .keys()
+            .any(|root| vault_descriptor::within(lowercase_path, &root.to_lowercase()))
     }
 
     /// The first note in scan order, or `None` for an empty vault.
@@ -1341,6 +1431,9 @@ impl Vault {
     /// by suffix instead would answer with whichever unrelated note happened to
     /// end in `ops/signoff`.
     pub fn resolve_from(&self, target: &str, from_note: &str) -> Resolution {
+        if self.nested_boundary(from_note).is_some() {
+            return Resolution::Unresolved;
+        }
         let bare = target.split(['#', '^']).next().unwrap_or("").trim();
         if bare.eq_ignore_ascii_case("@index") || bare.eq_ignore_ascii_case("@index.md") {
             let folder = from_note.rsplit_once('/').map_or("", |(folder, _)| folder);
@@ -1394,6 +1487,9 @@ impl Vault {
         }
         if let Some(path) = self.path_map.get(key) {
             return ResolutionRef::Resolved(path);
+        }
+        if self.indexed_nested_path(key) {
+            return ResolutionRef::Unresolved;
         }
         match self.alias_map.get(key).or_else(|| self.suffix_map.get(key)) {
             None => ResolutionRef::Unresolved,
@@ -1461,6 +1557,9 @@ impl Vault {
     }
 
     fn resolve_markdown_path(&self, path: &str, from: &str, indexed: bool) -> Resolution {
+        if self.nested_boundary(from).is_some() {
+            return Resolution::Unresolved;
+        }
         let key = path.to_lowercase();
         let key = key.strip_suffix(".md").unwrap_or(&key);
         let exact = |key: &str| {
@@ -1518,6 +1617,9 @@ impl Vault {
         if local != Resolution::Unresolved {
             return local;
         }
+        if self.indexed_nested_path(&relative) {
+            return Resolution::Unresolved;
+        }
         // A provisional snapshot cannot establish lexical absence. Do not
         // probe cloud-backed paths before the first document is published, or
         // redirect to a root/suffix namesake while local occupancy is unknown.
@@ -1544,6 +1646,9 @@ impl Vault {
         let root = exact(key);
         if root != Resolution::Unresolved {
             return root;
+        }
+        if self.indexed_nested_path(key) {
+            return Resolution::Unresolved;
         }
         let root_occupied = if indexed || self.graph_root.is_some() {
             self.indexed_occupied(&format!("{key}.md"))
@@ -1585,6 +1690,7 @@ impl Vault {
 
     pub(crate) fn indexed_occupied(&self, path: &str) -> bool {
         self.occupied_paths.contains(path)
+            || self.indexed_nested_path(path)
             || Path::new(path)
                 .ancestors()
                 .skip(1)
@@ -1689,17 +1795,35 @@ impl Vault {
                     .cloned()
             })
         } else {
+            let visible = |candidate: &Path| {
+                if self.nested_boundaries.is_empty() {
+                    return candidate.is_file();
+                }
+                let admitted = |path: &Path| {
+                    path.strip_prefix(&self.root)
+                        .ok()
+                        .is_none_or(|relative| !self.crosses_nested_boundary(relative, note_rel))
+                };
+                admitted(candidate)
+                    && candidate
+                        .canonicalize()
+                        .ok()
+                        .is_some_and(|real| admitted(&real) && real.is_file())
+            };
             // relative to note dir
             if let Some(dir) = Path::new(note_rel).parent() {
                 let cand = self.root.join(dir).join(t);
-                if cand.is_file() {
+                if visible(&cand) {
                     return Some(cand);
                 }
             }
             // relative to root
             let cand = self.root.join(t);
-            if cand.is_file() {
+            if visible(&cand) {
                 return Some(cand);
+            }
+            if self.nested_boundary(note_rel).is_some() {
+                return None;
             }
             // bare filename lookup
             let name = t.rsplit('/').next().unwrap_or(t).to_lowercase();
@@ -1737,6 +1861,7 @@ impl Vault {
         };
         let bytes = serde_json::to_vec(&(
             &self.entries,
+            &self.nested_boundaries.as_ref(),
             &self.unreadable,
             &self.cloud_placeholders,
             self.inventory_complete,

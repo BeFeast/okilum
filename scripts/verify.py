@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Small data-driven Linux acceptance runner, using the existing Wayland rig."""
 import argparse
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 import hashlib
 import json
@@ -29,6 +30,22 @@ def capture(*args):
 def require(condition, details):
     if not condition:
         raise AssertionError(details)
+
+
+@contextmanager
+def check_gate(step, check, result):
+    """A named gate can fail while other rehearsal gates still produce evidence."""
+    gate = step.get('gate')
+    if gate:
+        result.setdefault('gates', {}).setdefault(gate, True)
+    try:
+        yield
+    except AssertionError as error:
+        if not gate:
+            raise
+        check['error'] = str(error)
+        result['gates'][gate] = False
+
 
 
 def trace_events(root):
@@ -553,98 +570,106 @@ def run(args, scenario, output, result):
                     shot = output / f'{name}.png'
                     check = {'id': name, 'screenshot': str(shot)}
                     result['checks'].append(check)
-                    if 'max_ms' in step:
-                        timed_step(rig, step, scenario, output, frames_dir, check)
-                    else:
-                        if 'open_url' in step:
-                            url = step['open_url'].replace('{outside_file}', quote(str(outside_file)))
-                            require(url.startswith('okilum://'), 'open_url must be an okilum:// URL')
-                            command(binary, url, env=rig.env, stdout=log, stderr=log, timeout=15)
-                        if 'keys' in step:
-                            rig.keys(*step['keys'], mods=step.get('mods', ()))
-                        if 'click' in step:
-                            rig.click(*step['click'])
-                        if 'type' in step:
-                            # wtype interprets a standalone hyphen as stdin.
-                            # Feed the whole literal query through a closed pipe.
-                            command('wtype', '-', input=step['type'], text=True,
-                                    env=rig.env, timeout=10)
-                        if 'vault_replace' in step:
-                            replace_vault_text(vault, step['vault_replace'])
-                        if 'vault_create' in step:
-                            create_vault_text(vault, step['vault_create'])
-                        if step.get('restart'):
-                            rig.keys('q', mods=['ctrl'])
-                            require(proc.wait(timeout=15) == 0, 'App did not exit cleanly')
-                            proc = None
-                        if 'vault_remove' in step:
-                            remove_vault_file(vault, step['vault_remove'])
-                        if 'vault_move' in step:
-                            move_vault_fixture(vault, step['vault_move'])
-                        if 'cutover' in step:
-                            vault = cutover_fixture(vault, step['cutover'])
-                        if step.get('restart'):
-                            rig.close()
-                            rig = Rig(root, 1366, input_methods=None, **rig_options)
-                            rig.env['OKILUM_STATE_DIR'] = str(state)
-                            cutover = 'cutover' in step
-                            proc = launch(None, restore=cutover or step['restart'] == 'session',
-                                          cutover=cutover)
-                        time.sleep(step.get('wait', .4))
-                        rig.shot(shot)
-                        if set(step) & {'vault_replace', 'vault_create', 'vault_remove', 'vault_move', 'cutover', 'restart'}:
-                            deadline = time.monotonic() + 10
-                            while time.monotonic() < deadline and not condition(shot, step, scenario['region'])[0]:
-                                require(proc.poll() is None, f'App exited: {proc.returncode}')
-                                time.sleep(.2)
-                                rig.shot(shot)
-                    if ('max_ms' not in step and 'text' in step) or 'text_absent' in step or 'text_order' in step:
-                        check['text'] = text(shot, step.get('region', scenario['region']))
-                        if 'max_ms' not in step and 'text' in step:
-                            require(step['text'] in check['text'], check)
-                        if 'text_absent' in step:
-                            require(step['text_absent'] not in check['text'], check)
-                        if 'text_order' in step:
-                            pos = 0
-                            for needle in step['text_order']:
-                                found = check['text'].find(needle, pos)
-                                require(found != -1, {**check, 'missing_in_order': needle})
-                                pos = found + len(needle)
-                    if 'max_ms' not in step and 'pixels' in step:
-                        rule = step['pixels']
-                        check['pixels'] = pixels(shot, rule['region'], rule['expression'])
-                        require(rule['min'] <= check['pixels'] <= rule['max'], check)
-                    if 'changed_from' in step:
-                        before = output / f"{step['changed_from']}.png"
-                        delta = command('convert', before, shot, '-compose', 'difference', '-composite',
-                                        'png:-', capture_output=True).stdout
-                        diff = output / f'{name}-diff.png'
-                        diff.write_bytes(delta)
-                        check['changed_pixels'] = pixels(diff, scenario['region'], 'max(r,max(g,b))>0.08?1:0')
-                        require(check['changed_pixels'] >= step.get('min_changed_pixels', 100), check)
-                        require(check['changed_pixels'] <= step.get('max_changed_pixels', float('inf')), check)
-                    if 'window' in step:
-                        # Compositor-side window box (logical px): `rect` is
-                        # where sway places the window, `geometry` its natural
-                        # size. Values within 1 px (fractional scale); with
-                        # `from: <step id>` they are differences to that step.
-                        rule = dict(step['window'])
-                        field = rule.pop('field', 'rect')
-                        base = rule.pop('from', None)
-                        check['window'] = rig.window()
-                        box = dict((check['window'] or {}).get(field) or {})
-                        if base is not None:
-                            earlier = next(c for c in result['checks'] if c['id'] == base)['window'][field]
-                            box = {k: v - earlier[k] for k, v in box.items()}
-                            check['window_delta'] = box
-                        require(all(abs(box.get(k, float('nan')) - v) <= 1 for k, v in rule.items()), check)
-                    if 'ui_scale' in step:
-                        scales = [e['details']['scale']['ui_zoom'] for e in trace_events(root)
-                                  if e.get('phase') == 'ui_scale']
-                        check['ui_scale'] = scales[-1] if scales else None
-                        require(check['ui_scale'] is not None
-                                and abs(check['ui_scale'] - step['ui_scale']) < 1e-6, check)
-                result['passed'] = True
+                    with check_gate(step, check, result):
+                        if 'max_ms' in step:
+                            timed_step(rig, step, scenario, output, frames_dir, check)
+                        else:
+                            if 'open_url' in step:
+                                url = step['open_url'].replace('{outside_file}', quote(str(outside_file)))
+                                require(url.startswith('okilum://'), 'open_url must be an okilum:// URL')
+                                command(binary, url, env=rig.env, stdout=log, stderr=log, timeout=15)
+                            if 'keys' in step:
+                                rig.keys(*step['keys'], mods=step.get('mods', ()))
+                            if 'click' in step:
+                                rig.click(*step['click'])
+                            if 'hover' in step:
+                                rig.move_pointer(*step['hover'])
+                            if 'type' in step:
+                                # wtype interprets a standalone hyphen as stdin.
+                                # Feed the whole literal query through a closed pipe.
+                                command('wtype', '-', input=step['type'], text=True,
+                                        env=rig.env, timeout=10)
+                            if 'vault_replace' in step:
+                                replace_vault_text(vault, step['vault_replace'])
+                            if 'vault_create' in step:
+                                create_vault_text(vault, step['vault_create'])
+                            if step.get('restart'):
+                                rig.keys('q', mods=['ctrl'])
+                                require(proc.wait(timeout=15) == 0, 'App did not exit cleanly')
+                                proc = None
+                            if 'reopen' in step:
+                                proc.terminate()
+                                proc.wait(timeout=15)
+                                proc = None
+                            if 'vault_remove' in step:
+                                remove_vault_file(vault, step['vault_remove'])
+                            if 'vault_move' in step:
+                                move_vault_fixture(vault, step['vault_move'])
+                            if 'cutover' in step:
+                                vault = cutover_fixture(vault, step['cutover'])
+                            if step.get('restart') or 'reopen' in step:
+                                rig.close()
+                                rig = Rig(root, 1366, input_methods=None, **rig_options)
+                                rig.env['OKILUM_STATE_DIR'] = str(state)
+                                cutover = 'cutover' in step
+                                proc = launch(step.get('reopen'),
+                                              restore=cutover or step.get('restart') == 'session',
+                                              cutover=cutover)
+                            time.sleep(step.get('wait', .4))
+                            rig.shot(shot)
+                            if set(step) & {'vault_replace', 'vault_create', 'vault_remove', 'vault_move', 'cutover', 'restart'}:
+                                deadline = time.monotonic() + 10
+                                while time.monotonic() < deadline and not condition(shot, step, scenario['region'])[0]:
+                                    require(proc.poll() is None, f'App exited: {proc.returncode}')
+                                    time.sleep(.2)
+                                    rig.shot(shot)
+                        if ('max_ms' not in step and 'text' in step) or 'text_absent' in step or 'text_order' in step:
+                            check['text'] = text(shot, step.get('region', scenario['region']))
+                            if 'max_ms' not in step and 'text' in step:
+                                require(step['text'] in check['text'], check)
+                            if 'text_absent' in step:
+                                require(step['text_absent'] not in check['text'], check)
+                            if 'text_order' in step:
+                                pos = 0
+                                for needle in step['text_order']:
+                                    found = check['text'].find(needle, pos)
+                                    require(found != -1, {**check, 'missing_in_order': needle})
+                                    pos = found + len(needle)
+                        if 'max_ms' not in step and 'pixels' in step:
+                            rule = step['pixels']
+                            check['pixels'] = pixels(shot, rule['region'], rule['expression'])
+                            require(rule['min'] <= check['pixels'] <= rule['max'], check)
+                        if 'changed_from' in step:
+                            before = output / f"{step['changed_from']}.png"
+                            delta = command('convert', before, shot, '-compose', 'difference', '-composite',
+                                            'png:-', capture_output=True).stdout
+                            diff = output / f'{name}-diff.png'
+                            diff.write_bytes(delta)
+                            check['changed_pixels'] = pixels(diff, scenario['region'], 'max(r,max(g,b))>0.08?1:0')
+                            require(check['changed_pixels'] >= step.get('min_changed_pixels', 100), check)
+                            require(check['changed_pixels'] <= step.get('max_changed_pixels', float('inf')), check)
+                        if 'window' in step:
+                            # Compositor-side window box (logical px): `rect` is
+                            # where sway places the window, `geometry` its natural
+                            # size. Values within 1 px (fractional scale); with
+                            # `from: <step id>` they are differences to that step.
+                            rule = dict(step['window'])
+                            field = rule.pop('field', 'rect')
+                            base = rule.pop('from', None)
+                            check['window'] = rig.window()
+                            box = dict((check['window'] or {}).get(field) or {})
+                            if base is not None:
+                                earlier = next(c for c in result['checks'] if c['id'] == base)['window'][field]
+                                box = {k: v - earlier[k] for k, v in box.items()}
+                                check['window_delta'] = box
+                            require(all(abs(box.get(k, float('nan')) - v) <= 1 for k, v in rule.items()), check)
+                        if 'ui_scale' in step:
+                            scales = [e['details']['scale']['ui_zoom'] for e in trace_events(root)
+                                      if e.get('phase') == 'ui_scale']
+                            check['ui_scale'] = scales[-1] if scales else None
+                            require(check['ui_scale'] is not None
+                                    and abs(check['ui_scale'] - step['ui_scale']) < 1e-6, check)
+                result['passed'] = all(result.get('gates', {}).values())
         finally:
             if proc is not None:
                 if not result.get('passed'):

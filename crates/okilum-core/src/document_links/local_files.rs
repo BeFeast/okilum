@@ -63,12 +63,25 @@ pub(super) fn prepare(
         root.join(Path::new(from).parent().unwrap_or(Path::new("")))
             .join(&path)
     };
+    if direct
+        .strip_prefix(&root)
+        .ok()
+        .is_some_and(|relative| vault.crosses_nested_boundary(relative, from))
+    {
+        return Some(unavailable(target, "File is across a vault boundary."));
+    }
     // Existing file URLs may use a different OS spelling of the same path
     // (notably C:\ vs the canonical \\?\ prefix on Windows).
     let canonical_relative = (file_uri || (markdown && path.is_absolute()))
         .then(|| direct.canonicalize().ok())
         .flatten()
         .and_then(|real| real.strip_prefix(&root).ok().map(Path::to_path_buf));
+    if canonical_relative
+        .as_deref()
+        .is_some_and(|relative| vault.crosses_nested_boundary(relative, from))
+    {
+        return Some(unavailable(target, "File is across a vault boundary."));
+    }
     let spelling = if let Some(relative) = canonical_relative {
         Some(format!(
             "/{}",
@@ -128,11 +141,11 @@ pub(super) fn prepare(
                 ))
             }
             Ok(real) if real.is_file() && real.starts_with(&root) && !markdown => {
-                let rel = real
-                    .strip_prefix(&root)
-                    .ok()?
-                    .to_string_lossy()
-                    .replace(std::path::MAIN_SEPARATOR, "/");
+                let relative = real.strip_prefix(&root).ok()?;
+                if vault.crosses_nested_boundary(relative, from) {
+                    return Some(unavailable(target, "File is across a vault boundary."));
+                }
+                let rel = crate::vault::note_path(relative);
                 let url = format!("okilum://attachment/{}", encode(&rel));
                 let mut found = result("attachment", LinkStatus::Resolved, "Preview file", url);
                 found.0.candidates.push(rel);

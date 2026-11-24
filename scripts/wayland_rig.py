@@ -145,17 +145,19 @@ class Rig:
         time.sleep(.4)
         return subprocess.run(['fcitx5-remote', '-n'], env=self.env, capture_output=True, text=True).stdout.strip()
 
-    def click(self, x, y, hold=None):
-        """A left click at output pixel (x, y), optionally with a modifier held
-        (wtype names: logo, ctrl, shift, alt). The headless seat has no pointer
-        device, so wlrctl's virtual pointer moves (relative: to the corner first)."""
+    def move_pointer(self, x, y):
+        """Move the virtual pointer to a fixed output pixel."""
         wlr = lambda *a: subprocess.run(['wlrctl', 'pointer', *map(str, a)], env=self.env, check=True)
         wlr('move', -10000, -10000)
         wlr('move', x, y)
+
+    def click(self, x, y, hold=None):
+        """A left click at output pixel (x, y), optionally with a modifier held."""
+        self.move_pointer(x, y)
         time.sleep(.3)
         holder = subprocess.Popen(['wtype', '-M', hold, '-s', '2500', '-m', hold], env=self.env) if hold else None
         time.sleep(.6 if hold else 0)
-        wlr('click', 'left')
+        subprocess.run(['wlrctl', 'pointer', 'click', 'left'], env=self.env, check=True)
         if holder:
             holder.wait(timeout=10)
         time.sleep(.6)

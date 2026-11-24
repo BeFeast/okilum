@@ -55,7 +55,9 @@ fn publish_created(
     source: &[u8],
     parts: &[Component<'_>],
 ) -> Result<()> {
-    let _admission = okilum_write_authority::operation(root)?;
+    let parent = relative.parent().context("Missing destination folder")?;
+    let _scope = okilum_write_authority::Authority::for_root(root)?;
+    let _admission = okilum_write_authority::operation_for_directory(&root.join(parent))?;
     #[cfg(windows)]
     {
         // Validate the original root before canonicalization can follow links.
@@ -234,13 +236,14 @@ pub fn typed_path(parent: &Path, name: &str, directory: bool) -> Result<std::pat
 /// Create intermediate real directories via descriptors. Existing final folders
 /// are an error for New Folder; intermediate existing folders are allowed.
 pub fn create_folders(root: &Path, relative: &Path, exclusive_last: bool) -> Result<()> {
-    let _admission = okilum_write_authority::operation(root)?;
     if relative
         .components()
         .any(|p| !matches!(p, Component::Normal(_)))
     {
         bail!("Choose a folder inside the vault");
     }
+    let _scope = okilum_write_authority::Authority::for_root(root)?;
+    let _admission = okilum_write_authority::operation_for_directory(&root.join(relative))?;
     #[cfg(windows)]
     {
         let mut folder = crate::windows_files::Directory::open(root)?;
@@ -301,13 +304,15 @@ pub fn create_from_template(
     catalog: &crate::note_templates::Catalog,
     selected: Option<&str>,
 ) -> Result<String> {
-    let _admission = okilum_write_authority::operation(root)?;
     relative.to_str().context("Use a UTF-8 filename")?;
     let name = crate::vault::note_path(relative);
     let checked = typed_path(Path::new(""), &name, false)?;
     if checked != relative {
         bail!("Use a Markdown (.md) filename");
     }
+    let parent = relative.parent().context("Choose a note filename")?;
+    let _scope = okilum_write_authority::Authority::for_root(root)?;
+    let _admission = okilum_write_authority::operation_for_directory(&root.join(parent))?;
     if catalog.contains_target(relative) {
         bail!("Choose a note destination outside the templates folder");
     }
@@ -320,7 +325,6 @@ pub fn create_from_template(
         .and_then(|s| s.to_str())
         .context("Use a UTF-8 title")?;
     let source = catalog.source(root, selected, title, now)?;
-    let parent = relative.parent().context("Choose a note filename")?;
     create_folders(root, parent, false)?;
     let _reservation =
         crate::file_editor::FileEditor::reserve_destination(&root.join(relative), drafts)?;
@@ -367,6 +371,44 @@ pub fn body_start(source: &str) -> usize {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    fn nested_archive(root: &Path) {
+        std::fs::create_dir_all(root.join("Archive vault/Notes")).unwrap();
+        std::fs::write(root.join("Archive vault/.brain-read-only"), "").unwrap();
+    }
+
+    #[test]
+    fn nested_archive_refuses_create() {
+        let root = tempfile::tempdir().unwrap();
+        nested_archive(root.path());
+        let relative = Path::new("Archive vault/Notes/New.md");
+        let error = create(root.path(), relative).unwrap_err();
+        assert!(error.to_string().contains("read-only archive"), "{error:#}");
+        assert!(!root.path().join(relative).exists());
+    }
+
+    #[test]
+    fn nested_archive_refuses_create_folders() {
+        let root = tempfile::tempdir().unwrap();
+        nested_archive(root.path());
+        let relative = Path::new("Archive vault/Notes/New/Subfolder");
+        let error = create_folders(root.path(), relative, true).unwrap_err();
+        assert!(error.to_string().contains("read-only archive"), "{error:#}");
+        assert!(!root.path().join("Archive vault/Notes/New").exists());
+    }
+
+    #[test]
+    fn nested_archive_refuses_create_from_template() {
+        let root = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        nested_archive(root.path());
+        let relative = Path::new("Archive vault/Notes/New/Templated.md");
+        let error = create_note(root.path(), relative, state.path()).unwrap_err();
+        assert!(error.to_string().contains("read-only archive"), "{error:#}");
+        assert!(!root.path().join("Archive vault/Notes/New").exists());
+        assert!(std::fs::read_dir(state.path()).unwrap().next().is_none());
+    }
+
     fn create_note(root: &Path, relative: &Path, state: &Path) -> Result<String> {
         let catalog = crate::note_templates::Catalog::load(root)?;
         let selected = catalog.default_file();
