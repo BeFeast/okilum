@@ -324,6 +324,19 @@ def remove_vault_file(vault, relative):
     target.unlink()
 
 
+def check_declared_tree_roots(vault, visible, check):
+    """Check physical root rows against the copied vault's layout descriptor."""
+    descriptor = json.loads((vault / '.okilum/vault.json').read_text())
+    declared = set(descriptor['layout']['roots'].values())
+    require(declared and all(Path(name).name == name for name in declared),
+            'The declared_tree_roots check requires top-level directory names')
+    existing = {name for name in declared if (vault / name).is_dir()}
+    shown = declared.intersection(line.strip() for line in visible.splitlines())
+    check['existing_declared_roots'] = sorted(existing)
+    check['visible_declared_roots'] = sorted(shown)
+    require(shown == existing, check)
+
+
 def condition(path, rule, default_region):
     """Does the screenshot satisfy a step's `text` and/or `pixels` rule? (ok, details)"""
     details, ok = {}, True
@@ -623,7 +636,8 @@ def run(args, scenario, output, result):
                                     require(proc.poll() is None, f'App exited: {proc.returncode}')
                                     time.sleep(.2)
                                     rig.shot(shot)
-                        if ('max_ms' not in step and 'text' in step) or 'text_absent' in step or 'text_order' in step:
+                        if (('max_ms' not in step and 'text' in step)
+                                or set(step) & {'text_absent', 'text_order', 'declared_tree_roots'}):
                             check['text'] = text(shot, step.get('region', scenario['region']))
                             if 'max_ms' not in step and 'text' in step:
                                 require(step['text'] in check['text'], check)
@@ -635,6 +649,8 @@ def run(args, scenario, output, result):
                                     found = check['text'].find(needle, pos)
                                     require(found != -1, {**check, 'missing_in_order': needle})
                                     pos = found + len(needle)
+                            if step.get('declared_tree_roots'):
+                                check_declared_tree_roots(vault, check['text'], check)
                         if 'max_ms' not in step and 'pixels' in step:
                             rule = step['pixels']
                             check['pixels'] = pixels(shot, rule['region'], rule['expression'])

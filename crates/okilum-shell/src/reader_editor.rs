@@ -724,6 +724,9 @@ impl Reader {
         self.pane.recovery_offer = false;
         self.pane.recovery_checked = false;
         self.pane.recovery_error = false;
+        if self.pane.built_in_document && self.pane.file_preview.is_none() {
+            return;
+        }
         let Some(directory) = self.session_directory.clone() else {
             self.pane.recovery_error = true;
             cx.notify();

@@ -230,6 +230,7 @@ fn prepare_log(path: &Path, root: Option<&Path>, cancel: &Cancellation) -> Resul
             String::new(),
             prepared_links::PreparedDocument {
                 encoding_damaged: false,
+                built_in: false,
                 canonical_source: None,
                 source: String::new(),
                 original: Some(String::new()),
@@ -275,6 +276,7 @@ fn prepare_folder_view(root: &Path, cancel: &Cancellation) -> Result<Event> {
             String::new(),
             prepared_links::PreparedDocument {
                 encoding_damaged: false,
+                built_in: false,
                 canonical_source: None,
                 source: String::new(),
                 original: Some(String::new()),
@@ -314,6 +316,7 @@ fn prepare_plain_file(path: &Path, root: Option<&Path>, cancel: &Cancellation) -
             String::new(),
             prepared_links::PreparedDocument {
                 encoding_damaged: false,
+                built_in: false,
                 canonical_source: None,
                 source: String::new(),
                 original: Some(String::new()),
@@ -592,6 +595,7 @@ fn prepare_first_existing_document(
             let mut document = if rel.is_empty() {
                 prepared_links::PreparedDocument {
                     encoding_damaged: false,
+                    built_in: false,
                     source: String::new(),
                     canonical_source: None,
                     original: Some(String::new()),
@@ -2561,6 +2565,10 @@ impl Reader {
                     Some(Ok(()))
                 ))
         {
+            return;
+        }
+        // Shipped content has no file to restore.
+        if self.pane.built_in_document && self.pane.file_preview.is_none() {
             return;
         }
         let identity = (

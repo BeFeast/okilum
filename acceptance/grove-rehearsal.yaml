@@ -14,10 +14,6 @@ steps:
   - id: open-outer-note
     gate: opens
     text: Cursor Rules Reference
-  - id: loaded-tree
-    gate: tree
-    region: [0, 125, 275, 245]
-    text_order: [log, sources, state]
   - id: quick-state-result
     gate: quick-open
     keys: [k]
@@ -60,23 +56,26 @@ steps:
     click: [720, 366]
     wait: 2
     text: AI Agent Fleet Network
-  # Known failure. The rehearsal declares inbox and knowledge but omits
-  # their directories. With hidden entries shown, the tree exposes four roots.
+  # Expose hidden folders so the same check covers @views when present.
   - id: declared-tree
     gate: tree
     click: [258, 108]
-    region: [0, 126, 275, 350]
-    text_order: ['@views', inbox, knowledge, log, sources, state]
+    region: [26, 126, 250, 420]
+    declared_tree_roots: true
   - id: workbench-open
     gate: workbench
     click: [247, 68]
     wait: 12
     region: [0, 45, 279, 690]
     text: Rescan
-  - id: workbench-kind-status
+  - id: workbench-contexts
     gate: workbench
     region: [0, 100, 279, 350]
-    text_order: [IN PROGRESS, project, active]
+    text_order: [IN PROGRESS, ai-bills, Dev, anton-kt-job-prep, Life]
+  - id: workbench-kind-status
+    gate: workbench
+    region: [0, 435, 279, 272]
+    text_order: [CHANGES, active, decisions]
   - id: tree-mode
     click: [184, 68]
   # The canonical state result is a positive control.

@@ -136,6 +136,7 @@ impl Reader {
         let prepared_links::PreparedDocument {
             canonical_source,
             encoding_damaged,
+            built_in,
             source,
             original: original_body,
             identities,
@@ -302,8 +303,9 @@ impl Reader {
         self.pane.query_navigation = Default::default();
         self.pane.note_source = source;
         self.pane.note_canonical_source = canonical_source;
+        self.pane.built_in_document = built_in;
         self.note_encoding_damaged = encoding_damaged;
-        if request.history_index.is_none() {
+        if !built_in && request.history_index.is_none() {
             self.quick_open.remember(rel);
         }
         if self.pane.current_rel != rel {
@@ -330,7 +332,9 @@ impl Reader {
         };
         self.pane.table_overlay = None;
         self.discover_source_recovery(cx);
-        self.note_opened(cx);
+        if !built_in {
+            self.note_opened(cx);
+        }
         self.pane.usable_document = true;
         self.record_usable_document(cx);
         self.refresh_link_preparation(cx);

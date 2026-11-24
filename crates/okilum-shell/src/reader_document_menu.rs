@@ -620,6 +620,7 @@ impl Reader {
         self.pane.current_title.clear();
         self.pane.note_source.clear();
         self.pane.note_canonical_source = None;
+        self.pane.built_in_document = false;
         self.note_encoding_damaged = false;
         self.pane.file_preview = None;
         self.pane.editing = None;

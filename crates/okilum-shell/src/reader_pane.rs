@@ -57,6 +57,7 @@ pub(super) struct Surface {
     /// the find bar can re-mark it on every keystroke and restore it on Esc.
     pub note_source: String,
     pub note_canonical_source: Option<Arc<str>>,
+    pub built_in_document: bool,
 
     // Find.
     pub find_input: Entity<InputState>,
@@ -159,6 +160,7 @@ impl Surface {
             current_title: String::new(),
             note_source: String::new(),
             note_canonical_source: None,
+            built_in_document: false,
             find_input,
             find_open: false,
             link_choices: Vec::new(),

@@ -184,6 +184,8 @@ pub(crate) fn presentation(
 pub(crate) struct PreparedDocument {
     pub canonical_source: Option<Arc<str>>,
     pub encoding_damaged: bool,
+    /// Shipped content with no on-disk note, even when a view path is assigned.
+    pub built_in: bool,
     pub source: String,
     pub original: Option<String>,
     pub identities: Vec<document_links::prepared::LinkIdentity>,
@@ -199,6 +201,7 @@ impl From<okilum_core::render::ReaderDocument> for PreparedDocument {
         Self {
             canonical_source: (!document.encoding_damaged).then_some(document.canonical_source),
             encoding_damaged: document.encoding_damaged,
+            built_in: false,
             source: document.rendered,
             original: Some(document.original_body),
             identities: document.links,
@@ -219,6 +222,7 @@ impl PreparedDocument {
         };
         Ok(Self {
             encoding_damaged: source.encoding_damaged,
+            built_in: false,
             source: okilum_core::render::render_html_from_source(
                 vault,
                 rel,
@@ -448,10 +452,13 @@ impl Reader {
                         if domain_view {
                             let source = okilum_core::view::builtin::domain_source(&vault.root)
                                 .map_err(anyhow::Error::msg)?;
-                            let document = okilum_core::render::reader_document_from_source(
-                                &vault, &rel, &source,
+                            let mut document = PreparedDocument::from(
+                                okilum_core::render::reader_document_from_source(
+                                    &vault, &rel, &source,
+                                ),
                             );
-                            return Ok((document.into(), None));
+                            document.built_in = matches!(source, std::borrow::Cow::Borrowed(_));
+                            return Ok((document, None));
                         }
                         #[cfg(target_os = "macos")]
                         reader_icloud::materialize(&vault.root.join(&rel), || {

@@ -20,6 +20,12 @@ steps:
   - id: builtin-domain
     click: [52, 172]
     text_order: [Health, Projects and contexts, Sleep routine]
+  - id: builtin-domain-no-draft-warning
+    region: [960, 650, 405, 90]
+    text_absent: Could not check saved drafts
+  - id: builtin-domain-no-watch-warning
+    region: [960, 650, 405, 90]
+    text_absent: Automatic note updates unavailable
   - id: authored-sidebar
     vault_create:
       path: '@views/sidebar.md'
