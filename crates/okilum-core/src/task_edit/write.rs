@@ -448,45 +448,60 @@ mod tests {
     }
 
     #[test]
-    fn view_check_with_done_handles_lone_cr_and_refuses_multiline_spans_without_writing() {
+    fn view_check_with_done_refuses_lone_cr_protected_and_legacy_conflicts_without_writing() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("vault");
         let drafts = temp.path().join("state/editor-drafts");
         std::fs::create_dir(&root).unwrap();
         let done = time::macros::date!(2026 - 11 - 24);
 
-        // Lone CR must not leak edits into the sibling task; Undo restores exact bytes.
-        let cr_file = root.join("cr.md");
-        let cr_original = "- [ ] First\r- [x] Second [done:: 2026-01-01]\n";
-        std::fs::write(&cr_file, cr_original).unwrap();
-        let mut index = Index::default();
-        index.replace("cr.md", cr_original);
-        let task = index.note_tasks("cr.md").remove(0);
-        let receipt = apply_indexed(
-            &root,
-            &drafts,
-            &index,
-            &task,
-            Change::CheckWithDone {
-                checked: true,
-                done,
-            },
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(
-            std::fs::read(&cr_file).unwrap(),
-            b"- [x] First [done:: 2026-11-24]\r- [x] Second [done:: 2026-01-01]\n"
-        );
-        receipt.undo(&root, &drafts).unwrap();
-        assert_eq!(std::fs::read(&cr_file).unwrap(), cr_original.as_bytes());
+        // Notes containing a lone CR anywhere are refused via apply_indexed with zero disk writes.
+        for (name, original) in [
+            (
+                "cr-two.md",
+                "- [ ] First\r- [x] Second [done:: 2026-01-01]\n",
+            ),
+            ("cr-three.md", "- [ ] First\r- [ ] Second\n- [ ] Third\n"),
+        ] {
+            let file = root.join(name);
+            std::fs::write(&file, original).unwrap();
+            let mut index = Index::default();
+            index.replace(name, original);
+            for task in index.note_tasks(name) {
+                assert!(apply_indexed(
+                    &root,
+                    &drafts,
+                    &index,
+                    &task,
+                    Change::CheckWithDone {
+                        checked: true,
+                        done,
+                    },
+                )
+                .is_err());
+            }
+            assert_eq!(std::fs::read(&file).unwrap(), original.as_bytes());
+        }
 
-        // Multi-line code span, link, and read-only legacy emoji completion are refused with zero disk writes.
+        // Protected-span, math, HTML, comment, and legacy emoji conflicts refuse with zero disk writes.
         for (name, source) in [
             ("multiline-code.md", "- [ ] Example `code\n  continued`\n"),
             (
                 "multiline-link.md",
                 "- [ ] [Example\n  label](https://example.org)\n",
+            ),
+            ("math-done.md", "- [ ] Review $[done:: 2026-01-01]$\n"),
+            (
+                "html-comment-done.md",
+                "- [ ] <!-- [done:: 2026-01-01] --> Task\n",
+            ),
+            (
+                "html-attr-done.md",
+                "- [ ] <span title=\"[done:: 2026-01-01]\">Task</span>\n",
+            ),
+            (
+                "obsidian-comment-done.md",
+                "- [ ] Actual %% [done:: 2026-01-01] %%\n",
             ),
             ("legacy-date.md", "- [ ] Task ✅ 2026-01-01\n"),
             ("legacy-bad.md", "- [ ] Task ✅ nope\n"),
@@ -503,16 +518,19 @@ mod tests {
             let file = root.join(name);
             std::fs::write(&file, source).unwrap();
             let target = Target::capture(name, source, 1).unwrap();
-            assert!(apply(
-                &root,
-                &drafts,
-                &target,
-                Change::CheckWithDone {
-                    checked: true,
-                    done,
-                },
-            )
-            .is_err());
+            assert!(
+                apply(
+                    &root,
+                    &drafts,
+                    &target,
+                    Change::CheckWithDone {
+                        checked: true,
+                        done,
+                    },
+                )
+                .is_err(),
+                "{name}"
+            );
             assert_eq!(std::fs::read(&file).unwrap(), source.as_bytes());
         }
 
@@ -529,35 +547,5 @@ mod tests {
             assert!(Target::capture(name, source, line).is_err());
             assert_eq!(std::fs::read(&file).unwrap(), source.as_bytes());
         }
-
-        // Displayed row "Third" after a lone CR targets line 3 via Index, leaving First & Second untouched.
-        let cr3_file = root.join("cr3.md");
-        let cr3_original = "- [ ] First\r- [ ] Second\n- [ ] Third\n";
-        std::fs::write(&cr3_file, cr3_original).unwrap();
-        let mut cr3_index = Index::default();
-        cr3_index.replace("cr3.md", cr3_original);
-        let third = cr3_index
-            .note_tasks("cr3.md")
-            .into_iter()
-            .find(|t| t.text == "Third")
-            .unwrap();
-        let cr3_receipt = apply_indexed(
-            &root,
-            &drafts,
-            &cr3_index,
-            &third,
-            Change::CheckWithDone {
-                checked: true,
-                done,
-            },
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(
-            std::fs::read(&cr3_file).unwrap(),
-            b"- [ ] First\r- [ ] Second\n- [x] Third [done:: 2026-11-24]\n"
-        );
-        cr3_receipt.undo(&root, &drafts).unwrap();
-        assert_eq!(std::fs::read(&cr3_file).unwrap(), cr3_original.as_bytes());
     }
 }

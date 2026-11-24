@@ -1,76 +1,10 @@
 //! Disposable task projection with source revisions for explicit edit planning.
-use comrak::{nodes::NodeValue, parse_document, Arena, Options};
-use std::{cmp::Ordering, collections::BTreeMap, ops::Range, sync::Arc};
+use comrak::{nodes::NodeValue, parse_document, Arena};
+use std::{cmp::Ordering, collections::BTreeMap, sync::Arc};
 use time::{Date, Duration};
 
 mod metadata;
 pub use metadata::{Issue as MetadataIssue, IssueKind as MetadataIssueKind, Metadata};
-
-/// Shared parser configuration for task projection, record extraction, and task
-/// editing, matching the renderer (including dollar math).
-pub(crate) fn comrak_options() -> Options<'static> {
-    let mut options = crate::render::comrak_options();
-    options.extension.math_dollars = true;
-    options
-}
-
-pub(crate) fn has_lone_cr(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    bytes
-        .iter()
-        .enumerate()
-        .any(|(i, &b)| b == b'\r' && bytes.get(i + 1) != Some(&b'\n'))
-}
-
-/// Split text into CommonMark line content ranges (`\r\n`, `\n`, or lone `\r`),
-/// matching comrak's 1-based line numbering so reader and writer never disagree.
-pub(crate) fn markdown_line_ranges(text: &str) -> Vec<Range<usize>> {
-    let bytes = text.as_bytes();
-    let mut ranges = Vec::new();
-    let mut start = 0;
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\r' => {
-                ranges.push(start..i);
-                i += if bytes.get(i + 1) == Some(&b'\n') {
-                    2
-                } else {
-                    1
-                };
-                start = i;
-            }
-            b'\n' => {
-                ranges.push(start..i);
-                i += 1;
-                start = i;
-            }
-            _ => i += 1,
-        }
-    }
-    if start < bytes.len() {
-        ranges.push(start..bytes.len());
-    }
-    ranges
-}
-
-pub(crate) fn protected_line_spans(source: &str, line: usize) -> Vec<Range<usize>> {
-    let body = crate::render::without_frontmatter(source);
-    let prefix_lines = source[..source.len() - body.len()]
-        .bytes()
-        .filter(|&b| b == b'\n')
-        .count();
-    let Some(body_line) = line.checked_sub(prefix_lines).filter(|&n| n > 0) else {
-        return Vec::new();
-    };
-    let Some(line_range) = markdown_line_ranges(body).into_iter().nth(body_line - 1) else {
-        return Vec::new();
-    };
-    let comments = crate::obsidian::comment_spans(body);
-    let arena = Arena::new();
-    let root = parse_document(&arena, body, &comrak_options());
-    metadata::protected_spans(root, body_line, line_range, &comments)
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Task {
@@ -109,12 +43,8 @@ pub fn parse(path: &str, source: &str) -> Vec<Task> {
         .bytes()
         .filter(|b| *b == b'\n')
         .count();
-    parse_body(path, body, prefix_lines)
-}
-
-pub(crate) fn parse_body(path: &str, body: &str, prefix_lines: usize) -> Vec<Task> {
     let arena = Arena::new();
-    let root = parse_document(&arena, body, &comrak_options());
+    let root = parse_document(&arena, body, &crate::render::comrak_options());
     parse_tree(path, body, prefix_lines, root)
 }
 
@@ -124,7 +54,7 @@ pub(crate) fn parse_tree<'a>(
     prefix_lines: usize,
     root: &'a comrak::nodes::AstNode<'a>,
 ) -> Vec<Task> {
-    let line_ranges = markdown_line_ranges(body);
+    let lines: Vec<_> = body.lines().collect();
     let comments = crate::obsidian::comment_spans(body);
     let mut tasks = Vec::new();
     for (block, top) in root.children().enumerate() {
@@ -134,19 +64,18 @@ pub(crate) fn parse_tree<'a>(
                 continue;
             };
             let body_line = data.sourcepos.start.line;
-            let line_range = line_ranges
-                .get(body_line.saturating_sub(1))
-                .cloned()
-                .unwrap_or(0..0);
-            let raw = &body[line_range.clone()];
+            let Some(&raw) = lines.get(body_line.saturating_sub(1)) else {
+                continue;
+            };
             // The AST proves this is a checkbox, excluding fenced examples and YAML.
             let Some((before_close, text)) = raw.split_once(']') else {
                 continue;
             };
             // Hide tasks whose checkbox falls inside an Obsidian `%%…%%` comment,
             // matching `obsidian::before_links` stripping comments when rendering.
-            let checkbox_start = line_range.start + before_close.len().saturating_sub(2);
-            let checkbox_end = line_range.start + before_close.len() + 1;
+            let line_start = raw.as_ptr() as usize - body.as_ptr() as usize;
+            let checkbox_start = line_start + before_close.len().saturating_sub(2);
+            let checkbox_end = line_start + before_close.len() + 1;
             if comments
                 .iter()
                 .any(|comment| comment.start < checkbox_end && checkbox_start < comment.end)
@@ -159,8 +88,6 @@ pub(crate) fn parse_tree<'a>(
                 text,
                 text.as_ptr() as usize - raw.as_ptr() as usize,
                 body_line,
-                line_range,
-                &comments,
             );
             tasks.push(Task {
                 path: path.to_owned(),

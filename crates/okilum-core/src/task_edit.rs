@@ -47,6 +47,9 @@ impl Target {
         {
             return Err("Invalid task source path".into());
         }
+        if has_lone_cr(source) {
+            return Err("Unsupported lone carriage return in note".into());
+        }
         if !crate::tasks::parse(path, source)
             .iter()
             .any(|t| t.line == line)
@@ -68,7 +71,7 @@ impl Target {
         let checkbox = range.start + bom + status.start()..range.start + bom + status.end();
         let checkbox_brackets =
             (checkbox.start - range.start).saturating_sub(1)..(checkbox.end - range.start) + 1;
-        let protected = crate::tasks::protected_line_spans(source, line);
+        let protected = writer_protected_line_spans(source, line);
         if protected
             .iter()
             .any(|span| range_overlaps(span, &checkbox_brackets))
@@ -96,6 +99,9 @@ impl Target {
         if revision(source) != self.revision {
             return Err("The note changed, refresh.".into());
         }
+        if has_lone_cr(source) {
+            return Err("Unsupported lone carriage return in note".into());
+        }
         let verified = Self::capture(&self.path, source, self.line)?;
         if verified.checkbox != self.checkbox {
             return Err("The task occurrence changed".into());
@@ -120,7 +126,7 @@ impl Target {
                 let range = line_range(source, self.line).ok_or("Task line is unavailable")?;
                 let raw = &source[range.clone()];
                 let rel_after_box = self.checkbox.end + 1 - range.start;
-                let protected = crate::tasks::protected_line_spans(source, self.line);
+                let protected = writer_protected_line_spans(source, self.line);
                 let markers = done_markers(raw, rel_after_box, &protected);
                 if markers.len() > 1 {
                     return Err("The task has more than one done date marker".into());
@@ -283,33 +289,38 @@ impl Plan {
         Ok(&self.before)
     }
 }
+fn has_lone_cr(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes
+        .iter()
+        .enumerate()
+        .any(|(i, &b)| b == b'\r' && bytes.get(i + 1) != Some(&b'\n'))
+}
+
 fn line_range(source: &str, line: usize) -> Option<Range<usize>> {
-    if line == 0 {
+    if line == 0 || has_lone_cr(source) {
         return None;
     }
-    let body = crate::render::without_frontmatter(source);
-    let prefix_len = source.len() - body.len();
-    let prefix = &source[..prefix_len];
-    if crate::tasks::has_lone_cr(prefix) {
-        return None;
+    let mut offset = 0;
+    for (i, raw) in source.split_inclusive('\n').enumerate() {
+        if i + 1 == line {
+            let text = raw.strip_suffix('\n').unwrap_or(raw);
+            let text = text.strip_suffix('\r').unwrap_or(text);
+            return Some(offset..offset + text.len());
+        }
+        offset += raw.len();
     }
-    let prefix_lines = prefix.bytes().filter(|&b| b == b'\n').count();
-    let body_line = line.checked_sub(prefix_lines).filter(|&n| n > 0)?;
-    let range = crate::tasks::markdown_line_ranges(body)
-        .into_iter()
-        .nth(body_line - 1)?;
-    Some(prefix_len + range.start..prefix_len + range.end)
+    None
 }
 
 fn plain_metadata(source: &str, span: Range<usize>) -> bool {
     let body = crate::render::without_frontmatter(source);
     let prefix = source.len() - body.len();
-    let starts: Vec<_> = crate::tasks::markdown_line_ranges(body)
-        .into_iter()
-        .map(|range| range.start)
+    let starts: Vec<_> = std::iter::once(0)
+        .chain(body.match_indices('\n').map(|(i, _)| i + 1))
         .collect();
     let arena = Arena::new();
-    let root = parse_document(&arena, body, &crate::tasks::comrak_options());
+    let root = parse_document(&arena, body, &crate::render::comrak_options());
     root.descendants().any(|node| {
         let data = node.data.borrow();
         if !matches!(data.value, NodeValue::Text(_))
@@ -332,6 +343,73 @@ fn plain_metadata(source: &str, span: Range<usize>) -> bool {
         prefix + start + p.start.column.saturating_sub(1) <= span.start
             && prefix + end + p.end.column >= span.end
     })
+}
+
+/// Stricter writer-side protected-span set: parses with dollar math enabled and
+/// combines AST spans (code, links, wikilinks, images, inline HTML, math, raw)
+/// with Obsidian `%%…%%` comment spans so edits never modify protected content.
+fn writer_protected_line_spans(source: &str, line: usize) -> Vec<Range<usize>> {
+    let body = crate::render::without_frontmatter(source);
+    let prefix_len = source.len() - body.len();
+    let prefix_lines = source[..prefix_len].bytes().filter(|&b| b == b'\n').count();
+    let Some(body_line) = line.checked_sub(prefix_lines).filter(|&n| n > 0) else {
+        return Vec::new();
+    };
+    let Some(abs_range) = line_range(source, line) else {
+        return Vec::new();
+    };
+    let body_line_range =
+        abs_range.start.saturating_sub(prefix_len)..abs_range.end.saturating_sub(prefix_len);
+    let mut options = crate::render::comrak_options();
+    options.extension.math_dollars = true;
+    let arena = Arena::new();
+    let root = parse_document(&arena, body, &options);
+    let mut spans: Vec<Range<usize>> = root
+        .descendants()
+        .filter_map(|node| {
+            let data = node.data.borrow();
+            let pos = data.sourcepos;
+            if matches!(
+                data.value,
+                NodeValue::Code(_)
+                    | NodeValue::Link(_)
+                    | NodeValue::WikiLink(_)
+                    | NodeValue::Image(_)
+                    | NodeValue::HtmlInline(_)
+                    | NodeValue::Math(_)
+                    | NodeValue::Raw(_)
+            ) && pos.start.line <= body_line
+                && pos.end.line >= body_line
+            {
+                let start = if pos.start.line < body_line {
+                    0
+                } else {
+                    pos.start.column.saturating_sub(1)
+                };
+                let end = if pos.end.line > body_line {
+                    usize::MAX
+                } else {
+                    pos.end.column
+                };
+                Some(start..end)
+            } else {
+                None
+            }
+        })
+        .collect();
+    for comment in crate::obsidian::comment_spans(body) {
+        if comment.end <= body_line_range.start || comment.start >= body_line_range.end {
+            continue;
+        }
+        let start = comment.start.saturating_sub(body_line_range.start);
+        let end = if comment.end > body_line_range.end {
+            usize::MAX
+        } else {
+            comment.end - body_line_range.start
+        };
+        spans.push(start..end);
+    }
+    spans
 }
 
 struct DoneMarker<'a> {
@@ -402,11 +480,11 @@ fn verify_check_with_done_postcondition(
         return Err("Task edit violated byte-preservation invariant".into());
     }
 
-    // 2. Inline marker and checkbox invariants on the edited line (under the shared parser).
+    // 2. Inline marker and checkbox invariants on the edited line (under writer protection).
     let after_range = line_range(after, line).ok_or("Task line is unavailable")?;
     let after_raw = &after[after_range.clone()];
     let after_rel = checkbox.end + 1 - after_range.start;
-    let after_protected = crate::tasks::protected_line_spans(after, line);
+    let after_protected = writer_protected_line_spans(after, line);
     let after_checkbox_brackets = (checkbox.start - after_range.start).saturating_sub(1)
         ..(checkbox.end - after_range.start) + 1;
     if after_protected
@@ -726,27 +804,19 @@ mod tests {
     }
 
     #[test]
-    fn check_with_done_respects_lone_cr_line_boundaries() {
-        let done = time::macros::date!(2026 - 11 - 24);
-        let source = "- [ ] First\r- [x] Second [done:: 2026-01-01]\n";
-        let target = Target::capture("test.md", source, 1).unwrap();
-        let plan = target
-            .plan(
-                source,
-                Change::CheckWithDone {
-                    checked: true,
-                    done,
-                },
-            )
-            .unwrap();
-        assert_eq!(
-            plan.after.as_bytes(),
-            b"- [x] First [done:: 2026-11-24]\r- [x] Second [done:: 2026-01-01]\n"
-        );
-        assert_eq!(
-            plan.undo_source(&plan.after).unwrap().as_bytes(),
-            source.as_bytes()
-        );
+    fn check_with_done_refuses_lone_cr_notes_without_writing() {
+        for (source, line) in [
+            ("- [ ] First\r- [x] Second [done:: 2026-01-01]\n", 1),
+            ("- [ ] First\r- [ ] Second\n- [ ] Third\n", 1),
+            ("- [ ] First\r- [ ] Second\n- [ ] Third\n", 2),
+            ("- [ ] First\r- [ ] Second\n- [ ] Third\n", 3),
+            ("- [ ] Task\nOther\rLine\n", 1),
+        ] {
+            assert!(
+                Target::capture("test.md", source, line).is_err(),
+                "must refuse note containing lone CR: {source:?} line {line}"
+            );
+        }
     }
 
     #[test]
@@ -794,20 +864,88 @@ mod tests {
     }
 
     #[test]
-    fn check_with_done_aligns_projection_and_writer_on_lone_cr_math_legacy_and_html() {
+    fn read_projection_matches_main_and_writer_refuses_protected_or_readonly_conflicts() {
         let done = time::macros::date!(2026 - 11 - 24);
+        let jan1 = time::macros::date!(2026 - 01 - 01);
 
-        // 1. Lone CR: reader and writer share CommonMark line boundaries, so checking
-        //    displayed row "Third" checks line 3 and leaves First & Second intact.
-        let cr_source = "- [ ] First\r- [ ] Second\n- [ ] Third\n";
-        let projected = crate::tasks::parse("test.md", cr_source);
-        assert_eq!(projected.len(), 3);
-        let third = projected.iter().find(|t| t.text == "Third").unwrap();
-        assert_eq!(third.line, 3);
-        let target = Target::capture("test.md", cr_source, third.line).unwrap();
-        let plan = target
+        // 1. READ projection equals main byte-for-byte outside commented checkboxes:
+        let solve = crate::tasks::parse("test.md", "- [ ] Solve $x$ [owner:: oleg]\n");
+        assert_eq!(solve.len(), 1);
+        assert_eq!(
+            solve[0].display.as_deref(),
+            Some("Solve $x$ [owner:: oleg]")
+        );
+        assert_eq!(solve[0].metadata.owner.as_deref(), Some("oleg"));
+        assert_eq!(solve[0].metadata.text, "Solve $x$");
+
+        let eq = crate::tasks::parse("test.md", "- [ ] Equation $[owner:: oleg]$\n");
+        assert_eq!(eq.len(), 1);
+        assert_eq!(eq[0].metadata.owner.as_deref(), Some("oleg"));
+
+        let html_owner = crate::tasks::parse(
+            "test.md",
+            "- [ ] <span title=\"[owner:: oleg]\">Task</span>\n",
+        );
+        assert_eq!(html_owner.len(), 1);
+        assert_eq!(html_owner[0].metadata.owner.as_deref(), Some("oleg"));
+
+        let comment_done =
+            crate::tasks::parse("test.md", "- [ ] Actual %% [done:: 2026-01-01] %%\n");
+        assert_eq!(comment_done.len(), 1);
+        assert_eq!(comment_done[0].done, Some(jan1));
+        assert_eq!(comment_done[0].metadata.text, "Actual %% %%");
+
+        // Heading titles and anchors match main identically.
+        let schema = std::sync::Arc::new(
+            crate::records::FieldSchema::load(std::path::Path::new(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/views"
+            )))
+            .unwrap(),
+        );
+        let heading_cases = [
+            (
+                "knowledge/link-in-dollars.md",
+                "# $[label](a.md)$\n",
+                "$label$",
+            ),
+            (
+                "knowledge/entity-in-dollars.md",
+                "# $a &amp; b$\n",
+                "$a & b$",
+            ),
+            ("knowledge/code-in-dollars.md", "# $`code`$\n", "$code$"),
+            ("knowledge/escape-in-dollars.md", "# $\\$x$\n", "$$x$"),
+            ("knowledge/solve.md", "# Solve $x^2$\n", "Solve $x^2$"),
+            ("knowledge/energy.md", "# $E=mc^2$\n", "$E=mc^2$"),
+            ("knowledge/money.md", "# $2$ a month\n", "$2$ a month"),
+            ("knowledge/display.md", "# $$a+b$$\n", "$$a+b$$"),
+        ];
+        let sources: Vec<_> = heading_cases
+            .iter()
+            .map(|(path, body, _)| crate::records::Source {
+                path,
+                bytes: body.as_bytes(),
+                mtime: None,
+            })
+            .collect();
+        let projection = crate::records::Projection::build(schema, sources);
+        for (path, _, expected) in heading_cases {
+            let note = projection.note(path).unwrap();
+            assert_eq!(
+                note.fields.get("title"),
+                Some(&crate::records::Value::String(expected.to_owned())),
+                "{path}"
+            );
+            assert_eq!(note.sections[0].anchor, expected, "{path}");
+        }
+
+        // 2. Ordinary math without protected done metadata still completes cleanly.
+        let ordinary_math = "- [ ] Solve $x^2$\n";
+        let plan = Target::capture("test.md", ordinary_math, 1)
+            .unwrap()
             .plan(
-                cr_source,
+                ordinary_math,
                 Change::CheckWithDone {
                     checked: true,
                     done,
@@ -816,10 +954,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             plan.after.as_bytes(),
-            b"- [ ] First\r- [ ] Second\n- [x] Third [done:: 2026-11-24]\n"
+            b"- [x] Solve $x^2$ [done:: 2026-11-24]\n"
         );
 
-        // 2. Math spans (`$...$` and `$$...$$`, incl. tabs/quotes/BOM) stay untouched.
+        // 3. Writer refuses any edit that would touch protected math/HTML/comment content
+        //    or leave the main projection with a conflicting/duplicate done date.
         for source in [
             "- [ ] Review $[done:: 2026-01-01]$\n",
             "- [ ] Review $$[done:: 2026-01-01]$$\n",
@@ -827,154 +966,35 @@ mod tests {
             "- Parent\n\t- [ ] $[done:: 2026-01-01]$\n",
             "> - [ ] $$[done:: 2026-01-01]$$\n",
             "\u{feff}- [ ] $[done:: 2026-01-01]$\n",
-        ] {
-            let tasks = crate::tasks::parse("test.md", source);
-            assert_eq!(tasks.len(), 1, "{source:?}");
-            assert_eq!(
-                tasks[0].done, None,
-                "math must not project done: {source:?}"
-            );
-            let target = Target::capture("test.md", source, tasks[0].line).unwrap();
-            let plan = target
-                .plan(
-                    source,
-                    Change::CheckWithDone {
-                        checked: true,
-                        done,
-                    },
-                )
-                .unwrap();
-            let expected =
-                source
-                    .replacen("[ ]", "[x]", 1)
-                    .replacen('\n', " [done:: 2026-11-24]\n", 1);
-            // Only the task line's trailing LF gets the suffix (for 2-line input take last LF).
-            let expected = if source.contains("\n\t") {
-                format!(
-                    "{} [done:: 2026-11-24]\n",
-                    source.trim_end_matches('\n').replacen("[ ]", "[x]", 1)
-                )
-            } else {
-                expected
-            };
-            assert_eq!(plan.after.as_bytes(), expected.as_bytes(), "{source:?}");
-            let reparsed = crate::tasks::parse("test.md", &plan.after);
-            assert_eq!(reparsed[0].done, Some(done), "{source:?}");
-            assert!(reparsed[0].metadata.issues.is_empty(), "{source:?}");
-        }
-        // Multi-line math refuses without writing.
-        let multi_math = "- [ ] Example $a +\n  b$\n";
-        let target = Target::capture("test.md", multi_math, 1).unwrap();
-        assert!(target
-            .plan(
-                multi_math,
-                Change::CheckWithDone {
-                    checked: true,
-                    done,
-                },
-            )
-            .is_err());
-
-        // 3. Completing a task with read-only legacy `✅` cannot set effective done to
-        //    today without touching read-only metadata or creating duplicates -> refuse.
-        for legacy in [
+            "- [ ] Example $a +\n  b$\n",
+            "- [ ] <!-- [done:: 2026-01-01] --> Task\n",
+            "- [ ] <span title=\"[done:: 2026-01-01]\">Task</span>\n",
+            "- [ ] Actual %% [done:: 2026-01-01] %%\n",
+            "- [ ] Actual %% hidden\n  still hidden %%\n",
+            "- [ ] Actual %% [done:: 2026-01-01]\n  still hidden %%\n",
             "- [ ] Task ✅ 2026-01-01\n",
             "- [ ] Task ✅ nope\n",
             "- [ ] Task ✅ 2026-01-01 [done:: 2026-01-02]\n",
             "- [ ] Task ✅ 2026-11-24\n",
         ] {
-            let target = Target::capture("test.md", legacy, 1).unwrap();
+            let line = crate::tasks::parse("test.md", source)[0].line;
+            let target = Target::capture("test.md", source, line).unwrap();
             assert!(
                 target
                     .plan(
-                        legacy,
+                        source,
                         Change::CheckWithDone {
                             checked: true,
                             done,
                         },
                     )
                     .is_err(),
-                "must refuse completing task with read-only legacy emoji: {legacy:?}"
+                "must refuse protected/conflicting completion: {source:?}"
             );
         }
 
-        // 4. Inline HTML comments and attributes are ignored by both reader and writer,
-        //    so completing leaves HTML intact and projects effective done = today.
-        for html in [
-            "- [ ] <!-- [done:: 2026-01-01] --> Task\n",
-            "- [ ] <span title=\"[done:: 2026-01-01]\">Task</span>\n",
-        ] {
-            let before = crate::tasks::parse("test.md", html);
-            assert_eq!(before[0].done, None, "{html:?}");
-            let target = Target::capture("test.md", html, 1).unwrap();
-            let plan = target
-                .plan(
-                    html,
-                    Change::CheckWithDone {
-                        checked: true,
-                        done,
-                    },
-                )
-                .unwrap();
-            let expected = format!(
-                "{} [done:: 2026-11-24]\n",
-                html.trim_end_matches('\n').replacen("[ ]", "[x]", 1)
-            );
-            assert_eq!(plan.after.as_bytes(), expected.as_bytes(), "{html:?}");
-            let reparsed = crate::tasks::parse("test.md", &plan.after);
-            assert_eq!(reparsed[0].done, Some(done), "{html:?}");
-            assert!(reparsed[0].metadata.issues.is_empty(), "{html:?}");
-            assert_eq!(
-                reparsed[0].metadata.text, before[0].metadata.text,
-                "{html:?}"
-            );
-        }
-
-        // 5. Obsidian `%%…%%` comments (inline and multi-line) stay protected in both
-        //    projection and writer: inline comment content is untouched and `[done:: …]`
-        //    is appended outside; multi-line comment refuses insertion inside it.
-        let inline_comment = "- [ ] Actual %% [done:: 2026-01-01] %%\n";
-        let before = crate::tasks::parse("test.md", inline_comment);
-        assert_eq!(before[0].done, None);
-        let target = Target::capture("test.md", inline_comment, 1).unwrap();
-        let plan = target
-            .plan(
-                inline_comment,
-                Change::CheckWithDone {
-                    checked: true,
-                    done,
-                },
-            )
-            .unwrap();
-        assert_eq!(
-            plan.after.as_bytes(),
-            b"- [x] Actual %% [done:: 2026-01-01] %% [done:: 2026-11-24]\n"
-        );
-        let reparsed = crate::tasks::parse("test.md", &plan.after);
-        assert_eq!(reparsed[0].done, Some(done));
-        assert!(reparsed[0].metadata.issues.is_empty());
-
-        for multi_comment in [
-            "- [ ] Actual %% hidden\n  still hidden %%\n",
-            "- [ ] Actual %% [done:: 2026-01-01]\n  still hidden %%\n",
-        ] {
-            let target = Target::capture("test.md", multi_comment, 1).unwrap();
-            assert!(
-                target
-                    .plan(
-                        multi_comment,
-                        Change::CheckWithDone {
-                            checked: true,
-                            done,
-                        },
-                    )
-                    .is_err(),
-                "must refuse inserting done marker inside multi-line comment: {multi_comment:?}"
-            );
-        }
-
-        // Checkboxes inside `%%…%%` comments are hidden from Tasks projection and
-        // refused by Target::capture (cannot be reopened or completed).
+        // 4. Checkboxes inside `%%…%%` comments are hidden from Tasks projection and
+        //    refused by Target::capture (cannot be reopened or completed).
         let hidden_checked = "%%\n- [x] Hidden\n%%\n";
         assert!(crate::tasks::parse("test.md", hidden_checked).is_empty());
         assert!(Target::capture("test.md", hidden_checked, 2).is_err());
