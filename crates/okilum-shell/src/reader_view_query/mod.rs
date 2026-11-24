@@ -156,7 +156,8 @@ fn evaluate(
             })
         }
     };
-    let mut run = view::RunContext::new(projection, vault, chrono::Local::now().fixed_offset());
+    let mut run = view::RunContext::new(projection, vault, chrono::Local::now().fixed_offset())
+        .with_vault_snapshots();
     run.generation = request.epoch;
     run.searcher = searcher;
     if let Some(bindings) = &request.bindings {

@@ -4,6 +4,7 @@ mod compute;
 mod parse;
 mod render;
 mod run;
+pub(crate) mod snapshot;
 
 pub use parse::{parse, validate, Show, ViewDoc};
 pub use render::{render_json, render_markdown};

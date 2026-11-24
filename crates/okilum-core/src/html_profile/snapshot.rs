@@ -3,134 +3,13 @@ use super::{
 };
 use crate::{
     document_links::{self, Destination},
-    view::{Finding, Group, Row, Status, ViewIdentity},
+    view::{
+        snapshot::{valid_path, SnapshotJson, SnapshotSection, Timestamp},
+        Finding, Group, Row, Status,
+    },
 };
-use chrono::{DateTime, FixedOffset};
-use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::{collections::BTreeMap, fmt::Write};
-
-/// A sealed C2 snapshot (snapshot_version 1, view_api 0). Deserialize it from
-/// the published JSON. The gateway authorizes the snapshot and its targets.
-#[derive(Debug, Deserialize)]
-#[serde(try_from = "Envelope")]
-pub struct SnapshotJson {
-    generated_at: Timestamp,
-    findings: Vec<Finding>,
-    sections: Vec<Section>,
-}
-
-#[derive(Deserialize)]
-struct Envelope {
-    snapshot_version: u64,
-    view_api: u64,
-    generated_at: Timestamp,
-    view: ViewIdentity,
-    #[serde(rename = "params")]
-    _params: Map<String, Value>,
-    #[serde(rename = "as_of")]
-    _as_of: Timestamp,
-    #[serde(rename = "index")]
-    _index: Index,
-    findings: Vec<Finding>,
-    sections: Vec<Section>,
-}
-
-#[derive(Deserialize)]
-struct Index {
-    #[serde(rename = "by")]
-    _by: String,
-    #[serde(rename = "notes")]
-    _notes: usize,
-    #[serde(rename = "generation")]
-    _generation: u64,
-}
-
-impl TryFrom<Envelope> for SnapshotJson {
-    type Error = String;
-
-    fn try_from(wire: Envelope) -> Result<Self, Self::Error> {
-        if (wire.snapshot_version, wire.view_api) != (1, 0) {
-            return Err(format!(
-                "Unsupported view snapshot version pair: snapshot_version {}, view_api {}",
-                wire.snapshot_version, wire.view_api
-            ));
-        }
-        if !valid_path(&wire.view.path)
-            || !wire.view.path.starts_with("@views/")
-            || wire.view.path.starts_with("@views/out/")
-            || !wire.view.path.ends_with(".md")
-            || !valid_revision(&wire.view.rev)
-        {
-            return Err("Invalid view snapshot identity".into());
-        }
-        for section in &wire.sections {
-            if (section.source == Source::Snapshot)
-                != (section.status == Status::Ok && section.snapshot_at.is_some())
-                || (section.source == Source::Live && section.snapshot_at.is_some())
-            {
-                return Err(format!(
-                    "Invalid provenance in view section '{}'",
-                    section.id
-                ));
-            }
-            if section.rows.iter().any(|row| {
-                !valid_path(&row.path) || !valid_revision(&row.rev) || row.line == Some(0)
-            }) {
-                return Err(format!(
-                    "Invalid row source in view section '{}'",
-                    section.id
-                ));
-            }
-        }
-        Ok(Self {
-            generated_at: wire.generated_at,
-            findings: wire.findings,
-            sections: wire.sections,
-        })
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(try_from = "String")]
-struct Timestamp {
-    text: String,
-    value: DateTime<FixedOffset>,
-}
-
-impl TryFrom<String> for Timestamp {
-    type Error = chrono::ParseError;
-
-    fn try_from(text: String) -> Result<Self, Self::Error> {
-        let value = DateTime::parse_from_rfc3339(&text)?;
-        Ok(Self { text, value })
-    }
-}
-
-#[derive(Debug, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-enum Source {
-    Live,
-    Snapshot,
-}
-
-#[derive(Debug, Deserialize)]
-struct Section {
-    id: String,
-    title: String,
-    #[serde(rename = "line")]
-    _line: usize,
-    show: String,
-    cols: Vec<String>,
-    status: Status,
-    source: Source,
-    snapshot_at: Option<Timestamp>,
-    diagnostics: Vec<Finding>,
-    total: usize,
-    truncated: bool,
-    groups: Vec<Group>,
-    rows: Vec<Row>,
-}
 
 /// Render the already evaluated result without reading the vault or running
 /// the view. Source links carry the sealed revision and optional navigation
@@ -162,7 +41,7 @@ fn findings(out: &mut String, findings: &[Finding]) {
     }
 }
 
-impl Section {
+impl SnapshotSection {
     fn render(&self, out: &mut String, index: usize) {
         let shown = match self.show.as_str() {
             "table" => "table",
@@ -490,22 +369,6 @@ fn append_anchor(url: &mut String, fragment: Option<&str>) {
         url.push('#');
         url.push_str(&anchor(fragment));
     }
-}
-
-fn valid_revision(revision: &str) -> bool {
-    revision.strip_prefix("sha256:").is_some_and(|hash| {
-        hash.len() == 64
-            && hash
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    })
-}
-
-fn valid_path(path: &str) -> bool {
-    !path.contains('\\')
-        && !path.chars().any(|ch| ch.is_ascii_control())
-        && !matches!(path.as_bytes(), [a, b':', ..] if a.is_ascii_alphabetic())
-        && path.split('/').all(|part| !matches!(part, "" | "." | ".."))
 }
 
 /// The sealed Markdown has no live link inventory. Resolve explicit paths

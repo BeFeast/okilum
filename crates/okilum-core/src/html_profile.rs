@@ -16,7 +16,8 @@ use std::fmt::{self, Write};
 use std::path::{Component, Path};
 
 mod snapshot;
-pub use snapshot::{render_view_snapshot, SnapshotJson};
+pub use crate::view::snapshot::SnapshotJson;
+pub use snapshot::render_view_snapshot;
 
 pub const VERSION: u8 = 1;
 

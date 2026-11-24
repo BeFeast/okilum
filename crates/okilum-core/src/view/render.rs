@@ -192,6 +192,9 @@ pub fn render_markdown(result: &ViewResult) -> String {
             }
         };
         if section.status != Status::Ok {
+            if section.status == Status::Degraded {
+                markdown.push_str("> Unavailable\n\n");
+            }
             for finding in &section.diagnostics {
                 writeln!(
                     markdown,
@@ -203,6 +206,9 @@ pub fn render_markdown(result: &ViewResult) -> String {
                 .unwrap();
             }
             continue;
+        }
+        if let Some(time) = section.snapshot_clock() {
+            writeln!(markdown, "> snapshot {time}\n").unwrap();
         }
         if let Some(nodes) = &section.nodes {
             render_tree(&mut markdown, nodes, section, 0);

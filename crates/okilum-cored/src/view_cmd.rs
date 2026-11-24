@@ -129,7 +129,8 @@ pub fn run(root: &Path, request: RunRequest) -> Result<Result<ViewResult, Vec<Fi
     let schema = Arc::new(FieldSchema::load(root.root())?);
     let publication = Publication::open(root.root(), schema)?;
     let read = |path: &str| publication.read(path);
-    let mut context = RunContext::new(&publication.projection, &publication.vault, as_of);
+    let mut context =
+        RunContext::new(&publication.projection, &publication.vault, as_of).with_vault_snapshots();
     context.args = request.args;
     context.all_fields = request.all_fields;
     context.read_source = Some(&read);

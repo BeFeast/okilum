@@ -1,6 +1,54 @@
-# Launch Agent context on the shared vault. State shows the Next excerpt,
-# and a semantic section without a provider or snapshot shows Unavailable.
+# Open Agent context without a search service. State is evaluated live and
+# For the task shows the Gardener's sealed rows and their evaluation time.
 vault: crates/okilum-core/tests/fixtures/views
+generate:
+  - path: "@views/out/agent-context.json"
+    kind: text
+    text: |
+      {
+        "snapshot_version": 1,
+        "generated_at": "2026-11-24T08:04:00Z",
+        "view_api": 0,
+        "view": {
+          "path": "@views/agent-context.md",
+          "rev": "sha256:a496311a61eaac4e0a4dc4d06ccca26fd6d2c0bbdd99498645f5841e95ada4f9",
+          "extends": null
+        },
+        "params": {"context": "okilum", "task": ""},
+        "as_of": "2026-11-24T08:00:00Z",
+        "index": {"by": "okilum-core 0.1.0", "notes": 36, "generation": 0},
+        "findings": [],
+        "sections": [{
+          "id": "for-the-task",
+          "title": "For the task",
+          "line": 29,
+          "show": "list",
+          "cols": ["title"],
+          "status": "ok",
+          "source": "live",
+          "snapshot_at": null,
+          "diagnostics": [],
+          "total": 2,
+          "truncated": false,
+          "groups": [],
+          "rows": [
+            {
+              "path": "knowledge/rust-error-handling.md",
+              "rev": "sha256:6343547da4bb0dd4e125bc3b6d4a1f9a627eac868376a394fe9897eb07689607",
+              "line": null, "anchor": null, "group": [],
+              "fields": {"title": "Rust error handling"},
+              "actions": ["open"]
+            },
+            {
+              "path": "state/dev/okilum/roadmap.md",
+              "rev": "sha256:34f7e03c939fe97c7e3f98cdc45869a437fe96137fc40737403ad4bfe31a23bb",
+              "line": null, "anchor": null, "group": [],
+              "fields": {"title": "Okilum roadmap"},
+              "actions": ["open"]
+            }
+          ]
+        }]
+      }
 open: "@views/agent-context.md"
 appearance: light
 preferences:
@@ -10,9 +58,7 @@ ready_text: Read top to bottom
 steps:
   - id: state-next
     text: Freeze the views contract with the gardener.
-  - id: for-the-task-unavailable
+  - id: for-the-task-snapshot
     keys: [End]
     mods: [ctrl]
-    text: Unavailable
-  - id: near-diagnostic
-    text: near needs the search service
+    text_order: [For the task, snapshot 10:00, Rust error handling, Okilum roadmap]

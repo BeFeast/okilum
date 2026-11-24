@@ -5,6 +5,7 @@ use super::{
         self, Action, ActionMapping, Block, Check, Open, OpenAction, Part, SectionDoc, Show,
         ViewDoc,
     },
+    snapshot::{self, SnapshotJson},
     Finding,
 };
 use crate::{
@@ -46,6 +47,7 @@ pub struct RunContext<'a> {
     /// section excerpts and an in-memory search index when no searcher is given.
     /// JSONL is always read through the confined vault reader.
     pub read_source: Option<&'a ReadSource<'a>>,
+    vault_snapshots: bool,
 }
 
 impl<'a> RunContext<'a> {
@@ -60,7 +62,15 @@ impl<'a> RunContext<'a> {
             near: None,
             searcher: None,
             read_source: None,
+            vault_snapshots: false,
         }
+    }
+
+    /// Allow `near` to reuse snapshots published in this vault. Consumers must
+    /// have access to the whole vault, including any sources in the snapshot.
+    pub fn with_vault_snapshots(mut self) -> Self {
+        self.vault_snapshots = true;
+        self
     }
 }
 
@@ -174,7 +184,7 @@ pub struct Group {
     pub agg: BTreeMap<String, Json>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TreeNode {
     pub field: String,
     pub value: Json,
@@ -1081,6 +1091,7 @@ fn execute(doc: &ViewDoc, runner: &mut Runner<'_, '_>) -> ViewResult {
         .or(definition.front.budget.as_deref())
         .and_then(parse::budget);
     let mut ids = BTreeSet::new();
+    let mut snapshot = None;
     for section in &definition.blocks {
         let title = super::render::substitute(&section.title, &vars, false);
         let mut output = new_section(section, title);
@@ -1106,6 +1117,16 @@ fn execute(doc: &ViewDoc, runner: &mut Runner<'_, '_>) -> ViewResult {
             output.groups.clear();
             output.total = 0;
             output.truncated = false;
+        }
+        if output.status == Status::Degraded && ctx.vault_snapshots && runner.coverage.is_none() {
+            let snapshot = snapshot.get_or_insert_with(|| {
+                let path = snapshot::path(&result.view.path)?;
+                let source = runner.read(&path, snapshot::MAX_BYTES).ok()?;
+                serde_json::from_str::<SnapshotJson>(&source).ok()
+            });
+            if let Some(snapshot) = snapshot {
+                snapshot.reuse(&result, &mut output);
+            }
         }
         result.sections.push(output);
     }

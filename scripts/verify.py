@@ -148,6 +148,9 @@ def write_fixtures(vault, specs):
                 f'Fixture path must stay inside the vault: {spec["path"]}')
         target.parent.mkdir(parents=True, exist_ok=True)
         kind = spec['kind']
+        if kind == 'text':
+            target.write_text(spec['text'], encoding='utf-8')
+            continue
         require(kind in ('markdown', 'json'), f'Unknown fixture kind: {kind}')
         target.write_bytes(generate_markdown(spec) if kind == 'markdown' else generate_json(spec))
 

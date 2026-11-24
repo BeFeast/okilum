@@ -597,3 +597,85 @@ show: table
         .message
         .contains("Ambiguous link 'roadmap'"));
 }
+
+#[test]
+fn near_reuses_only_a_compatible_vault_snapshot() {
+    use serde_json::json;
+
+    let root = tempfile::tempdir().unwrap();
+    let out = root.path().join("@views/out");
+    fs::create_dir_all(&out).unwrap();
+    let path = out.join("test.json");
+    let vault = Vault::scan(root.path()).unwrap();
+    let projection = projection(Path::new(FIXTURE), &[]);
+    let doc = doc("## For the task\n```view\nfrom: notes\nnear: task\nshow: list\n```\n");
+    let context = RunContext::new(&projection, &vault, timestamp("2026-11-25T09:00:00Z"))
+        .with_vault_snapshots();
+    let run = || view::run(&doc, &context);
+    let mut snapshot = serde_json::to_value(run()).unwrap();
+    let assert_unavailable = || {
+        let result = run();
+        let section = &result.sections[0];
+        assert_eq!(section.status, view::Status::Degraded);
+        assert!(section.rows.is_empty());
+        assert_eq!(
+            section.diagnostics[0].message,
+            "near needs the search service"
+        );
+    };
+    assert_unavailable();
+
+    snapshot["snapshot_version"] = json!(1);
+    snapshot["as_of"] = json!("2026-11-24T08:00:00Z");
+    snapshot["generated_at"] = json!("2026-11-24T08:04:00Z");
+    let section = &mut snapshot["sections"][0];
+    section["status"] = json!("ok");
+    section["diagnostics"] = json!([]);
+    section["total"] = json!(1);
+    section["rows"] = json!([{
+        "path": "knowledge/rust-error-handling.md",
+        "rev": "sha256:6343547da4bb0dd4e125bc3b6d4a1f9a627eac868376a394fe9897eb07689607",
+        "line": null, "anchor": null, "group": [],
+        "fields": {"title": "Rust error handling"},
+        "actions": ["open"]
+    }]);
+
+    let write = |value: &Value| fs::write(&path, serde_json::to_vec(value).unwrap()).unwrap();
+    for (key, wrong) in [
+        ("snapshot_version", json!(2)),
+        ("view_api", json!(1)),
+        ("params", json!({"task": "different"})),
+        ("as_of", json!("invalid timestamp")),
+    ] {
+        let mut wrong_snapshot = snapshot.clone();
+        wrong_snapshot[key] = wrong;
+        write(&wrong_snapshot);
+        assert_unavailable();
+    }
+    let mut wrong_revision = snapshot.clone();
+    wrong_revision["view"]["rev"] = snapshot["sections"][0]["rows"][0]["rev"].clone();
+    write(&wrong_revision);
+    assert_unavailable();
+
+    write(&snapshot);
+    let result = run();
+    let section = &result.sections[0];
+    assert_eq!(section.status, view::Status::Ok);
+    assert_eq!(section.source, "snapshot");
+    assert_eq!(section.snapshot_at.as_deref(), Some("2026-11-24T08:00:00Z"));
+    assert_eq!(section.snapshot_clock().as_deref(), Some("10:00"));
+    assert_eq!(section.rows[0].fields["title"], "Rust error handling");
+    assert!(view::render_markdown(&result).contains("snapshot 10:00"));
+
+    // A newer envelope can carry a section evaluated before the DST change.
+    snapshot["sections"][0]["source"] = json!("snapshot");
+    snapshot["sections"][0]["snapshot_at"] = json!("2026-10-24T07:00:00Z");
+    write(&snapshot);
+    let result = run();
+    let section = &result.sections[0];
+    assert_eq!(section.snapshot_at.as_deref(), Some("2026-10-24T07:00:00Z"));
+    assert_eq!(section.snapshot_clock().as_deref(), Some("10:00"));
+
+    fs::remove_file(&path).unwrap();
+    assert_unavailable();
+}

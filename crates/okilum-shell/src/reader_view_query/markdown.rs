@@ -165,7 +165,6 @@ fn section(
     out: &mut String,
     section: &Section,
     heading: &str,
-    as_of: &str,
     projection: &Projection,
     tasks: Option<&Arc<TasksIndex>>,
     blocks: &mut actions::Blocks,
@@ -182,12 +181,8 @@ fn section(
     if section.status != Status::Ok {
         return;
     }
-    if let Some(time) = section.snapshot_at.as_deref().and_then(|stamp| {
-        let stamp = chrono::DateTime::parse_from_rfc3339(stamp).ok()?;
-        let offset = *chrono::DateTime::parse_from_rfc3339(as_of).ok()?.offset();
-        Some(stamp.with_timezone(&offset).format("%H:%M").to_string())
-    }) {
-        writeln!(out, "> Snapshot {time}\n").unwrap();
+    if let Some(time) = section.snapshot_clock() {
+        writeln!(out, "> snapshot {time}\n").unwrap();
     }
     if let Some(label) = match section.show {
         Show::Graph => Some("Graph"),
@@ -274,7 +269,6 @@ pub(super) fn render(
                     &mut markdown,
                     output,
                     heading,
-                    &result.as_of,
                     projection,
                     tasks,
                     &mut blocks,
