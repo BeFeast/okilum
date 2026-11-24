@@ -1,0 +1,835 @@
+diff --git a/crates/base/src/text/format/html.rs b/crates/base/src/text/format/html.rs
+index 96b72231..44914dbf 100644
+--- a/crates/base/src/text/format/html.rs
++++ b/crates/base/src/text/format/html.rs
+@@ -11,8 +11,8 @@ use markup5ever_rcdom::{Node, NodeData, RcDom};
+ 
+ use crate::text::document::ParsedDocument;
+ use crate::text::node::{
+-    self, BlockNode, ImageNode, InlineNode, LinkMark, NodeContext, Paragraph, Table, TableRow,
+-    TextMark,
++    self, BlockNode, CodeBlock, ImageNode, InlineNode, LinkMark, NodeContext, Paragraph, Table,
++    TableRow, TextMark,
+ };
+ 
+ const BLOCK_ELEMENTS: [&str; 35] = [
+@@ -139,6 +139,107 @@ fn parse_mark_color(value: &str) -> Option<Hsla> {
+     }
+ }
+ 
++/// A CSS text colour: `#rgb`, `#rrggbb`, `rgb(r, g, b)` or a common colour name.
++fn parse_css_color(value: &str) -> Option<Hsla> {
++    let value = value.trim().trim_end_matches("!important").trim();
++    if value.starts_with('#') {
++        return gpui::Rgba::try_from(value).ok().map(Into::into);
++    }
++    let lower = value.to_ascii_lowercase();
++    if let Some(args) = lower
++        .strip_prefix("rgb(")
++        .or_else(|| lower.strip_prefix("rgba("))
++        .and_then(|rest| rest.strip_suffix(')'))
++    {
++        let parts: Vec<&str> = args
++            .split([',', ' ', '/'])
++            .filter(|part| !part.is_empty())
++            .collect();
++        let channel = |part: &str| match part.strip_suffix('%') {
++            Some(percent) => percent.parse::<f32>().ok().map(|v| v / 100.0),
++            None => part.parse::<f32>().ok().map(|v| v / 255.0),
++        };
++        let alpha = match parts.get(3) {
++            Some(part) => match part.strip_suffix('%') {
++                Some(percent) => percent.parse::<f32>().ok()? / 100.0,
++                None => part.parse::<f32>().ok()?,
++            },
++            None => 1.0,
++        };
++        return Some(
++            gpui::Rgba {
++                r: channel(parts.first()?)?.clamp(0.0, 1.0),
++                g: channel(parts.get(1)?)?.clamp(0.0, 1.0),
++                b: channel(parts.get(2)?)?.clamp(0.0, 1.0),
++                a: alpha.clamp(0.0, 1.0),
++            }
++            .into(),
++        );
++    }
++    let hex = match lower.as_str() {
++        "black" => 0x000000,
++        "white" => 0xffffff,
++        "red" => 0xff0000,
++        "green" => 0x008000,
++        "blue" => 0x0000ff,
++        "yellow" => 0xffff00,
++        "orange" => 0xffa500,
++        "purple" => 0x800080,
++        "gray" | "grey" => 0x808080,
++        "silver" => 0xc0c0c0,
++        "maroon" => 0x800000,
++        "olive" => 0x808000,
++        "lime" => 0x00ff00,
++        "aqua" | "cyan" => 0x00ffff,
++        "teal" => 0x008080,
++        "navy" => 0x000080,
++        "fuchsia" | "magenta" => 0xff00ff,
++        "pink" => 0xffc0cb,
++        "brown" => 0xa52a2a,
++        "gold" => 0xffd700,
++        "crimson" => 0xdc143c,
++        "coral" => 0xff7f50,
++        "tomato" => 0xff6347,
++        "salmon" => 0xfa8072,
++        "indigo" => 0x4b0082,
++        "violet" => 0xee82ee,
++        "orchid" => 0xda70d6,
++        "turquoise" => 0x40e0d0,
++        "skyblue" => 0x87ceeb,
++        "royalblue" => 0x4169e1,
++        "darkred" => 0x8b0000,
++        "darkgreen" => 0x006400,
++        "darkblue" => 0x00008b,
++        "darkorange" => 0xff8c00,
++        "firebrick" => 0xb22222,
++        "forestgreen" => 0x228b22,
++        "limegreen" => 0x32cd32,
++        "dodgerblue" => 0x1e90ff,
++        "steelblue" => 0x4682b4,
++        "slategray" | "slategrey" => 0x708090,
++        "dimgray" | "dimgrey" => 0x696969,
++        "lightgray" | "lightgrey" => 0xd3d3d3,
++        "hotpink" => 0xff69b4,
++        "deeppink" => 0xff1493,
++        _ => return None,
++    };
++    Some(gpui::rgb(hex).into())
++}
++
++/// The text colour of a `<span style="color:…">` or `<font color="…">`.
++fn text_color(attrs: &RefCell<Vec<html5ever::Attribute>>, font: bool) -> Option<Hsla> {
++    if let Some(color) = style_attrs(attrs)
++        .get("color")
++        .and_then(|value| parse_css_color(value))
++    {
++        return Some(color);
++    }
++    if font {
++        return attr_value(attrs, local_name!("color")).and_then(|value| parse_css_color(&value));
++    }
++    None
++}
++
+ /// Get style properties to HashMap
+ /// TODO: Use cssparser to parse style attribute.
+ fn style_attrs(attrs: &RefCell<Vec<html5ever::Attribute>>) -> HashMap<String, String> {
+@@ -208,9 +309,12 @@ fn attr_width_height(
+     (width, height)
+ }
+ 
+-fn parse_table_row(table: &mut Table, node: &Rc<Node>) {
++/// Parse one `<tr>` into `table`. Returns whether the row was added and
++/// whether any of its cells is a `<th>`.
++fn parse_table_row(table: &mut Table, node: &Rc<Node>) -> (bool, bool) {
+     let mut row = TableRow::default();
+     let mut count = 0;
++    let mut has_th = false;
+     for child in node.children.borrow().iter() {
+         match child.data {
+             NodeData::Element {
+@@ -223,6 +327,7 @@ fn parse_table_row(table: &mut Table, node: &Rc<Node>) {
+                 }
+ 
+                 count += 1;
++                has_th |= name.local == local_name!("th");
+                 parse_table_cell(&mut row, child, attrs);
+             }
+             _ => {}
+@@ -232,6 +337,7 @@ fn parse_table_row(table: &mut Table, node: &Rc<Node>) {
+     if count > 0 {
+         table.children.push(row);
+     }
++    (count > 0, has_th)
+ }
+ 
+ fn parse_table_cell(
+@@ -369,6 +475,14 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &Rc<Node>) {
+                     Some(TextMark::default().highlight(color)),
+                 );
+             }
++            local_name!("span") | local_name!("font") => {
++                let color = text_color(attrs, name.local == local_name!("font"));
++                merge_children_with_mark(
++                    node,
++                    paragraph,
++                    color.map(|color| TextMark::default().color(color)),
++                );
++            }
+             local_name!("a") => {
+                 let link_mark = LinkMark {
+                     url: attr_value(&attrs, local_name!("href"))
+@@ -558,21 +672,32 @@ fn parse_node(
+                 consume_paragraph(&mut children, paragraph);
+ 
+                 let mut table = Table::default();
++                // Only a `<thead>` or `<th>` row is a header: the first row
++                // of `<table><tr><td>…` is a body row like any other.
++                let mut first_row_is_header = None;
+                 for child in node.children.borrow().iter() {
+                     match child.data {
+                         NodeData::Element { ref name, .. }
+                             if name.local == local_name!("tbody")
+                                 || name.local == local_name!("thead") =>
+                         {
++                            let in_thead = name.local == local_name!("thead");
+                             for sub_child in child.children.borrow().iter() {
+-                                parse_table_row(&mut table, &sub_child);
++                                let (added, has_th) = parse_table_row(&mut table, &sub_child);
++                                if added && first_row_is_header.is_none() {
++                                    first_row_is_header = Some(in_thead || has_th);
++                                }
+                             }
+                         }
+                         _ => {
+-                            parse_table_row(&mut table, &child);
++                            let (added, has_th) = parse_table_row(&mut table, &child);
++                            if added && first_row_is_header.is_none() {
++                                first_row_is_header = Some(has_th);
++                            }
+                         }
+                     }
+                 }
++                table.headerless = !first_row_is_header.unwrap_or(false);
+                 consume_paragraph(&mut children, paragraph);
+ 
+                 let table = BlockNode::Table(table);
+@@ -593,6 +718,35 @@ fn parse_node(
+                     span: None,
+                 })
+             }
++            // `<pre>` (with or without `<code>`) is a code block: text,
++            // newlines and indentation exactly as written.
++            local_name!("pre") => {
++                let mut children = vec![];
++                consume_paragraph(&mut children, paragraph);
++
++                let mut code = String::new();
++                let mut lang = None;
++                collect_pre_text(node, &mut code, &mut lang);
++                // As in a Markdown code block, the final line ending is not
++                // part of the code.
++                if code.ends_with('\n') {
++                    code.pop();
++                }
++                let code: SharedString = code.into();
++                let block = BlockNode::CodeBlock(
++                    CodeBlock::new(code.clone(), lang.map(Into::into), None::<node::Span>)
++                        .with_copy_code(code),
++                );
++                if children.is_empty() {
++                    Some(block)
++                } else {
++                    children.push(block);
++                    Some(BlockNode::Root {
++                        children,
++                        span: None,
++                    })
++                }
++            }
+             local_name!("style") | local_name!("script") => None,
+             _ => {
+                 if BLOCK_ELEMENTS.contains(&name.local.trim()) {
+@@ -646,6 +800,31 @@ fn parse_node(
+     }
+ }
+ 
++/// The text of a `<pre>`, `<br>` as a line ending, and the language a nested
++/// `<code class="language-x">` names.
++fn collect_pre_text(node: &Node, out: &mut String, lang: &mut Option<String>) {
++    for child in node.children.borrow().iter() {
++        match &child.data {
++            NodeData::Text { contents } => out.push_str(&contents.borrow()),
++            NodeData::Element { name, attrs, .. } => {
++                if name.local == local_name!("br") {
++                    out.push('\n');
++                    continue;
++                }
++                if name.local == local_name!("code") && lang.is_none() {
++                    *lang = attr_value(attrs, local_name!("class")).and_then(|class| {
++                        class
++                            .split_whitespace()
++                            .find_map(|name| name.strip_prefix("language-").map(str::to_string))
++                    });
++                }
++                collect_pre_text(child, out, lang);
++            }
++            _ => {}
++        }
++    }
++}
++
+ fn consume_children_nodes(
+     node: &Node,
+     paragraph: &mut Paragraph,
+@@ -779,6 +958,105 @@ mod tests {
+         );
+     }
+ 
++    fn code_blocks(block: &BlockNode, out: &mut Vec<(String, Option<String>)>) {
++        match block {
++            BlockNode::Root { children, .. } => {
++                children.iter().for_each(|child| code_blocks(child, out))
++            }
++            BlockNode::CodeBlock(code) => out.push((
++                code.code().to_string(),
++                code.lang().map(|lang| lang.to_string()),
++            )),
++            _ => {}
++        }
++    }
++
++    fn first_table(document: &ParsedDocument) -> crate::text::node::Table {
++        fn find(block: &BlockNode) -> Option<crate::text::node::Table> {
++            match block {
++                BlockNode::Root { children, .. } => children.iter().find_map(find),
++                BlockNode::Table(table) => Some(table.clone()),
++                _ => None,
++            }
++        }
++        document.blocks.iter().find_map(find).expect("a table")
++    }
++
++    #[test]
++    fn test_table_header_needs_th_or_thead() {
++        let mut cx = NodeContext::default();
++        let parse = |html: &str, cx: &mut NodeContext| first_table(&super::parse(html, cx).unwrap());
++
++        let table = parse("<table><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></table>", &mut cx);
++        assert!(table.headerless);
++        assert!(!table.is_header_row(0));
++        assert_eq!(table.children.len(), 2);
++
++        let table = parse("<table><tr><th>a</th><th>b</th></tr><tr><td>c</td><td>d</td></tr></table>", &mut cx);
++        assert!(!table.headerless);
++        assert!(table.is_header_row(0) && !table.is_header_row(1));
++
++        let table = parse("<table><thead><tr><td>a</td></tr></thead><tbody><tr><td>c</td></tr></tbody></table>", &mut cx);
++        assert!(!table.headerless);
++
++        // A `<th>` in a later row does not make the first row a header.
++        let table = parse("<table><tr><td>a</td></tr><tr><th>c</th></tr></table>", &mut cx);
++        assert!(table.headerless);
++    }
++
++    #[test]
++    fn test_pre_is_a_code_block_with_exact_text() {
++        let mut cx = NodeContext::default();
++        let mut found = vec![];
++        let document = super::parse("<pre>\none\n    two\n\n        three\n</pre>", &mut cx).unwrap();
++        document.blocks.iter().for_each(|block| code_blocks(block, &mut found));
++        assert_eq!(found, [("one\n    two\n\n        three".to_string(), None)]);
++
++        let mut found = vec![];
++        let html = "<pre><code class=\"language-rust\">fn main() {\n    run();\n}\n</code></pre>";
++        let document = super::parse(html, &mut cx).unwrap();
++        document.blocks.iter().for_each(|block| code_blocks(block, &mut found));
++        assert_eq!(
++            found,
++            [("fn main() {\n    run();\n}".to_string(), Some("rust".to_string()))]
++        );
++
++        // Whitespace inside nested elements, and a leading blank line, survive.
++        let mut found = vec![];
++        let html = "<pre><b>a</b>  <i> b</i>\n\n  c</pre>";
++        let document = super::parse(html, &mut cx).unwrap();
++        document.blocks.iter().for_each(|block| code_blocks(block, &mut found));
++        assert_eq!(found, [("a   b\n\n  c".to_string(), None)]);
++    }
++
++    #[test]
++    fn test_css_text_colours() {
++        use super::parse_css_color;
++        assert_eq!(parse_css_color("red"), Some(gpui::rgb(0xff0000).into()));
++        assert_eq!(parse_css_color(" Teal "), Some(gpui::rgb(0x008080).into()));
++        assert_eq!(parse_css_color("#f00"), Some(gpui::rgb(0xff0000).into()));
++        assert_eq!(parse_css_color("#336699"), Some(gpui::rgb(0x336699).into()));
++        assert_eq!(parse_css_color("rgb(255, 0, 0)"), Some(gpui::rgb(0xff0000).into()));
++        assert_eq!(parse_css_color("notacolour"), None);
++    }
++
++    #[test]
++    fn test_readable_colour_keeps_contrast() {
++        use crate::text::node::readable_color;
++        let dark_text = gpui::rgb(0x1f2328).into();
++        let light_text = gpui::rgb(0xe6e6e6).into();
++        // Red reads on both pages; yellow on white and black on dark do not.
++        let red = gpui::rgb(0xff0000).into();
++        assert_eq!(readable_color(red, dark_text), red);
++        assert_eq!(readable_color(red, light_text), red);
++        let yellow = gpui::rgb(0xffff00).into();
++        assert_ne!(readable_color(yellow, dark_text), yellow);
++        assert_eq!(readable_color(yellow, light_text), yellow);
++        let black = gpui::rgb(0x000000).into();
++        assert_ne!(readable_color(black, light_text), black);
++        assert_eq!(readable_color(black, dark_text), black);
++    }
++
+     #[test]
+     fn test_value_to_length() {
+         assert_eq!(super::value_to_length("100px"), Some(px(100.).into()));
+diff --git a/crates/base/src/text/format/html5minify/mod.rs b/crates/base/src/text/format/html5minify/mod.rs
+index 44e609dc..9a58f3e2 100644
+--- a/crates/base/src/text/format/html5minify/mod.rs
++++ b/crates/base/src/text/format/html5minify/mod.rs
+@@ -58,6 +58,9 @@ pub struct Minifier<'a, W: io::Write> {
+     collapse_whitespace: bool,
+     preserve_comments: bool,
+     preceding_whitespace: bool,
++    /// How many `<pre>`/`<textarea>` elements enclose the node being written:
++    /// their text keeps its whitespace even inside `<code>` or `<span>`.
++    preformatted_depth: usize,
+ }
+ 
+ /// Holds node positional context.
+@@ -131,6 +134,7 @@ where
+             collapse_whitespace: true,
+             preserve_comments: false,
+             preceding_whitespace: false,
++            preformatted_depth: 0,
+         }
+     }
+ 
+@@ -203,7 +207,20 @@ where
+                         }
+                     });
+ 
+-                if skip_collapse_whitespace {
++                if skip_collapse_whitespace || self.preformatted_depth > 0 {
++                    // The parser drops one line ending right after `<pre>`;
++                    // when the text itself starts with one, write it twice so
++                    // the output parses back to the same text.
++                    let first_in_parent = ctx.as_ref().is_some_and(|ctx| {
++                        ctx.parent
++                            .children
++                            .borrow()
++                            .first()
++                            .is_some_and(|first| std::ptr::eq(&**first, node))
++                    });
++                    if skip_collapse_whitespace && first_in_parent && contents.starts_with('\n') {
++                        self.w.write_all(b"\n")?;
++                    }
+                     return self.w.write_all(contents.as_bytes());
+                 }
+ 
+@@ -271,7 +288,11 @@ where
+                     self.write_start_tag(name, &attrs)?;
+                 }
+ 
+-                self.minify_children(ctx, node)?;
++                let preformatted = preserve_whitespace(tag);
++                self.preformatted_depth += usize::from(preformatted);
++                let children = self.minify_children(ctx, node);
++                self.preformatted_depth -= usize::from(preformatted);
++                children?;
+ 
+                 if !omit_end_tag {
+                     self.write_end_tag(name)?;
+diff --git a/crates/base/src/text/format/markdown.rs b/crates/base/src/text/format/markdown.rs
+index baa5cbde..b8e1cdfd 100644
+--- a/crates/base/src/text/format/markdown.rs
++++ b/crates/base/src/text/format/markdown.rs
+@@ -813,17 +813,113 @@ fn ast_to_document(source: &str, root: mdast::Node, cx: &mut NodeContext) -> Par
+         _ => panic!("expected root node"),
+     };
+ 
+-    let blocks = root
+-        .children
+-        .into_iter()
+-        .map(|c| ast_to_node(source, c, cx))
+-        .collect();
++    let blocks = root_blocks(source, root.children, cx);
+     ParsedDocument {
+         source: source.to_string().into(),
+         blocks: Arc::new(blocks),
+     }
+ }
+ 
++/// Follow the `<table>` and `</table>` tags of one raw HTML block, keeping
++/// the number of tables still open in `depth`.
++fn track_open_tables(html: &str, depth: &mut usize) {
++    let mut at = 0;
++    while let Some(found) = html[at..].find('<') {
++        let tag = at + found;
++        let rest = &html[tag + 1..];
++        if rest.starts_with("!--") {
++            match html[tag..].find("-->") {
++                Some(end) => at = tag + end + 3,
++                None => return,
++            }
++            continue;
++        }
++        let (closing, name) = match rest.strip_prefix('/') {
++            Some(name) => (true, name),
++            None => (false, rest),
++        };
++        let name_len = name
++            .find(|c: char| !c.is_ascii_alphanumeric())
++            .unwrap_or(name.len());
++        let ends_name = name[name_len..]
++            .chars()
++            .next()
++            .is_none_or(|c| c == '>' || c == '/' || c.is_ascii_whitespace());
++        if name[..name_len].eq_ignore_ascii_case("table") && ends_name {
++            if closing {
++                *depth = depth.saturating_sub(1);
++            } else {
++                *depth += 1;
++            }
++        }
++        at = tag + 1;
++    }
++}
++
++/// The root's children as blocks. Markdown ends an HTML block at a blank
++/// line, but a browser parses the whole document as one, so a `<table>` with
++/// blank lines inside it falls apart into pieces. An HTML block that leaves a
++/// table open is joined, with every block up to the one that closes it and the
++/// Markdown between them, into one HTML fragment. The blocks keep the span of
++/// the whole range. A table that is never closed stays as it was.
++///
++/// Only tables are joined: elsewhere (a `<div>` around Markdown, say) the
++/// blocks between are Markdown, and CommonMark renders them as such.
++fn root_blocks(source: &str, children: Vec<Node>, cx: &mut NodeContext) -> Vec<BlockNode> {
++    let mut pending: std::collections::VecDeque<Node> = children.into();
++    let mut blocks = Vec::with_capacity(pending.len());
++    while let Some(node) = pending.pop_front() {
++        if let Some(joined) = join_open_table(source, &node, &pending, cx) {
++            let (count, block) = joined;
++            pending.drain(..count);
++            blocks.push(block);
++            continue;
++        }
++        blocks.push(ast_to_node(source, node, cx));
++    }
++    blocks
++}
++
++/// The block for `first` (an HTML block opening a table) and the `count`
++/// following nodes that belong to the same table, if it is closed later.
++fn join_open_table(
++    source: &str,
++    first: &Node,
++    following: &std::collections::VecDeque<Node>,
++    cx: &mut NodeContext,
++) -> Option<(usize, BlockNode)> {
++    let Node::Html(html) = first else {
++        return None;
++    };
++    let mut depth = 0;
++    track_open_tables(&html.value, &mut depth);
++    if depth == 0 {
++        return None;
++    }
++    let mut last = None;
++    for (ix, node) in following.iter().enumerate() {
++        if let Node::Html(html) = node {
++            track_open_tables(&html.value, &mut depth);
++            if depth == 0 {
++                last = Some(ix);
++                break;
++            }
++        }
++    }
++    let last = last?;
++    let start = html.position.as_ref()?.start.clone();
++    let end = following[last].position()?.end.clone();
++    let fragment = source.get(start.offset..end.offset)?;
++    let parsed = super::html::parse(fragment, cx).ok()?;
++    Some((
++        last + 1,
++        BlockNode::Root {
++            children: Arc::unwrap_or_clone(parsed.blocks),
++            span: new_span(Some(markdown::unist::Position { start, end }), cx),
++        },
++    ))
++}
++
+ fn new_span(pos: Option<markdown::unist::Position>, cx: &NodeContext) -> Option<Span> {
+     let pos = pos?;
+ 
+@@ -1231,6 +1327,65 @@ mod tests {
+         mark
+     }
+ 
++    /// A raw HTML table whose blocks Markdown splits at blank lines is one
++    /// table again: every cell lands in the same grid.
++    #[test]
++    fn test_html_table_with_blank_lines_is_one_table() {
++        fn tables<'a>(block: &'a BlockNode, out: &mut Vec<&'a Table>) {
++            match block {
++                BlockNode::Root { children, .. } => {
++                    children.iter().for_each(|child| tables(child, out))
++                }
++                BlockNode::Table(table) => out.push(table),
++                _ => {}
++            }
++        }
++        let source = "<table>\n\n<tr>\n\n<td>Echo</td>\n\n<td>Foxtrot</td>\n\n</tr>\n\n</table>\n\nafter";
++        let mut cx = NodeContext::default();
++        let document = parse(source, &mut cx).unwrap();
++        assert_eq!(document.blocks.len(), 2, "table, then the paragraph");
++        let mut found = vec![];
++        tables(&document.blocks[0], &mut found);
++        assert_eq!(found.len(), 1);
++        assert_eq!(found[0].children.len(), 1);
++        let cells: Vec<_> = found[0].children[0]
++            .children
++            .iter()
++            .map(|cell| cell.children.text().to_string())
++            .collect();
++        assert_eq!(cells, ["Echo", "Foxtrot"]);
++        assert!(found[0].headerless, "no <th>, so no header row");
++        let BlockNode::Root { span, .. } = &document.blocks[0] else {
++            panic!("expected the joined table to be a root block");
++        };
++        let span = span.expect("the joined blocks keep a source span");
++        assert_eq!(&source[span.start..span.end], &source[..source.len() - "\n\nafter".len()]);
++    }
++
++    /// Markdown between the blocks of a `<div>` stays Markdown (CommonMark),
++    /// and a table that is never closed is left alone.
++    #[test]
++    fn test_only_open_tables_join_blocks() {
++        let mut cx = NodeContext::default();
++        let document = parse("<div>\n\n*em*\n\n</div>", &mut cx).unwrap();
++        assert_eq!(document.blocks.len(), 3);
++        let document = parse("<table>\n\n*em*", &mut cx).unwrap();
++        assert_eq!(document.blocks.len(), 2);
++    }
++
++    #[test]
++    fn test_inline_span_and_font_colour() {
++        let paragraph = first_paragraph(
++            "plain <span style=\"color:red\">red</span> <font color=\"#0000ff\">blue</font> **<span style=\"color: #0f0\">bold</span>**",
++        );
++        assert_eq!(mark_at(&paragraph, "plain").color, None);
++        assert_eq!(mark_at(&paragraph, "red").color, Some(gpui::rgb(0xff0000).into()));
++        assert_eq!(mark_at(&paragraph, "blue").color, Some(gpui::rgb(0x0000ff).into()));
++        let bold = mark_at(&paragraph, "bold");
++        assert!(bold.bold);
++        assert_eq!(bold.color, Some(gpui::rgb(0x00ff00).into()));
++    }
++
+     fn first_paragraph(source: &str) -> Paragraph {
+         let mut cx = NodeContext::default();
+         let document = parse(source, &mut cx).unwrap();
+diff --git a/crates/base/src/text/node.rs b/crates/base/src/text/node.rs
+index 65d0e6b6..dc1a715b 100644
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -416,6 +416,9 @@ pub struct TextMark {
+     ///
+     /// `None` means the text is not highlighted.
+     pub highlight: Option<Hsla>,
++    /// Foreground colour from `<span style="color:…">` or `<font color>`.
++    /// Rendering adjusts it to stay readable on the theme background.
++    pub color: Option<Hsla>,
+     pub link: Option<LinkMark>,
+ }
+ 
+@@ -451,6 +454,12 @@ impl TextMark {
+         self
+     }
+ 
++    /// Colour the text (`<span style="color:…">`, `<font color>`).
++    pub fn color(mut self, color: Hsla) -> Self {
++        self.color = Some(color);
++        self
++    }
++
+     pub fn link(mut self, link: impl Into<LinkMark>) -> Self {
+         self.link = Some(link.into());
+         self
+@@ -465,6 +474,9 @@ impl TextMark {
+         if other.highlight.is_some() {
+             self.highlight = other.highlight;
+         }
++        if other.color.is_some() {
++            self.color = other.color;
++        }
+         if let Some(link) = other.link {
+             self.link = Some(link);
+         }
+@@ -1002,6 +1014,10 @@ impl Paragraph {
+ pub(crate) struct Table {
+     pub(crate) children: Vec<TableRow>,
+     pub(crate) column_aligns: Vec<ColumnumnAlign>,
++    /// A raw HTML table without `<th>`/`<thead>`: no row is a header. The
++    /// default (Markdown tables, HTML tables with a header) treats row 0 as
++    /// the header.
++    pub(crate) headerless: bool,
+     pub(crate) span: Option<Span>,
+     /// The exact source bytes the table was parsed from (its `span`).
+     pub(crate) source: Option<SharedString>,
+@@ -1066,6 +1082,11 @@ pub struct TableData {
+ }
+ 
+ impl Table {
++    /// Whether row `row_ix` is drawn (and measured, and exported) as the header.
++    pub(crate) fn is_header_row(&self, row_ix: usize) -> bool {
++        row_ix == 0 && !self.headerless
++    }
++
+     pub(crate) fn column_align(&self, index: usize) -> ColumnumnAlign {
+         self.column_aligns.get(index).copied().unwrap_or_default()
+     }
+@@ -1780,6 +1801,53 @@ impl PartialEq for NodeContext {
+     }
+ }
+ 
++fn relative_luminance(color: Hsla) -> f32 {
++    let rgba = gpui::Rgba::from(color);
++    let channel = |c: f32| {
++        if c <= 0.03928 {
++            c / 12.92
++        } else {
++            ((c + 0.055) / 1.055).powf(2.4)
++        }
++    };
++    0.2126 * channel(rgba.r) + 0.7152 * channel(rgba.g) + 0.0722 * channel(rgba.b)
++}
++
++fn contrast_ratio(a: f32, b: f32) -> f32 {
++    let (hi, lo) = if a >= b { (a, b) } else { (b, a) };
++    (hi + 0.05) / (lo + 0.05)
++}
++
++/// An author's text colour, kept readable: the page background is inferred
++/// from the theme's text colour (dark text means a light page and the other
++/// way round), and a colour with too little contrast against it (`yellow` on
++/// white, `black` on a dark theme) is blended toward the theme text colour
++/// until it clears a contrast ratio of 3.
++pub(crate) fn readable_color(color: Hsla, foreground: Hsla) -> Hsla {
++    const MIN_CONTRAST: f32 = 3.0;
++    let foreground_luminance = relative_luminance(foreground);
++    let background = if foreground_luminance > 0.4 { 0.0 } else { 1.0 };
++    if contrast_ratio(relative_luminance(color), background) >= MIN_CONTRAST {
++        return color;
++    }
++    let from = gpui::Rgba::from(color);
++    let to = gpui::Rgba::from(foreground);
++    for step in 1..=10 {
++        let t = step as f32 / 10.0;
++        let blended = gpui::Rgba {
++            r: from.r + (to.r - from.r) * t,
++            g: from.g + (to.g - from.g) * t,
++            b: from.b + (to.b - from.b) * t,
++            a: from.a,
++        };
++        let blended = Hsla::from(blended);
++        if contrast_ratio(relative_luminance(blended), background) >= MIN_CONTRAST {
++            return blended;
++        }
++    }
++    foreground
++}
++
+ /// The highlight a text mark renders with. The link decoration is applied by
+ /// the caller, which also has to record the link range.
+ fn mark_highlight(mark: &TextMark, node_cx: &NodeContext) -> InlineHighlight {
+@@ -1813,6 +1881,9 @@ fn mark_highlight(mark: &TextMark, node_cx: &NodeContext) -> InlineHighlight {
+         highlight = highlight.highlight(node_cx.style.inline_code_highlight());
+         font_family = node_cx.style.inline_code_font_family().cloned();
+     }
++    if let Some(color) = mark.color {
++        highlight.color = Some(readable_color(color, node_cx.style.foreground()));
++    }
+     if let Some(color) = mark.highlight {
+         let themed = node_cx.style.decorations().highlight;
+         highlight.background_color = Some(match themed {
+@@ -2146,7 +2217,7 @@ fn measure_table_widths(
+     let mut col_w = vec![0.0_f32; col_count];
+     for (row_ix, row) in table.children.iter().enumerate() {
+         let mut text_style = window.text_style();
+-        if row_ix == 0 {
++        if table.is_header_row(row_ix) {
+             text_style.refine(&node_cx.style.table_head().text);
+         }
+         text_style.refine(&node_cx.style.table_cell().text);
+@@ -2702,7 +2773,7 @@ impl BlockNode {
+                     // The first row is the header, as everywhere else that
+                     // reads a table (`table_data`, `to_markdown`). The
+                     // refinement comes last so it can override the defaults.
+-                    .when(row_ix == 0, |this| {
++                    .when(table.is_header_row(row_ix), |this| {
+                         this.bg(style.code_background())
+                             .text_color(style.foreground())
+                             .refine_style(&style.table_head())
+@@ -2939,7 +3010,7 @@ impl BlockNode {
+                     // The first row is the header, as everywhere else that
+                     // reads a table (`table_data`, `to_markdown`). The
+                     // refinement comes last so it can override the defaults.
+-                    .when(row_ix == 0, |this| {
++                    .when(table.is_header_row(row_ix), |this| {
+                         this.bg(style.code_background())
+                             .text_color(style.foreground())
+                             .refine_style(&style.table_head())
+@@ -3308,6 +3379,7 @@ mod tests {
+             span: None,
+             source: None,
+             frame_cache: Default::default(),
++            headerless: false,
+         };
+         let node_cx = NodeContext {
+             style: TextViewStyle::default().with_inline_code_font_family(Some(MONO.into())),
+@@ -3706,6 +3778,7 @@ mod tests {
+             span: None,
+             source: None,
+             frame_cache: Default::default(),
++            headerless: false,
+         };
+         let block = BlockNode::Table(table);
+         assert_eq!(
+@@ -3733,6 +3806,7 @@ mod tests {
+             span: None,
+             source: None,
+             frame_cache: Default::default(),
++            headerless: false,
+         }
+     }
+ 
+diff --git a/crates/base/src/text/render_model.rs b/crates/base/src/text/render_model.rs
+index 7e559eec..8c0c32ba 100644
+--- a/crates/base/src/text/render_model.rs
++++ b/crates/base/src/text/render_model.rs
+@@ -124,11 +124,15 @@ fn write_block(out: &mut String, block: &BlockNode, cx: &NodeContext, tight: boo
+         }
+         BlockNode::Table(table) => {
+             out.push_str("<table>\n");
++            // A header table has `<thead>` and `<tbody>`; one without a
++            // header is plain rows, as the HTML it came from writes it.
++            let first_body = if table.headerless { usize::MAX } else { 1 };
+             for (row_ix, row) in table.children.iter().enumerate() {
+-                let cell = if row_ix == 0 { "th" } else { "td" };
+-                if row_ix == 0 {
++                let header = table.is_header_row(row_ix);
++                let cell = if header { "th" } else { "td" };
++                if header {
+                     out.push_str("<thead>\n");
+-                } else if row_ix == 1 {
++                } else if row_ix == first_body {
+                     out.push_str("<tbody>\n");
+                 }
+                 out.push_str("<tr>\n");
+@@ -143,11 +147,11 @@ fn write_block(out: &mut String, block: &BlockNode, cx: &NodeContext, tight: boo
+                     out.push_str(&format!("</{cell}>\n"));
+                 }
+                 out.push_str("</tr>\n");
+-                if row_ix == 0 {
++                if header {
+                     out.push_str("</thead>\n");
+                 }
+             }
+-            if table.children.len() > 1 {
++            if !table.headerless && table.children.len() > 1 {
+                 out.push_str("</tbody>\n");
+             }
+             out.push_str("</table>\n");

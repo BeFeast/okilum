@@ -1,0 +1,92 @@
+# C7/C8 + span colour (markdown conformance 2026-11-24): raw HTML blocks.
+# - `<table>` without `<th>`/`<thead>` has no header row: the first row is not
+#   drawn on the header background (#f6f7f8 in the light theme).
+# - A table with blank lines inside is one table: Echo and Foxtrot share a row.
+# - `<pre>` is a code block, newlines and indentation exactly as written, with
+#   or without `<code>`.
+# - `<span style="color:red">` and `<font color>` colour the text.
+appearance: light
+note: |
+  # HTML blocks
+
+  Plain <span style="color:red">Crimson</span> and <font color="#0000ff">Cobalt</font> text end
+
+  <table>
+  <tr><td>Alpha</td><td>Bravo</td></tr>
+  <tr><td>Charlie</td><td>Delta</td></tr>
+  </table>
+
+  <table>
+
+  <tr>
+
+  <td>Echo</td>
+
+  <td>Foxtrot</td>
+
+  </tr>
+
+  </table>
+
+  <pre>
+  one
+          two
+  </pre>
+
+  <pre><code>
+  kilo
+          lima
+                  mike
+  </code></pre>
+region: [300, 60, 800, 700]
+ready_text: Plain
+steps:
+  - id: span-colour
+    text: Plain Crimson and Cobalt text end
+    pixels:
+      region: [398, 192, 68, 24]
+      expression: 'r>0.8 && g<0.3 && b<0.3 ? 1 : 0'
+      min: 10
+      max: 5000
+  - id: font-colour
+    text: Cobalt
+    pixels:
+      region: [495, 192, 55, 24]
+      expression: 'b>0.8 && r<0.3 && g<0.3 ? 1 : 0'
+      min: 10
+      max: 5000
+  - id: table-first-row-not-header
+    text: Alpha Bravo
+    # The first row of `<table><tr><td>` is a body row: no header background
+    # to the right of "Alpha" (it was #f6f7f8, r 0.965 / b 0.973).
+    pixels:
+      region: [440, 231, 250, 25]
+      expression: 'r>0.955 && r<0.985 && b>=r ? 1 : 0'
+      min: 0
+      max: 50
+  - id: table-blank-lines-one-grid
+    text: Echo
+    layout:
+      # Cells of one row: level, and side by side.
+      - {a: Echo, b: Foxtrot, min: -6, max: 6}
+      - {a: Echo, b: Foxtrot, axis: x, min: 20}
+  - id: pre-without-code
+    text: two
+    # `<pre>` alone is a code block too: on the code background (#f6f7f8),
+    # in the code font, indentation kept.
+    pixels:
+      region: [560, 362, 380, 40]
+      expression: 'r>0.955 && r<0.985 && b>=r ? 1 : 0'
+      min: 10000
+      max: 15500
+    layout:
+      - {a: one, b: two, min: 15}
+      - {a: one, b: two, axis: x, min: 20}
+  - id: pre-code-block
+    text: kilo
+    layout:
+      # Three lines, each below the last and indented 8 more columns.
+      - {a: kilo, b: Lima, min: 15}
+      - {a: Lima, b: mike, min: 15}
+      - {a: kilo, b: Lima, axis: x, min: 15}
+      - {a: Lima, b: mike, axis: x, min: 15}
