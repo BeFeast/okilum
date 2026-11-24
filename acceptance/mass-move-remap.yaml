@@ -1,4 +1,5 @@
-# A saved Brain session follows the sealed map to Grove. A live bulk rename follows.
+# A saved Brain session and a pin inside an opaque tree follow the map to Grove.
+# A live bulk rename follows.
 vault: tests/fixtures/mass-move-remap
 open: Legacy/Bundle/Anchor.md
 appearance: light
@@ -9,7 +10,7 @@ rig:
 sidebar_state:
   now_enabled: false
   recent: [[Legacy/Recent beacon.md, 1795478400], [Legacy/Retired.md, 1795478000]]
-  pinned: [Legacy/Pinned beacon.md]
+  pinned: [Legacy/Pinned beacon.md, Obsidian Vaults/Nested Vault/Nested beacon.md]
   recent_projects: [Legacy/Bundle]
   nav_all_vault: [Legacy/Bundle]
 generate:
@@ -38,6 +39,12 @@ generate:
       # Recent beacon
 
       Recent destination body
+  - path: Obsidian Vaults/Nested Vault/Nested beacon.md
+    kind: text
+    text: |
+      # Nested beacon
+
+      Nested destination body
   - path: Legacy/Bundle/@index.md
     kind: text
     text: '# Cutover project'
@@ -71,6 +78,8 @@ steps:
     restart: true
     cutover:
       retired: [Legacy/Retired.md]
+      keep-nested:
+        Obsidian Vaults/Nested Vault: vaults/Nested Vault
       paths:
         Legacy/Bundle/Anchor.md: state/dev/cutover/Anchor.md
         Legacy/Bundle/chart.png: state/dev/cutover/chart.png
@@ -109,6 +118,15 @@ steps:
     keys: [Return]
     text: Recent destination body
   - id: pinned-list
+    click: [207, 20]
+    region: [95, 25, 400, 230]
+    text: Pinned beacon
+    text_order: [Pinned beacon, Nested beacon]
+    text_absent: moved
+  - id: nested-bookmark-open
+    keys: [Down, Return]
+    text_order: [vaults, Nested destination body]
+  - id: reopen-pinned-list
     click: [207, 20]
     region: [95, 25, 400, 230]
     text: Pinned beacon

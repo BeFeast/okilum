@@ -320,7 +320,7 @@ fn history(
                     reader_path_moves::Cutover::from_archive(&root, &roots).and_then(|cutover| {
                         let old = reader_history::ReadingHistory::last_document(&directory, &root)
                             .ok()??;
-                        let target = cutover.target(&old)?.to_owned();
+                        let target = cutover.target(&old)?;
                         Some((cutover.grove, target))
                     });
                 match mapped {
@@ -373,7 +373,7 @@ fn restorable_windows(
                     .get(&root)
                     .and_then(|cutover| Some((cutover, cutover.target(note.as_deref()?)?)))
                 {
-                    return ((cutover.grove.clone(), Some(target.to_owned())), false);
+                    return ((cutover.grove.clone(), Some(target)), false);
                 }
             }
             let note = note.and_then(|note| {

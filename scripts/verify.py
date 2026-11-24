@@ -159,17 +159,20 @@ def numbered_paths(spec):
     return [spec['path'].format(i=i) for i in range(spec['count'])]
 
 
-def move_vault_fixture(vault, spec):
+def move_vault_fixture(vault, spec, directories=None):
     """Move files and apply the caller's fixture link rewrites."""
     moves = dict(spec.get('paths', {}))
     for batch in spec.get('numbered', ()):
         sources = numbered_paths({'path': batch['from'], 'count': batch['count']})
         targets = numbered_paths({'path': batch['to'], 'count': batch['count']})
         moves.update(zip(sources, targets, strict=True))
+    directories = directories or {}
+    moves.update(directories)
     for source, target in moves.items():
         before, after = (vault / source).resolve(), (vault / target).resolve()
         require(before.is_relative_to(vault) and after.is_relative_to(vault)
-                and before.is_file() and not after.exists(), f'Invalid move: {source} → {target}')
+                and (before.is_dir() if source in directories else before.is_file())
+                and not after.exists(), f'Invalid move: {source} → {target}')
         after.parent.mkdir(parents=True, exist_ok=True)
         before.rename(after)
     for rewrite in spec.get('rewrite', ()):
@@ -178,12 +181,17 @@ def move_vault_fixture(vault, spec):
 
 
 def cutover_fixture(archive, spec):
-    """Publish a synthetic sealed Grove copy and mark the retained Brain archive."""
+    """Publish a synthetic Grove copy and mark the retained Brain archive."""
     grove = archive.parent / 'grove'
     shutil.copytree(archive, grove)
-    moves = move_vault_fixture(grove, spec)
+    opaque = {
+        old: (action, new)
+        for action in ('keep-nested', 'keep-unit')
+        for old, new in spec.get(action, {}).items()
+    }
+    moves = move_vault_fixture(grove, spec, {old: new for old, (_, new) in opaque.items()})
     grove_id = '550e8400-e29b-41d4-a716-446655440000'
-    archive_id = '550e8400-e29b-41d4-a716-446655440001'
+    archive_id = 'cc480ea3-0b98-4783-960f-3a64fa4c274c'
     for vault, identity, lifecycle in (
         (grove, grove_id, {'state': 'active'}),
         (archive, archive_id, {
@@ -210,13 +218,14 @@ def cutover_fixture(archive, spec):
     create_vault_text(grove, {
         'path': '@views/path-map.jsonl',
         'source': ''.join(json.dumps({
-            'old_path': old, 'new_path': new, 'action': 'move' if new else 'retire',
+            'old_path': old, 'new_path': new,
+            'action': opaque[old][0] if old in opaque else ('move' if new else 'retire'),
             'rule': 'fixture', 'reason': '', 'aliases': [],
         }) + '\n' for old, new in moves.items()),
     })
     create_vault_text(grove, {
         'path': '@views/path-map.md',
-        'source': '# Migration map\n\n[Sealed map](path-map.jsonl)\n',
+        'source': '# Migration map\n\n[Path map](path-map.jsonl)\n',
     })
     create_vault_text(archive, {'path': '.brain-read-only', 'source': 'Archived'})
     for directory, _, files in os.walk(archive, topdown=False):

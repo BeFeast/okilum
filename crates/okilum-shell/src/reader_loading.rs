@@ -187,7 +187,7 @@ fn prepare_first_with_ui_notes(
                         .ok()
                         .flatten()
                 })?;
-                cutover.target(&note).map(str::to_owned)
+                cutover.target(&note)
             });
         moves = Some(plan);
         Ok(document)
