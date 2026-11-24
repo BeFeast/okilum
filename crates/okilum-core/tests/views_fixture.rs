@@ -18,6 +18,10 @@ fn root() -> PathBuf {
 fn files(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(dir).unwrap() {
         let path = entry.unwrap().path();
+        if path == root().join("@Schema/domain-template-vault") {
+            // This separate vault is exercised by the domain-template scenario and CLI test.
+            continue;
+        }
         if path.is_dir() {
             files(&path, out);
         } else {

@@ -188,3 +188,80 @@ fn view_cli_and_mcp_leave_the_fixture_vault_unchanged() {
     assert_eq!(replies[4]["result"]["isError"], true);
     assert_eq!(tree_hash(&vault), before);
 }
+
+#[test]
+fn domain_instance_renders_a_gardener_snapshot_with_the_same_sections_as_the_template() {
+    let vault = Path::new(FIXTURES).join("views/@Schema/domain-template-vault");
+    let before = tree_hash(&vault);
+    let render = |args: &[&str]| {
+        let output = cli(&vault, args);
+        assert!(output.status.success(), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let instance = render(&["@views/domain-health.md", "--as-of", AS_OF]);
+    let direct = render(&[
+        "@views/domain.md",
+        "--arg",
+        "domain=health",
+        "--as-of",
+        AS_OF,
+    ]);
+
+    assert_eq!(instance["view_api"], 0);
+    assert_eq!(instance["view"]["path"], "@views/domain-health.md");
+    assert_eq!(instance["view"]["extends"], "@views/domain.md");
+    assert_eq!(instance["params"]["domain"], "Health");
+    assert_eq!(instance["sections"], direct["sections"]);
+
+    let sections = instance["sections"].as_array().unwrap();
+    assert_eq!(sections.len(), 5);
+    for (section, (id, column, expected)) in sections.iter().zip([
+        (
+            "contexts",
+            "title",
+            vec!["Sleep tracking", "Mobility routine"],
+        ),
+        (
+            "recent_log",
+            "title",
+            vec!["Bedtime window", "Sleep review", "Tracking handover"],
+        ),
+        (
+            "open_tasks",
+            "text",
+            vec!["Make a stretching plan", "Review sleep data"],
+        ),
+        ("inbox", "title", vec!["Evening routine idea"]),
+        ("sources", "title", vec!["Circadian light"]),
+    ]) {
+        assert_eq!(section["id"], id);
+        assert_eq!(section["status"], "ok", "{section}");
+        let titles = section["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["fields"][column].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(titles, expected);
+    }
+    assert_eq!(sections[0]["groups"][0]["key"], json!(["active"]));
+    assert_eq!(sections[0]["groups"][1]["key"], json!(["parked"]));
+
+    let scoped = render(&[
+        "@views/domain.md",
+        "--arg",
+        "domain=Health",
+        "--arg",
+        "context=mobility",
+        "--as-of",
+        AS_OF,
+    ]);
+    let scoped = scoped["sections"].as_array().unwrap();
+    assert_eq!(scoped[0]["rows"][0]["fields"]["title"], "Mobility routine");
+    assert_eq!(scoped[0]["total"], 1);
+    assert_eq!(scoped[1]["total"], 0);
+    assert_eq!(scoped[2]["total"], 1);
+    assert_eq!(scoped[3], sections[3]);
+    assert_eq!(scoped[4], sections[4]);
+    assert_eq!(tree_hash(&vault), before);
+}

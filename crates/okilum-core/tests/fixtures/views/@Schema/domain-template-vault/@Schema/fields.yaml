@@ -1,0 +1,22 @@
+version: 1-draft
+timezone: Asia/Jerusalem
+fields:
+  area: {type: enum, values: [Health]}
+  context: {type: string, format: slug}
+  layer: {type: enum, values: [inbox, state, log, sources]}
+  kind: {type: enum, values: [project, area, decisions, reports, handovers]}
+  status: {type: enum, values: [active, parked, done]}
+  tags: {type: "list<string>"}
+  date: {type: date}
+  updated: {type: date}
+  title: {type: string}
+  channel: {type: enum, values: [web]}
+task_fields:
+  checked: {type: bool}
+  text: {type: string}
+  due: {type: date}
+  priority: {type: number}
+scope: {include: "**/*.md", exclude: []}
+path_projection: {templates_from: "layout.yaml#layers"}
+builtins: {}
+section_fields: {}

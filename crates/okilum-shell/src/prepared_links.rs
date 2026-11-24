@@ -397,6 +397,11 @@ impl Reader {
             Some(Landing::Line(line)) => Some(*line),
             _ => None,
         };
+        let domain_view = rel == okilum_core::view::builtin::DOMAIN_PATH
+            && (request.view.is_some()
+                || request
+                    .history_index
+                    .is_some_and(|index| self.pane.navigation.history_views.contains_key(&index)));
         let quiet = matches!(landing, Some(Landing::Top | Landing::Place(_)));
         let started = std::time::Instant::now();
         self.open_started = Some(started);
@@ -440,6 +445,14 @@ impl Reader {
                 .spawn(async move {
                     let worker_started = std::time::Instant::now();
                     let prepare = || {
+                        if domain_view {
+                            let source = okilum_core::view::builtin::domain_source(&vault.root)
+                                .map_err(anyhow::Error::msg)?;
+                            let document = okilum_core::render::reader_document_from_source(
+                                &vault, &rel, &source,
+                            );
+                            return Ok((document.into(), None));
+                        }
                         #[cfg(target_os = "macos")]
                         reader_icloud::materialize(&vault.root.join(&rel), || {
                             cloud_send.send_blocking(()).map_err(|_| anyhow::anyhow!("Opening cancelled"))

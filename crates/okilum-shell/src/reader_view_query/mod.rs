@@ -76,6 +76,11 @@ impl Content {
 }
 
 impl Reader {
+    pub(super) fn is_bound_domain_view(&self) -> bool {
+        self.pane.current_rel == view::builtin::DOMAIN_PATH
+            && self.pane.navigation.view_bindings().is_some()
+    }
+
     pub(super) fn publish_view_query(&mut self, index: Index, cx: &App) {
         let retired = self.view_query_index.replace(index);
         self.view_query_generation = self.view_query_generation.wrapping_add(1);

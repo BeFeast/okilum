@@ -68,23 +68,22 @@ fn build_tree(
     let template = section
         .resolve_node_view(vault, definition.path())
         .and_then(|path| {
-            path.map(|path| {
-                let text = projection
-                    .note(&path)
+            let path = path.as_deref().unwrap_or(view::builtin::DOMAIN_PATH);
+            let text = if path == view::builtin::DOMAIN_PATH {
+                view::builtin::domain_source(&vault.root)?
+            } else {
+                projection
+                    .note(path)
                     .filter(|_| path.starts_with("@views/"))
-                    .and_then(|_| source(&path))
-                    .ok_or_else(|| format!("Node view '{path}' must be a view under @views/"))?;
-                view::parse(&path, &text).map_err(|findings| findings[0].message.clone())
-            })
-            .transpose()
+                    .and_then(|_| source(path))
+                    .ok_or_else(|| format!("Node view '{path}' must be a view under @views/"))?
+                    .into()
+            };
+            view::parse(path, &text).map_err(|findings| findings[0].message.clone())
         });
     let mut tree = Tree {
         rows: Vec::new(),
-        template: template
-            .as_ref()
-            .ok()
-            .and_then(Option::as_ref)
-            .map(|doc| doc.path().to_owned()),
+        template: template.as_ref().ok().map(|doc| doc.path().to_owned()),
         notice: template.as_ref().err().cloned().or_else(|| {
             section
                 .truncated
@@ -96,7 +95,7 @@ fn build_tree(
         nodes,
         section,
         definition.path(),
-        template.as_ref().ok().and_then(Option::as_ref),
+        template.as_ref().ok(),
         &mut Vec::new(),
     );
     Ok(tree)
@@ -114,11 +113,18 @@ fn append_rows(
         let depth = branch.len();
         branch.push((node.field.clone(), node.value.clone()));
         let key = serde_json::to_string(&(source, &branch)).expect("serializable Areas branch");
-        let bindings = template.map(|template| reader_view_query::Bindings {
-            key: key.clone(),
-            label: node.label.clone(),
-            args: template.node_args(branch),
-        });
+        let bindings = template
+            .filter(|template| {
+                template.path() != view::builtin::DOMAIN_PATH
+                    || branch
+                        .iter()
+                        .any(|(field, value)| field == "area" && !value.is_null())
+            })
+            .map(|template| reader_view_query::Bindings {
+                key: key.clone(),
+                label: node.label.clone(),
+                args: template.node_args(branch),
+            });
         let index = rows.len();
         rows.push(Row {
             label: node.label.clone(),

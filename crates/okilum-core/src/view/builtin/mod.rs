@@ -1,4 +1,4 @@
-//! Shipped declarative views for the project workspace.
+//! Shipped declarative views and their vault overrides.
 use super::{parse, run, Finding, RunContext, Section, Show, Status};
 use crate::{
     agent_imports::{Failure, RootedSource, Source as _},
@@ -6,10 +6,29 @@ use crate::{
     Vault,
 };
 use std::{
+    borrow::Cow,
     collections::BTreeMap,
     path::Path,
     sync::{Arc, OnceLock},
 };
+
+pub const DOMAIN_PATH: &str = "@views/domain.md";
+const DOMAIN_SOURCE: &str = include_str!("domain.md");
+
+/// The canonical template is available without installing a file in the vault.
+pub fn domain_source(root: &Path) -> Result<Cow<'static, str>, String> {
+    Ok(match read_override(root, DOMAIN_PATH)? {
+        Some(source) => Cow::Owned(source),
+        None => Cow::Borrowed(DOMAIN_SOURCE),
+    })
+}
+
+pub(super) fn is_domain_reference(target: &str) -> bool {
+    matches!(
+        super::parse::wikilink(target).unwrap_or(target),
+        "@views/domain" | DOMAIN_PATH
+    )
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProjectKind {

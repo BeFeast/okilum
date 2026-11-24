@@ -169,7 +169,8 @@ impl Reader {
     /// Inventory reconciliation of the note on screen. Looks at the note's own
     /// place and records whether it went away or came back. Returns true when
     /// the displayed document must be kept as it is: its file is gone, or came
-    /// back different and the person has not chosen to reload it.
+    /// back different and the person has not chosen to reload it. Bound domain
+    /// views also keep their prepared template until the next Areas navigation.
     pub(super) fn track_deleted_note(
         &mut self,
         sources: &std::collections::HashMap<String, String>,
@@ -177,6 +178,9 @@ impl Reader {
     ) -> bool {
         if self.pane.deleted_note.is_some() && self.deleted_current().is_none() {
             self.pane.deleted_note = None;
+        }
+        if self.is_bound_domain_view() && self.pane.editing.is_none() {
+            return true;
         }
         if self.pane.current_rel.is_empty()
             || self.pane.file_preview.is_some()
@@ -216,6 +220,9 @@ impl Reader {
         cx: &mut Context<Self>,
     ) -> bool {
         let editing = self.pane.editing.is_some();
+        if self.is_bound_domain_view() && !editing {
+            return true;
+        }
         let retained = self.source_text(cx);
         let mut returned = false;
         let held = match (on_disk, self.pane.deleted_note.as_mut()) {

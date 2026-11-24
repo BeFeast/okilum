@@ -69,6 +69,10 @@ fn checked_path(path: &str) -> Result<PathBuf> {
 
 fn load_doc(root: &RootedSource, path: &Path) -> Result<Result<ViewDoc, Vec<Finding>>> {
     let path = note_path(path);
+    if path == view::builtin::DOMAIN_PATH {
+        let source = view::builtin::domain_source(root.root()).map_err(anyhow::Error::msg)?;
+        return Ok(view::parse(&path, &source));
+    }
     let source = root
         .read(&root.root().join(&path), usize::MAX - 1)
         .map_err(|error| anyhow::anyhow!("cannot read view '{path}': {error:?}"))?;
@@ -182,7 +186,11 @@ fn validation_paths(root: &Path, target: &Path) -> Result<Vec<PathBuf>> {
 pub fn validate(root: &Path, path: &str, include_coverage: bool) -> Result<Validation> {
     let target = checked_path(path)?;
     let root = open_root(root)?;
-    let paths = validation_paths(root.root(), &target)?;
+    let paths = if target == Path::new(view::builtin::DOMAIN_PATH) {
+        vec![target]
+    } else {
+        validation_paths(root.root(), &target)?
+    };
     let schema = Arc::new(FieldSchema::load(root.root())?);
     let publication = include_coverage
         .then(|| Publication::open(root.root(), schema.clone()))

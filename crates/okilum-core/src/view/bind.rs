@@ -522,6 +522,16 @@ fn compile_predicate(
                 .map(|value| value.unwrap_or_else(|| Value::String(authored.text.clone())))
         }
         .map_err(|error| fail(i, error))?;
+        let value = match value {
+            Value::String(text)
+                if exact
+                    && !block.jsonl()
+                    && matches!(predicate.field.as_str(), "tags" | "note.tags") =>
+            {
+                Value::String(text.to_lowercase())
+            }
+            value => value,
+        };
         values.push(value);
     }
     if unbound {

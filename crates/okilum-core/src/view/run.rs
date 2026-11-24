@@ -1,5 +1,6 @@
 use super::{
     bind::{self, Clock, Params},
+    builtin,
     compute::Computations,
     parse::{
         self, Action, ActionMapping, Block, Check, Open, OpenAction, Part, SectionDoc, Show,
@@ -159,7 +160,13 @@ impl Section {
     pub fn resolve_node_view(&self, vault: &Vault, from: &str) -> Result<Option<String>, String> {
         self.node_view
             .as_deref()
-            .map(|target| resolve(vault, from, target))
+            .map(|target| {
+                if builtin::is_domain_reference(target) {
+                    Ok(builtin::DOMAIN_PATH.to_owned())
+                } else {
+                    resolve(vault, from, target)
+                }
+            })
             .transpose()
     }
 }
@@ -235,6 +242,34 @@ impl Runner<'_, '_> {
         } else {
             self.read(path, usize::MAX - 1)
         }
+    }
+
+    fn template(
+        &self,
+        doc: &ViewDoc,
+        target: &str,
+    ) -> Result<Result<ViewDoc, Vec<Finding>>, String> {
+        let domain = builtin::is_domain_reference(target);
+        let path = if domain {
+            builtin::DOMAIN_PATH.to_owned()
+        } else {
+            self.resolve(doc, target)?
+        };
+        if !path.starts_with("@views/") || self.ctx.projection.schema().excludes(&path) {
+            return Err(format!("Template '{path}' must be a view under @views/"));
+        }
+        let source = if !domain {
+            self.source(&path)?.into()
+        } else if let Some(source) = self.ctx.read_source.and_then(|read| read(&path)) {
+            source.into()
+        } else {
+            let source = builtin::domain_source(&self.ctx.vault.root)?;
+            if self.ctx.read_source.is_some() && matches!(&source, std::borrow::Cow::Owned(_)) {
+                return Err(format!("Source '{path}' is unavailable in the publication"));
+            }
+            source
+        };
+        Ok(parse::parse(&path, &source))
     }
 
     fn searcher(&self) -> Result<&Searcher, String> {
@@ -1026,14 +1061,7 @@ fn execute(doc: &ViewDoc, runner: &mut Runner<'_, '_>) -> ViewResult {
         heading_labels: BTreeMap::new(),
     };
     let template = if let Some(target) = &doc.front.extends {
-        let template = runner.resolve(doc, target).and_then(|path| {
-            if !path.starts_with("@views/") || schema.excludes(&path) {
-                return Err(format!("Template '{path}' must be a view under @views/"));
-            }
-            let source = runner.source(&path)?;
-            Ok(parse::parse(&path, &source))
-        });
-        match template {
+        match runner.template(doc, target) {
             Ok(Ok(template)) if template.front.extends.is_none() => Some(template),
             Ok(Err(findings)) => {
                 result.findings.extend(findings);

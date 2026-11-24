@@ -1,0 +1,58 @@
+# Open Health from Areas, then create the vault override and reopen Health.
+vault: crates/okilum-core/tests/fixtures/views/@Schema/domain-template-vault
+note: '# Workspace entry'
+appearance: light
+preferences:
+  note_open_mode: read
+rig:
+  persistent_pointer: true
+region: [265, 92, 825, 650]
+ready_text: Workspace entry
+steps:
+  - id: areas-ready
+    wait: 2
+    region: [10, 92, 205, 35]
+    text: Areas
+  - id: areas
+    click: [159, 110]
+    region: [0, 132, 250, 125]
+    text: Health
+  - id: builtin
+    click: [53, 144]
+    text_order:
+      - Health
+      - Projects and contexts
+      - Sleep tracking
+      - Recent decisions
+      - Open tasks
+      - Review sleep data
+      - Inbox
+      - Evening routine idea
+      - Sources
+      - Circadian light
+    text_absent: Section error
+  - id: no-deletion-notice
+    region: [900, 45, 453, 93]
+    text_absent: deleted from disk
+  - id: install-override
+    vault_create:
+      path: '@views/domain.md'
+      source: |
+        ---
+        type: view
+        params: {domain: area}
+        ---
+        # $domain
+
+        ## Health review
+        ```view
+        from: notes
+        where: area = $domain and layer = state and kind = project
+        show: list
+        cols: [title]
+        ```
+    wait: 2
+  - id: override
+    click: [53, 144]
+    text_order: [Health review, Sleep tracking]
+    text_absent: Projects and contexts

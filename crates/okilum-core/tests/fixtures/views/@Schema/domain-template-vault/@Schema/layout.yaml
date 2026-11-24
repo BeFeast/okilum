@@ -1,0 +1,9 @@
+layers:
+  inbox: "inbox/{rest}"
+  state: "state/{domain}/{context}/{rest}"
+  log: "log/{domain}/{context}/{kind}/{date}-{slug}.md"
+  sources: "sources/{channel}/{yyyy}/{mm}/{dd}/{rest}"
+domains:
+  - {area: Health, dir: health}
+kinds: [decisions, reports, handovers]
+channels: [web]
