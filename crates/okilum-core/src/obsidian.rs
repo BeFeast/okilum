@@ -61,11 +61,11 @@ fn is_prose(prose: &[Range<usize>], at: usize) -> bool {
     prose.get(i).is_some_and(|r| r.contains(&at))
 }
 
-/// Remove `%%…%%` comments outside code. Markers pair in order; a trailing
-/// unpaired marker is left as text.
-pub fn strip_comments(text: &str) -> String {
+/// Byte ranges of paired `%%…%%` Obsidian comments outside code (inclusive of
+/// both `%%` markers). An unpaired trailing marker is not a comment.
+pub(crate) fn comment_spans(text: &str) -> Vec<Range<usize>> {
     if !text.contains("%%") {
-        return text.to_string();
+        return Vec::new();
     }
     let prose = prose_spans(text);
     let mut marks = Vec::new();
@@ -79,10 +79,25 @@ pub fn strip_comments(text: &str) -> String {
             i = at + 1;
         }
     }
+    marks
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| pair[0]..pair[1] + 2)
+        .collect()
+}
+
+/// Remove `%%…%%` comments outside code. Markers pair in order; a trailing
+/// unpaired marker is left as text.
+pub fn strip_comments(text: &str) -> String {
+    let spans = comment_spans(text);
+    if spans.is_empty() {
+        return text.to_string();
+    }
     let mut out = String::with_capacity(text.len());
     let mut pos = 0;
-    for pair in marks.as_chunks::<2>().0 {
-        let (mut start, mut end) = (pair[0], pair[1] + 2);
+    for span in spans {
+        let (mut start, mut end) = (span.start, span.end);
         let line_start = text[..start].rfind('\n').map_or(0, |n| n + 1);
         let line_end = text[end..].find('\n').map_or(text.len(), |n| end + n + 1);
         if line_start >= pos

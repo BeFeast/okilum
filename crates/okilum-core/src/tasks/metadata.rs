@@ -40,10 +40,17 @@ static MARKER: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Byte ranges on 1-based `line` inside `root` that contain non-plain-text
-/// Markdown syntax (code spans, links, wikilinks, images, inline HTML, math).
-/// Shared between task projection and task editing so reader and writer agree.
-pub(crate) fn protected_spans<'a>(root: &'a AstNode<'a>, line: usize) -> Vec<Range<usize>> {
-    root.descendants()
+/// Markdown or Obsidian comment syntax (code spans, links, wikilinks, images,
+/// inline HTML, math, and `%%…%%` comments). Shared between task projection
+/// and task editing so reader and writer agree.
+pub(crate) fn protected_spans<'a>(
+    root: &'a AstNode<'a>,
+    line: usize,
+    line_range: Range<usize>,
+    comments: &[Range<usize>],
+) -> Vec<Range<usize>> {
+    let mut spans: Vec<Range<usize>> = root
+        .descendants()
         .filter_map(|node| {
             let data = node.data.borrow();
             let pos = data.sourcepos;
@@ -74,10 +81,30 @@ pub(crate) fn protected_spans<'a>(root: &'a AstNode<'a>, line: usize) -> Vec<Ran
                 None
             }
         })
-        .collect()
+        .collect();
+    for comment in comments {
+        if comment.end <= line_range.start || comment.start >= line_range.end {
+            continue;
+        }
+        let start = comment.start.saturating_sub(line_range.start);
+        let end = if comment.end > line_range.end {
+            usize::MAX
+        } else {
+            comment.end - line_range.start
+        };
+        spans.push(start..end);
+    }
+    spans
 }
 
-pub(super) fn parse<'a>(item: &'a AstNode<'a>, text: &str, offset: usize, line: usize) -> Metadata {
+pub(super) fn parse<'a>(
+    item: &'a AstNode<'a>,
+    text: &str,
+    offset: usize,
+    line: usize,
+    line_range: Range<usize>,
+    comments: &[Range<usize>],
+) -> Metadata {
     let mut meta = Metadata::default();
     let mut markers = MARKER.captures_iter(text).peekable();
     if markers.peek().is_none() {
@@ -86,12 +113,12 @@ pub(super) fn parse<'a>(item: &'a AstNode<'a>, text: &str, offset: usize, line: 
     }
 
     // The Markdown AST accounts for escaped delimiters, reference links, math,
-    // inline HTML and variable-length code spans. Inspect only the opening line.
+    // inline HTML and variable-length code spans; `comments` adds `%%…%%` spans.
     let protected: Vec<Range<usize>> = item
         .children()
         .next()
         .filter(|node| matches!(node.data.borrow().value, NodeValue::Paragraph))
-        .map(|paragraph| protected_spans(paragraph, line))
+        .map(|paragraph| protected_spans(paragraph, line, line_range, comments))
         .unwrap_or_default();
 
     let mut seen = Vec::new();

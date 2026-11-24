@@ -907,5 +907,54 @@ mod tests {
                 "{html:?}"
             );
         }
+
+        // 5. Obsidian `%%…%%` comments (inline and multi-line) stay protected in both
+        //    projection and writer: inline comment content is untouched and `[done:: …]`
+        //    is appended outside; multi-line comment refuses insertion inside it.
+        let inline_comment = "- [ ] Actual %% [done:: 2026-01-01] %%\n";
+        let before = crate::tasks::parse("test.md", inline_comment);
+        assert_eq!(before[0].done, None);
+        let target = Target::capture("test.md", inline_comment, 1).unwrap();
+        let plan = target
+            .plan(
+                inline_comment,
+                Change::CheckWithDone {
+                    checked: true,
+                    done,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            plan.after.as_bytes(),
+            b"- [x] Actual %% [done:: 2026-01-01] %% [done:: 2026-11-24]\n"
+        );
+        let reparsed = crate::tasks::parse("test.md", &plan.after);
+        assert_eq!(reparsed[0].done, Some(done));
+        assert!(reparsed[0].metadata.issues.is_empty());
+
+        for multi_comment in [
+            "- [ ] Actual %% hidden\n  still hidden %%\n",
+            "- [ ] Actual %% [done:: 2026-01-01]\n  still hidden %%\n",
+            "%%\n- [ ] Hidden task\n%%\n",
+        ] {
+            let line = if multi_comment.starts_with("%%\n") {
+                2
+            } else {
+                1
+            };
+            let target = Target::capture("test.md", multi_comment, line).unwrap();
+            assert!(
+                target
+                    .plan(
+                        multi_comment,
+                        Change::CheckWithDone {
+                            checked: true,
+                            done,
+                        },
+                    )
+                    .is_err(),
+                "must refuse inserting done marker inside multi-line comment: {multi_comment:?}"
+            );
+        }
     }
 }

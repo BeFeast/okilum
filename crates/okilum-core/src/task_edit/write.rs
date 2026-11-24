@@ -494,6 +494,10 @@ mod tests {
                 "legacy-with-inline.md",
                 "- [ ] Task ✅ 2026-01-01 [done:: 2026-01-02]\n",
             ),
+            (
+                "multiline-obsidian-comment.md",
+                "- [ ] Actual %% hidden\n  still hidden %%\n",
+            ),
         ] {
             let file = root.join(name);
             std::fs::write(&file, source).unwrap();

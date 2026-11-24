@@ -63,9 +63,13 @@ pub(crate) fn protected_line_spans(source: &str, line: usize) -> Vec<Range<usize
     let Some(body_line) = line.checked_sub(prefix_lines).filter(|&n| n > 0) else {
         return Vec::new();
     };
+    let Some(line_range) = markdown_line_ranges(body).into_iter().nth(body_line - 1) else {
+        return Vec::new();
+    };
+    let comments = crate::obsidian::comment_spans(body);
     let arena = Arena::new();
     let root = parse_document(&arena, body, &comrak_options());
-    metadata::protected_spans(root, body_line)
+    metadata::protected_spans(root, body_line, line_range, &comments)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -116,10 +120,8 @@ pub(crate) fn parse_tree<'a>(
     prefix_lines: usize,
     root: &'a comrak::nodes::AstNode<'a>,
 ) -> Vec<Task> {
-    let lines: Vec<_> = markdown_line_ranges(body)
-        .into_iter()
-        .map(|range| &body[range])
-        .collect();
+    let line_ranges = markdown_line_ranges(body);
+    let comments = crate::obsidian::comment_spans(body);
     let mut tasks = Vec::new();
     for (block, top) in root.children().enumerate() {
         for node in top.descendants() {
@@ -128,10 +130,11 @@ pub(crate) fn parse_tree<'a>(
                 continue;
             };
             let body_line = data.sourcepos.start.line;
-            let raw = lines
+            let line_range = line_ranges
                 .get(body_line.saturating_sub(1))
-                .copied()
-                .unwrap_or("");
+                .cloned()
+                .unwrap_or(0..0);
+            let raw = &body[line_range.clone()];
             // The AST proves this is a checkbox, excluding fenced examples and YAML.
             let Some((_, text)) = raw.split_once(']') else {
                 continue;
@@ -142,6 +145,8 @@ pub(crate) fn parse_tree<'a>(
                 text,
                 text.as_ptr() as usize - raw.as_ptr() as usize,
                 body_line,
+                line_range,
+                &comments,
             );
             tasks.push(Task {
                 path: path.to_owned(),

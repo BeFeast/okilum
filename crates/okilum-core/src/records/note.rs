@@ -467,6 +467,12 @@ fn markdown(row: &mut NoteRecord, body: &str, prefix_lines: usize) -> Option<Str
                     match &child.data.borrow().value {
                         NodeValue::Text(value) => text.push_str(value),
                         NodeValue::Code(value) => text.push_str(&value.literal),
+                        NodeValue::Math(math) => {
+                            let delim = if math.display_math { "$$" } else { "$" };
+                            text.push_str(delim);
+                            text.push_str(&math.literal);
+                            text.push_str(delim);
+                        }
                         NodeValue::SoftBreak | NodeValue::LineBreak => text.push(' '),
                         _ => {}
                     }
@@ -565,5 +571,54 @@ impl NoteRecord {
             line: task.line,
             fields,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::records::{FieldSchema, Projection, Source};
+    use std::{path::Path, sync::Arc};
+
+    #[test]
+    fn headings_preserve_math_and_currency_literals_for_titles_and_anchors() {
+        let schema = Arc::new(
+            FieldSchema::load(Path::new(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/views"
+            )))
+            .unwrap(),
+        );
+        let cases = [
+            ("knowledge/solve.md", "# Solve $x^2$\n", "Solve $x^2$"),
+            ("knowledge/energy.md", "# $E=mc^2$\n", "$E=mc^2$"),
+            ("knowledge/money.md", "# $2$ a month\n", "$2$ a month"),
+            ("knowledge/display.md", "# $$a+b$$\n", "$$a+b$$"),
+            ("knowledge/prices.md", "# $5 and $10\n", "$5 and $10"),
+        ];
+        let sources: Vec<_> = cases
+            .iter()
+            .map(|(path, body, _)| Source {
+                path,
+                bytes: body.as_bytes(),
+                mtime: None,
+            })
+            .collect();
+        let projection = Projection::build(schema, sources);
+        for (path, _, expected) in cases {
+            let note = projection.note(path).unwrap();
+            assert_eq!(
+                note.fields.get("title"),
+                Some(&Value::String(expected.to_owned())),
+                "{path}"
+            );
+            assert_eq!(note.sections.len(), 1, "{path}");
+            assert_eq!(note.sections[0].anchor, expected, "{path}");
+            assert_eq!(
+                note.sections[0].fields.get("heading"),
+                Some(&Value::String(expected.to_owned())),
+                "{path}"
+            );
+        }
     }
 }
