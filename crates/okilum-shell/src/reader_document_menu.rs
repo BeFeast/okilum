@@ -659,22 +659,26 @@ impl Reader {
         let p = brand::palette(cx);
         let name = super::vault_name::shown(&self.vault_root, cx);
         let mut recent = v_flex().w_full().min_w_0().gap_1();
-        let mut recent_notes = self
+        let shown: Vec<(String, String)> = self
             .sidebar
             .recent
             .iter()
             .filter(|(rel, _)| {
                 !self.tree.hidden_by_preference(rel) && !self.vault.folders().markdown_asset(rel)
             })
-            .peekable();
-        let has_recent = recent_notes.peek().is_some();
-        for (ix, item) in recent_notes.take(10).enumerate() {
-            let rel = item.0.clone();
-            let label = self.vault.note_title(&rel);
-            let folder = Path::new(&rel)
-                .parent()
-                .and_then(Path::file_name)
-                .map(|name| name.to_string_lossy().into_owned());
+            .take(10)
+            .map(|(rel, _)| (self.vault.note_title(rel), rel.clone()))
+            .collect();
+        let has_recent = !shown.is_empty();
+        // Notes of one name show enough of their folders to tell them apart.
+        let folders = reader_title_nav::contexts(
+            &shown
+                .iter()
+                .map(|(label, rel)| (label.as_str(), rel.as_str()))
+                .collect::<Vec<_>>(),
+            "",
+        );
+        for (ix, ((label, rel), folder)) in shown.into_iter().zip(folders).enumerate() {
             recent = recent.child(
                 Button::new(("empty-recent", ix))
                     .ghost()
@@ -698,7 +702,7 @@ impl Reader {
                             .when_some(folder, |row, folder| {
                                 row.child(
                                     div()
-                                        .max_w(relative(0.3))
+                                        .max_w(relative(0.4))
                                         .min_w_0()
                                         .truncate()
                                         .text_right()
@@ -809,12 +813,24 @@ impl Reader {
                             h_flex()
                                 .debug_selector(|| "empty-recent-heading".into())
                                 .w_full()
+                                .items_center()
                                 .gap_2()
                                 .text_sm()
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(p.text_muted)
                                 .child(Icon::default().path(brand::READER_CLOCK_ICON).small())
-                                .child("Recent"),
+                                .child(div().flex_1().child("Recent"))
+                                .child(
+                                    Button::new("empty-recent-clear")
+                                        .ghost()
+                                        .small()
+                                        .label("Clear")
+                                        .tooltip("Clear recent notes")
+                                        .debug_selector(|| "empty-recent-clear".into())
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.clear_recents(window, cx)
+                                        })),
+                                ),
                         )
                         .child(recent),
                 )

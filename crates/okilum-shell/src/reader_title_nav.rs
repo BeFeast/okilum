@@ -131,6 +131,89 @@ pub(super) fn location(path: &str, folder: &str) -> Option<String> {
     parent.rsplit('/').next().map(str::to_owned)
 }
 
+/// The folders between `folder` and a note, outermost first. Empty for a note
+/// at the root of what the list shows.
+fn parent_parts<'a>(path: &'a str, folder: &str) -> Vec<&'a str> {
+    let inside = if folder.is_empty() {
+        path
+    } else {
+        path.strip_prefix(folder)
+            .and_then(|rest| rest.strip_prefix('/'))
+            .unwrap_or(path)
+    };
+    let mut parts: Vec<&str> = inside.split('/').collect();
+    parts.pop();
+    parts
+}
+
+/// The context label of every `(display name, path)` row of one list, in
+/// order. A name that is unique keeps what [`location`] gives: the parent
+/// folder's name. When rows share a display name, each of them gets the
+/// shortest folder-path suffix no other row of that name shares, like the
+/// tab titles of an editor: `assistant/state.md` in three projects reads
+/// «karaoke/assistant», «ok-player/assistant», «x/assistant». Two rows
+/// that no folder tells apart, the same name in one folder, end in their file
+/// names. Rows listing the same path are one note, never a collision.
+pub(super) fn contexts(rows: &[(&str, &str)], folder: &str) -> Vec<Option<String>> {
+    let parts: Vec<Vec<&str>> = rows
+        .iter()
+        .map(|(_, path)| parent_parts(path, folder))
+        .collect();
+    let suffix = |row: usize, depth: usize| {
+        let parts = &parts[row];
+        parts[parts.len().saturating_sub(depth)..].join("/")
+    };
+    rows.iter()
+        .enumerate()
+        .map(|(row, (name, path))| {
+            let rivals: Vec<usize> = (0..rows.len())
+                .filter(|&other| rows[other].0 == *name && rows[other].1 != *path)
+                .collect();
+            let Some(nearest) = parts[row].last() else {
+                // At the scope's root: no label, unless another root note
+                // has the same name.
+                let twin = rivals.iter().any(|&other| parts[other].is_empty());
+                return twin.then(|| file_name(path).to_owned());
+            };
+            if rivals.is_empty() {
+                return Some((*nearest).to_owned());
+            }
+            let told_apart = (1..=parts[row].len()).find(|&depth| {
+                rivals
+                    .iter()
+                    .all(|&other| suffix(other, depth) != suffix(row, depth))
+            });
+            let whole = suffix(row, parts[row].len());
+            Some(match told_apart {
+                Some(depth) => suffix(row, depth),
+                // Every folder of this row is also the tail of a longer
+                // rival's: the shorter path reads as itself. Only a note in
+                // the very same folder needs its file name.
+                None if rivals.iter().any(|&other| parts[other] == parts[row]) => {
+                    format!("{whole}/{}", file_name(path))
+                }
+                None => whole,
+            })
+        })
+        .collect()
+}
+
+fn file_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// [`contexts`] applied to a menu's entries.
+fn disambiguate(entries: &mut [Entry], folder: &str) {
+    let rows: Vec<(&str, &str)> = entries
+        .iter()
+        .map(|entry| (entry.label.as_str(), entry.path.as_str()))
+        .collect();
+    let locations = contexts(&rows, folder);
+    for (entry, location) in entries.iter_mut().zip(locations) {
+        entry.location = location;
+    }
+}
+
 /// The switcher's label, icon and tooltip. Inside a project the picture is
 /// the project's avatar (#1627), drawn by the caller; no icon here.
 pub(super) fn switcher_face(
@@ -241,6 +324,9 @@ impl Reader {
                 .map(|path| entry(path, None))
                 .collect(),
         };
+        // Notes of one name tell their folders apart (the archive rows below
+        // carry their own labels).
+        disambiguate(&mut entries, &folder);
         if folder.is_empty() {
             if let Some(archive) = &self.sidebar.archive_shortcuts {
                 let archived = |path: &str, age| Entry {

@@ -96,6 +96,8 @@ pub(super) enum PaletteItem {
     /// «Open in terminal» for the open file's folder (#2837).
     OpenInTerminal,
     TerminalSettings,
+    /// Empties this vault's Recent lists; the toast offers Undo.
+    ClearRecent,
     /// A Pinned or Recent note or folder, as the title-bar menus list it.
     Note(reader_title_nav::Entry),
     /// Boxed: a row carries its project, icon included (#1627).
@@ -785,6 +787,7 @@ impl Reader {
             PaletteItem::OpenTerminal => "open-terminal".into(),
             PaletteItem::OpenInTerminal => "open-in-terminal".into(),
             PaletteItem::TerminalSettings => "terminal-settings".into(),
+            PaletteItem::ClearRecent => "clear-recent".into(),
             PaletteItem::AllProjects => String::new(),
             PaletteItem::File(row) => self
                 .quick_open
@@ -910,6 +913,9 @@ impl Reader {
             && "terminal settings".contains(&palette.query.to_lowercase())
         {
             items.push((PaletteSection::Projects, PaletteItem::TerminalSettings));
+        }
+        if self.has_recents() && reader_recent_clear::command_matches(&palette.query) {
+            items.push((PaletteSection::Files, PaletteItem::ClearRecent));
         }
         for (section, entries) in [
             (PaletteSection::Pinned, &sections.pinned),
@@ -1288,6 +1294,10 @@ impl Reader {
             PaletteItem::OpenTerminal => {
                 self.close_quick_open(window, cx);
                 self.open_project_terminal(window, cx);
+            }
+            PaletteItem::ClearRecent => {
+                self.close_quick_open(window, cx);
+                self.clear_recents(window, cx);
             }
             PaletteItem::OpenInTerminal => {
                 self.close_quick_open(window, cx);
@@ -1731,6 +1741,12 @@ impl Reader {
                         .h(px(30.))
                         .text_sm()
                         .child("Terminal settings…")
+                        .into_any_element(),
+                    PaletteItem::ClearRecent => section_row(*ix)
+                        .debug_selector(|| "palette-clear-recent".into())
+                        .h(px(30.))
+                        .text_sm()
+                        .child("Clear recent notes")
                         .into_any_element(),
                     PaletteItem::OpenTerminal => section_row(*ix)
                         .h(px(30.))
@@ -3240,6 +3256,7 @@ canaryhidden [[Target]]",
                     PaletteItem::OpenTerminal => "Open terminal".into(),
                     PaletteItem::OpenInTerminal => reader_files::TERMINAL_LABEL.into(),
                     PaletteItem::TerminalSettings => "Terminal settings".into(),
+                    PaletteItem::ClearRecent => "Clear recent notes".into(),
                     PaletteItem::AllProjects => "All projects…".into(),
                     PaletteItem::File(ix) => v.quick_open.rows[*ix].path.clone(),
                 };
