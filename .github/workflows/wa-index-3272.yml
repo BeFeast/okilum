@@ -1,0 +1,51 @@
+# Scratch branch only (#3272 review): hosted tests and measurements, never merged.
+name: wa-index-3272
+on:
+  push:
+    branches: ['root-identity-native/index-3272']
+permissions: {contents: read}
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_BUILD_JOBS: '4'
+jobs:
+  measure:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    defaults: {run: {shell: bash}}
+    steps:
+      - name: Keep LF
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false, fetch-depth: 0}
+      - run: bash scripts/vendor-setup.sh
+      - name: Clippy
+        run: cargo clippy --locked -p okilum-write-authority --all-targets -- -D warnings
+      - name: Crate tests (debug)
+        run: cargo test --locked -p okilum-write-authority --lib -- --nocapture --test-threads=1 2>&1 | tee tests.log | grep -E "^test |registry index|test result|panicked|root ignores"; test ${PIPESTATUS[0]} -eq 0
+      - name: PR measurement (release)
+        env: {ACCOUNT_SCALE_SIZES: '1000,10000'}
+        run: cargo test --locked -p okilum-write-authority --release --lib account_scale -- --ignored --nocapture --test-threads=1
+      - name: main measurement (release, same runner)
+        env: {ACCOUNT_SCALE_SIZES: '1000,10000'}
+        run: |
+          git checkout 1145517d82d8d314bffd32e800ffbcb82c490a9a -- crates/okilum-write-authority
+          cat .scratch/lockwait.rs >> crates/okilum-write-authority/src/account_scale_tests.rs
+          cargo test --locked -p okilum-write-authority --release --lib account_scale -- --ignored --nocapture --test-threads=1
+      - name: PR measurement again (release)
+        env: {ACCOUNT_SCALE_SIZES: '1000,10000'}
+        run: |
+          git checkout HEAD -- crates/okilum-write-authority
+          cargo test --locked -p okilum-write-authority --release --lib account_scale -- --ignored --nocapture --test-threads=1
+      - name: Fail-before - new regression tests on the first PR head 19551988a
+        run: |
+          git checkout 19551988a5f98f27b066cbcafc0cc0023ca3a05c -- crates/okilum-write-authority
+          cat .scratch/fail_before.rs >> crates/okilum-write-authority/src/registry_index_tests.rs
+          set +e
+          cargo test --locked -p okilum-write-authority --lib fail_before -- --nocapture --test-threads=1 2>&1 | tee fb.log | grep -E "^test |fail-before|test result|panicked|differ|left|right"
+          echo "fail-before exit: ${PIPESTATUS[0]} (nonzero = the old head fails the new tests)"
