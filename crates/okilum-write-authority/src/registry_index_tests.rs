@@ -145,6 +145,7 @@ struct Totals {
     hits: usize,
     stale: usize,
     unread_concerning: usize,
+    full_reads: usize,
 }
 
 const NAMES: [&str; 7] = ["a", "A", "b", "c d", "é", "nest", "Nest"];
@@ -308,8 +309,10 @@ fn scenario(seed: u64, totals: &mut Totals) {
             let [hits, _, stale] = counters();
             let full = decision(&account, probe, false, walk);
             let [full_hits, full_reads, _] = counters();
+            // A record the full scan fails to read (a corrupt one listed first,
+            // as NTFS lists by name) ends it before anything is counted.
             assert_eq!(full_hits, 0, "the full scan reads every record");
-            assert!(full_reads > 0);
+            totals.full_reads += full_reads;
             assert_eq!(
                 indexed,
                 full,
