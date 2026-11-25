@@ -5,6 +5,8 @@
 //! with a pairing code there); the browser comes back to a one-shot loopback
 //! listener on this machine (RFC 8252). T3 issues a 30-day bearer token with
 //! no refresh grant, so connecting again is the only way to renew it.
+//! [`sign_in_with_pairing_code`] renews without a browser: it posts the
+//! pairing-code decision that T3's approval page would post.
 //! Every call here talks to the server: nothing runs until the user asks to
 //! connect.
 
@@ -28,6 +30,20 @@ use crate::unix_now;
 /// Read the manager's threads and operate them (send, configure, launch).
 pub const SCOPE: &str = "orchestration:read orchestration:operate";
 pub const CALLBACK_PATH: &str = "/callback";
+/// The redirect a pairing-code sign-in registers. T3 matches loopback
+/// redirects without their port (RFC 8252 §7.3) and its decision endpoint
+/// returns the redirect as JSON, so nothing listens on it.
+pub const PAIRING_REDIRECT_URI: &str = "http://127.0.0.1/callback";
+/// T3's approval levels (`AuthMcpClientAccess`); the level caps the runtime
+/// mode of threads the client starts. Browser sign-ins of Okilum so far chose
+/// `full-access`.
+pub const ACCESS_LEVELS: [&str; 5] = [
+    "read-only",
+    "approval-required",
+    "auto-accept-edits",
+    "auto",
+    "full-access",
+];
 
 mod pending;
 pub use pending::{Authorization, Input, Progress, DEFAULT_WAIT};
@@ -83,6 +99,133 @@ pub fn connect(
         callback.redirect_uri(),
         &resource,
     )
+}
+
+/// Signs in without a browser: discover, register, approve with a one-time
+/// T3 pairing code at `access` (the call T3's `/connect-agent` page makes
+/// when the owner types a code), exchange the code. The pairing code must
+/// carry the scopes of `access`; `t3 auth pairing create` on the T3 host makes
+/// one. The returned token is the record [`connect`] returns.
+pub fn sign_in_with_pairing_code(
+    env: &Environment,
+    client_name: &str,
+    access: &str,
+    pairing_code: &str,
+) -> Result<StoredToken> {
+    ensure!(
+        ACCESS_LEVELS.contains(&access),
+        "unknown access level {access}; use one of {}",
+        ACCESS_LEVELS.join(", ")
+    );
+    let http = http_client(env)?;
+    let metadata = discover(&http, env)?;
+    let client_id = register(&http, &metadata, client_name, PAIRING_REDIRECT_URI)?;
+    let pkce = Pkce::generate()?;
+    let state = random_token()?;
+    let resource = env.mcp_url();
+    let code = approve_with_pairing_code(
+        &http,
+        env,
+        &metadata,
+        &client_id,
+        &state,
+        &pkce,
+        &resource,
+        access,
+        pairing_code,
+    )?;
+    exchange_code(
+        &http,
+        &metadata,
+        &client_id,
+        &code,
+        &pkce,
+        PAIRING_REDIRECT_URI,
+        &resource,
+    )
+}
+
+/// Posts the pairing-code decision to `/oauth/mcp/decision` and returns the
+/// authorization code from the redirect it answers with, after the same
+/// state and issuer checks the loopback callback makes.
+#[allow(clippy::too_many_arguments)]
+fn approve_with_pairing_code(
+    http: &Client,
+    env: &Environment,
+    metadata: &AuthServerMetadata,
+    client_id: &str,
+    state: &str,
+    pkce: &Pkce,
+    resource: &Url,
+    access: &str,
+    pairing_code: &str,
+) -> Result<String> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Decided {
+        redirect_to: String,
+    }
+    anyhow::ensure!(
+        crate::NetworkAccess::current().allowed(),
+        "Agents is disabled"
+    );
+    let response = http
+        .post(env.endpoint("/oauth/mcp/decision"))
+        .json(&json!({
+            "authorization": {
+                "response_type": "code",
+                "client_id": client_id,
+                "redirect_uri": PAIRING_REDIRECT_URI,
+                "code_challenge": pkce.challenge,
+                "code_challenge_method": "S256",
+                "state": state,
+                "resource": resource.as_str(),
+            },
+            "decision": { "_tag": "pairing-code", "access": access, "code": pairing_code.trim() },
+        }))
+        .send()
+        .context("the approval did not reach the server")?;
+    let status = response.status();
+    let body = response.text().unwrap_or_default();
+    ensure!(
+        status.is_success(),
+        "the server refused the pairing code: {status} {}",
+        oauth_error(&body)
+    );
+    let decided: Decided =
+        serde_json::from_str(&body).context("the approval answered without a redirect")?;
+    let target = Url::parse(&decided.redirect_to).context("the approval redirect is not a URL")?;
+    let registered = Url::parse(PAIRING_REDIRECT_URI)?;
+    ensure!(
+        target.scheme() == registered.scheme()
+            && target.host_str() == registered.host_str()
+            && target.path() == registered.path(),
+        "the approval redirected somewhere this client did not register"
+    );
+    let param = |name: &str| {
+        target
+            .query_pairs()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.into_owned())
+    };
+    if let Some(error) = param("error") {
+        let description = param("error_description").unwrap_or_default();
+        bail!("T3 did not approve the sign-in: {error} {description}");
+    }
+    ensure!(
+        param("state").as_deref() == Some(state),
+        "the approval came back with a different state"
+    );
+    if metadata.authorization_response_iss_parameter_supported {
+        let returned = param("iss");
+        ensure!(
+            returned.as_deref().map(|iss| iss.trim_end_matches('/'))
+                == Some(metadata.issuer.trim_end_matches('/')),
+            "the approval came from issuer {returned:?}, not {}",
+            metadata.issuer
+        );
+    }
+    param("code").ok_or_else(|| anyhow!("the approval came back without a code"))
 }
 
 /// One client per flow: discovery checks every endpoint shares `env`'s origin,
@@ -290,7 +433,8 @@ pub fn exchange_code(
     })
 }
 
-/// `error: error_description` from an OAuth error body, never the body itself.
+/// `error: error_description` from an OAuth error body (or the `message` of
+/// T3's approval errors), never the body itself.
 fn oauth_error(body: &str) -> String {
     let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
     let field = |name: &str| {
@@ -300,9 +444,10 @@ fn oauth_error(body: &str) -> String {
             .unwrap_or_default()
             .to_owned()
     };
-    match (field("error"), field("error_description")) {
-        (error, description) if !description.is_empty() => format!("{error}: {description}"),
-        (error, _) => error,
+    match (field("error"), field("error_description"), field("message")) {
+        (error, description, _) if !description.is_empty() => format!("{error}: {description}"),
+        (error, _, _) if !error.is_empty() => error,
+        (_, _, message) => message,
     }
 }
 

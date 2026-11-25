@@ -342,3 +342,131 @@ fn waiting_longer_reopens_the_original_callback_and_cancel_is_bounded() {
         .to_string()
         .contains("cancelled"));
 }
+
+/// T3's endpoints for a pairing-code sign-in: `/oauth/mcp/decision` takes the
+/// code the approval page would post and answers with the redirect as JSON.
+fn fake_t3_pairing(accept: &'static str) -> FakeServer {
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    FakeServer::start(move |request: &Request| {
+        let origin = format!("http://{}", request.header("host").unwrap());
+        match (request.method.as_str(), request.path()) {
+            ("GET", "/.well-known/oauth-authorization-server") => Response::json(
+                200,
+                json!({
+                    "issuer": origin,
+                    "authorization_endpoint": format!("{origin}/oauth/mcp/authorize"),
+                    "token_endpoint": format!("{origin}/oauth/mcp/token"),
+                    "registration_endpoint": format!("{origin}/oauth/mcp/register"),
+                    "code_challenge_methods_supported": ["S256"],
+                    "authorization_response_iss_parameter_supported": true
+                }),
+            ),
+            ("POST", "/oauth/mcp/register") => {
+                let body = request.json();
+                assert_eq!(body["client_name"], "Okilum");
+                assert_eq!(body["redirect_uris"], json!([PAIRING_REDIRECT_URI]));
+                Response::json(201, json!({ "client_id": "signed-client" }))
+            }
+            ("POST", "/oauth/mcp/decision") => {
+                let body = request.json();
+                let authorization = &body["authorization"];
+                assert_eq!(authorization["client_id"], "signed-client");
+                assert_eq!(authorization["redirect_uri"], PAIRING_REDIRECT_URI);
+                assert_eq!(authorization["code_challenge_method"], "S256");
+                assert_eq!(authorization["resource"], format!("{origin}/mcp"));
+                assert_eq!(body["decision"]["_tag"], "pairing-code");
+                assert_eq!(body["decision"]["access"], "full-access");
+                if body["decision"]["code"] != accept {
+                    return Response::json(
+                        400,
+                        json!({ "_tag": "AuthMcpApprovalError",
+                                "message": "That code is unknown or already used." }),
+                    );
+                }
+                seen.lock().unwrap().challenge =
+                    authorization["code_challenge"].as_str().map(str::to_owned);
+                let mut back = Url::parse(PAIRING_REDIRECT_URI).unwrap();
+                back.query_pairs_mut()
+                    .append_pair("code", "one-use-code")
+                    .append_pair("state", authorization["state"].as_str().unwrap())
+                    .append_pair("iss", &origin);
+                Response::json(200, json!({ "redirectTo": back.as_str() }))
+            }
+            ("POST", "/oauth/mcp/token") => {
+                let form: Vec<(String, String)> =
+                    url::form_urlencoded::parse(request.body.as_bytes())
+                        .into_owned()
+                        .collect();
+                let field = |name: &str| form.iter().find(|(k, _)| k == name).unwrap().1.clone();
+                assert_eq!(field("code"), "one-use-code");
+                assert_eq!(field("redirect_uri"), PAIRING_REDIRECT_URI);
+                assert_eq!(
+                    Some(Pkce::from_verifier(field("code_verifier")).challenge),
+                    seen.lock().unwrap().challenge
+                );
+                Response::json(
+                    200,
+                    json!({ "access_token": "issued-token", "token_type": "Bearer",
+                            "expires_in": 2_592_000,
+                            "scope": "orchestration:read orchestration:operate settings:write source-control:write" }),
+                )
+            }
+            (method, path) => panic!("unexpected {method} {path}"),
+        }
+    })
+}
+
+#[test]
+fn a_pairing_code_signs_in_without_a_browser() {
+    let server = fake_t3_pairing("ABCD2345EFGH");
+    let env = Environment::new("test", &server.origin).unwrap();
+    let before = unix_now();
+    let token =
+        sign_in_with_pairing_code(&env, "Okilum", "full-access", " ABCD2345EFGH\n").unwrap();
+    assert_eq!(token.access_token, "issued-token");
+    assert_eq!(token.client_id, "signed-client");
+    assert!(token.scope.contains("settings:write"), "{}", token.scope);
+    assert!(token.expires_at >= before + 2_592_000);
+    let paths: Vec<String> = server
+        .requests()
+        .iter()
+        .map(|r| r.path().to_owned())
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            "/.well-known/oauth-authorization-server",
+            "/oauth/mcp/register",
+            "/oauth/mcp/decision",
+            "/oauth/mcp/token"
+        ]
+    );
+}
+
+#[test]
+fn a_refused_pairing_code_reports_why_and_exchanges_nothing() {
+    let server = fake_t3_pairing("ABCD2345EFGH");
+    let env = Environment::new("test", &server.origin).unwrap();
+    let error = sign_in_with_pairing_code(&env, "Okilum", "full-access", "WRONG").unwrap_err();
+    assert!(
+        error.to_string().contains("unknown or already used"),
+        "{error}"
+    );
+    assert!(!error.to_string().contains("WRONG"), "{error}");
+    assert!(server
+        .requests()
+        .iter()
+        .all(|r| r.path() != "/oauth/mcp/token"));
+}
+
+#[test]
+fn an_unknown_access_level_is_refused_before_any_request() {
+    let server = fake_t3_pairing("ABCD2345EFGH");
+    let env = Environment::new("test", &server.origin).unwrap();
+    let error = sign_in_with_pairing_code(&env, "Okilum", "root", "ABCD2345EFGH").unwrap_err();
+    assert!(
+        error.to_string().contains("unknown access level"),
+        "{error}"
+    );
+    assert!(server.requests().is_empty());
+}

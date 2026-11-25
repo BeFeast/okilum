@@ -183,6 +183,7 @@ mod reader_table_copy;
 mod reader_title_nav;
 mod reader_vaults;
 mod reader_workbench;
+mod t3_sign_in_cli;
 #[cfg(windows)]
 mod url_protocol;
 mod vault_name;
@@ -1032,6 +1033,11 @@ fn main() {
     // handoff, AppImage re-exec or any GPUI initialization (#2589).
     #[cfg(unix)]
     if let Some(code) = reader_settings_sync::cli::entry() {
+        std::process::exit(code);
+    }
+    // `okilum t3-sign-in …` is headless too: it renews the T3 MCP token with a
+    // pairing code and writes it as this signed app (see t3_sign_in_cli).
+    if let Some(code) = t3_sign_in_cli::entry() {
         std::process::exit(code);
     }
     #[cfg(windows)]
