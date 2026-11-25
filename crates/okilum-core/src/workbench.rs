@@ -20,6 +20,8 @@ pub struct Unit {
     pub terminal: bool,
     pub status: String,
     pub manager: bool,
+    /// The project manifest parks it (`status` or delivery `profile`).
+    pub parked: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,6 +63,58 @@ pub struct View {
     /// All declared contexts, including those without recent edits.
     pub project_count: usize,
     pub older_active: Vec<Activity>,
+    /// Parked or finished projects and those without activity for 14 days.
+    pub other: Vec<Activity>,
+}
+
+/// Now's project order after merging activity the index cannot see.
+#[derive(Clone, Debug, Default)]
+pub struct Ordered {
+    /// Activity in the last 7 days, newest first.
+    pub active: Vec<Activity>,
+    /// Activity 7 to 14 days ago, newest first.
+    pub older: Vec<Activity>,
+    /// Parked, finished or dormant projects, newest first.
+    pub other: Vec<Activity>,
+}
+
+impl View {
+    /// Projects by their latest real activity, newest first. `external` adds
+    /// activity per unit path that is not a note edit (for example the T3
+    /// threads of a project's manager); a unit's time is the latest of both.
+    /// Parked and finished projects always go to `other`, as do projects idle
+    /// for 14 days. Ties keep path order, never a pinned alphabetical group.
+    pub fn ordered(&self, external: &BTreeMap<String, u64>) -> Ordered {
+        let week = self.built_at.saturating_sub(7 * DAY);
+        let fortnight = self.built_at.saturating_sub(14 * DAY);
+        let mut ordered = Ordered::default();
+        for activity in self
+            .active
+            .iter()
+            .chain(&self.older_active)
+            .chain(&self.other)
+        {
+            let mut activity = activity.clone();
+            if let Some(at) = external.get(&activity.unit.path) {
+                activity.modified = activity.modified.max((*at).min(self.built_at));
+            }
+            if activity.unit.parked || activity.unit.terminal || activity.modified < fortnight {
+                ordered.other.push(activity);
+            } else if activity.modified >= week {
+                ordered.active.push(activity);
+            } else {
+                ordered.older.push(activity);
+            }
+        }
+        for list in [&mut ordered.active, &mut ordered.older, &mut ordered.other] {
+            list.sort_by(|a, b| {
+                b.modified
+                    .cmp(&a.modified)
+                    .then(a.unit.path.cmp(&b.unit.path))
+            });
+        }
+        ordered
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -608,7 +662,7 @@ impl Index {
                 });
             }
             if let Some(unit) = owner {
-                if !archived && !unit.terminal && !is_noise(&unit.path, self.managed) {
+                if !archived && !is_noise(&unit.path, self.managed) {
                     let a = activity
                         .entry(unit.path.as_str())
                         .or_insert_with(|| Activity {
@@ -652,9 +706,11 @@ impl Index {
                 .push(row);
         }
         for a in activity.into_values() {
-            if a.modified >= week {
+            if a.unit.terminal || a.unit.parked || a.modified < now.saturating_sub(14 * DAY) {
+                view.other.push(a);
+            } else if a.modified >= week {
                 view.active.push(a);
-            } else if a.modified >= now.saturating_sub(14 * DAY) {
+            } else {
                 view.older += 1;
                 view.older_active.push(a);
             }
@@ -665,6 +721,11 @@ impl Index {
                 .then(a.unit.path.cmp(&b.unit.path))
         });
         view.older_active.sort_by(|a, b| {
+            b.modified
+                .cmp(&a.modified)
+                .then(a.unit.path.cmp(&b.unit.path))
+        });
+        view.other.sort_by(|a, b| {
             b.modified
                 .cmp(&a.modified)
                 .then(a.unit.path.cmp(&b.unit.path))
@@ -932,6 +993,71 @@ mod tests {
         i.remove("Dev/Areas/App/notes/a.md");
         i.refresh(now, now - 100, now - DAY);
         assert!(i.view.active.is_empty());
+    }
+
+    #[test]
+    fn now_orders_by_latest_activity_and_keeps_parked_and_dormant_in_other() {
+        let now = 40 * DAY;
+        let mut i = Index {
+            managed: true,
+            ..Index::default()
+        };
+        let unit = |path: &str, parked: bool| Unit {
+            path: path.into(),
+            parked,
+            ..Unit::default()
+        };
+        i.set_units(vec![
+            unit("state/dev/alder", false),
+            unit("state/dev/birch", true),
+            unit("state/dev/cedar", false),
+            unit("state/dev/dremla", false),
+            unit("state/dev/maple", false),
+            unit("state/dev/zinnia", false),
+            unit("state/dev/done", false),
+        ]);
+        for (path, at) in [
+            ("state/dev/alder/a.md", now - 3 * DAY),
+            ("state/dev/birch/a.md", now),
+            ("state/dev/cedar/a.md", now - 20 * DAY),
+            ("state/dev/dremla/a.md", now - 9 * DAY),
+            ("state/dev/maple/a.md", now - DAY),
+            ("state/dev/zinnia/a.md", now - 3600),
+            ("state/dev/done/a.md", now),
+        ] {
+            i.replace(path, "", at);
+        }
+        i.replace("state/dev/done/@index.md", "---\nstatus: done\n---\n", now);
+        i.refresh(now, now - 100, now - DAY);
+        let paths = |rows: &[Activity]| {
+            rows.iter()
+                .map(|row| row.unit.path.rsplit('/').next().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(paths(&i.view.active), ["zinnia", "maple", "alder"]);
+        assert_eq!(paths(&i.view.older_active), ["dremla"]);
+        assert_eq!(paths(&i.view.other), ["birch", "done", "cedar"]);
+        // Folder activity alone, as when T3 cannot be read.
+        let ordered = i.view.ordered(&BTreeMap::new());
+        assert_eq!(paths(&ordered.active), ["zinnia", "maple", "alder"]);
+        assert_eq!(paths(&ordered.other), ["birch", "done", "cedar"]);
+        // T3 activity revives a dormant project and reorders active ones, but
+        // never lifts a parked or finished project out of Other.
+        let external = BTreeMap::from([
+            ("state/dev/cedar".to_owned(), now - 60),
+            ("state/dev/alder".to_owned(), now - 120),
+            ("state/dev/birch".to_owned(), now),
+            ("state/dev/done".to_owned(), now),
+            ("state/dev/maple".to_owned(), now - 30 * DAY),
+        ]);
+        let ordered = i.view.ordered(&external);
+        assert_eq!(
+            paths(&ordered.active),
+            ["cedar", "alder", "zinnia", "maple"]
+        );
+        assert_eq!(paths(&ordered.older), ["dremla"]);
+        assert_eq!(paths(&ordered.other), ["birch", "done"]);
+        assert_eq!(ordered.active[0].modified, now - 60);
     }
 
     #[test]

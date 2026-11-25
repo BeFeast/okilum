@@ -50,6 +50,12 @@ fn units(root: &Path) -> Vec<Unit> {
                 .and_then(serde_yaml::Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
+            // Manifests park a project with `status` or its delivery `profile`.
+            let parked = ["status", "profile"].iter().any(|key| {
+                doc.get(*key)
+                    .and_then(serde_yaml::Value::as_str)
+                    .is_some_and(|value| value.trim().eq_ignore_ascii_case("parked"))
+            });
             let name = doc
                 .get("slug")
                 .and_then(serde_yaml::Value::as_str)
@@ -65,6 +71,7 @@ fn units(root: &Path) -> Vec<Unit> {
                 terminal,
                 status,
                 manager: matches!(project.manager, okilum_t3::projects::Manager::Thread(_)),
+                parked,
             })
         })
         .collect()
@@ -117,6 +124,45 @@ fn location(path: &str) -> String {
 }
 
 impl Reader {
+    /// T3 activity of the discovered projects, keyed by vault-relative path.
+    /// Empty while T3 is unreadable: Now then orders by folder activity.
+    pub(super) fn now_t3_activity(&self) -> std::collections::BTreeMap<String, u64> {
+        self.project_navigation
+            .activity
+            .iter()
+            .filter_map(|(folder, at)| {
+                let path = folder.strip_prefix(&self.vault_root).ok()?;
+                Some((path.to_string_lossy().replace('\\', "/"), *at))
+            })
+            .collect()
+    }
+
+    /// Rank of a project folder in Now: projects in progress by their latest
+    /// activity first, then folders Now does not track, then Other.
+    pub(super) fn now_rank(&self) -> impl Fn(&Path) -> (u8, std::cmp::Reverse<u64>) {
+        let mut ranks = std::collections::BTreeMap::new();
+        if let Some(index) = &self.workbench_ready {
+            let order = index.view.ordered(&self.now_t3_activity());
+            for (tier, rows) in [(0, &order.active), (0, &order.older), (2, &order.other)] {
+                for row in rows {
+                    ranks.insert(
+                        row.unit.path.clone(),
+                        (tier, std::cmp::Reverse(row.modified)),
+                    );
+                }
+            }
+        }
+        let root = self.vault_root.clone();
+        move |folder: &Path| {
+            folder
+                .strip_prefix(&root)
+                .ok()
+                .and_then(|path| ranks.get(&path.to_string_lossy().replace('\\', "/")))
+                .copied()
+                .unwrap_or((1, std::cmp::Reverse(0)))
+        }
+    }
+
     pub(super) fn refresh_workbench_clock(&mut self, cx: &mut Context<Self>) {
         let minute = reader_sidebar::now() / 60;
         if !self.sidebar.now_enabled()
@@ -718,30 +764,36 @@ impl Reader {
                         }),
                 );
         let current_unit = index.unit_for(&self.pane.current_rel);
-        let mut groups: std::collections::BTreeMap<_, Vec<&Activity>> = Default::default();
-        for activity in &view.active {
+        let order = view.ordered(&self.now_t3_activity());
+        // Groups follow their newest project: `order.active` is newest first,
+        // so a group's first appearance is its rank. No alphabetical pinning.
+        let mut groups: Vec<((&str, Option<(&str, &str)>), Vec<&Activity>)> = Vec::new();
+        for activity in &order.active {
             let group = if view.managed {
                 match index.activity_context(activity) {
-                    Some((context, domain)) => (0, context.name, Some((domain, context.domain))),
-                    None => (1, "—", None),
+                    Some((context, domain)) => (context.name, Some((domain, context.domain))),
+                    None => ("—", None),
                 }
             } else {
-                let domain = activity.legacy_domain();
-                let priority = match domain {
-                    "Dev" => 0,
-                    "Music" => 1,
-                    "AI · HomeLab" => 2,
-                    _ => 3,
-                };
-                (priority, domain, None)
+                (activity.legacy_domain(), None)
             };
-            groups.entry(group).or_default().push(activity);
+            match groups.iter_mut().find(|(key, _)| *key == group) {
+                Some((_, rows)) => rows.push(activity),
+                None => groups.push((group, vec![activity])),
+            }
         }
+        // Equally recent groups: named contexts before unassigned, by name.
+        groups.sort_by(|(a, a_rows), (b, b_rows)| {
+            let tie = |&(label, domain): &(&str, Option<(&str, &str)>)| {
+                (view.managed && domain.is_none(), String::from(label))
+            };
+            b_rows[0]
+                .modified
+                .cmp(&a_rows[0].modified)
+                .then_with(|| tie(a).cmp(&tie(b)))
+        });
         let mut active = v_flex().w_full().min_w_0().pb_2();
-        for ((_, label, domain), mut rows) in groups {
-            // Keep the current context visible even when the group is compact.
-            // Stable sorting preserves recency among the other projects.
-            rows.sort_by_key(|row| current_unit != Some(row.unit.path.as_str()));
+        for ((label, domain), rows) in groups {
             active = active.child(
                 h_flex()
                     .px_3()
@@ -789,6 +841,15 @@ impl Reader {
                     cx,
                 ));
             }
+            // The current context stays visible in a compact group, in its
+            // place after the newest rows rather than above them.
+            if let Some(row) = rows
+                .iter()
+                .skip(shown)
+                .find(|row| current_unit == Some(row.unit.path.as_str()))
+            {
+                active = active.child(self.now_project_row(row, true, cx));
+            }
             if rows.len() > shown {
                 let reader = reader.clone();
                 let names = rows
@@ -820,7 +881,7 @@ impl Reader {
                 );
             }
         }
-        if view.active.is_empty() {
+        if order.active.is_empty() {
             active = active.child(
                 div()
                     .px_3()
@@ -834,16 +895,35 @@ impl Reader {
                     }),
             );
         }
-        if view.older > 0 {
+        if !order.older.is_empty() {
             active = active.child(self.now_heading(
                 "older".into(),
                 "More in the last 14 days".into(),
-                view.older,
+                order.older.len(),
                 true,
                 cx,
             ));
             if self.sidebar.now_expanded.contains("older") {
-                for row in &view.older_active {
+                for row in &order.older {
+                    active = active.child(self.now_project_row(
+                        row,
+                        current_unit == Some(row.unit.path.as_str()),
+                        cx,
+                    ));
+                }
+            }
+        }
+        // Parked, finished and dormant projects: collapsed at the bottom.
+        if !order.other.is_empty() {
+            active = active.child(self.now_heading(
+                "other".into(),
+                "OTHER".into(),
+                order.other.len(),
+                true,
+                cx,
+            ));
+            if self.sidebar.now_expanded.contains("other") {
+                for row in &order.other {
                     active = active.child(self.now_project_row(
                         row,
                         current_unit == Some(row.unit.path.as_str()),
@@ -979,7 +1059,7 @@ impl Reader {
             .child(self.now_heading(
                 "active".into(),
                 "IN PROGRESS".into(),
-                view.active.len(),
+                order.active.len(),
                 false,
                 cx,
             ))
@@ -1151,14 +1231,20 @@ mod tests {
         assert!(
             visual
                 .debug_bounds("now-project-Dev/Projects/Project03")
+                .is_some(),
+            "the newest projects lead the compact group"
+        );
+        assert!(
+            visual
+                .debug_bounds("now-project-Dev/Projects/Project04")
                 .is_none(),
-            "group tail starts collapsed"
+            "group tail starts collapsed; the older current project is shown after it"
         );
         let more = visual.debug_bounds("now-more-projects").unwrap();
         visual.simulate_click(more.center(), Modifiers::default());
         visual.run_until_parked();
         assert!(visual
-            .debug_bounds("now-project-Dev/Projects/Project03")
+            .debug_bounds("now-project-Dev/Projects/Project04")
             .is_some());
         assert!(
             visual.debug_bounds("now-heading-changes").unwrap().origin.y
@@ -1451,6 +1537,26 @@ mod tests {
         for activity in &index.view.active {
             diagnostic_println!("ACTIVE {}", activity.unit.path);
         }
+        // Now's order from folder activity alone, then merged with a JSON map
+        // of T3 activity (vault-relative project path -> Unix seconds).
+        let t3: std::collections::BTreeMap<String, u64> = std::env::var_os("OKILUM_WORKBENCH_T3")
+            .map(|path| serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap())
+            .unwrap_or_default();
+        for (source, external) in [("folder", Default::default()), ("folder+t3", t3)] {
+            let order = index.view.ordered(&external);
+            for (part, rows) in [
+                ("active", &order.active),
+                ("older", &order.older),
+                ("other", &order.other),
+            ] {
+                let names: Vec<_> = rows.iter().map(|row| row.unit.title.as_str()).collect();
+                diagnostic_println!(
+                    "ORDER {source} {part} {}: {}",
+                    names.len(),
+                    names.join(", ")
+                );
+            }
+        }
     }
 
     fn waiting_source(
@@ -1578,6 +1684,68 @@ mod tests {
         visual.run_until_parked();
         assert!(visual.debug_bounds("now-waiting-stale-row").is_some());
         assert!(visual.debug_bounds("now-waiting-row").is_none());
+    }
+
+    /// Waiting rows follow Now's activity order, not folder names: a parked
+    /// project's question comes last, and T3 activity reorders the rest.
+    #[gpui::test]
+    fn waiting_rows_follow_project_activity_with_parked_last(cx: &mut TestAppContext) {
+        let (reader, visual, _temp) = fixture(cx);
+        let now = reader_sidebar::now();
+        let mut index = Index::default();
+        index.set_units(
+            [("Alpha", false), ("Parked", true), ("Zed", false)]
+                .into_iter()
+                .map(|(name, parked)| Unit {
+                    path: format!("Dev/Areas/{name}"),
+                    title: name.into(),
+                    parked,
+                    ..Default::default()
+                })
+                .collect(),
+        );
+        index.replace("Dev/Areas/Alpha/a.md", "", now - 3 * workbench::DAY);
+        index.replace("Dev/Areas/Parked/a.md", "", now);
+        index.replace("Dev/Areas/Zed/a.md", "", now - 60);
+        index.observed_at = now;
+        index.refresh(now, now - 1000, now - workbench::DAY);
+        let order = |r: &Reader| {
+            r.ordered_waiting()
+                .rows
+                .iter()
+                .map(|row| row.request_id.clone())
+                .collect::<Vec<_>>()
+        };
+        reader.update(visual, |r, cx| {
+            r.workbench = Arc::new(index);
+            r.workbench_ready = Some(r.workbench.clone());
+            let root = r.vault_root.clone();
+            let sources = ["Alpha", "Parked", "Zed"]
+                .map(|name| waiting_source(r, name, &format!("mcp:{}", name.to_lowercase())));
+            let (generation, _) = r.waiting.begin(&root, Default::default());
+            let reads = std::collections::BTreeMap::from([
+                waiting_read(&sources[0], Ok(vec!["alpha"])),
+                waiting_read(&sources[1], Ok(vec!["parked"])),
+                waiting_read(&sources[2], Ok(vec!["zed-1", "zed-2"])),
+            ]);
+            assert!(r.accept_waiting(&root, generation, reads, now, "12:00".into(), cx));
+            assert_eq!(
+                order(r),
+                ["zed-1", "zed-2", "alpha", "parked"],
+                "folder activity alone: newest first, parked last"
+            );
+            r.project_navigation
+                .activity
+                .insert(sources[0].folder.clone(), now - 5);
+            r.project_navigation
+                .activity
+                .insert(sources[1].folder.clone(), now);
+            assert_eq!(
+                order(r),
+                ["alpha", "zed-1", "zed-2", "parked"],
+                "T3 activity reorders projects but never lifts a parked one"
+            );
+        });
     }
 
     /// #2346: a reply belongs to the vault, generation and enabled Now that
