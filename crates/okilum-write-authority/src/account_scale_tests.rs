@@ -1,14 +1,14 @@
 //! How the cost of opening a vault scope grows with the entries already in the
 //! account directory (#3272). Records are never pruned, so a long-lived
-//! account (or a test host) only ever adds to them; the registration index
-//! (registry_index.rs) keeps a new folder's registration from reading them
-//! twice and from parsing the unchanged ones.
+//! account (or a test host) only ever adds to them. A new folder's
+//! registration reads each of them once per registry.lock hold, not twice
+//! (registry_reads.rs).
 //!
 //! Run on a pool host, in release as shipped:
 //! `cargo test -p okilum-write-authority --release account_scale -- --ignored --nocapture`
-//! With `ACCOUNT_SCALE_BUDGET_MS` set, the indexed first open of a new folder
-//! at the largest size must stay within it (release only).
-use super::registry_index::{self, ENABLED};
+//! With `ACCOUNT_SCALE_BUDGET_MS` set, the first open of a new folder at the
+//! largest size must stay within it (release only).
+use super::registry_reads::ENABLED;
 use super::*;
 use std::time::{Duration, Instant};
 
@@ -71,7 +71,7 @@ fn account_scale_open_cost_by_entry_count() -> Result<()> {
         Ok(root)
     };
     println!(
-        "entries | first open of a new folder: full scan (pre-#3272) | index rebuilt | index | reopen + admit of a known folder"
+        "entries | first open of a new folder: two full scans (pre-#3272) | one read per hold | reopen + admit of a known folder"
     );
     let mut last = None;
     for size in sizes.split(',').map(|s| s.trim().parse::<usize>().unwrap()) {
@@ -89,11 +89,7 @@ fn account_scale_open_cost_by_entry_count() -> Result<()> {
         });
         ENABLED.with(|e| e.set(true));
         let full = full?;
-        let _ = fs::remove_file(account.join(registry_index::FILE));
-        let rebuilt = average(1, |_| {
-            Authority::open_in(&account, &new_folder()?).map(drop)
-        })?;
-        let indexed = average(5, |_| {
+        let reused = average(5, |_| {
             Authority::open_in(&account, &new_folder()?).map(drop)
         })?;
         let warm = average(50, |_| {
@@ -108,27 +104,26 @@ fn account_scale_open_cost_by_entry_count() -> Result<()> {
             })
             .count();
         println!(
-            "{entries:>7} | {:>10.2} ms | {:>10.2} ms | {:>10.2} ms | {:>8.3} ms",
+            "{entries:>7} | {:>10.2} ms | {:>10.2} ms | {:>8.3} ms",
             ms(full),
-            ms(rebuilt),
-            ms(indexed),
+            ms(reused),
             ms(warm)
         );
-        last = Some((size, full, indexed));
+        last = Some((size, full, reused));
     }
-    if let (Some(budget), Some((size, full, indexed))) = (budget, last) {
+    if let (Some(budget), Some((size, full, reused))) = (budget, last) {
         if cfg!(debug_assertions) {
             println!("debug build: the {budget} ms budget applies to release only");
         } else {
             assert!(
-                ms(indexed) <= budget,
-                "indexed first open at {size} entries: {:.2} ms > {budget} ms",
-                ms(indexed)
+                ms(reused) <= budget,
+                "first open at {size} entries: {:.2} ms > {budget} ms",
+                ms(reused)
             );
         }
-        // Control: the measured path is the index, not a cheap account.
+        // Control: the measured path is the reuse, not a cheap account.
         if size >= 1000 {
-            assert!(indexed < full, "index {indexed:?} vs full scan {full:?}");
+            assert!(reused < full, "reuse {reused:?} vs two full scans {full:?}");
         }
     }
     Ok(())
@@ -151,7 +146,7 @@ fn account_scale_registry_lock_wait() -> Result<()> {
     fs::create_dir(&folders)?;
     private_dir(&account)?;
     fill(&account, &folders, size)?;
-    // Warm the page cache (and, with the index, the index file).
+    // Warm the page cache.
     for warm in 0..2 {
         let root = temp.path().join(format!("warm-{warm}"));
         fs::create_dir(&root)?;

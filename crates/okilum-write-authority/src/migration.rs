@@ -7,7 +7,7 @@ impl Authority {
     pub(super) fn migrate_legacy_bindings(
         account: &Path,
         requested: &Path,
-        index: &mut registry_index::RecordIndex,
+        reads: &mut registry_reads::HoldReads,
     ) -> Result<Option<File>> {
         // Normal admissions must not take the account-wide registration lock.
         // The outermost existing scope is the one existing() will select.
@@ -25,7 +25,7 @@ impl Authority {
             .lock()
             .context("Cannot serialize writer identity migration")?;
         for entry in fs::read_dir(account)? {
-            let Some((path, binding)) = Self::legacy_record(&entry?, index)? else {
+            let Some((path, binding)) = Self::legacy_record(&entry?, reads)? else {
                 continue;
             };
             let relevant =
@@ -38,7 +38,7 @@ impl Authority {
                 binding,
             };
             // Whatever it writes, this record is no longer what this hold read.
-            index.rewritten(&authority.binding_path);
+            reads.rewritten(&authority.binding_path);
             let result = authority.migrate_legacy_binding();
             // An unrelated offline/replaced/busy volume cannot prevent opening
             // this vault. Registry alias checks still retain its durable fences.
@@ -50,26 +50,18 @@ impl Authority {
     }
 
     /// The record at `entry` when it is a schema 1 record to migrate. Every
-    /// record is read exactly as before, with the same errors; a record whose
-    /// bytes the index knows not to be schema 1 is not parsed again (#3272).
+    /// record is read exactly as before, with the same errors, and remembered
+    /// for the registry scan in this hold (#3272).
     pub(super) fn legacy_record(
         entry: &fs::DirEntry,
-        index: &mut registry_index::RecordIndex,
+        reads: &mut registry_reads::HoldReads,
     ) -> Result<Option<(PathBuf, Binding)>> {
         let path = entry.path();
         if path.extension().is_none_or(|extension| extension != "json") {
             return Ok(None);
         }
-        let (bytes, digest) = registry_index::read_record(&path)?;
-        let name = entry.file_name();
-        if index
-            .get(&name, &digest)
-            .is_some_and(|summary| summary.schema != 1)
-        {
-            return Ok(None);
-        }
-        let binding: Binding = parse(&bytes)?;
-        index.learn(name, digest, &binding);
+        let binding = registry_reads::read_record(&path)?;
+        reads.learn(entry.file_name(), &binding);
         Ok((binding.schema == 1).then_some((path, binding)))
     }
 

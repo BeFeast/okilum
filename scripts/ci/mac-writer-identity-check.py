@@ -39,9 +39,9 @@ def main():
     finally:
         native.write_text(original_native)
     try:
-        call = "let held = Self::migrate_legacy_bindings(account, &root, index)?;"
+        call = "let held = Self::migrate_legacy_bindings(&account, &root, &mut reads)?;"
         assert original_entry.count(call) == 1
-        entry.write_text(original_entry.replace(call, "let held: Option<File> = { let _ = (&account, &root, &index); None };"))
+        entry.write_text(original_entry.replace(call, "let held: Option<File> = { let _ = (&account, &root, &mut reads); None };"))
         run(legacy_test, "no-migration-negative", negative=True)
     finally:
         entry.write_text(original_entry)

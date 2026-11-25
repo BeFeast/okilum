@@ -45,9 +45,9 @@ mod identity_macos_tests;
 mod identity_windows_tests;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 mod migration;
-mod registry_index;
+mod registry_reads;
 #[cfg(test)]
-mod registry_index_tests;
+mod registry_reads_tests;
 #[cfg(any(test, feature = "test-isolation"))]
 pub mod test_isolation;
 pub mod vault_descriptor;
@@ -158,11 +158,6 @@ fn exclusive(f: &File) -> Result<()> {
     })
 }
 fn read<T: for<'a> Deserialize<'a>>(p: &Path) -> Result<T> {
-    parse(&read_bytes(p)?)
-}
-/// The bytes of a record, with exactly the checks and errors of `read`
-/// before parsing.
-fn read_bytes(p: &Path) -> Result<Vec<u8>> {
     ensure!(
         fs::symlink_metadata(p)?.is_file(),
         "Writer authority record is not a regular file"
@@ -173,10 +168,7 @@ fn read_bytes(p: &Path) -> Result<Vec<u8>> {
         bytes.len() <= 64 * 1024,
         "Writer authority record is oversized"
     );
-    Ok(bytes)
-}
-fn parse<T: for<'a> Deserialize<'a>>(bytes: &[u8]) -> Result<T> {
-    serde_json::from_slice(bytes).context("Invalid writer authority; explicit recovery required")
+    serde_json::from_slice(&bytes).context("Invalid writer authority; explicit recovery required")
 }
 fn persist(p: &Path, v: &impl Serialize, create: bool) -> Result<()> {
     let parent = p.parent().context("Authority parent missing")?;
@@ -434,22 +426,13 @@ impl Authority {
             !account.starts_with(&root),
             "Writer authority must be outside the vault"
         );
-        // Derived summaries of the records (#3272); see registry_index.rs.
-        let mut index = registry_index::RecordIndex::new(&account);
-        let registered = Self::register(&account, root, &mut index);
-        index.save();
-        registered
-    }
-    fn register(
-        account: &Path,
-        root: PathBuf,
-        index: &mut registry_index::RecordIndex,
-    ) -> Result<Self> {
+        // Records read in this registry.lock hold (#3272); see registry_reads.rs.
+        let mut reads = registry_reads::HoldReads::default();
         #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-        let held = Self::migrate_legacy_bindings(account, &root, index)?;
+        let held = Self::migrate_legacy_bindings(&account, &root, &mut reads)?;
         #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
         let held: Option<File> = None;
-        if let Some(a) = Self::existing(account, &root)? {
+        if let Some(a) = Self::existing(&account, &root)? {
             return Ok(a);
         }
         // Keep holding the lock the migration scan took: no record writer can
@@ -464,14 +447,13 @@ impl Authority {
                 registry
             }
         };
-        if let Some(a) = Self::existing(account, &root)? {
+        if let Some(a) = Self::existing(&account, &root)? {
             return Ok(a);
         }
-        let _enclosed = match Self::scan_registry(account, &root, index)? {
+        let _enclosed = match Self::scan_registry(&account, &root, &reads)? {
             Scan::Existing(a) => return Ok(*a),
             Scan::Enclosed(enclosed) => enclosed,
         };
-        let account = account.to_owned();
         let directory = account.join(key(&root));
         // No binding was published, so no caller can have acquired this scope.
         // Resume interrupted initialization under registry.lock, preserving any
@@ -522,12 +504,13 @@ impl Authority {
         })
     }
     /// The registry scan under `registry.lock`: every record in directory
-    /// order, exactly as without the index; the index only lets a record
-    /// that none of the checks below can concern go unread.
+    /// order, as before #3272, except that a record the migration scan read
+    /// in this same hold, and that none of the checks below can concern, is
+    /// not read again.
     fn scan_registry(
         account: &Path,
         root: &Path,
-        index: &mut registry_index::RecordIndex,
+        reads: &registry_reads::HoldReads,
     ) -> Result<Scan> {
         let account = account.to_owned();
         // Promote idle quick-file scopes under the registry lock. Keep their
@@ -541,24 +524,11 @@ impl Authority {
                 let name = entry.file_name();
                 // Read by the migration scan in this same registry.lock hold,
                 // and it cannot concern this root: nothing to do.
-                if index
-                    .read_in_this_hold(&name)
-                    .is_some_and(|summary| !summary.may_concern(root, &ancestor_identities))
-                {
+                if reads.skip(&name, root, &ancestor_identities) {
                     continue;
                 }
-                // Otherwise read exactly as without the index, with the same
-                // errors; only the parse of unchanged bytes that cannot
-                // concern this root is skipped.
-                let (bytes, digest) = registry_index::read_record(&p)?;
-                if index
-                    .get(&name, &digest)
-                    .is_some_and(|summary| !summary.may_concern(root, &ancestor_identities))
-                {
-                    continue;
-                }
-                let b: Binding = parse(&bytes)?;
-                index.learn(name, digest, &b);
+                // Otherwise read exactly as before, with the same errors.
+                let b: Binding = registry_reads::read_record(&p)?;
                 // A UUID-less identity (NFS, SMB, macFUSE; #3202) names its
                 // export by the mount source spelling, so it cannot prove two
                 // roots disjoint: another mount spelling, a child or a parent of
@@ -626,7 +596,6 @@ impl Authority {
                 }
             }
         }
-        index.scanned_all();
         Ok(Scan::Enclosed(enclosed))
     }
     fn existing(account: &Path, root: &Path) -> Result<Option<Self>> {
