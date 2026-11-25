@@ -6125,6 +6125,7 @@ dependencies = [
  "base64 0.22.1",
  "notify",
  "okilum-core",
+ "okilum-write-authority",
  "regex",
  "reqwest",
  "serde",
@@ -6199,6 +6200,7 @@ dependencies = [
  "chrono",
  "okilum-brain",
  "okilum-core",
+ "okilum-write-authority",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -6373,6 +6375,7 @@ dependencies = [
  "okilum-core",
  "okilum-gpui",
  "okilum-t3",
+ "okilum-write-authority",
  "raw-window-handle",
  "resvg 0.45.1",
  "rust-embed",
@@ -6472,6 +6475,7 @@ name = "okilum-write-authority"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ctor",
  "libc",
  "rustix",
  "serde",

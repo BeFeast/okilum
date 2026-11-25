@@ -79,6 +79,8 @@ async-channel = "2"
 zeroize = "1.9"
 
 [dev-dependencies]
+# Private writer state and temp directory per test process (#3271).
+okilum-write-authority = { path = "../okilum-write-authority", features = ["test-isolation"] }
 # The default reader parses Markdown with markdown-rs inside gpui-component
 # (vendored). The spec harness (#650) measures that parse too. Keep the
 # requirement identical to the vendor's so both resolve to one locked build.

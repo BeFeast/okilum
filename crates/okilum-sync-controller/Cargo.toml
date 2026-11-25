@@ -27,6 +27,8 @@ globset = "=0.4.20"
 ring = "=0.17.14"
 
 [dev-dependencies]
+# Private writer state and temp directory per test process (#3271).
+okilum-write-authority = { path = "../okilum-write-authority", features = ["test-isolation"] }
 okilum-core = { path = "../okilum-core", default-features = false }
 tempfile = "3"
 

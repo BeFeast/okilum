@@ -1110,6 +1110,13 @@ fn export_labels_rows_by_their_own_session_across_retarget_failure_and_restart(
             b"current instance line\n",
             "{name}: the file holds the rows the view shows"
         );
+        // The note quotes the bundle path. Its length follows the temp directory, so
+        // left in place it re-wraps the view and moves the controls the next clicks
+        // aim at (#3271).
+        h.update(|ws, _, cx| {
+            ws.export_note = None;
+            cx.notify();
+        });
         manifest
     };
 

@@ -5504,7 +5504,9 @@ mod tests {
             let (send, _receive) = async_channel::unbounded();
             prepare_rest(&worker_root, &worker_opts, &worker_cancel, &send)
         });
-        let staged = received.recv_timeout(Duration::from_secs(10)).unwrap();
+        // A rendezvous with the hook, not a speed check: it only guards against a
+        // hang. Ten seconds expired on a loaded host (#3271).
+        let staged = received.recv_timeout(Duration::from_secs(120)).unwrap();
         assert!(
             staged.is_dir(),
             "first worker owns an actual in-progress index"
@@ -9692,6 +9694,11 @@ mod quick_view_tests {
         );
         std::fs::write(root.join("note.md"), &body).unwrap();
         let root = root.canonicalize().unwrap();
+        // The first registration of a folder scans every writer scope the process
+        // already holds and syncs the result (tens to hundreds of ms on a loaded
+        // host; #3272). It would land inside the timed window below, but this
+        // test measures the preview-parse wait, not that registration.
+        okilum_write_authority::Authority::for_root(&root).unwrap();
         let directory = fixture.path().join("state");
         cx.update(|cx| {
             crate::test_init(cx);

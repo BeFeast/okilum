@@ -11,6 +11,17 @@ serde_json = "1"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 tempfile = "3"
+# Only with `test-isolation`; see src/test_isolation.rs.
+ctor = { version = "1", optional = true }
+
+[features]
+# Per-process private writer state and temp directory for test binaries (#3271).
+# Enabled only through [dev-dependencies]; never in a shipped build.
+test-isolation = ["dep:ctor"]
+
+[dev-dependencies]
+# This crate's own unit tests are isolated too.
+ctor = "1"
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", features = ["fs", "process"] }

@@ -391,3 +391,12 @@ fn local_writer_admission_raw_byte_proposals_remain_exact_and_retry_after_releas
     );
     assert_eq!(fs::read(&note).unwrap(), after);
 }
+
+#[test]
+fn writer_admission_tests_use_a_private_writer_state() {
+    assert!(okilum_write_authority::test_isolation::active());
+    let root = okilum_write_authority::test_isolation::root().unwrap();
+    assert!(okilum_write_authority::account_directory()
+        .unwrap()
+        .starts_with(root));
+}

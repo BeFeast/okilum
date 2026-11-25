@@ -18,6 +18,8 @@ serde_json.workspace = true
 okilum-brain = { path = "../okilum-brain" }
 
 [dev-dependencies]
+# Private writer state and temp directory per test process (#3271).
+okilum-write-authority = { path = "../okilum-write-authority", features = ["test-isolation"] }
 base64 = "0.22"
 tempfile = "3"
 sha2 = "0.10"

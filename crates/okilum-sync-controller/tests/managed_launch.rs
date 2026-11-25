@@ -4103,3 +4103,12 @@ fn issue2043_crash_recovery_retains_versions_and_rejects_third_version() -> Resu
     }
     Ok(())
 }
+
+#[test]
+fn writer_admission_tests_use_a_private_writer_state() {
+    assert!(okilum_write_authority::test_isolation::active());
+    let root = okilum_write_authority::test_isolation::root().unwrap();
+    assert!(okilum_write_authority::account_directory()
+        .unwrap()
+        .starts_with(root));
+}

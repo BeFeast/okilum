@@ -113,6 +113,8 @@ unicode-linebreak = "0.1.5"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 
 [dev-dependencies]
+# Private writer state and temp directory per test process (#3271).
+okilum-write-authority = { path = "../okilum-write-authority", features = ["test-isolation"] }
 # cfg(test) is not propagated to dependencies, especially under --release.
 okilum-core = { workspace = true, features = ["test-support"] }
 okilum-shell-kit = { path = "../okilum-shell-kit", features = ["test-support"] }

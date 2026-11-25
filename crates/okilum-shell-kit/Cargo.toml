@@ -38,6 +38,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 
 [dev-dependencies]
+# Private writer state and temp directory per test process (#3271).
+okilum-write-authority = { path = "../okilum-write-authority", features = ["test-isolation"] }
 gpui = { package = "okilum-gpui", path = "../okilum-gpui", features = ["test-support"] }
 okilum-core = { workspace = true, features = ["test-support"] }
 resvg = "=0.45.1"

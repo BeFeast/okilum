@@ -212,6 +212,8 @@ mod reader_document_decorations;
 mod reader_features;
 mod reader_file_access_notice;
 #[cfg(test)]
+mod test_state_isolation_tests;
+#[cfg(test)]
 use reader_features::test_init;
 mod reader_batch;
 #[cfg(any(unix, windows))]

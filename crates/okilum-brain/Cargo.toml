@@ -25,3 +25,7 @@ tar = "0.4"
 
 # Filesystem events drive derived brain indexing; no periodic full scans.
 notify = "7"
+
+[dev-dependencies]
+# Private writer state and temp directory per test process (#3271).
+okilum-write-authority = { path = "../okilum-write-authority", features = ["test-isolation"] }

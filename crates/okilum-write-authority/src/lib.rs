@@ -35,6 +35,8 @@ pub use native_identity as filesystem_identity;
 pub mod filesystem_identity;
 #[cfg(windows)]
 use filesystem_identity::Identity;
+#[cfg(test)]
+mod account_scale_tests;
 #[cfg(all(test, target_os = "linux"))]
 mod identity_linux_tests;
 #[cfg(all(test, target_os = "macos"))]
@@ -43,6 +45,8 @@ mod identity_macos_tests;
 mod identity_windows_tests;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 mod migration;
+#[cfg(any(test, feature = "test-isolation"))]
+pub mod test_isolation;
 pub mod vault_descriptor;
 
 const BINDING_SCHEMA: u32 = if cfg!(any(target_os = "macos", target_os = "linux", windows)) {
@@ -87,6 +91,8 @@ fn identity(path: &Path) -> Result<Identity> {
 /// OKILUM_STATE_DIR is intentionally ignored: a second window cannot bypass a hold
 /// by selecting different drafts/index/profile directories.
 pub fn account_directory() -> Result<PathBuf> {
+    #[cfg(any(test, feature = "test-isolation"))]
+    test_isolation::ensure_linked();
     #[cfg(target_os = "macos")]
     let base = std::env::var_os("HOME")
         .map(|p| PathBuf::from(p).join("Library/Application Support/com.befeast.okilum"));

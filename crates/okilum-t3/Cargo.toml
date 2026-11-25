@@ -37,4 +37,6 @@ tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots", "native
 native-tls = "0.2"
 
 [dev-dependencies]
+# Private writer state and temp directory per test process (#3271).
+okilum-write-authority = { path = "../okilum-write-authority", features = ["test-isolation"] }
 tempfile = "3"
