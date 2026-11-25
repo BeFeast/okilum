@@ -158,26 +158,25 @@ fn exclusive(f: &File) -> Result<()> {
     })
 }
 fn read<T: for<'a> Deserialize<'a>>(p: &Path) -> Result<T> {
-    Ok(read_stamped(p)?.0)
+    parse(&read_bytes(p)?)
 }
-/// `read`, plus the metadata of the handle the content came from (none if
-/// that metadata is unavailable; the read itself is unchanged).
-fn read_stamped<T: for<'a> Deserialize<'a>>(p: &Path) -> Result<(T, Option<fs::Metadata>)> {
+/// The bytes of a record, with exactly the checks and errors of `read`
+/// before parsing.
+fn read_bytes(p: &Path) -> Result<Vec<u8>> {
     ensure!(
         fs::symlink_metadata(p)?.is_file(),
         "Writer authority record is not a regular file"
     );
     let mut bytes = Vec::new();
-    let mut handle = File::open(p)?;
-    let meta = handle.metadata().ok();
-    (&mut handle).take(64 * 1024 + 1).read_to_end(&mut bytes)?;
+    File::open(p)?.take(64 * 1024 + 1).read_to_end(&mut bytes)?;
     ensure!(
         bytes.len() <= 64 * 1024,
         "Writer authority record is oversized"
     );
-    let value = serde_json::from_slice(&bytes)
-        .context("Invalid writer authority; explicit recovery required")?;
-    Ok((value, meta))
+    Ok(bytes)
+}
+fn parse<T: for<'a> Deserialize<'a>>(bytes: &[u8]) -> Result<T> {
+    serde_json::from_slice(bytes).context("Invalid writer authority; explicit recovery required")
 }
 fn persist(p: &Path, v: &impl Serialize, create: bool) -> Result<()> {
     let parent = p.parent().context("Authority parent missing")?;
@@ -453,8 +452,8 @@ impl Authority {
         if let Some(a) = Self::existing(account, &root)? {
             return Ok(a);
         }
-        // Keep holding the lock the migration scan took: no record can change
-        // in between, so its stamp checks stay valid for the registry scan.
+        // Keep holding the lock the migration scan took: no record writer can
+        // run in between, so the records that scan read stay as it read them.
         let _registry = match held {
             Some(registry) => registry,
             None => {
@@ -539,14 +538,27 @@ impl Authority {
             let entry = entry?;
             let p = entry.path();
             if p.extension().is_some_and(|e| e == "json") {
+                let name = entry.file_name();
+                // Read by the migration scan in this same registry.lock hold,
+                // and it cannot concern this root: nothing to do.
                 if index
-                    .get(&entry, &p)
+                    .read_in_this_hold(&name)
                     .is_some_and(|summary| !summary.may_concern(root, &ancestor_identities))
                 {
                     continue;
                 }
-                let (b, meta): (Binding, _) = read_stamped(&p)?;
-                index.learn(&entry, meta.as_ref(), &b);
+                // Otherwise read exactly as without the index, with the same
+                // errors; only the parse of unchanged bytes that cannot
+                // concern this root is skipped.
+                let (bytes, digest) = registry_index::read_record(&p)?;
+                if index
+                    .get(&name, &digest)
+                    .is_some_and(|summary| !summary.may_concern(root, &ancestor_identities))
+                {
+                    continue;
+                }
+                let b: Binding = parse(&bytes)?;
+                index.learn(name, digest, &b);
                 // A UUID-less identity (NFS, SMB, macFUSE; #3202) names its
                 // export by the mount source spelling, so it cannot prove two
                 // roots disjoint: another mount spelling, a child or a parent of

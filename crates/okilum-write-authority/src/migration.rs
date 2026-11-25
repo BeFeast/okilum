@@ -3,8 +3,7 @@ use super::*;
 
 impl Authority {
     /// Returns the held `registry.lock` when it scanned the records, so the
-    /// registration can keep it (and the stamps this scan checked) for its own
-    /// scan.
+    /// registration can keep it, and what this scan read, for its own scan.
     pub(super) fn migrate_legacy_bindings(
         account: &Path,
         requested: &Path,
@@ -38,7 +37,7 @@ impl Authority {
                 binding_path: path,
                 binding,
             };
-            // Whatever it writes, this record is no longer what the index checked.
+            // Whatever it writes, this record is no longer what this hold read.
             index.rewritten(&authority.binding_path);
             let result = authority.migrate_legacy_binding();
             // An unrelated offline/replaced/busy volume cannot prevent opening
@@ -50,9 +49,9 @@ impl Authority {
         Ok(Some(registry))
     }
 
-    /// The record at `entry` when it is a schema 1 record to migrate. A record
-    /// the index proves is not schema 1 is skipped unread (#3272); any other
-    /// is read exactly as before, with the same errors.
+    /// The record at `entry` when it is a schema 1 record to migrate. Every
+    /// record is read exactly as before, with the same errors; a record whose
+    /// bytes the index knows not to be schema 1 is not parsed again (#3272).
     pub(super) fn legacy_record(
         entry: &fs::DirEntry,
         index: &mut registry_index::RecordIndex,
@@ -61,14 +60,16 @@ impl Authority {
         if path.extension().is_none_or(|extension| extension != "json") {
             return Ok(None);
         }
+        let (bytes, digest) = registry_index::read_record(&path)?;
+        let name = entry.file_name();
         if index
-            .get(entry, &path)
+            .get(&name, &digest)
             .is_some_and(|summary| summary.schema != 1)
         {
             return Ok(None);
         }
-        let (binding, meta): (Binding, _) = read_stamped(&path)?;
-        index.learn(entry, meta.as_ref(), &binding);
+        let binding: Binding = parse(&bytes)?;
+        index.learn(name, digest, &binding);
         Ok((binding.schema == 1).then_some((path, binding)))
     }
 

@@ -1,32 +1,33 @@
-//! The registration index (#3272) must never change a registry decision.
-//! Every comparison runs the same scan twice on the same account: once with
-//! the index (`ENABLED`) and once as the pre-#3272 full scan, which reads
-//! every record.
-use super::registry_index::{self, RecordIndex, Summary, ENABLED, HITS, READS, SETTLED, STALE};
+//! The registration index (#3272) must never change a registry decision,
+//! including its errors. Every comparison runs the same scan twice on the
+//! same account: once with the index (`ENABLED`) and once as the pre-#3272
+//! full scan, which parses every record.
+use super::registry_index::{self, RecordIndex, Summary, ENABLED, HITS, PARSES, READS, STALE};
 use super::*;
 
-fn counters() -> [usize; 3] {
+/// Records skipped from the index, record files read, records parsed, and
+/// index entries refused because the bytes changed; all reset.
+fn counters() -> [usize; 4] {
     [
         HITS.with(|c| c.replace(0)),
         READS.with(|c| c.replace(0)),
+        PARSES.with(|c| c.replace(0)),
         STALE.with(|c| c.replace(0)),
     ]
 }
 
-/// Settles every record for the test (no SETTLE wait) and restores the
-/// defaults when dropped, even after a failed assertion.
-struct Settled;
-impl Settled {
+/// Enables the index and restores that default when dropped, even after a
+/// failed assertion.
+struct Fresh;
+impl Fresh {
     fn new() -> Self {
-        SETTLED.with(|s| s.set(true));
         ENABLED.with(|e| e.set(true));
         counters();
         Self
     }
 }
-impl Drop for Settled {
+impl Drop for Fresh {
     fn drop(&mut self) {
-        SETTLED.with(|s| s.set(false));
         ENABLED.with(|e| e.set(true));
     }
 }
@@ -146,12 +147,14 @@ struct Totals {
     stale: usize,
     unread_concerning: usize,
     full_reads: usize,
+    /// Records changed in place with their size and times restored.
+    same_stamp: usize,
 }
 
 const NAMES: [&str; 7] = ["a", "A", "b", "c d", "é", "nest", "Nest"];
 
 fn scenario(seed: u64, totals: &mut Totals) {
-    let _settled = Settled::new();
+    let _fresh = Fresh::new();
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     let temp = tempfile::tempdir().unwrap();
     let base = temp.path().canonicalize().unwrap();
@@ -210,7 +213,7 @@ fn scenario(seed: u64, totals: &mut Totals) {
             continue;
         }
         let record = account.join(format!("{}.json", key(folder)));
-        match rng.below(7) {
+        match rng.below(8) {
             0 => fs::remove_dir_all(folder).unwrap(),
             1 => {
                 let moved = world.join(format!("moved-{number}"));
@@ -243,9 +246,16 @@ fn scenario(seed: u64, totals: &mut Totals) {
             }
             5 => {
                 if record.exists() {
-                    // Another size than any record: the stamp changes even
-                    // within one coarse timestamp tick.
                     fs::write(&record, b"{").unwrap();
+                }
+            }
+            6 => {
+                if let Ok(mut bytes) = fs::read(&record) {
+                    // Corrupt in place, same size, times restored: nothing
+                    // but the content tells this record changed.
+                    bytes[0] = b'x';
+                    overwrite_keeping_stamp(&record, &bytes);
+                    totals.same_stamp += 1;
                 }
             }
             _ => {
@@ -306,9 +316,9 @@ fn scenario(seed: u64, totals: &mut Totals) {
             let walk = number % 2 == 1;
             counters();
             let indexed = decision(&account, probe, true, walk);
-            let [hits, _, stale] = counters();
+            let [hits, _, _, stale] = counters();
             let full = decision(&account, probe, false, walk);
-            let [full_hits, full_reads, _] = counters();
+            let [full_hits, full_reads, _, _] = counters();
             // A record the full scan fails to read (a corrupt one listed first,
             // as NTFS lists by name) ends it before anything is counted.
             assert_eq!(full_hits, 0, "the full scan reads every record");
@@ -377,11 +387,15 @@ fn registry_index_decisions_equal_the_full_scan() {
     );
     assert!(totals.existing > 0 && totals.enclosed > 0 && totals.errors > 0);
     assert!(totals.migrations > 0, "legacy records were compared");
+    assert!(
+        totals.same_stamp > 0,
+        "records changed under an equal stamp"
+    );
 }
 
 #[test]
 fn registry_index_is_ignored_by_older_builds_and_changes_no_record() {
-    let _settled = Settled::new();
+    let _fresh = Fresh::new();
     let temp = tempfile::tempdir().unwrap();
     let account = temp.path().join("account");
     let mut roots = Vec::new();
@@ -426,8 +440,8 @@ fn registry_index_is_ignored_by_older_builds_and_changes_no_record() {
 }
 
 #[test]
-fn registry_index_reads_only_unknown_records() {
-    let _settled = Settled::new();
+fn registry_index_reads_every_record_and_parses_only_unknown_ones() {
+    let _fresh = Fresh::new();
     let temp = tempfile::tempdir().unwrap();
     let account = temp.path().join("account");
     let count = 120;
@@ -436,57 +450,303 @@ fn registry_index_reads_only_unknown_records() {
         fs::create_dir(&root).unwrap();
         Authority::open_in(&account, &root).unwrap();
     }
-    // A missing index: one full read of the records (and the migration scan
-    // learns them first), then a saved index.
+    // A missing index: the migration scan reads and parses every record once;
+    // the registry scan, in the same registry.lock hold, uses what it read.
     fs::remove_file(account.join(registry_index::FILE)).unwrap();
     counters();
     let root = temp.path().join("first");
     fs::create_dir(&root).unwrap();
     Authority::open_in(&account, &root).unwrap();
-    let [hits, reads, _] = counters();
-    assert_eq!(reads, count, "the migration scan read every record once");
-    assert_eq!(hits, count, "the registry scan used what it learned");
-    // With the index: only the record the last registration added is read,
-    // by the migration scan; the registry scan, in the same lock hold, uses
-    // what that scan checked and learned.
+    let [hits, reads, parses, _] = counters();
+    assert_eq!((reads, parses, hits), (count, count, count));
+    // With the index: every record is still read (a read error still stops
+    // the registration), but only the one the last registration added is
+    // parsed.
     let root = temp.path().join("second");
     fs::create_dir(&root).unwrap();
     Authority::open_in(&account, &root).unwrap();
-    let [hits, reads, _] = counters();
-    assert_eq!((reads, hits), (1, 2 * count + 1));
-    // Control: without the index every record is read twice.
+    let [hits, reads, parses, _] = counters();
+    assert_eq!((reads, parses, hits), (count + 1, 1, 2 * count + 1));
+    // Control: without the index every record is read and parsed twice.
     let root = temp.path().join("third");
     fs::create_dir(&root).unwrap();
     with_index(false, || Authority::open_in(&account, &root)).unwrap();
-    let [hits, reads, _] = counters();
-    assert_eq!((reads, hits), (2 * (count + 2), 0));
+    let [hits, reads, parses, _] = counters();
+    assert_eq!((reads, parses, hits), (2 * (count + 2), 2 * (count + 2), 0));
 }
 
-#[test]
-fn registry_index_caches_a_record_only_after_it_settles() {
-    ENABLED.with(|e| e.set(true));
-    let temp = tempfile::tempdir().unwrap();
-    let account = temp.path().join("account");
-    let new = |name: &str| {
-        let root = temp.path().join(name);
-        fs::create_dir(&root).unwrap();
-        Authority::open_in(&account, &root).unwrap();
+/// Rewrites `path` in place with `bytes` and restores its modification time
+/// (and, on Windows, its creation time), as `SetFileTime` allows any program
+/// to. Only Unix ctime still changes; Okilum's index trusts none of these.
+fn overwrite_keeping_stamp(path: &Path, bytes: &[u8]) {
+    let before = fs::metadata(path).unwrap();
+    let file = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .unwrap();
+    (&file).write_all(bytes).unwrap();
+    let times = fs::FileTimes::new()
+        .set_accessed(before.accessed().unwrap())
+        .set_modified(before.modified().unwrap());
+    #[cfg(windows)]
+    let times = {
+        use std::os::windows::fs::FileTimesExt;
+        times.set_created(before.created().unwrap())
     };
-    new("one");
-    new("two");
+    file.set_times(times).unwrap();
+    drop(file);
+    let after = fs::metadata(path).unwrap();
+    assert_eq!(after.len(), before.len(), "same size");
+    assert_eq!(after.modified().unwrap(), before.modified().unwrap());
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        assert_eq!(
+            (
+                after.file_size(),
+                after.creation_time(),
+                after.last_write_time()
+            ),
+            (
+                before.file_size(),
+                before.creation_time(),
+                before.last_write_time()
+            ),
+            "the whole Windows stamp of #3284's first version is unchanged"
+        );
+    }
+}
+
+/// An account of four registered folders, the first three in the index, and a
+/// new unrelated folder to register next.
+struct Cached {
+    _temp: tempfile::TempDir,
+    account: PathBuf,
+    authorities: Vec<Authority>,
+    new: PathBuf,
+}
+fn cached() -> Cached {
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path().canonicalize().unwrap();
+    let account = base.join("account");
+    let mut authorities = Vec::new();
+    for name in ["one", "two", "three", "four"] {
+        let root = base.join(name);
+        fs::create_dir(&root).unwrap();
+        authorities.push(Authority::open_in(&account, &root).unwrap());
+    }
     let account = account.canonicalize().unwrap();
+    assert_eq!(RecordIndex::new(&account).len(), 3, "records known");
+    let new = base.join("new");
+    fs::create_dir(&new).unwrap();
+    Cached {
+        _temp: temp,
+        account,
+        authorities,
+        new,
+    }
+}
+
+/// Every decision the index can take on `cached`'s account, with and
+/// without it: the registry scan (alone and after the migration scan in the
+/// same hold), the migration scan, and a whole registration.
+fn decisions(cached: &Cached, enabled: bool) -> Vec<String> {
+    let mut decisions = vec![
+        decision(&cached.account, &cached.new, enabled, false),
+        decision(&cached.account, &cached.new, enabled, true),
+    ];
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    decisions.extend(migration(&cached.account, enabled));
+    let account = cached.account.clone();
+    let new = cached.new.clone();
+    decisions.push(with_index(enabled, || {
+        match Authority::open_in(&account, &new) {
+            Ok(authority) => {
+                // Undo, so the next comparison sees the same account.
+                fs::remove_file(&authority.binding_path).unwrap();
+                fs::remove_dir_all(&authority.directory).unwrap();
+                "registered".to_owned()
+            }
+            Err(error) => format!("error {error:#}"),
+        }
+    }));
+    decisions
+}
+
+/// Review of #3284, finding 1: a record replaced or rewritten in place with
+/// an equal size and restored times (Windows: the whole first-version stamp)
+/// must be noticed. Malformed: the full scan stops with an explicit-recovery
+/// error. Valid with a changed physical identity: the full scan sees an alias
+/// of the new folder with an unfinished hold.
+#[test]
+fn registry_index_notices_a_change_that_keeps_size_and_times() {
+    let _fresh = Fresh::new();
+    for valid in [false, true] {
+        let cached = cached();
+        let record = &cached.authorities[1].binding_path;
+        let original = fs::read(record).unwrap();
+        let changed = if valid {
+            // An unfinished hold: the physical-alias check refuses the new
+            // folder while this record claims its identity.
+            drop(cached.authorities[1].begin_drain("same stamp"));
+            let original = fs::read(record).unwrap();
+            let mut binding: Binding = serde_json::from_slice(&original).unwrap();
+            binding.root_identity = identity(&cached.new).unwrap();
+            let mut bytes = serde_json::to_vec(&binding).unwrap();
+            assert!(bytes.len() <= original.len() + 64);
+            // Pad the original and the change to one length (JSON allows
+            // trailing whitespace), and let the index learn the original.
+            let length = original.len() + 64;
+            let mut padded = original.clone();
+            padded.resize(length, b' ');
+            persist_bytes(record, &padded);
+            bytes.resize(length, b' ');
+            let warm = cached.new.with_file_name("warm");
+            fs::create_dir(&warm).unwrap();
+            Authority::open_in(&cached.account, &warm).unwrap();
+            bytes
+        } else {
+            let mut bytes = original.clone();
+            bytes[0] = b'x';
+            bytes
+        };
+        let before = decisions(&cached, true);
+        assert!(
+            before.last().unwrap() == "registered",
+            "control: the unchanged account registers {before:?}"
+        );
+        overwrite_keeping_stamp(record, &changed);
+        counters();
+        let indexed = decisions(&cached, true);
+        let [_, _, _, stale] = counters();
+        let full = decisions(&cached, false);
+        assert_eq!(indexed, full, "valid: {valid}");
+        assert!(stale > 0, "the index entry was refused");
+        let expected = if valid {
+            "Physical vault identity has an unfinished hold"
+        } else {
+            "Invalid writer authority; explicit recovery required"
+        };
+        assert!(
+            indexed.last().unwrap().contains(expected),
+            "the registration stops as the full scan does: {indexed:?}"
+        );
+    }
+}
+
+/// Writes `bytes` over `path` the way records are written (temp + rename).
+fn persist_bytes(path: &Path, bytes: &[u8]) {
+    let mut temp = tempfile::NamedTempFile::new_in(path.parent().unwrap()).unwrap();
+    temp.write_all(bytes).unwrap();
+    temp.persist(path).unwrap();
+}
+
+/// Review of #3284, finding 2: a cached record that can be listed and
+/// stat'ed but not opened or read still stops the registration, with the
+/// full scan's error. Windows: another handle denies read sharing; Unix: no
+/// read permission (not enforced for root, so skipped there).
+#[test]
+fn registry_index_keeps_the_read_error_of_a_cached_record() {
+    let _fresh = Fresh::new();
+    let cached = cached();
+    let record = cached.authorities[1].binding_path.clone();
+    let before = decisions(&cached, true);
+    assert_eq!(before.last().unwrap(), "registered", "control: {before:?}");
+    #[cfg(windows)]
+    let _deny = {
+        use std::os::windows::fs::OpenOptionsExt;
+        OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&record)
+            .unwrap()
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            println!("root ignores file permissions; nothing to check");
+            return;
+        }
+        fs::set_permissions(&record, fs::Permissions::from_mode(0o000)).unwrap();
+    }
+    // The record is still listed with metadata: only its content is gone.
+    let listed = fs::read_dir(&cached.account)
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .find(|entry| entry.path() == record)
+        .unwrap();
+    listed.metadata().unwrap();
     assert!(
-        !account.join(registry_index::FILE).exists(),
-        "a record younger than SETTLE is never cached"
+        File::open(&record).is_err(),
+        "control: the record is unreadable"
     );
-    std::thread::sleep(registry_index::SETTLE + std::time::Duration::from_millis(200));
-    new("three");
-    assert_eq!(RecordIndex::new(&account).len(), 2, "both settled records");
+    let indexed = decisions(&cached, true);
+    let full = decisions(&cached, false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&record, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    assert_eq!(indexed, full);
+    assert!(
+        indexed.last().unwrap().starts_with("error"),
+        "the registration stops as the full scan does: {indexed:?}"
+    );
+}
+
+/// The index caches what a record's bytes parse to; its MAGIC must change
+/// with that parse. This pins the definitions it depends on.
+#[test]
+fn registry_index_format_is_pinned() {
+    fn item(source: &str, start: &str, end: &str) -> String {
+        let source = source.replace('\r', "");
+        let from = source.find(start).expect(start);
+        let to = from + source[from..].find(end).expect(end) + end.len();
+        source[from..to].to_owned()
+    }
+    let shape = [
+        item(include_str!("lib.rs"), "struct Binding {", "\n}"),
+        item(include_str!("lib.rs"), "struct Identity(", ");"),
+        item(include_str!("lib.rs"), "fn parse<", "\n}"),
+        item(
+            include_str!("identity_linux.rs"),
+            "pub struct Identity(",
+            ");",
+        ),
+        item(
+            include_str!("identity_macos.rs"),
+            "pub struct Identity(",
+            ");",
+        ),
+        item(
+            include_str!("identity_windows.rs"),
+            "pub struct Identity(",
+            ");",
+        ),
+        item(
+            include_str!("identity_windows.rs"),
+            "pub enum FileIdentity {",
+            "\n}",
+        ),
+        item(
+            include_str!("registry_index.rs"),
+            "pub(super) fn of(",
+            "\n    }",
+        ),
+    ]
+    .join("\n");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(shape)),
+        "20646442785db736052749a83b86338ec0172893f316c7b09bbb17a47c82e731",
+        "a record's parse changed: bump registry_index::MAGIC, then update this pin"
+    );
 }
 
 #[test]
 fn registry_index_refuses_a_damaged_or_foreign_file() {
-    let _settled = Settled::new();
+    let _fresh = Fresh::new();
     let temp = tempfile::tempdir().unwrap();
     let account = temp.path().join("account");
     for name in ["one", "two"] {
@@ -513,7 +773,7 @@ fn registry_index_refuses_a_damaged_or_foreign_file() {
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 #[test]
 fn registry_index_rereads_a_record_the_migration_rewrote() {
-    let _settled = Settled::new();
+    let _fresh = Fresh::new();
     let temp = tempfile::tempdir().unwrap();
     let account = temp.path().join("account");
     let mut authorities = Vec::new();
@@ -546,15 +806,16 @@ fn registry_index_rereads_a_record_the_migration_rewrote() {
     assert_eq!(read::<Binding>(&legacy.binding_path).unwrap().schema, 1);
     drop(busy);
     // Now the migration scan rewrites it in the same lock hold as the
-    // registry scan, which must read the new file instead of trusting the
-    // stamp checked before the rewrite.
+    // registry scan, which must read the new file instead of using what the
+    // migration scan read before the rewrite.
     counters();
     let root = temp.path().join("five");
     fs::create_dir(&root).unwrap();
     Authority::open_in(&account, &root).unwrap();
     assert_eq!(read::<Binding>(&legacy.binding_path).unwrap().schema, 2);
-    let [_, reads, stale] = counters();
-    // Migration: "two" (cached schema 1, read to migrate) and "four" (new);
-    // registry scan: "two" again, now a different file.
-    assert_eq!((reads, stale), (3, 1));
+    let [_, reads, parses, stale] = counters();
+    // Migration: reads all four records, parses "two" (cached schema 1, to
+    // migrate) and "four" (new); registry scan: reads and parses "two" again,
+    // now different bytes.
+    assert_eq!((reads, parses, stale), (5, 3, 1));
 }
