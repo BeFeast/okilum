@@ -32,7 +32,7 @@
 use super::*;
 
 /// Scopes retired by one registration; the rest wait for the next one.
-pub(super) const PER_REGISTRATION: usize = 1024;
+pub(super) const PER_REGISTRATION: usize = 256;
 /// Present while a scope may be retired; removed for good by `durable_binding`.
 pub(super) const PRUNABLE: &str = "prunable";
 const TOMBSTONE: &str = "pruned";
