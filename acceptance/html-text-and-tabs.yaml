@@ -1,0 +1,30 @@
+# C6/C9 (markdown conformance 2026-11-24, #3260):
+# - Text of a raw HTML block that no <p> encloses has no paragraph gap of its
+#   own: <div>Alpha</div> and <div>Bravo</div> sit on consecutive lines, as in
+#   a browser, whether they are separate HTML blocks (blank line between) or
+#   one block (Echo, Foxtrot). Markdown paragraphs keep their gap (Charlie,
+#   Delta), and so does bare text before a Markdown paragraph (Foxtrot, Golf).
+# - A tab that indented code inside a container only partly uses keeps its
+#   leftover columns: ">\t\talpha" is "  alpha", aligned with "  omega"
+#   (written with spaces), two columns right of "sigma".
+# - The three quoted code lines are one code block: markdown-rs split an
+#   indented code block inside a block quote into one block per line.
+appearance: light
+note: "<div>Alpha</div>\n\n<div>Bravo</div>\n\nCharlie paragraph\n\nDelta paragraph\n\n<div>Echo</div>\n<div>Foxtrot</div>\n\nGolf paragraph\n\n>\t\talpha\n>       omega\n>     sigma\n"
+region: [300, 60, 800, 700]
+ready_text: Alpha
+steps:
+  - id: html-text-and-tabs
+    text: Charlie paragraph
+    layout:
+      # Bare HTML text runs on: one line apart, closer than a paragraph break.
+      - {a: Alpha, b: Bravo, min: 12, less_than: {a: Charlie, b: Delta, by: -8}}
+      - {a: Echo, b: Foxtrot, min: 12, less_than: {a: Charlie, b: Delta, by: -8}}
+      # Before a Markdown paragraph the gap stays.
+      - {a: Foxtrot, b: Golf, more_than: {a: Echo, b: Foxtrot, by: 8}}
+      # One code block: omega is one line below alpha, not a block gap.
+      - {a: alpha, b: omega, min: 12, less_than: {a: Charlie, b: Delta, by: -8}}
+      # alpha starts where omega starts (same 5-letter width), so the x gap
+      # from alpha's end to omega's start is more negative than from sigma's
+      # end (two columns further left) to omega's start.
+      - {a: alpha, b: omega, axis: x, less_than: {a: sigma, b: omega, axis: x, by: -6}}
