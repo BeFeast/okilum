@@ -38,6 +38,132 @@ fn project_prefix_and_parent_location() {
     assert_eq!(location("note.md", ""), None);
 }
 
+fn some(labels: &[&str]) -> Vec<Option<String>> {
+    labels
+        .iter()
+        .map(|label| Some((*label).to_owned()))
+        .collect()
+}
+
+#[test]
+fn unique_names_keep_the_parent_folder_label() {
+    let rows = [
+        ("plan", "Dev/App/plan.md"),
+        ("rules", "Dev/App/design/rules.md"),
+        ("note", "note.md"),
+    ];
+    assert_eq!(
+        contexts(&rows, ""),
+        vec![Some("App".into()), Some("design".into()), None]
+    );
+    assert_eq!(
+        contexts(&rows[..2], "Dev/App"),
+        vec![None, Some("design".into())]
+    );
+}
+
+#[test]
+fn colliding_names_get_the_shortest_distinguishing_suffix() {
+    // One folder level apart.
+    let rows = [
+        ("state", "karaoke/assistant/state.md"),
+        ("state", "ok-player/assistant/state.md"),
+        ("state", "okilum/assistant/state.md"),
+        ("plan", "karaoke/plan.md"),
+    ];
+    assert_eq!(
+        contexts(&rows, ""),
+        some(&[
+            "karaoke/assistant",
+            "ok-player/assistant",
+            "okilum/assistant",
+            "karaoke"
+        ])
+    );
+    // Three levels apart: only the outermost folders differ.
+    let deep = [
+        ("state", "a/x/assistant/state.md"),
+        ("state", "b/x/assistant/state.md"),
+    ];
+    assert_eq!(
+        contexts(&deep, ""),
+        some(&["a/x/assistant", "b/x/assistant"])
+    );
+    // Depth is per row: a folder name no other row has stays short.
+    let mixed = [
+        ("state", "a/assistant/state.md"),
+        ("state", "b/assistant/state.md"),
+        ("state", "c/other/state.md"),
+    ];
+    assert_eq!(
+        contexts(&mixed, ""),
+        some(&["a/assistant", "b/assistant", "other"])
+    );
+    // Depth 2 for the pair, and a row with a shorter path keeps its own.
+    let uneven = [
+        ("state", "assistant/state.md"),
+        ("state", "c/x/assistant/state.md"),
+        ("state", "d/x/assistant/state.md"),
+    ];
+    assert_eq!(
+        contexts(&uneven, ""),
+        some(&["assistant", "c/x/assistant", "d/x/assistant"])
+    );
+}
+
+#[test]
+fn collisions_are_told_apart_inside_the_menus_scope() {
+    let rows = [
+        ("state", "Dev/App/a/assistant/state.md"),
+        ("state", "Dev/App/b/assistant/state.md"),
+    ];
+    assert_eq!(
+        contexts(&rows, "Dev/App"),
+        some(&["a/assistant", "b/assistant"])
+    );
+}
+
+#[test]
+fn a_note_at_the_scope_root_has_no_label_even_when_the_name_repeats() {
+    let rows = [("state", "state.md"), ("state", "x/state.md")];
+    assert_eq!(contexts(&rows, ""), vec![None, Some("x".to_owned())]);
+    // Two root notes of one name are told apart by file name.
+    let twins = [("State", "a.md"), ("State", "b.md")];
+    assert_eq!(contexts(&twins, ""), some(&["a.md", "b.md"]));
+}
+
+#[test]
+fn same_name_in_one_folder_ends_in_the_file_name_and_one_note_never_collides() {
+    let rows = [("State", "p/a.md"), ("State", "p/b.md")];
+    assert_eq!(contexts(&rows, ""), some(&["p/a.md", "p/b.md"]));
+    // The same note listed twice (Pinned and Recent rows) is not a collision.
+    let twice = [("state", "p/state.md"), ("state", "p/state.md")];
+    assert_eq!(contexts(&twice, ""), some(&["p", "p"]));
+}
+
+#[test]
+fn disambiguating_entries_rewrites_only_colliding_locations() {
+    let entry = |path: &str, label: &str| Entry {
+        path: path.into(),
+        label: label.into(),
+        location: location(path, ""),
+        age: None,
+        folder: false,
+        unsaved: false,
+    };
+    let mut entries = vec![
+        entry("a/assistant/state.md", "state"),
+        entry("b/assistant/state.md", "state"),
+        entry("a/assistant/plan.md", "plan"),
+    ];
+    disambiguate(&mut entries, "");
+    let locations: Vec<_> = entries.iter().map(|e| e.location.as_deref()).collect();
+    assert_eq!(
+        locations,
+        [Some("a/assistant"), Some("b/assistant"), Some("assistant")]
+    );
+}
+
 /// Opens `vault` on `note.md` at a desktop width, with keys bound.
 fn open_reader<'a>(
     cx: &'a mut TestAppContext,

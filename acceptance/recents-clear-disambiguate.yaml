@@ -1,0 +1,76 @@
+# The vault start page lists three recent notes that are all `state` in an
+# `assistant` folder of different projects. Each row must say which project it
+# is: the shortest folder suffix that tells them apart, not three times
+# «assistant». The Recent heading offers «Clear», and ⌘K offers «Clear recent
+# notes»: the list empties, a toast offers Undo, and Undo restores the list; a
+# clear survives a restart.
+# The first note is closed to reach the start page.
+open: a/assistant/state.md
+generate:
+  - path: a/assistant/state.md
+    kind: text
+    text: |
+      # State of a
+  - path: b/assistant/state.md
+    kind: text
+    text: |
+      # State of b
+  - path: c/x/assistant/state.md
+    kind: text
+    text: |
+      # State of c
+sidebar_state:
+  recent:
+    - [a/assistant/state.md, 1795000300]
+    - [b/assistant/state.md, 1795000200]
+    - [c/x/assistant/state.md, 1795000100]
+appearance: light
+rig:
+  persistent_pointer: true
+preferences:
+  note_open_mode: read
+region: [265, 50, 1366, 700]
+ready_text: State of a
+steps:
+  - id: labels-tell-notes-apart
+    keys: [w]
+    mods: [ctrl]
+    wait: 1
+    region: [265, 400, 1060, 640]
+    text_order: [a/assistant, b/assistant, x/assistant]
+  - id: clear-button-empties-list
+    click: [940, 420]
+    wait: 0.8
+    region: [265, 400, 1060, 640]
+    text_absent: assistant
+  - id: undo-toast-visible
+    region: [975, 690, 260, 32]
+    text: Recent notes cleared
+  - id: undo-restores-list
+    click: [1298, 705]
+    wait: 0.8
+    region: [265, 400, 1060, 640]
+    text_order: [a/assistant, b/assistant, x/assistant]
+  - id: palette-offers-command
+    keys: [k]
+    mods: [ctrl]
+    wait: 0.6
+  - id: palette-command-typed
+    type: clear recent
+    wait: 0.8
+    region: [265, 50, 1366, 700]
+    text: Clear recent notes
+  - id: palette-clears-list
+    keys: [Return]
+    wait: 0.8
+    region: [265, 400, 1060, 640]
+    text_absent: assistant
+  - id: palette-clear-toast
+    region: [975, 690, 260, 32]
+    text: Recent notes cleared
+  - id: cleared-list-persists
+    restart: session
+    wait: 1.5
+    region: [265, 50, 1366, 700]
+    text: Create a note or pick up where you left off
+    text_absent: assistant

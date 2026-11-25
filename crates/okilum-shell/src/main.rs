@@ -217,6 +217,7 @@ mod reader_batch;
 #[cfg(any(unix, windows))]
 mod reader_daily_notes;
 mod reader_recent;
+mod reader_recent_clear;
 #[cfg(any(unix, windows))]
 mod reader_recovery_rows;
 mod reader_reminder;
