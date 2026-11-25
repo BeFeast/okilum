@@ -45,6 +45,9 @@ mod identity_macos_tests;
 mod identity_windows_tests;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 mod migration;
+mod prune;
+#[cfg(test)]
+mod prune_tests;
 #[cfg(any(test, feature = "test-isolation"))]
 pub mod test_isolation;
 pub mod vault_descriptor;
@@ -360,6 +363,9 @@ impl DurableBinding {
 impl Authority {
     pub fn durable_binding(&self) -> Result<DurableBinding> {
         let (authority, _lock) = self.locked()?;
+        // Sync keeps this reference and may admit it while the root is absent
+        // (#2582): the scope must never be retired from now on.
+        prune::pin(&authority.directory)?;
         Ok(DurableBinding {
             account: authority.account,
             binding: authority.binding,
@@ -425,11 +431,25 @@ impl Authority {
         // Promote idle quick-file scopes under the registry lock. Keep their
         // records: existing handles resolve the new enclosing authority at admission.
         let mut enclosed = Vec::new();
+        // Scopes whose root was missing, and unfinished retirements (#3272).
+        let mut stale = Vec::new();
+        let mut tombstones = Vec::new();
         let ancestor_identities = root.ancestors().map(identity).collect::<Result<Vec<_>>>()?;
         for entry in fs::read_dir(&account)? {
             let p = entry?.path();
+            if prune::is_tombstone(&p) {
+                tombstones.push(p);
+                continue;
+            }
             if p.extension().is_some_and(|e| e == "json") {
                 let b: Binding = read(&p)?;
+                #[cfg(test)]
+                SCANNED.with(|count| count.set(count.get() + 1));
+                if fs::symlink_metadata(&b.root)
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+                {
+                    stale.push((p.clone(), b.clone()));
+                }
                 // A UUID-less identity (NFS, SMB, macFUSE; #3202) names its
                 // export by the mount source spelling, so it cannot prove two
                 // roots disjoint: another mount spelling, a child or a parent of
@@ -494,6 +514,14 @@ impl Authority {
             }
         }
         let directory = account.join(key(&root));
+        // A scope retired at this path whose removal was interrupted: its record
+        // was already unpublished while idle and Open, so nothing can hold it.
+        let tombstone = prune::tombstone(&account, &root);
+        if tombstone.try_exists()? {
+            prune::remove_scope(&directory)?;
+            fs::remove_file(&tombstone)?;
+            tombstones.retain(|t| *t != tombstone);
+        }
         // No binding was published, so no caller can have acquired this scope.
         // Resume interrupted initialization under registry.lock, preserving any
         // unfinished durable hold rather than resetting operational state.
@@ -509,7 +537,12 @@ impl Authority {
                 "Unbound authority is not an interrupted initial Open state; recovery required"
             );
         }
-        for name in ["admission.lock", "writers.lock", "owner.lock"] {
+        for name in [
+            "admission.lock",
+            "writers.lock",
+            "owner.lock",
+            prune::PRUNABLE,
+        ] {
             file(&directory.join(name), true)?.sync_all()?;
         }
         let binding = Binding {
@@ -534,6 +567,9 @@ impl Authority {
         )?;
         let binding_path = account.join(format!("{}.json", key(&root)));
         persist(&binding_path, &binding, true)?;
+        drop(enclosed);
+        prune::run(&account, stale, tombstones);
+        drop(registry);
         Ok(Self {
             requested: None,
             account,
@@ -1096,6 +1132,8 @@ fn existing_directory(directory: &Path) -> Result<&Path> {
     anyhow::bail!("Destination has no existing parent")
 }
 
+#[cfg(test)]
+thread_local! { static SCANNED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 #[cfg(test)]
 thread_local! { static VALIDATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 

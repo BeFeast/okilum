@@ -1,6 +1,6 @@
 //! How the cost of opening a vault scope grows with the entries already in the
-//! account directory (#3272). Nothing prunes those entries, so a long-lived
-//! account (or a test host) only ever adds to them.
+//! account directory (#3272). These entries have real folders, so pruning
+//! (`prune.rs`) keeps them all: this is the cost of live scopes.
 //!
 //! Run on a pool host, in release as shipped:
 //! `cargo test -p okilum-write-authority --release account_scale -- --ignored --nocapture`
