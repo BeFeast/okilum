@@ -42,10 +42,12 @@ ZONE = "Asia/Jerusalem"
 
 
 ZONE_EVIDENCE = "issue2567-retention-zone"
+# Test isolation (#3271) deletes the test's own $TMPDIR at exit: name the file.
+ZONE_EVIDENCE_VARIABLE = "OKILUM_SYNC_ZONE_EVIDENCE"
 
 
 def ran_in(work, *zones):
-    """The retention control records `date '+%Z %z'` in its own TMPDIR."""
+    """The retention control records `date '+%Z %z'` in the file the driver names."""
     evidence = work / ZONE_EVIDENCE
     return evidence.is_file() and evidence.read_text().strip() in zones
 
@@ -96,7 +98,8 @@ def run_trials(args, evidence, processes):
                 work = evidence / name
                 work.mkdir()
                 log = evidence / f"{name}.log"
-                env = dict(os.environ, RUST_BACKTRACE="1", TMPDIR=str(work), TZ=zone)
+                env = dict(os.environ, RUST_BACKTRACE="1", TMPDIR=str(work), TZ=zone,
+                           **{ZONE_EVIDENCE_VARIABLE: str(work / ZONE_EVIDENCE)})
                 with log.open("w") as output:
                     process = subprocess.Popen(
                         [str(args.executable.resolve()), *selection, "--ignored",
