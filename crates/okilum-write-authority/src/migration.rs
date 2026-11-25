@@ -2,14 +2,20 @@
 use super::*;
 
 impl Authority {
-    pub(super) fn migrate_legacy_bindings(account: &Path, requested: &Path) -> Result<()> {
+    /// Returns the held `registry.lock` when it scanned the records, so the
+    /// registration can keep it, and what this scan read, for its own scan.
+    pub(super) fn migrate_legacy_bindings(
+        account: &Path,
+        requested: &Path,
+        reads: &mut registry_reads::HoldReads,
+    ) -> Result<Option<File>> {
         // Normal admissions must not take the account-wide registration lock.
         // The outermost existing scope is the one existing() will select.
         for ancestor in requested.ancestors().collect::<Vec<_>>().into_iter().rev() {
             let path = account.join(format!("{}.json", key(ancestor)));
             if path.try_exists()? {
                 if read::<Binding>(&path)?.schema == BINDING_SCHEMA {
-                    return Ok(());
+                    return Ok(None);
                 }
                 break;
             }
@@ -19,14 +25,9 @@ impl Authority {
             .lock()
             .context("Cannot serialize writer identity migration")?;
         for entry in fs::read_dir(account)? {
-            let path = entry?.path();
-            if path.extension().is_none_or(|extension| extension != "json") {
+            let Some((path, binding)) = Self::legacy_record(&entry?, reads)? else {
                 continue;
-            }
-            let binding: Binding = read(&path)?;
-            if binding.schema != 1 {
-                continue;
-            }
+            };
             let relevant =
                 requested.starts_with(&binding.root) || binding.root.starts_with(requested);
             let authority = Self {
@@ -36,6 +37,8 @@ impl Authority {
                 binding_path: path,
                 binding,
             };
+            // Whatever it writes, this record is no longer what this hold read.
+            reads.rewritten(&authority.binding_path);
             let result = authority.migrate_legacy_binding();
             // An unrelated offline/replaced/busy volume cannot prevent opening
             // this vault. Registry alias checks still retain its durable fences.
@@ -43,7 +46,23 @@ impl Authority {
                 result?;
             }
         }
-        Ok(())
+        Ok(Some(registry))
+    }
+
+    /// The record at `entry` when it is a schema 1 record to migrate. Every
+    /// record is read exactly as before, with the same errors, and remembered
+    /// for the registry scan in this hold (#3272).
+    pub(super) fn legacy_record(
+        entry: &fs::DirEntry,
+        reads: &mut registry_reads::HoldReads,
+    ) -> Result<Option<(PathBuf, Binding)>> {
+        let path = entry.path();
+        if path.extension().is_none_or(|extension| extension != "json") {
+            return Ok(None);
+        }
+        let binding = registry_reads::read_record(&path)?;
+        reads.learn(entry.file_name(), &binding);
+        Ok((binding.schema == 1).then_some((path, binding)))
     }
 
     fn migrate_legacy_binding(&self) -> Result<()> {

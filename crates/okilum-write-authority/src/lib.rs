@@ -45,6 +45,9 @@ mod identity_macos_tests;
 mod identity_windows_tests;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 mod migration;
+mod registry_reads;
+#[cfg(test)]
+mod registry_reads_tests;
 #[cfg(any(test, feature = "test-isolation"))]
 pub mod test_isolation;
 pub mod vault_descriptor;
@@ -254,6 +257,19 @@ struct Binding {
     writers: Identity,
     owner: Identity,
 }
+/// Outcome of the registry scan for a new root.
+enum Scan {
+    /// A physical alias of the root already has this authority.
+    Existing(Box<Authority>),
+    /// No alias: these nested scopes are locked idle for the promotion.
+    Enclosed(Vec<Enclosed>),
+}
+struct Enclosed {
+    #[cfg_attr(not(test), allow(dead_code))] // compared by the equivalence tests
+    directory: PathBuf,
+    _admission: File,
+    _writers: File,
+}
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Phase {
     Open,
@@ -410,89 +426,34 @@ impl Authority {
             !account.starts_with(&root),
             "Writer authority must be outside the vault"
         );
+        // Records read in this registry.lock hold (#3272); see registry_reads.rs.
+        let mut reads = registry_reads::HoldReads::default();
         #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-        Self::migrate_legacy_bindings(&account, &root)?;
+        let held = Self::migrate_legacy_bindings(&account, &root, &mut reads)?;
+        #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+        let held: Option<File> = None;
         if let Some(a) = Self::existing(&account, &root)? {
             return Ok(a);
         }
-        let registry = file(&account.join("registry.lock"), true)?;
-        registry
-            .lock()
-            .context("Cannot serialize vault authority registration")?;
-        if let Some(a) = Self::existing(&account, &root)? {
-            return Ok(a);
-        }
-        // Promote idle quick-file scopes under the registry lock. Keep their
-        // records: existing handles resolve the new enclosing authority at admission.
-        let mut enclosed = Vec::new();
-        let ancestor_identities = root.ancestors().map(identity).collect::<Result<Vec<_>>>()?;
-        for entry in fs::read_dir(&account)? {
-            let p = entry?.path();
-            if p.extension().is_some_and(|e| e == "json") {
-                let b: Binding = read(&p)?;
-                // A UUID-less identity (NFS, SMB, macFUSE; #3202) names its
-                // export by the mount source spelling, so it cannot prove two
-                // roots disjoint: another mount spelling, a child or a parent of
-                // a registered root may be the same physical folder. Allow one
-                // UUID-less scope; a different one is refused while any other
-                // UUID-less binding is registered, whether or not it is readable.
-                #[cfg(target_os = "macos")]
-                ensure!(
-                    !ancestor_identities[0].is_mount_source()
-                        || !b.root_identity.is_mount_source()
-                        || b.root_identity == ancestor_identities[0],
-                    "{} is on a network or FUSE volume without a volume UUID, and another such folder ({}) already has a writer scope; only one is supported for now (#3204)",
-                    root.display(),
-                    b.root.display()
-                );
-                // Canonical path aliases such as bind mounts can still name
-                // the same physical root. Never mint a second authority for it.
-                if physical_candidate(&ancestor_identities, &b.root_identity) {
-                    let a = Self {
-                        requested: None,
-                        account: account.clone(),
-                        binding_path: p.clone(),
-                        directory: account.join(key(&b.root)),
-                        binding: b.clone(),
-                    };
-                    if identity(&b.root)
-                        .is_ok_and(|current| physical_candidate(&[current], &b.root_identity))
-                    {
-                        a.validate()?;
-                        return Ok(a);
-                    }
-                    // A removed inactive vault's inode may be reused for an
-                    // unrelated new folder. An unfinished hold still fences a
-                    // moved physical root even after its old path disappears.
-                    ensure!(a.state()?.phase == Phase::Open,
-                        "Physical vault identity has an unfinished hold at another root; explicit recovery required");
-                }
-                if b.root.starts_with(&root) && b.root != root {
-                    let child = Self {
-                        requested: None,
-                        account: account.clone(),
-                        binding_path: p.clone(),
-                        directory: account.join(key(&b.root)),
-                        binding: b,
-                    };
-                    let admission = file(&child.directory.join("admission.lock"), false)?;
-                    admission.lock()?;
-                    // A temporarily moved/deleted child root still owns its
-                    // durable hold and outstanding leases. Missing paths never
-                    // authorize an enclosing scope to bypass those fences.
-                    if child.root().try_exists()? {
-                        child.validate()?;
-                    } else {
-                        child.validate_binding()?;
-                    }
-                    ensure!(child.state()?.phase == Phase::Open,
-                        "Enclosed folder has an unfinished writer hold; release or recover it before opening the enclosing vault");
-                    let writers = file(&child.directory.join("writers.lock"), false)?;
-                    writers.try_lock().context("Enclosed folder is publishing; retry opening the enclosing vault after it finishes")?;
-                    enclosed.push((admission, writers));
-                }
+        // Keep holding the lock the migration scan took: no record writer can
+        // run in between, so the records that scan read stay as it read them.
+        let _registry = match held {
+            Some(registry) => registry,
+            None => {
+                let registry = file(&account.join("registry.lock"), true)?;
+                registry
+                    .lock()
+                    .context("Cannot serialize vault authority registration")?;
+                registry
             }
+        };
+        if let Some(a) = Self::existing(&account, &root)? {
+            return Ok(a);
         }
+        let _enclosed = match Self::scan_registry(&account, &root, &reads)? {
+            Scan::Existing(a) => return Ok(*a),
+            Scan::Enclosed(enclosed) => enclosed,
+        };
         let directory = account.join(key(&root));
         // No binding was published, so no caller can have acquired this scope.
         // Resume interrupted initialization under registry.lock, preserving any
@@ -541,6 +502,101 @@ impl Authority {
             directory,
             binding,
         })
+    }
+    /// The registry scan under `registry.lock`: every record in directory
+    /// order, as before #3272, except that a record the migration scan read
+    /// in this same hold, and that none of the checks below can concern, is
+    /// not read again.
+    fn scan_registry(
+        account: &Path,
+        root: &Path,
+        reads: &registry_reads::HoldReads,
+    ) -> Result<Scan> {
+        let account = account.to_owned();
+        // Promote idle quick-file scopes under the registry lock. Keep their
+        // records: existing handles resolve the new enclosing authority at admission.
+        let mut enclosed = Vec::new();
+        let ancestor_identities = root.ancestors().map(identity).collect::<Result<Vec<_>>>()?;
+        for entry in fs::read_dir(&account)? {
+            let entry = entry?;
+            let p = entry.path();
+            if p.extension().is_some_and(|e| e == "json") {
+                let name = entry.file_name();
+                // Read by the migration scan in this same registry.lock hold,
+                // and it cannot concern this root: nothing to do.
+                if reads.skip(&name, root, &ancestor_identities) {
+                    continue;
+                }
+                // Otherwise read exactly as before, with the same errors.
+                let b: Binding = registry_reads::read_record(&p)?;
+                // A UUID-less identity (NFS, SMB, macFUSE; #3202) names its
+                // export by the mount source spelling, so it cannot prove two
+                // roots disjoint: another mount spelling, a child or a parent of
+                // a registered root may be the same physical folder. Allow one
+                // UUID-less scope; a different one is refused while any other
+                // UUID-less binding is registered, whether or not it is readable.
+                #[cfg(target_os = "macos")]
+                ensure!(
+                    !ancestor_identities[0].is_mount_source()
+                        || !b.root_identity.is_mount_source()
+                        || b.root_identity == ancestor_identities[0],
+                    "{} is on a network or FUSE volume without a volume UUID, and another such folder ({}) already has a writer scope; only one is supported for now (#3204)",
+                    root.display(),
+                    b.root.display()
+                );
+                // Canonical path aliases such as bind mounts can still name
+                // the same physical root. Never mint a second authority for it.
+                if physical_candidate(&ancestor_identities, &b.root_identity) {
+                    let a = Self {
+                        requested: None,
+                        account: account.clone(),
+                        binding_path: p.clone(),
+                        directory: account.join(key(&b.root)),
+                        binding: b.clone(),
+                    };
+                    if identity(&b.root)
+                        .is_ok_and(|current| physical_candidate(&[current], &b.root_identity))
+                    {
+                        a.validate()?;
+                        return Ok(Scan::Existing(Box::new(a)));
+                    }
+                    // A removed inactive vault's inode may be reused for an
+                    // unrelated new folder. An unfinished hold still fences a
+                    // moved physical root even after its old path disappears.
+                    ensure!(a.state()?.phase == Phase::Open,
+                        "Physical vault identity has an unfinished hold at another root; explicit recovery required");
+                }
+                if b.root.starts_with(root) && b.root != root {
+                    let child = Self {
+                        requested: None,
+                        account: account.clone(),
+                        binding_path: p.clone(),
+                        directory: account.join(key(&b.root)),
+                        binding: b,
+                    };
+                    let admission = file(&child.directory.join("admission.lock"), false)?;
+                    admission.lock()?;
+                    // A temporarily moved/deleted child root still owns its
+                    // durable hold and outstanding leases. Missing paths never
+                    // authorize an enclosing scope to bypass those fences.
+                    if child.root().try_exists()? {
+                        child.validate()?;
+                    } else {
+                        child.validate_binding()?;
+                    }
+                    ensure!(child.state()?.phase == Phase::Open,
+                        "Enclosed folder has an unfinished writer hold; release or recover it before opening the enclosing vault");
+                    let writers = file(&child.directory.join("writers.lock"), false)?;
+                    writers.try_lock().context("Enclosed folder is publishing; retry opening the enclosing vault after it finishes")?;
+                    enclosed.push(Enclosed {
+                        directory: child.directory,
+                        _admission: admission,
+                        _writers: writers,
+                    });
+                }
+            }
+        }
+        Ok(Scan::Enclosed(enclosed))
     }
     fn existing(account: &Path, root: &Path) -> Result<Option<Self>> {
         for ancestor in root.ancestors().collect::<Vec<_>>().into_iter().rev() {
