@@ -41,14 +41,14 @@ fn deserialize_nested_roots<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Vec<NestedRoot>, D::Error> {
     let Value::Array(entries) = Value::deserialize(deserializer)? else {
-        eprintln!("Ignoring vault descriptor nested_roots: expected an array");
+        diagnostic_error!("Ignoring vault descriptor nested_roots: expected an array");
         return Ok(Vec::new());
     };
     let mut paths = std::collections::BTreeSet::new();
     let mut roots = Vec::new();
     for (index, entry) in entries.into_iter().enumerate() {
         let Ok(entry) = serde_json::from_value::<NestedRoot>(entry) else {
-            eprintln!("Ignoring malformed vault descriptor nested_roots[{index}]");
+            diagnostic_error!("Ignoring malformed vault descriptor nested_roots[{index}]");
             continue;
         };
         if !entry.path.contains(['\\', '\0'])
@@ -68,7 +68,9 @@ fn deserialize_nested_roots<'de, D: serde::Deserializer<'de>>(
         {
             roots.push(entry);
         } else {
-            eprintln!("Ignoring invalid or duplicate vault descriptor nested_roots[{index}]");
+            diagnostic_error!(
+                "Ignoring invalid or duplicate vault descriptor nested_roots[{index}]"
+            );
         }
     }
     Ok(roots)

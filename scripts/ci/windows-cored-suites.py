@@ -31,7 +31,7 @@ GIB = 1024 ** 3
 # Exact counts on Windows. cli.rs carries 11 portable tests plus one
 # cfg(not(unix)) control that the Brain runtime refuses before writing state.
 SUITES = {
-    "cli": {"count": 12, "controls": (
+    "cli": {"count": 14, "controls": (
         "strays_reports_only_entries_outside_the_vault_notes",
         "explicit_values_index_and_override_environment",
         "unsupported_brain_refuses_before_creating_state_but_reader_still_works")},

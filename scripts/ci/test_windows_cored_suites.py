@@ -53,8 +53,8 @@ class WindowsCoredSuitesTests(unittest.TestCase):
 
     def test_discovery_requires_the_exact_count_and_named_controls(self):
         with patch.object(check.subprocess, "run", return_value=listing("cli")):
-            self.assertEqual(len(check.discover("cli", "cli.exe")), 12)
-        for broken in (listing("cli", count=11), listing("cli", count=0),
+            self.assertEqual(len(check.discover("cli", "cli.exe")), 14)
+        for broken in (listing("cli", count=13), listing("cli", count=0),
                        listing("mcp", drop=("handshake_then_tools_list",))):
             suite = "mcp" if "notification" in broken.stdout else "cli"
             with patch.object(check.subprocess, "run", return_value=broken):

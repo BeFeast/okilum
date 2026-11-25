@@ -767,7 +767,9 @@ impl Reader {
         let order = view.ordered(&self.now_t3_activity());
         // Groups follow their newest project: `order.active` is newest first,
         // so a group's first appearance is its rank. No alphabetical pinning.
-        let mut groups: Vec<((&str, Option<(&str, &str)>), Vec<&Activity>)> = Vec::new();
+        // (context label, optional (domain, context domain)).
+        type GroupKey<'a> = (&'a str, Option<(&'a str, &'a str)>);
+        let mut groups: Vec<(GroupKey, Vec<&Activity>)> = Vec::new();
         for activity in &order.active {
             let group = if view.managed {
                 match index.activity_context(activity) {
@@ -784,7 +786,7 @@ impl Reader {
         }
         // Equally recent groups: named contexts before unassigned, by name.
         groups.sort_by(|(a, a_rows), (b, b_rows)| {
-            let tie = |&(label, domain): &(&str, Option<(&str, &str)>)| {
+            let tie = |&(label, domain): &GroupKey| {
                 (view.managed && domain.is_none(), String::from(label))
             };
             b_rows[0]

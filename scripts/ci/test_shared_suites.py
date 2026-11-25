@@ -31,8 +31,8 @@ pooled = (name == 'workspace' and '--skip' in args and 'reader_log' not in args)
 sys.exit(42 if name in os.environ.get('SHARED_FAILURES', '').split(',') else
          43 if pooled and os.environ.get('SHARED_POOL_CONFLICT') == '1' else 0)
 '''
-EXPECTED = ['fmt', 'clippy', 'workspace', 'logs', 'portable', 'scripts/ci',
-            'scripts/releases', 'scripts/manifests/check.py', 'scripts/updater']
+EXPECTED = ['fmt', 'scripts/agent/check-vault-layout.py', 'clippy', 'workspace', 'logs',
+            'portable', 'scripts/ci', 'scripts/releases', 'scripts/manifests/check.py', 'scripts/updater']
 
 
 class SharedSuitesTests(unittest.TestCase):
@@ -65,13 +65,13 @@ class SharedSuitesTests(unittest.TestCase):
         self.assertIn('| Workspace Rust tests | FAIL | 42 |', receipt)
         self.assertIn('| CI Python tests | FAIL | 42 |', receipt)
         self.assertIn('| Updater Python tests | PASS | 0 |', receipt)
-        self.assertEqual(events[2][1], [
+        self.assertEqual(events[3][1], [
             'scripts/ci/workspace-rust-tests.py', '--shared'])
 
     def test_log_pool_is_isolated_and_log_failure_still_fails_the_gate(self):
         result, _, events = self.invoke([], pool_conflict=True)
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(events[3][1], [
+        self.assertEqual(events[4][1], [
             'test', '--workspace', '--locked', '--no-fail-fast', 'reader_log', '--',
             '--test-threads=1', '--skip', 'platform::'])
         result, receipt, _ = self.invoke(['logs'])

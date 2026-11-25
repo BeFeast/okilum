@@ -451,7 +451,7 @@ fn run_suite(name: &str, json: &str, report: bool) -> SuiteResult {
                     .or_default()
                     .push(example.example);
                 if report {
-                    println!(
+                    diagnostic_println!(
                         "FAIL {name} {} [{}] {class}\n  md:       {:?}\n  expected: {expected}\n  got:      {got}",
                         example.example, example.section, example.markdown
                     );
@@ -460,15 +460,17 @@ fn run_suite(name: &str, json: &str, report: bool) -> SuiteResult {
         }
     }
     if report {
-        println!(
+        diagnostic_println!(
             "\n== {name}: {}/{} pass ({} after link resolution)",
-            result.pass, result.total, result.resolved
+            result.pass,
+            result.total,
+            result.resolved
         );
         for (section, (pass, total)) in &result.sections {
-            println!("  {section}: {pass}/{total}");
+            diagnostic_println!("  {section}: {pass}/{total}");
         }
         for (class, examples) in &result.classes {
-            println!("  class {class}: {} {:?}", examples.len(), examples);
+            diagnostic_println!("  class {class}: {} {:?}", examples.len(), examples);
         }
     }
     result
@@ -724,7 +726,7 @@ fn reader_render_model_conformance_ratchet() {
         let ok = (probe.expect)(&model);
         let kind = if probe.obsidian { "obsidian" } else { "extra" };
         if report {
-            println!(
+            diagnostic_println!(
                 "{} {kind} {}: {:?}\n  model: {model}",
                 if ok { "PASS" } else { "GAP " },
                 probe.name,
@@ -751,7 +753,7 @@ fn reader_render_model_conformance_ratchet() {
         extra_gaps.len(),
         PROBES.len() - obsidian_total
     );
-    println!("render conformance: {summary}");
+    diagnostic_println!("render conformance: {summary}");
     assert_eq!(
         (commonmark.pass, gfm.pass, gaps.len(), extra_gaps.len()),
         (
