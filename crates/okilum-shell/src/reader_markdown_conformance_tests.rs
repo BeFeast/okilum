@@ -28,8 +28,8 @@ use std::collections::BTreeMap;
 
 /// Pinned results; see the module docs. The gap matrix behind these numbers
 /// is `Dev/Areas/okilum/specs/2026-11-24-markdown-conformance.md`.
-const PINNED_COMMONMARK_PASS: usize = 618;
-const PINNED_GFM_PASS: usize = 637;
+const PINNED_COMMONMARK_PASS: usize = 639;
+const PINNED_GFM_PASS: usize = 658;
 const PINNED_OBSIDIAN_GAPS: usize = 0;
 const PINNED_EXTRA_GAPS: usize = 0;
 
@@ -700,6 +700,30 @@ const PROBES: &[Probe] = &[
         name: "html details",
         markdown: "<details>\n<summary>More</summary>\n\nHidden\n\n</details>",
         expect: |m| m.contains("More") && m.contains("Hidden"),
+    },
+    Probe {
+        obsidian: false,
+        name: "html block text is not a paragraph",
+        markdown: "<div>a</div>\n\n<div>b</div>\n\nc",
+        expect: |m| m.starts_with("a b") && m.ends_with("<p>c</p>"),
+    },
+    Probe {
+        obsidian: false,
+        name: "tab in container code keeps its columns",
+        markdown: ">\t\tfoo",
+        expect: |m| m.contains("<code>  foo"),
+    },
+    Probe {
+        obsidian: false,
+        name: "indented code in a quote is one block",
+        markdown: ">     alpha\n>     omega\n>\n>     sigma",
+        expect: |m| m.matches("<pre>").count() == 1 && m.contains("alpha\nomega\n\nsigma"),
+    },
+    Probe {
+        obsidian: false,
+        name: "nested image alt",
+        markdown: "![a ![b](x.png) c](y.png)",
+        expect: |m| m.contains("alt=\"a b c\""),
     },
     Probe {
         obsidian: false,

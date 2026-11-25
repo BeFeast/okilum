@@ -1,0 +1,377 @@
+diff --git a/crates/base/src/text/document.rs b/crates/base/src/text/document.rs
+index 6b34fa26..6a3cc17a 100644
+--- a/crates/base/src/text/document.rs
++++ b/crates/base/src/text/document.rs
+@@ -200,7 +200,8 @@ impl ParsedDocument {
+                 .id("document")
+                 .pt(node_cx.style.top_padding())
+                 .children(self.blocks.iter().enumerate().map(move |(ix, node)| {
+-                    let is_last = ix + 1 == blocks_len;
++                    let is_last = ix + 1 == blocks_len
++                        || node.joins_bare_text(&self.blocks[ix + 1]);
+                     node.render_block(
+                         NodeRenderOptions {
+                             ix,
+@@ -228,7 +229,9 @@ impl ParsedDocument {
+             let node_cx = node_cx.clone();
+             let blocks = blocks.clone();
+             move |ix, window, cx| {
+-                let is_last = ix + 1 == blocks.len();
++                // Bare raw HTML text running on into more of it has no gap.
++                let is_last = ix + 1 == blocks.len()
++                    || blocks[ix].joins_bare_text(&blocks[ix + 1]);
+                 let block = blocks[ix]
+                     .render_block(
+                         NodeRenderOptions {
+diff --git a/crates/base/src/text/format/html.rs b/crates/base/src/text/format/html.rs
+index 44914dbf..b1106440 100644
+--- a/crates/base/src/text/format/html.rs
++++ b/crates/base/src/text/format/html.rs
+@@ -765,7 +765,14 @@ fn parse_node(
+                             children.push(child_node);
+                         }
+                     }
++                    let before = children.len();
+                     consume_paragraph(&mut children, paragraph);
++                    // The text a `<p>` encloses is a paragraph, with its gap.
++                    if name.local == local_name!("p") && children.len() > before {
++                        if let Some(BlockNode::Paragraph(text)) = children.last_mut() {
++                            text.bare = false;
++                        }
++                    }
+ 
+                     if children.is_empty() {
+                         None
+@@ -860,7 +867,10 @@ fn consume_paragraph(children: &mut Vec<BlockNode>, paragraph: &mut Paragraph) {
+         return;
+     }
+ 
+-    children.push(BlockNode::Paragraph(paragraph.take()));
++    // Loose text, not (yet) known to be inside a `<p>`: see `Paragraph::bare`.
++    let mut text = paragraph.take();
++    text.bare = true;
++    children.push(BlockNode::Paragraph(text));
+ }
+ 
+ #[cfg(test)]
+diff --git a/crates/base/src/text/format/markdown.rs b/crates/base/src/text/format/markdown.rs
+index b8e1cdfd..7de699e8 100644
+--- a/crates/base/src/text/format/markdown.rs
++++ b/crates/base/src/text/format/markdown.rs
+@@ -131,12 +131,197 @@ fn inline_code_value(source: &str, code: &mdast::InlineCode) -> Option<String> {
+     Some(value)
+ }
+ 
++/// Width of `text` in columns, with tab stops every 4 columns.
++fn tab_columns(text: &str) -> usize {
++    text.chars().fold(0, |column, c| match c {
++        '\t' => column + 4 - column % 4,
++        _ => column + 1,
++    })
++}
++
++/// Restore the columns of a tab that an indented code block's indentation
++/// only partly used (CommonMark 0.31.2, tabs: `>\t\tfoo` is `  foo`).
++///
++/// markdown-rs splits such a tab into virtual spaces, and its HTML output
++/// keeps the ones left over as content, but its mdast `Code.value` drops them.
++/// The code's start column (which counts virtual spaces) gives the content
++/// column; a line whose content follows a tab crossing it gets the columns
++/// that tab has past it back as spaces.
++///
++/// It also joins an indented code block that markdown-rs split into one
++/// `Code` node per line (it does so inside a block quote: `>     a\n>     b`
++/// is one block of two lines, not two blocks). CommonMark never puts two
++/// indented code blocks next to each other, so adjacent ones are one block;
++/// the blank lines between them are kept.
++fn restore_indented_code_columns(node: &mut Node, source: &str) {
++    if let Node::Code(code) = node {
++        if let Some(value) = indented_code_value(source, code) {
++            code.value = value;
++        }
++        return;
++    }
++    let Some(children) = node.children_mut() else {
++        return;
++    };
++    for child in children.iter_mut() {
++        restore_indented_code_columns(child, source);
++    }
++    let mut ix = 1;
++    while ix < children.len() {
++        let joined = match (&children[ix - 1], &children[ix]) {
++            (Node::Code(prev), Node::Code(next))
++                if is_indented_code(source, prev) && is_indented_code(source, next) =>
++            {
++                match (&prev.position, &next.position) {
++                    (Some(a), Some(b)) if b.start.line > a.end.line => {
++                        let breaks = b.start.line - a.end.line;
++                        let mut value = prev.value.clone();
++                        value.extend(std::iter::repeat_n('\n', breaks));
++                        value.push_str(&next.value);
++                        Some(mdast::Code {
++                            value,
++                            position: Some(markdown::unist::Position {
++                                start: a.start.clone(),
++                                end: b.end.clone(),
++                            }),
++                            lang: None,
++                            meta: None,
++                        })
++                    }
++                    _ => None,
++                }
++            }
++            _ => None,
++        };
++        match joined {
++            Some(code) => {
++                children[ix - 1] = Node::Code(code);
++                children.remove(ix);
++            }
++            None => ix += 1,
++        }
++    }
++}
++
++/// A code block made by indentation, not by a fence.
++fn is_indented_code(source: &str, code: &mdast::Code) -> bool {
++    let Some(raw) = code
++        .position
++        .as_ref()
++        .and_then(|p| source.get(p.start.offset..p.end.offset))
++    else {
++        return false;
++    };
++    let first = raw.trim_start_matches(' ');
++    !(raw.len() - first.len() < 4 && (first.starts_with("```") || first.starts_with("~~~")))
++}
++
++fn indented_code_value(source: &str, code: &mdast::Code) -> Option<String> {
++    if !is_indented_code(source, code) {
++        return None;
++    }
++    let position = code.position.as_ref()?;
++    let content_column = position.start.column.checked_sub(1)? + 4;
++    let line_start = source[..position.start.offset]
++        .rfind('\n')
++        .map_or(0, |at| at + 1);
++    let mut source_lines = source[line_start..].split('\n');
++    let mut value = String::with_capacity(code.value.len());
++    let mut changed = false;
++    for (ix, line) in code.value.split('\n').enumerate() {
++        if ix > 0 {
++            value.push('\n');
++        }
++        let source_line = source_lines.next()?;
++        if !line.is_empty() && source_line.ends_with(line) {
++            let prefix = &source_line[..source_line.len() - line.len()];
++            if let Some(before_tab) = prefix.strip_suffix('\t') {
++                let (from, to) = (tab_columns(before_tab), tab_columns(prefix));
++                if from < content_column && to > content_column {
++                    value.extend(std::iter::repeat_n(' ', to - content_column));
++                    changed = true;
++                }
++            }
++        }
++        value.push_str(line);
++    }
++    changed.then_some(value)
++}
++
++/// The alt text of an image whose description holds another image
++/// (`![foo ![bar](/url)](/url2)` has the alt `foo bar`).
++///
++/// mdast flattens an image description to plain text, where a nested image
++/// contributes nothing. The description is parsed again as a link, from the
++/// image's source span, and its text taken with every nested image's alt.
++fn restore_nested_image_alt(node: &mut Node, source: &str, options: &markdown::ParseOptions) {
++    if let Node::Image(image) = node {
++        if let Some(alt) = nested_image_alt(source, image, options) {
++            image.alt = alt;
++        }
++        return;
++    }
++    if let Some(children) = node.children_mut() {
++        for child in children {
++            restore_nested_image_alt(child, source, options);
++        }
++    }
++}
++
++fn nested_image_alt(
++    source: &str,
++    image: &mdast::Image,
++    options: &markdown::ParseOptions,
++) -> Option<String> {
++    let position = image.position.as_ref()?;
++    let raw = source.get(position.start.offset..position.end.offset)?;
++    let link = raw.strip_prefix('!')?;
++    if !link.contains("![") {
++        return None;
++    }
++    let options = markdown::ParseOptions {
++        constructs: options.constructs.clone(),
++        gfm_strikethrough_single_tilde: options.gfm_strikethrough_single_tilde,
++        math_text_single_dollar: options.math_text_single_dollar,
++        mdx_expression_parse: None,
++        mdx_esm_parse: None,
++    };
++    let mut tree = markdown::to_mdast(link, &options).ok()?;
++    restore_nested_image_alt(&mut tree, link, &options);
++    let Node::Root(root) = tree else {
++        return None;
++    };
++    let [Node::Paragraph(paragraph)] = root.children.as_slice() else {
++        return None;
++    };
++    let [Node::Link(link)] = paragraph.children.as_slice() else {
++        return None;
++    };
++    fn plain_text(nodes: &[Node], out: &mut String) {
++        for node in nodes {
++            match node {
++                Node::Image(image) => out.push_str(&image.alt),
++                Node::ImageReference(image) => out.push_str(&image.alt),
++                node => match node.children() {
++                    Some(children) => plain_text(children, out),
++                    None => out.push_str(&node.to_string()),
++                },
++            }
++        }
++    }
++    let mut alt = String::new();
++    plain_text(&link.children, &mut alt);
++    Some(alt)
++}
++
+ /// Parse Markdown into a tree of nodes.
+ pub(crate) fn parse(source: &str, cx: &mut NodeContext) -> Result<ParsedDocument, SharedString> {
+     let options = cx.markdown_extensions.parse_options();
+     to_mdast(source, &options)
+         .map(|mut n| {
+             normalize_inline_code(&mut n, source);
++            restore_indented_code_columns(&mut n, source);
++            restore_nested_image_alt(&mut n, source, &options);
+             ast_to_document(source, n, cx)
+         })
+         .map_err(|e| e.to_string().into())
+diff --git a/crates/base/src/text/node.rs b/crates/base/src/text/node.rs
+index dc1a715b..1164524d 100644
+--- a/crates/base/src/text/node.rs
++++ b/crates/base/src/text/node.rs
+@@ -117,6 +117,25 @@ impl BlockNode {
+         }
+     }
+ 
++    /// Whether this block ends with, or `next` starts with, bare raw HTML text
++    /// on both sides: `<div>a</div>` then `<div>b</div>` are two lines with
++    /// no paragraph gap between them, as in a browser. Before a Markdown
++    /// paragraph, heading or list the gap stays (their own top margin in a
++    /// browser).
++    pub(crate) fn joins_bare_text(&self, next: &BlockNode) -> bool {
++        fn edge(block: &BlockNode, last: bool) -> bool {
++            match block {
++                BlockNode::Paragraph(paragraph) => paragraph.bare,
++                BlockNode::Root { children, .. } => {
++                    let child = if last { children.last() } else { children.first() };
++                    child.is_some_and(|child| edge(child, last))
++                }
++                _ => false,
++            }
++        }
++        edge(self, true) && edge(next, false)
++    }
++
+     /// Get the span of the node.
+     pub(crate) fn span(&self) -> Option<Span> {
+         match self {
+@@ -875,6 +894,10 @@ pub(crate) struct Paragraph {
+     ///
+     /// The key is the identifier, the value is the url.
+     pub(super) link_refs: HashMap<SharedString, SharedString>,
++    /// Text of a raw HTML block that no `<p>` encloses (`<div>\n*foo*\n</div>`).
++    /// A browser gives it no paragraph margin of its own, so it sits directly
++    /// against the next such text; see [`BlockNode::joins_bare_text`].
++    pub(crate) bare: bool,
+ 
+     pub(crate) state: Arc<Mutex<InlineState>>,
+ }
+@@ -884,6 +907,7 @@ impl PartialEq for Paragraph {
+         self.span == other.span
+             && self.children == other.children
+             && self.link_refs == other.link_refs
++            && self.bare == other.bare
+     }
+ }
+ 
+@@ -893,6 +917,7 @@ impl Paragraph {
+             span: None,
+             children: vec![InlineNode::new(&text)],
+             link_refs: HashMap::new(),
++            bare: false,
+             state: Arc::new(Mutex::new(InlineState::default())),
+         }
+     }
+@@ -1235,6 +1260,7 @@ impl Paragraph {
+                 span: None,
+                 children: vec![],
+                 link_refs: Default::default(),
++                bare: false,
+                 state: Arc::new(Mutex::new(InlineState::default())),
+             },
+         )
+@@ -3070,7 +3096,23 @@ impl BlockNode {
+             BlockNode::Root { children, .. } => div()
+                 .id(("div", ix))
+                 .children(children.into_iter().enumerate().map(move |(ix, node)| {
+-                    node.render_block(NodeRenderOptions { ix, ..options }, node_cx, window, cx)
++                    // Only the last child takes the container's place; the
++                    // others keep their own gap, except bare text running on
++                    // into more bare text.
++                    let is_last = match children.get(ix + 1) {
++                        Some(next) => node.joins_bare_text(next),
++                        None => options.is_last,
++                    };
++                    node.render_block(
++                        NodeRenderOptions {
++                            ix,
++                            is_last,
++                            ..options
++                        },
++                        node_cx,
++                        window,
++                        cx,
++                    )
+                 }))
+                 .into_any_element(),
+             BlockNode::Paragraph(paragraph) => div()
+@@ -3529,6 +3571,7 @@ mod tests {
+             span: None,
+             children,
+             link_refs: HashMap::new(),
++            bare: false,
+             state: Arc::new(Mutex::new(InlineState::default())),
+         };
+         if let Ok(mut state) = paragraph.state.lock() {
+@@ -3967,6 +4010,7 @@ mod tests {
+             span: None,
+             children: vec![InlineNode::image(image)],
+             link_refs: HashMap::new(),
++            bare: false,
+             state: Arc::new(Mutex::new(InlineState::default())),
+         }
+     }
+diff --git a/crates/base/src/text/render_model.rs b/crates/base/src/text/render_model.rs
+index 8c0c32ba..d8c6d795 100644
+--- a/crates/base/src/text/render_model.rs
++++ b/crates/base/src/text/render_model.rs
+@@ -34,7 +34,7 @@ fn write_block(out: &mut String, block: &BlockNode, cx: &NodeContext, tight: boo
+             }
+         }
+         BlockNode::Paragraph(paragraph) => {
+-            if tight {
++            if tight || paragraph.bare {
+                 write_inline(out, paragraph, cx);
+                 out.push('\n');
+             } else {
