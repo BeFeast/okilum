@@ -795,8 +795,11 @@ fn fixture_lifecycle_control() -> Result<()> {
     Ok(())
 }
 
-/// `$TMPDIR` file naming the zone the retention control ran in (#2567).
+/// File naming the zone the retention control ran in (#2567). The driver
+/// passes its path in `ZONE_EVIDENCE_VARIABLE`: test isolation (#3271) moves
+/// `$TMPDIR` into a per-process root that is deleted at exit.
 const ZONE_EVIDENCE: &str = "issue2567-retention-zone";
+const ZONE_EVIDENCE_VARIABLE: &str = "OKILUM_SYNC_ZONE_EVIDENCE";
 
 #[test]
 #[ignore = "requires checksum-pinned Syncthing 2.1.6; run scripts/ci/sync-source-sharing.sh"]
@@ -986,7 +989,10 @@ fn managed_history_2045_restore_retention_and_migration() -> Result<()> {
     };
     let zone = date(&["+%Z %z"])?;
     // Evidence for the driver, outside libtest's interleaved `... ok` lines.
-    fs::write(std::env::temp_dir().join(ZONE_EVIDENCE), &zone)?;
+    let evidence = std::env::var_os(ZONE_EVIDENCE_VARIABLE)
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join(ZONE_EVIDENCE));
+    fs::write(evidence, &zone)?;
     let ((old_stamp, old_epoch), (new_stamp, new_epoch)) = (stamp(31)?, stamp(29)?);
     let expired = archive.join(format!("trim~{old_stamp}.md"));
     let retained = archive.join(format!("trim~{new_stamp}.md"));
