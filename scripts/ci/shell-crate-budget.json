@@ -2,12 +2,13 @@
   "note": "Line budget per crate source directory, checked by shell-crate-budget.py in the pre-merge gate (#3232, epic #3241). Each okilum-shell split PR lowers max_lines; raise it only with the reason in the PR.",
   "crates": {
     "crates/okilum-shell/src": {
-      "max_lines": 433000,
+      "max_lines": 440000,
       "measured": {
-        "lines": 427865,
-        "commit": "kit split part 2 (#3233)",
-        "date": "2026-11-23",
-        "test_harness_peak_gib": 9.79
+        "lines": 436380,
+        "commit": "f9cf21f69 (main, 61 feature commits after #3233)",
+        "date": "2026-11-25",
+        "raised_from": 433000,
+        "reason": "Stable fast.yml was red on organic feature growth (+8515 lines since #3233); no split crate owns those areas yet. Raised with 3.6k headroom, below the 441k level measured at 9.08 GiB harness peak; the next okilum-shell-* split lowers it again (epic #3241)."
       }
     }
   }
