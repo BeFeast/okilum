@@ -175,9 +175,7 @@ impl State {
             ensure!(
                 path.is_empty()
                     || known.contains_key(&path)
-                    || !known
-                        .keys()
-                        .any(|name| name.to_lowercase() == path.to_lowercase()),
+                    || !known.keys().any(|name| name.link_key() == path.link_key()),
                 "Case-only directory identity requires reconciliation"
             );
             // A renamed file is reported under its own name, because a moved
@@ -391,8 +389,7 @@ impl State {
             !changes.removed.iter().any(|removed| changes
                 .changed
                 .iter()
-                .any(|changed| removed != changed
-                    && removed.to_lowercase() == changed.to_lowercase())),
+                .any(|changed| removed != changed && removed.link_key() == changed.link_key())),
             "Case-only rename requires reconciliation"
         );
         let touched: BTreeSet<_> = changes.changed.union(&changes.removed).cloned().collect();
@@ -476,9 +473,9 @@ impl State {
                     path: path.clone(),
                     kind: EntryKind::Directory,
                 });
-                self.vault.occupied_paths.insert(path.to_lowercase());
+                self.vault.occupied_paths.insert(path.link_key());
             } else {
-                self.vault.occupied_paths.remove(&path.to_lowercase());
+                self.vault.occupied_paths.remove(&path.link_key());
             }
         }
         self.vault.entries.sort_by(|a, b| a.path.cmp(&b.path));

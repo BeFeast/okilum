@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
@@ -285,8 +286,17 @@ def generate_json(spec):
 
 def write_fixtures(vault, specs):
     for spec in specs:
-        target = vault / spec['path']
-        require(not Path(spec['path']).is_absolute() and '..' not in Path(spec['path']).parts,
+        path = spec['path']
+        # `path_form: nfd` stores the name decomposed, as macOS and Syncthing
+        # copies do (`й` as `и` + U+0306), while note text stays composed.
+        form = spec.get('path_form')
+        if form is not None:
+            require(form in ('nfc', 'nfd'), f'Unknown path_form: {form}')
+            path = unicodedata.normalize(form.upper(), path)
+            require(form == 'nfc' or path != unicodedata.normalize('NFC', path),
+                    f'path_form nfd leaves this path unchanged: {spec["path"]}')
+        target = vault / path
+        require(not Path(path).is_absolute() and '..' not in Path(path).parts,
                 f'Fixture path must stay inside the vault: {spec["path"]}')
         target.parent.mkdir(parents=True, exist_ok=True)
         kind = spec['kind']

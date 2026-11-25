@@ -3,7 +3,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 pub(super) fn key(path: &str) -> String {
-    path.to_lowercase().trim_end_matches(".md").to_owned()
+    use okilum_core::vault::LinkKey;
+    path.link_key().trim_end_matches(".md").to_owned()
 }
 pub(super) fn target(path: &str, sources: &[Value]) -> Result<String, String> {
     if !path.ends_with(".md")

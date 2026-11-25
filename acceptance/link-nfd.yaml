@@ -1,0 +1,28 @@
+# State: a note links in composed (NFC) Cyrillic text to a note whose file name
+# is stored decomposed (NFD), as macOS and Syncthing copies keep it. The runner
+# writes the target's name in NFD bytes (`path_form: nfd`).
+# Action: click the link. Visible: the target note's heading, not "Link unavailable".
+note: |
+  # NFD Link Source
+
+  [[sources/похудеешь-ёлка-й|Open decomposed target]]
+generate:
+  - path: sources/похудеешь-ёлка-й.md
+    kind: text
+    path_form: nfd
+    text: "# Decomposed Target Opened\n\nThe file name on disk is decomposed.\n"
+appearance: light
+preferences:
+  note_open_mode: read
+rig:
+  persistent_pointer: true
+region: [300, 90, 800, 540]
+ready_text: Open decomposed target
+wait_for_vault: 30
+steps:
+  - id: link-visible
+    text: Open decomposed target
+  - id: open-target
+    click: [420, 200]
+    wait: 2
+    text: Decomposed Target Opened

@@ -115,6 +115,9 @@ Large fixtures and timing (no big files in git):
   error_at: end|middle, single_line}` (one array, exact size; invalid = trailing comma at
   the end or a bare word in the middle). `open: <path>` launches that note instead of
   `scenario.md` (`note:` is then optional).
+- `path_form: nfd` on a `generate:` entry stores its path decomposed (NFD), as macOS and
+  Syncthing copies do, while note text stays composed; the runner fails if the path has no
+  NFD form (`acceptance/link-nfd.yaml`).
 - A step with `max_ms: N` and a `text`/`pixels` condition is timed from the input event
   to the first screenshot that satisfies the condition. Frames are grabbed back to back
   and read afterwards, so OCR adds no latency. `result.json` has `ms` (when that grab

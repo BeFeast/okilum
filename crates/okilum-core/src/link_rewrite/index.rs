@@ -3,6 +3,7 @@
 //! unresolved/ambiguous links, so inventory changes cannot hide a candidate.
 use super::*;
 use crate::vault::warm::{Snapshot, SourceRevision};
+use crate::vault::LinkKey;
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 
@@ -77,7 +78,7 @@ impl CandidateIndex {
             .map(crate::document_links::decode)
             .collect::<Vec<_>>()
             .join("\n")
-            .to_lowercase();
+            .link_key();
         if !fallback.is_empty() {
             self.fallback_lines.insert(path.into(), fallback);
         }
@@ -181,7 +182,7 @@ fn key(target: &str, wiki: bool) -> Option<String> {
 }
 
 fn path_key(path: &str) -> Option<String> {
-    let name = path.rsplit('/').next()?.to_lowercase();
+    let name = path.rsplit('/').next()?.link_key();
     let name = name.strip_suffix(".md").unwrap_or(&name);
     (!name.is_empty()).then(|| name.to_owned())
 }

@@ -1,7 +1,7 @@
 //! Whole-vault name/path matching, independent of the full-text index.
 use std::collections::HashMap;
 
-use crate::vault::{EntryKind, Note, VaultEntry};
+use crate::vault::{EntryKind, LinkKey, Note, VaultEntry};
 
 /// Every file the Reader can open (#686): the Markdown notes plus the vault's
 /// other files. A non-Markdown file is named by its file name with the
@@ -173,15 +173,15 @@ pub fn search_named_first_by(
     inside: impl Fn(&str) -> bool,
     limit: usize,
 ) -> Vec<Note> {
-    let query = query.trim().to_lowercase();
+    let query = query.trim().link_key();
     let mut matches: Vec<_> = notes
         .iter()
         .filter_map(|note| {
             let score = if query.is_empty() {
                 0
             } else {
-                let display = titles.get(&note.path).map(|t| t.to_lowercase());
-                score(&note.title.to_lowercase(), &query, true)
+                let display = titles.get(&note.path).map(|t| t.link_key());
+                score(&note.title.link_key(), &query, true)
                     .into_iter()
                     .chain(display.and_then(|title| score(&title, &query, true)))
                     .chain(
@@ -189,10 +189,10 @@ pub fn search_named_first_by(
                             .get(&note.path)
                             .into_iter()
                             .flatten()
-                            .filter_map(|name| score(&name.to_lowercase(), &query, true)),
+                            .filter_map(|name| score(&name.link_key(), &query, true)),
                     )
                     .map(|s| s + 1000)
-                    .chain(score(&note.path.to_lowercase(), &query, false))
+                    .chain(score(&note.path.link_key(), &query, false))
                     .max()?
             };
             let recency = recent

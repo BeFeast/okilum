@@ -4,6 +4,7 @@ mod operation;
 use crate::link_candidates::syntax;
 pub use operation::{Applied, Operation, RecoveryList};
 
+use crate::vault::LinkKey;
 use crate::{Resolution, Vault};
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -463,7 +464,7 @@ impl<'a> NotePaths<'a> {
         let mut folded_counts = HashMap::new();
         for note in vault.markdown_entries() {
             exact.insert(note.path.as_str());
-            *folded_counts.entry(note.path.to_lowercase()).or_insert(0) += 1;
+            *folded_counts.entry(note.path.link_key()).or_insert(0) += 1;
         }
         Self {
             exact,
@@ -471,7 +472,7 @@ impl<'a> NotePaths<'a> {
         }
     }
     fn unique(&self, path: &str) -> bool {
-        self.folded_counts.get(&path.to_lowercase()) == Some(&1)
+        self.folded_counts.get(&path.link_key()) == Some(&1)
     }
 }
 struct RewriteContext<'a> {

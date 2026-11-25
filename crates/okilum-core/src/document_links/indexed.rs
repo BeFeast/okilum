@@ -1,6 +1,7 @@
 //! Rendering consumes captured identities. Filesystem verification belongs to
 //! the separate, lazy/background LinkPreparation job, never this resolver.
 use super::*;
+use crate::vault::LinkKey;
 use std::{borrow::Cow, path::Path};
 
 pub struct IndexedResolver<'a> {
@@ -56,7 +57,7 @@ impl<'a> IndexedResolver<'a> {
     }
 
     fn asset(&self, path: &str, wiki: bool, from: &str) -> Resolution {
-        let key = path.to_lowercase();
+        let key = path.link_key();
         let rooted = key.starts_with('/');
         let explicit = key.starts_with("./") || key.starts_with("../");
         let relative = if rooted || wiki && !explicit {
@@ -71,7 +72,7 @@ impl<'a> IndexedResolver<'a> {
             let matches: Vec<_> = self
                 .assets()
                 .paths(self.vault, key)
-                .filter(|path| path.eq_ignore_ascii_case(key))
+                .filter(|path| path.link_key() == key)
                 .cloned()
                 .collect();
             match matches.as_slice() {

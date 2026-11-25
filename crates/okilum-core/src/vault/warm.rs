@@ -447,7 +447,7 @@ fn cached_vault(
             .file_name()
             .unwrap_or_default()
             .to_string_lossy()
-            .to_lowercase();
+            .link_key();
         vault
             .asset_map
             .entry(name)

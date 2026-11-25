@@ -6,7 +6,7 @@
 //! render, on the UI thread for small notes. The index now lives with the
 //! inventory it describes. Clones of an unchanged inventory share it, inventory
 //! mutations drop it, and background publication warms it before the UI reads.
-use super::{EntryKind, Vault};
+use super::{EntryKind, LinkKey, Vault};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
@@ -52,7 +52,7 @@ impl AttachmentIndex {
                 continue;
             }
             let at = u32::try_from(at).expect("vault inventory exceeds u32 entries");
-            let key = entry.path.to_lowercase();
+            let key = entry.path.link_key();
             let parts: Vec<_> = key.split('/').collect();
             for i in 0..parts.len() {
                 map.entry(parts[i..].join("/").into_boxed_str())

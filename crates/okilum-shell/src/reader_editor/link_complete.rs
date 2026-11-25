@@ -174,7 +174,8 @@ impl Index {
 
     /// The best matches for `query`, written from the note at `from`.
     pub(super) fn search(&self, query: &str, from: &str) -> Vec<Candidate> {
-        let query = query.trim().to_lowercase();
+        use okilum_core::vault::LinkKey;
+        let query = query.trim().link_key();
         let from_folder = folder_of(from);
         let matcher = providers::Matcher::new(&query);
         let notes = self.notes.get_or_init(|| {
@@ -185,9 +186,9 @@ impl Index {
                 .filter(|(_, note)| self.show_hidden || !reader_tree::hidden(&note.path))
                 .filter(|(_, note)| !note.path.contains(NAME_END))
                 .map(|(at, note)| {
-                    let title = note.title.to_lowercase();
+                    let title = note.title.link_key();
                     let length = title.chars().count();
-                    (title, strip_md(&note.path).to_lowercase(), length, at)
+                    (title, strip_md(&note.path).link_key(), length, at)
                 })
                 .collect()
         });
@@ -245,10 +246,11 @@ pub(super) fn target_for(vault: &Vault, path: &str, from: &str) -> String {
             vault.resolve_from(suffix, from),
             okilum_core::vault::Resolution::Resolved { path: found } if found == path
         ) {
-            return suffix.to_owned();
+            // A name stored decomposed on disk is still written composed.
+            return okilum_core::vault::nfc(suffix).into_owned();
         }
         if start == 0 {
-            return name.to_owned();
+            return okilum_core::vault::nfc(name).into_owned();
         }
         at = start - 1;
     }

@@ -189,7 +189,7 @@ impl Vault {
             .next()
             .unwrap_or("")
             .trim()
-            .to_lowercase();
+            .link_key();
         let key = target.trim_end_matches(".md").trim_matches('/');
         if key.is_empty() {
             return Resolution::Unresolved;

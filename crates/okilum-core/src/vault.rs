@@ -23,6 +23,45 @@ pub fn note_path(path: &std::path::Path) -> String {
         .replace(std::path::MAIN_SEPARATOR, "/")
 }
 
+/// Lookup key for a path, file name or link target: Unicode NFC, then lowercase.
+///
+/// Stored identities keep the bytes the directory listing returned, so file I/O
+/// opens the real file. Keys compare canonically equivalent spellings as equal:
+/// macOS and Syncthing copies often store names decomposed (NFD, `и` + U+0306)
+/// while Markdown text is composed (NFC, `й`), and a byte-for-byte key left
+/// those links unresolved. Distinct files that share a key are ambiguous, never
+/// silently one of them.
+pub trait LinkKey {
+    fn link_key(&self) -> String;
+}
+
+impl LinkKey for str {
+    fn link_key(&self) -> String {
+        use unicode_normalization::{is_nfc_quick, IsNormalized, UnicodeNormalization};
+        if self.is_ascii() {
+            return self.to_ascii_lowercase();
+        }
+        let lower = self.to_lowercase();
+        if is_nfc_quick(lower.chars()) == IsNormalized::Yes {
+            lower
+        } else {
+            lower.nfc().collect()
+        }
+    }
+}
+
+/// The composed (NFC) spelling of `text`, borrowed when it already is NFC.
+/// Text Okilum writes, such as a completed link, uses this form; the name on
+/// disk may be decomposed.
+pub fn nfc(text: &str) -> std::borrow::Cow<'_, str> {
+    use unicode_normalization::{is_nfc_quick, IsNormalized, UnicodeNormalization};
+    if text.is_ascii() || is_nfc_quick(text.chars()) == IsNormalized::Yes {
+        std::borrow::Cow::Borrowed(text)
+    } else {
+        std::borrow::Cow::Owned(text.nfc().collect())
+    }
+}
+
 /// Canonical vault root. On Windows a share root (`\\server\share`, or a mapped
 /// drive resolving to one) canonicalizes to a bare UNC prefix without a root
 /// directory, so `strip_prefix` of every descendant kept a leading separator and
@@ -882,12 +921,12 @@ impl Vault {
             }
             let rel = note_path(relative);
             if !rel.is_empty() {
-                occupied_paths.insert(rel.to_lowercase());
+                occupied_paths.insert(rel.link_key());
                 if !entry.file_type().is_dir() {
-                    non_directory_paths.insert(rel.to_lowercase());
+                    non_directory_paths.insert(rel.link_key());
                 }
                 if entry.file_type().is_symlink() {
-                    symlink_paths.insert(rel.to_lowercase());
+                    symlink_paths.insert(rel.link_key());
                 }
             }
             if cloud_placeholder(path) {
@@ -907,7 +946,7 @@ impl Vault {
             }
             let ext = path
                 .extension()
-                .map(|e| e.to_string_lossy().to_lowercase())
+                .map(|e| e.to_string_lossy().link_key())
                 .unwrap_or_default();
             if ext == "md" {
                 entries.push(VaultEntry {
@@ -923,7 +962,7 @@ impl Vault {
                     .unwrap_or_default()
                     .to_string_lossy()
                     .to_string();
-                let key = rel.to_lowercase();
+                let key = rel.link_key();
                 let key = key.trim_end_matches(".md");
                 // Index every suffix, not just the stem: "a/b/note" is reachable
                 // as "note", "b/note" and "a/b/note", and each of those is a
@@ -941,7 +980,7 @@ impl Vault {
                         .file_name()
                         .unwrap_or_default()
                         .to_string_lossy()
-                        .to_lowercase();
+                        .link_key();
                     asset_map.entry(name).or_insert_with(|| path.to_path_buf());
                 } else {
                     notes.push(Note {
@@ -958,7 +997,7 @@ impl Vault {
                     .file_name()
                     .unwrap_or_default()
                     .to_string_lossy()
-                    .to_lowercase();
+                    .link_key();
                 asset_map.entry(name).or_insert_with(|| path.to_path_buf());
             }
         }
@@ -1036,12 +1075,12 @@ impl Vault {
             values.retain(|value| value != path);
             !values.is_empty()
         });
-        self.occupied_paths.remove(&path.to_lowercase());
-        self.non_directory_paths.remove(&path.to_lowercase());
-        self.symlink_paths.remove(&path.to_lowercase());
+        self.occupied_paths.remove(&path.link_key());
+        self.non_directory_paths.remove(&path.link_key());
+        self.symlink_paths.remove(&path.link_key());
         if present {
-            self.occupied_paths.insert(path.to_lowercase());
-            self.non_directory_paths.insert(path.to_lowercase());
+            self.occupied_paths.insert(path.link_key());
+            self.non_directory_paths.insert(path.link_key());
             self.entries.push(VaultEntry {
                 path: path.into(),
                 kind: if self.folders.asset_content(path) {
@@ -1060,7 +1099,7 @@ impl Vault {
                         .into_owned(),
                 });
             }
-            let lower = path.to_lowercase();
+            let lower = path.link_key();
             let key = lower.trim_end_matches(".md");
             self.path_map.insert(key.into(), path.into());
             let parts: Vec<_> = key.split('/').collect();
@@ -1084,14 +1123,14 @@ impl Vault {
     /// attachment with that name in path order.
     fn set_attachment_identity(&mut self, path: &str, present: bool) {
         self.invalidate_attachment_index();
-        let lower = path.to_lowercase();
+        let lower = path.link_key();
         self.entries.retain(|entry| entry.path != path);
         self.occupied_paths.remove(&lower);
         self.non_directory_paths.remove(&lower);
         self.symlink_paths.remove(&lower);
         if present {
             self.occupied_paths.insert(lower);
-            self.non_directory_paths.insert(path.to_lowercase());
+            self.non_directory_paths.insert(path.link_key());
             self.entries.push(VaultEntry {
                 path: path.into(),
                 kind: EntryKind::Attachment,
@@ -1106,7 +1145,7 @@ impl Vault {
             .file_name()
             .unwrap_or_default()
             .to_string_lossy()
-            .to_lowercase();
+            .link_key();
         let first = self
             .entries
             .iter()
@@ -1114,7 +1153,7 @@ impl Vault {
             .find(|entry| {
                 Path::new(&entry.path)
                     .file_name()
-                    .is_some_and(|file| file.to_string_lossy().to_lowercase() == name)
+                    .is_some_and(|file| file.to_string_lossy().link_key() == name)
             })
             .map(|entry| self.root.join(&entry.path));
         match first {
@@ -1213,7 +1252,7 @@ impl Vault {
             if service_path(Path::new(path)) {
                 continue;
             }
-            let key = path.to_lowercase();
+            let key = path.link_key();
             let key = key.trim_end_matches(".md");
             let segments: Vec<_> = key.split('/').collect();
             for i in 0..segments.len() {
@@ -1263,7 +1302,7 @@ impl Vault {
             .take_while(|path| !path.as_os_str().is_empty())
         {
             let path = note_path(directory);
-            self.occupied_paths.insert(path.to_lowercase());
+            self.occupied_paths.insert(path.link_key());
             if !self.entries.iter().any(|entry| entry.path == path) {
                 self.entries.push(VaultEntry {
                     path,
@@ -1391,7 +1430,7 @@ impl Vault {
     fn indexed_nested_path(&self, lowercase_path: &str) -> bool {
         self.nested_boundaries
             .keys()
-            .any(|root| vault_descriptor::within(lowercase_path, &root.to_lowercase()))
+            .any(|root| vault_descriptor::within(lowercase_path, &root.link_key()))
     }
 
     /// The first note in scan order, or `None` for an empty vault.
@@ -1454,7 +1493,7 @@ impl Vault {
             let key = if folder.is_empty() {
                 "@index".to_owned()
             } else {
-                format!("{folder}/@index").to_lowercase()
+                format!("{folder}/@index").link_key()
             };
             let candidates: Vec<_> = self
                 .suffix_map
@@ -1471,12 +1510,16 @@ impl Vault {
             }
         }
         if let Some(graph) = self.published_graph() {
-            return self.resolve_published(target, from_note, &graph.alias_map);
+            return self.distinct_identity(self.resolve_published(
+                target,
+                from_note,
+                &graph.alias_map,
+            ));
         }
         match self.resolve_from_ref(target, from_note) {
-            ResolutionRef::Resolved(path) => Resolution::Resolved {
+            ResolutionRef::Resolved(path) => self.distinct_identity(Resolution::Resolved {
                 path: path.to_owned(),
-            },
+            }),
             ResolutionRef::Ambiguous(candidates) => Resolution::Ambiguous {
                 candidates: candidates.to_vec(),
             },
@@ -1484,11 +1527,35 @@ impl Vault {
         }
     }
 
+    /// A resolved note whose key is shared by another file is ambiguous. On a
+    /// filesystem that stores both an NFC and an NFD spelling (or two cases) of
+    /// one name, the key cannot tell them apart and neither may win silently.
+    fn distinct_identity(&self, resolution: Resolution) -> Resolution {
+        let Resolution::Resolved { path } = &resolution else {
+            return resolution;
+        };
+        let key = path.link_key();
+        let key = key.trim_end_matches(".md");
+        let same: Vec<_> = self
+            .suffix_map
+            .get(key)
+            .into_iter()
+            .flatten()
+            .filter(|candidate| candidate.link_key().trim_end_matches(".md") == key)
+            .cloned()
+            .collect();
+        if same.len() > 1 {
+            Resolution::Ambiguous { candidates: same }
+        } else {
+            resolution
+        }
+    }
+
     /// Same identity rules as `resolve_from`, with borrowed candidate storage.
     fn resolve_from_ref(&self, target: &str, from_note: &str) -> ResolutionRef<'_> {
         let _phase = crate::open_diagnostics::phase("wiki_index_lookup");
         let t = target.split(['#', '^']).next().unwrap_or("").trim();
-        let key = t.to_lowercase();
+        let key = t.link_key();
         let key = key.trim_end_matches(".md").trim_matches('/');
         if key.is_empty() {
             return ResolutionRef::Unresolved;
@@ -1528,7 +1595,7 @@ impl Vault {
                 continue;
             }
             for name in names {
-                let lower = name.to_lowercase();
+                let lower = name.link_key();
                 let key = lower.trim_end_matches(".md").trim_matches('/');
                 let candidates = self
                     .alias_map
@@ -1574,7 +1641,7 @@ impl Vault {
         if self.nested_boundary(from).is_some() {
             return Resolution::Unresolved;
         }
-        let key = path.to_lowercase();
+        let key = path.link_key();
         let key = key.strip_suffix(".md").unwrap_or(&key);
         let exact = |key: &str| {
             // The wiki index strips repeated .md suffixes. Narrow to that
@@ -1584,7 +1651,7 @@ impl Vault {
                 .get(key.trim_end_matches(".md"))
                 .into_iter()
                 .flatten()
-                .filter(|path| path.to_lowercase().strip_suffix(".md") == Some(key))
+                .filter(|path| path.link_key().strip_suffix(".md") == Some(key))
                 .cloned()
                 .collect();
             candidates.sort();
@@ -1679,7 +1746,7 @@ impl Vault {
             .into_iter()
             .flatten()
             .filter(|path| {
-                path.to_lowercase()
+                path.link_key()
                     .strip_suffix(".md")
                     .is_some_and(|p| p == key || p.ends_with(&suffix))
             })
@@ -1699,7 +1766,7 @@ impl Vault {
             .any(|part| matches!(part, std::path::Component::ParentDir))
             || path
                 .ancestors()
-                .any(|part| self.symlink_paths.contains(&note_path(part).to_lowercase()))
+                .any(|part| self.symlink_paths.contains(&note_path(part).link_key()))
     }
 
     pub(crate) fn indexed_occupied(&self, path: &str) -> bool {
@@ -1714,7 +1781,7 @@ impl Vault {
     /// Apply a `./` `../` target to the directory of `from_note`, yielding a
     /// lowercased vault-relative key, or `None` if it walks above the root.
     pub(crate) fn walk_relative(&self, key: &str, from_note: &str) -> Option<String> {
-        let from = from_note.to_lowercase();
+        let from = from_note.link_key();
         let mut parts: Vec<&str> = from
             .trim_end_matches(".md")
             .split('/')
@@ -1788,7 +1855,8 @@ impl Vault {
                 self.entries
                     .iter()
                     .find(|entry| {
-                        entry.kind == EntryKind::Attachment && entry.path.eq_ignore_ascii_case(key)
+                        entry.kind == EntryKind::Attachment
+                            && entry.path.link_key() == key.link_key()
                     })
                     .map(|entry| self.root.join(&entry.path))
             };
@@ -1796,7 +1864,7 @@ impl Vault {
             if path.is_absolute() {
                 return find(&note_path(path.strip_prefix(&self.root).ok()?));
             }
-            let local = self.walk_relative(&t.to_lowercase(), note_rel)?;
+            let local = self.walk_relative(&t.link_key(), note_rel)?;
             if let Some(path) = find(&local) {
                 return Some(path);
             }
@@ -1805,7 +1873,7 @@ impl Vault {
             }
             find(t).or_else(|| {
                 self.asset_map
-                    .get(&t.rsplit('/').next()?.to_lowercase())
+                    .get(&t.rsplit('/').next()?.link_key())
                     .cloned()
             })
         } else {
@@ -1840,7 +1908,7 @@ impl Vault {
                 return None;
             }
             // bare filename lookup
-            let name = t.rsplit('/').next().unwrap_or(t).to_lowercase();
+            let name = t.rsplit('/').next().unwrap_or(t).link_key();
             self.asset_map.get(&name).cloned().or_else(|| {
                 if !self.single_file {
                     return None;
@@ -1851,7 +1919,7 @@ impl Vault {
                     entry.kind == EntryKind::Attachment
                         && Path::new(&entry.path)
                             .file_name()
-                            .is_some_and(|file| file.to_string_lossy().to_lowercase() == name)
+                            .is_some_and(|file| file.to_string_lossy().link_key() == name)
                 });
                 let first = known.next()?;
                 known.next().is_none().then(|| self.root.join(&first.path))
