@@ -1,0 +1,207 @@
+# #3287: Edit mode keyboard selection shortcuts and viewport auto-scroll.
+# Verifies page/document/line/word/all selection shortcuts and that extending
+# a selection past the viewport edges scrolls the active cursor into view.
+appearance: light
+note: |
+  FirstWord SecondWord ThirdWord
+  MarkerRow02 alpha
+  MarkerRow03 bravo
+  MarkerRow04 charlie
+  MarkerRow05 delta
+  MarkerRow06 echo
+  MarkerRow07 foxtrot
+  MarkerRow08 golf
+  MarkerRow09 hotel
+  MarkerRow10 india
+  MarkerRow11 juliet
+  MarkerRow12 kilo
+  MarkerRow13 lima
+  MarkerRow14 mike
+  MarkerRow15 november
+  MarkerRow16 oscar
+  MarkerRow17 papa
+  MarkerRow18 quebec
+  MarkerRow19 romeo
+  MarkerRow20 sierra
+  MarkerRow21 tango
+  MarkerRow22 uniform
+  MarkerRow23 victor
+  MarkerRow24 whiskey
+  MarkerRow25 xray
+  MarkerRow26 yankee
+  MarkerRow27 zulu
+  MarkerRow28 amber
+  MarkerRow29 birch
+  MarkerRow30 cedar
+  MarkerRow31 delta
+  MarkerRow32 elder
+  MarkerRow33 frost
+  MarkerRow34 grove
+  MarkerRow35 hazel
+  MarkerRow36 ivory
+  MarkerRow37 jasper
+  MarkerRow38 kelp
+  MarkerRow39 larch
+  MarkerRow40 maple
+  MarkerRow41 noble
+  MarkerRow42 olive
+  MarkerRow43 pine
+  MarkerRow44 quartz
+  MarkerRow45 ridge
+  MarkerRow46 spruce
+  MarkerRow47 timber
+  MarkerRow48 umber
+  MarkerRow49 vale
+  MarkerRow50 willow
+  MarkerRow51 xenon
+  MarkerRow52 yarrow
+  MarkerRow53 zenith
+  MarkerRow54 aurora
+  MarkerRow55 FinalBottomLine
+region: [300, 60, 800, 680]
+ready_text: FirstWord SecondWord ThirdWord
+steps:
+  - id: enter-edit
+    keys: [e]
+    mods: [ctrl, shift]
+    wait: 1.5
+    text: FirstWord SecondWord ThirdWord
+    text_absent: FinalBottomLine
+
+  - id: shift-page-down-selects-and-scrolls
+    # One Shift+Page_Down selects a page downward and scrolls past the first
+    # screen; pressing Right collapses the selection at the active cursor so
+    # OCR can read the scrolled lines cleanly while preserving the viewport.
+    keys: [Page_Down, Page_Down]
+    mods: [shift]
+    wait: 0.6
+    changed_from: enter-edit
+    min_changed_pixels: 5000
+
+  - id: shift-page-down-scrolled-view
+    keys: [Right]
+    wait: 0.5
+    text: FinalBottomLine
+    text_absent: FirstWord
+
+  - id: shift-page-up-selects-and-scrolls
+    keys: [Page_Up, Page_Up]
+    mods: [shift]
+    wait: 0.6
+    changed_from: shift-page-down-scrolled-view
+    min_changed_pixels: 5000
+
+  - id: shift-page-up-scrolled-view
+    keys: [Left]
+    wait: 0.5
+    text: FirstWord
+    text_absent: FinalBottomLine
+
+  - id: reset-top-before-doc-end
+    keys: [Home]
+    mods: [ctrl]
+    wait: 0.4
+    text: FirstWord
+    text_absent: FinalBottomLine
+
+  - id: ctrl-shift-end-scrolls
+    keys: [End]
+    mods: [ctrl, shift]
+    wait: 0.6
+    changed_from: reset-top-before-doc-end
+    min_changed_pixels: 5000
+
+  - id: ctrl-shift-end-scrolled-view
+    keys: [Right]
+    wait: 0.5
+    text: FinalBottomLine
+    text_absent: FirstWord
+
+  - id: ctrl-shift-home-scrolls
+    keys: [Home]
+    mods: [ctrl, shift]
+    wait: 0.6
+    changed_from: ctrl-shift-end-scrolled-view
+    min_changed_pixels: 5000
+
+  - id: ctrl-shift-home-scrolled-view
+    keys: [Left]
+    wait: 0.5
+    text: FirstWord
+    text_absent: FinalBottomLine
+
+  - id: shift-down-auto-scrolls
+    keys: [Down, Down, Down, Down, Down, Down, Down, Down, Down, Down, Down, Down, Down, Down, Down, Down, Down, Down, Down, Down, Down, Down, Down, Down, Down, Down, Down, Down, Down, Down, Down, Down, Down, Down, Down]
+    mods: [shift]
+    wait: 0.6
+    changed_from: ctrl-shift-home-scrolled-view
+    min_changed_pixels: 5000
+
+  - id: shift-down-scrolled-view
+    keys: [Right]
+    wait: 0.5
+    text: MarkerRow35
+    text_absent: FirstWord
+
+  - id: reset-top-for-word-and-line
+    keys: [Home]
+    mods: [ctrl]
+    wait: 0.5
+    text: FirstWord SecondWord ThirdWord
+
+  - id: select-word-right
+    keys: [Right]
+    mods: [ctrl, shift]
+    wait: 0.3
+    changed_from: reset-top-for-word-and-line
+    min_changed_pixels: 100
+
+  - id: delete-word-right
+    keys: [BackSpace]
+    wait: 0.5
+    text: SecondWord ThirdWord
+    text_absent: FirstWord
+
+  - id: select-to-end-of-line
+    keys: [End]
+    mods: [shift]
+    wait: 0.3
+    changed_from: delete-word-right
+    min_changed_pixels: 100
+
+  - id: delete-to-end-of-line
+    keys: [BackSpace]
+    wait: 0.5
+    text: MarkerRow02
+    text_absent: ThirdWord
+
+  - id: move-to-row2-end
+    keys: [Down, End]
+    wait: 0.3
+    text: MarkerRow02 alpha
+
+  - id: select-to-start-of-line
+    keys: [Home]
+    mods: [shift]
+    wait: 0.3
+    changed_from: move-to-row2-end
+    min_changed_pixels: 100
+
+  - id: delete-to-start-of-line
+    keys: [BackSpace]
+    wait: 0.5
+    text: MarkerRow03
+    text_absent: MarkerRow02
+
+  - id: ctrl-a-select-all
+    keys: [a]
+    mods: [ctrl]
+    wait: 0.4
+    changed_from: delete-to-start-of-line
+    min_changed_pixels: 5000
+
+  - id: replace-all-selected
+    keys: [a, l, l, c, l, e, a, r, e, d]
+    wait: 0.8
+    text: allcleared
+    text_absent: MarkerRow

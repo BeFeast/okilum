@@ -8528,4 +8528,238 @@ mod mode_navigation_tests {
             "Plain text follows the chosen editing mode.\n"
         );
     }
+
+    /// #3287: Edit mode keyboard selection shortcuts (word, line, page,
+    /// document, select-all) and viewport auto-scroll when extending a
+    /// selection past the top or bottom edge, in both Source and Live Preview.
+    #[gpui::test]
+    fn edit_keyboard_selection_shortcuts_and_autoscroll(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            crate::test_init(cx);
+            bind_keys(cx);
+        });
+        let root = std::env::temp_dir().join(format!("okilum-sel3287-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut source = String::from("FirstWord SecondWord ThirdWord\n");
+        for i in 2..=60 {
+            source.push_str(&format!("Line {i:02} body text\n"));
+        }
+        source.push_str("FinalBottomLine");
+        std::fs::write(root.join("long.md"), &source).unwrap();
+
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("long.md".into()),
+                        session_directory: Some(root.join("state")),
+                        ..Opts::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.simulate_resize(size(px(1200.), px(440.)));
+        visual.run_until_parked();
+        reader.update_in(visual, |v, window, cx| v.toggle_source(window, cx));
+        visual.run_until_parked();
+
+        let input = reader.read_with(visual, |v, _| {
+            v.pane.editing.as_ref().unwrap().input.clone()
+        });
+
+        let word_left = if cfg!(target_os = "macos") {
+            "alt-shift-left"
+        } else {
+            "ctrl-shift-left"
+        };
+        let word_right = if cfg!(target_os = "macos") {
+            "alt-shift-right"
+        } else {
+            "ctrl-shift-right"
+        };
+        let doc_start = if cfg!(target_os = "macos") {
+            "cmd-shift-up"
+        } else {
+            "ctrl-shift-home"
+        };
+        let doc_end = if cfg!(target_os = "macos") {
+            "cmd-shift-down"
+        } else {
+            "ctrl-shift-end"
+        };
+        let select_all_key = if cfg!(target_os = "macos") {
+            "cmd-a"
+        } else {
+            "ctrl-a"
+        };
+
+        let assert_cursor_visible = |visual: &mut VisualTestContext, label: &str| {
+            visual.run_until_parked();
+            visual.update(|w, cx| w.draw(cx).clear(cx));
+            input.read_with(visual, |v, _| {
+                let cursor = v.cursor();
+                let probe = if cursor < v.value().len() {
+                    cursor..cursor + 1
+                } else {
+                    cursor.saturating_sub(1)..cursor
+                };
+                let bounds = v
+                    .range_to_bounds(&probe)
+                    .unwrap_or_else(|| panic!("{label}: cursor at {cursor} not in visible layout"));
+                let view = v.input_bounds();
+                assert!(
+                    bounds.top() >= view.top() - px(2.)
+                        && bounds.bottom() <= view.bottom() + px(2.),
+                    "{label}: cursor bounds {bounds:?} outside viewport {view:?}"
+                );
+            });
+        };
+
+        for live_preview in [false, true] {
+            let mode = if live_preview {
+                "live-preview"
+            } else {
+                "source"
+            };
+            reader.update_in(visual, |v, window, cx| {
+                v.set_live_preview(live_preview, window, cx);
+                let input = v.pane.editing.as_ref().unwrap().input().clone();
+                input.update(cx, |i, cx| {
+                    i.focus_handle(cx).focus(window, cx);
+                    i.set_selected_range(0..0, cx);
+                });
+            });
+            visual.run_until_parked();
+            visual.update(|w, cx| w.draw(cx).clear(cx));
+
+            // 1. Word selection forward, then shrink backward by one word.
+            visual.simulate_keystrokes(&format!("{word_right} {word_right}"));
+            visual.run_until_parked();
+            let after_two_words = input.read_with(visual, |i, _| i.selected_range());
+            assert_eq!(
+                &source[after_two_words.clone()],
+                "FirstWord SecondWord",
+                "{mode}: two word-right selections"
+            );
+            visual.simulate_keystrokes(word_left);
+            visual.run_until_parked();
+            let after_one_back = input.read_with(visual, |i, _| i.selected_range());
+            assert_eq!(
+                &source[after_one_back.clone()],
+                "FirstWord ",
+                "{mode}: word-left shrinks forward selection from active cursor"
+            );
+
+            // 2. Shift+End and Shift+Home.
+            input.update(visual, |i, cx| i.set_selected_range(0..0, cx));
+            visual.run_until_parked();
+            visual.simulate_keystrokes("shift-end");
+            visual.run_until_parked();
+            assert_eq!(
+                &source[input.read_with(visual, |i, _| i.selected_range())],
+                "FirstWord SecondWord ThirdWord",
+                "{mode}: shift-end selects to end of line"
+            );
+            visual.simulate_keystrokes("end shift-home");
+            visual.run_until_parked();
+            assert_eq!(
+                &source[input.read_with(visual, |i, _| i.selected_range())],
+                "FirstWord SecondWord ThirdWord",
+                "{mode}: shift-home selects to start of line"
+            );
+
+            // 3. Shift+PageDown and Shift+PageUp scroll viewport and extend selection.
+            input.update(visual, |i, cx| i.set_selected_range(0..0, cx));
+            visual.run_until_parked();
+            visual.update(|w, cx| w.draw(cx).clear(cx));
+            let top_y = input.read_with(visual, |i, _| i.scroll_offset().y);
+            visual.simulate_keystrokes("shift-pagedown shift-pagedown");
+            assert_cursor_visible(visual, &format!("{mode} shift-pagedown"));
+            let after_pgdn_y = input.read_with(visual, |i, _| i.scroll_offset().y);
+            assert!(
+                after_pgdn_y < top_y - px(50.),
+                "{mode}: shift-pagedown must scroll down (was {top_y:?}, now {after_pgdn_y:?})"
+            );
+            assert!(
+                !input
+                    .read_with(visual, |i, _| i.selected_range())
+                    .is_empty(),
+                "{mode}: shift-pagedown selects text"
+            );
+
+            visual.simulate_keystrokes("shift-pageup shift-pageup");
+            assert_cursor_visible(visual, &format!("{mode} shift-pageup"));
+            let after_pgup_y = input.read_with(visual, |i, _| i.scroll_offset().y);
+            assert!(
+                after_pgup_y > after_pgdn_y + px(50.),
+                "{mode}: shift-pageup must scroll back up (was {after_pgdn_y:?}, now {after_pgup_y:?})"
+            );
+
+            // 4. Ctrl+Shift+End / Home (Cmd+Shift+Down / Up on macOS) select to doc edges & scroll.
+            input.update(visual, |i, cx| i.set_selected_range(0..0, cx));
+            visual.run_until_parked();
+            visual.update(|w, cx| w.draw(cx).clear(cx));
+            visual.simulate_keystrokes(doc_end);
+            assert_cursor_visible(visual, &format!("{mode} {doc_end}"));
+            assert_eq!(
+                input.read_with(visual, |i, _| i.selected_range()),
+                0..source.len(),
+                "{mode}: {doc_end} selects to end of document"
+            );
+            assert!(
+                input.read_with(visual, |i, _| i.scroll_offset().y) < px(-200.),
+                "{mode}: {doc_end} scrolls to bottom"
+            );
+
+            // Place caret at end, then select to start of document.
+            input.update(visual, |i, cx| {
+                let end = i.value().len();
+                i.set_selected_range(end..end, cx);
+            });
+            visual.run_until_parked();
+            visual.update(|w, cx| w.draw(cx).clear(cx));
+            visual.simulate_keystrokes(doc_start);
+            assert_cursor_visible(visual, &format!("{mode} {doc_start}"));
+            assert_eq!(
+                input.read_with(visual, |i, _| i.selected_range()),
+                0..source.len(),
+                "{mode}: {doc_start} selects to start of document"
+            );
+            assert!(
+                input.read_with(visual, |i, _| i.scroll_offset().y) >= px(-10.),
+                "{mode}: {doc_start} scrolls back to top"
+            );
+
+            // 5. Shift+Down past bottom edge auto-scrolls viewport with active cursor.
+            input.update(visual, |i, cx| i.set_selected_range(0..0, cx));
+            visual.run_until_parked();
+            visual.update(|w, cx| w.draw(cx).clear(cx));
+            for _ in 0..35 {
+                visual.simulate_keystrokes("shift-down");
+            }
+            assert_cursor_visible(visual, &format!("{mode} shift-down"));
+            assert!(
+                input.read_with(visual, |i, _| i.scroll_offset().y) < px(-100.),
+                "{mode}: shift-down past viewport bottom must scroll"
+            );
+
+            // 6. Ctrl+A / Cmd+A selects all.
+            input.update(visual, |i, cx| i.set_selected_range(5..5, cx));
+            visual.run_until_parked();
+            visual.simulate_keystrokes(select_all_key);
+            visual.run_until_parked();
+            assert_eq!(
+                input.read_with(visual, |i, _| i.selected_range()),
+                0..source.len(),
+                "{mode}: {select_all_key} selects entire document"
+            );
+        }
+    }
 }

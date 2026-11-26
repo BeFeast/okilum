@@ -1,0 +1,482 @@
+diff --git a/crates/base/src/input/base/movement.rs b/crates/base/src/input/base/movement.rs
+index 92f540f5..d2e241d2 100644
+--- a/crates/base/src/input/base/movement.rs
++++ b/crates/base/src/input/base/movement.rs
+@@ -92,7 +92,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             return;
+         };
+         self.cursor_bidi_affinity = bidi_affinity;
+-        if pending.select { self.select_to_with_affinity(source, affinity, cx); }
++        if pending.select { self.select_to_with_scroll(source, Some(pending.direction), affinity, cx); }
+         else { self.move_to_with_affinity(source, Some(pending.direction), affinity, cx); }
+         self.preferred_column = Some(pending.preferred);
+     }
+@@ -177,6 +177,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+     fn projected_vertical_target(
+         &self,
+         move_lines: isize,
++        select: bool,
+         window: &Window,
+         cx: &mut Context<Self>,
+     ) -> Option<(usize, bool, gpui::Pixels)> {
+@@ -267,8 +268,13 @@ impl<M: InputModeKind> InputBaseState<M> {
+             &|line| self.paragraph_rtl_at(line),
+             window,
+         )?;
++        let selection_anchor = if self.selection_reversed {
++            self.selected_range.end
++        } else {
++            self.selected_range.start
++        };
+         let mut active = self.projection.active.clone();
+-        active.anchor = SourceByte(provisional);
++        active.anchor = SourceByte(if select { selection_anchor } else { provisional });
+         active.head = SourceByte(provisional);
+         active.affinity = if provisional_affinity {
+             WrapAffinity::End
+@@ -303,7 +309,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             &|line| self.paragraph_rtl_at(line),
+             window,
+         )?;
+-        active.anchor = SourceByte(resolved.0);
++        active.anchor = SourceByte(if select { selection_anchor } else { resolved.0 });
+         active.head = SourceByte(resolved.0);
+         active.affinity = if resolved.1 {
+             WrapAffinity::End
+@@ -408,14 +414,37 @@ impl<M: InputModeKind> InputBaseState<M> {
+         Some((start, line))
+     }
+ 
+-    /// Move the cursor vertically by one line (up or down) while preserving the column if possible.
+-    ///
+-    /// move_lines: Number of lines to move vertically (positive for down, negative for up).
++    /// Move the cursor vertically by `move_lines` (positive for down, negative for up)
++    /// while preserving the column if possible.
+     pub(super) fn move_vertical(
+         &mut self,
+         move_lines: isize,
+         window: &mut Window,
+         cx: &mut Context<Self>,
++    ) {
++        self.move_vertical_inner(move_lines, false, window, cx);
++    }
++
++    /// Extend the selection vertically by `move_lines` while preserving the column
++    /// and scrolling the viewport to keep the active selection end visible.
++    pub(super) fn select_vertical(
++        &mut self,
++        move_lines: isize,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
++        if self.preferred_column.is_none() {
++            self.update_preferred_column();
++        }
++        self.move_vertical_inner(move_lines, true, window, cx);
++    }
++
++    fn move_vertical_inner(
++        &mut self,
++        move_lines: isize,
++        select: bool,
++        window: &mut Window,
++        cx: &mut Context<Self>,
+     ) {
+         if self.is_single_line() {
+             return;
+@@ -427,12 +456,19 @@ impl<M: InputModeKind> InputBaseState<M> {
+         if self.projection.enabled && last_layout.projection.is_some() {
+             let original_column = self.preferred_column.map(|(_, column)| column)
+                 .unwrap_or_else(|| self.text.offset_to_point(self.cursor()).column);
+-            if let Some((target, affinity, preferred_x)) = self.projected_vertical_target(move_lines, window, cx) {
++            if let Some((target, affinity, preferred_x)) = self.projected_vertical_target(move_lines, select, window, cx) {
+                 let direction = if move_lines < 0 { MoveDirection::Up } else { MoveDirection::Down };
+-                self.move_to_with_affinity(target, Some(direction), affinity, cx);
++                if select {
++                    self.select_to_with_scroll(target, Some(direction), affinity, cx);
++                } else {
++                    self.move_to_with_affinity(target, Some(direction), affinity, cx);
++                }
+                 self.preferred_column = Some((preferred_x, original_column));
++                return;
++            }
++            if !select {
++                return;
+             }
+-            return;
+         }
+ 
+         let pending = self.projection_pending_vertical.take().filter(|pending| {
+@@ -522,7 +558,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+                     stamp: self.source_stamp(),
+                     active: self.projection.active.clone(),
+                     edge: None,
+-                    select: false,
++                    select,
+                     target: self.cursor_boundary(new_offset, Bias::Left),
+                     preferred: (preferred_x, column),
+                     direction: if move_lines < 0 {
+@@ -555,7 +591,11 @@ impl<M: InputModeKind> InputBaseState<M> {
+             MoveDirection::Down
+         };
+         self.cursor_bidi_affinity = new_bidi_affinity;
+-        self.move_to_with_affinity(new_offset, Some(direction), new_affinity, cx);
++        if select {
++            self.select_to_with_scroll(new_offset, Some(direction), new_affinity, cx);
++        } else {
++            self.move_to_with_affinity(new_offset, Some(direction), new_affinity, cx);
++        }
+         // Set back the preferred_column
+         self.preferred_column = was_preferred_column;
+         cx.notify();
+@@ -620,7 +660,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+                 self.selected_range = (origin..origin).into();
+                 self.selection_reversed = false;
+             }
+-            self.select_to_with_affinity(offset, wrap, cx);
++            self.select_to_with_scroll(offset, None, wrap, cx);
+         }
+         else { self.move_to_with_affinity(offset, None, wrap, cx); }
+         true
+@@ -716,7 +756,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+ 
+     /// Rows in one page from the caret. With tall rows (headings) the page is
+     /// measured in pixels, so it neither skips text nor stops short (#1034).
+-    fn page_rows(&self, down: bool) -> Option<isize> {
++    pub(super) fn page_rows(&self, down: bool) -> Option<isize> {
+         let last_layout = self.last_layout.as_ref()?;
+         let rows = &last_layout.rows;
+         let height = self.input_bounds.size.height;
+@@ -759,7 +799,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+ 
+     /// Resolve a Home/End target from the painted row, not a separately wrapped
+     /// display map or its leftmost glyph (which can be the logical end in bidi).
+-    fn painted_row_boundary(&self, end: bool) -> Option<(usize, bool, super::bidi_geometry::Affinity)> {
++    pub(super) fn painted_row_boundary(&self, end: bool) -> Option<(usize, bool, super::bidi_geometry::Affinity)> {
+         // Mask bullets have different UTF-8 lengths from the underlying value.
+         if self.masked { return None; }
+         let last = self.last_layout.as_ref()?;
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index 86af6366..544528b0 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -100,7 +100,7 @@ use super::{
+     mode::LayoutMode,
+     undo_manager::{EditIntent, UndoManager},
+ };
+-use crate::actions::{SelectDown, SelectLeft, SelectRight, SelectUp};
++use crate::actions::{SelectDown, SelectLeft, SelectPageDown, SelectPageUp, SelectRight, SelectUp};
+ use crate::input::blink_cursor::CURSOR_WIDTH;
+ use crate::input::movement::MoveDirection;
+ use crate::input::{
+@@ -258,6 +258,8 @@ pub(crate) fn init(cx: &mut App) {
+         KeyBinding::new("shift-right", SelectRight, Some(CONTEXT)),
+         KeyBinding::new("shift-up", SelectUp, Some(CONTEXT)),
+         KeyBinding::new("shift-down", SelectDown, Some(CONTEXT)),
++        KeyBinding::new("shift-pageup", SelectPageUp, Some(CONTEXT)),
++        KeyBinding::new("shift-pagedown", SelectPageDown, Some(CONTEXT)),
+         KeyBinding::new("home", MoveHome, Some(CONTEXT)),
+         KeyBinding::new("end", MoveEnd, Some(CONTEXT)),
+         #[cfg(not(target_os = "macos"))]
+@@ -338,6 +340,10 @@ pub(crate) fn init(cx: &mut App) {
+         KeyBinding::new("cmd-shift-up", SelectToStart, Some(CONTEXT)),
+         #[cfg(target_os = "macos")]
+         KeyBinding::new("cmd-shift-down", SelectToEnd, Some(CONTEXT)),
++        #[cfg(target_os = "macos")]
++        KeyBinding::new("cmd-shift-home", SelectToStart, Some(CONTEXT)),
++        #[cfg(target_os = "macos")]
++        KeyBinding::new("cmd-shift-end", SelectToEnd, Some(CONTEXT)),
+         #[cfg(not(target_os = "macos"))]
+         KeyBinding::new("ctrl-z", Undo, Some(CONTEXT)),
+         #[cfg(not(target_os = "macos"))]
+@@ -2213,34 +2219,80 @@ impl<M: InputModeKind> InputBaseState<M> {
+         self.undo_manager.break_transaction_coalescing();
+         if !self.move_visually(false, true, cx) {
+             self.cursor_bidi_affinity = Affinity::Before;
+-            self.select_to(self.previous_boundary(self.cursor()), cx);
++            let offset = self.previous_boundary(self.cursor());
++            self.select_to_with_scroll(offset, None, false, cx);
+         }
++        self.update_preferred_column();
+     }
+ 
+     pub(super) fn select_right(&mut self, _: &SelectRight, _: &mut Window, cx: &mut Context<Self>) {
+         self.undo_manager.break_transaction_coalescing();
+         if !self.move_visually(true, true, cx) {
+             self.cursor_bidi_affinity = Affinity::Before;
+-            self.select_to(self.next_boundary(self.cursor()), cx);
++            let offset = self.next_boundary(self.cursor());
++            self.select_to_with_scroll(offset, None, false, cx);
+         }
++        self.update_preferred_column();
+     }
+ 
+-    pub(super) fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
++    pub(super) fn select_up(&mut self, _: &SelectUp, window: &mut Window, cx: &mut Context<Self>) {
+         if self.is_single_line() {
+             return;
+         }
+         self.undo_manager.break_transaction_coalescing();
+-        let offset = self.start_of_line().saturating_sub(1);
+-        self.select_to(self.previous_boundary(offset), cx);
++        if self.last_layout.is_some() {
++            self.select_vertical(-1, window, cx);
++        } else {
++            let offset = self.start_of_line().saturating_sub(1);
++            let target = self.previous_boundary(offset);
++            self.select_to_with_scroll(target, Some(MoveDirection::Up), false, cx);
++        }
+     }
+ 
+-    pub(super) fn select_down(&mut self, _: &SelectDown, _: &mut Window, cx: &mut Context<Self>) {
++    pub(super) fn select_down(&mut self, _: &SelectDown, window: &mut Window, cx: &mut Context<Self>) {
+         if self.is_single_line() {
+             return;
+         }
+         self.undo_manager.break_transaction_coalescing();
+-        let offset = (self.end_of_line() + 1).min(self.text.len());
+-        self.select_to(self.next_boundary(offset), cx);
++        if self.last_layout.is_some() {
++            self.select_vertical(1, window, cx);
++        } else {
++            let offset = (self.end_of_line() + 1).min(self.text.len());
++            let target = self.next_boundary(offset);
++            self.select_to_with_scroll(target, Some(MoveDirection::Down), false, cx);
++        }
++    }
++
++    pub(super) fn select_page_up(
++        &mut self,
++        _: &SelectPageUp,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
++        if self.is_single_line() {
++            return;
++        }
++        self.undo_manager.break_transaction_coalescing();
++        let Some(display_lines) = self.page_rows(false) else {
++            return;
++        };
++        self.select_vertical(-display_lines, window, cx);
++    }
++
++    pub(super) fn select_page_down(
++        &mut self,
++        _: &SelectPageDown,
++        window: &mut Window,
++        cx: &mut Context<Self>,
++    ) {
++        if self.is_single_line() {
++            return;
++        }
++        self.undo_manager.break_transaction_coalescing();
++        let Some(display_lines) = self.page_rows(true) else {
++            return;
++        };
++        self.select_vertical(display_lines, window, cx);
+     }
+ 
+     pub(super) fn on_action_select_all(
+@@ -2259,7 +2311,8 @@ impl<M: InputModeKind> InputBaseState<M> {
+         cx: &mut Context<Self>,
+     ) {
+         self.undo_manager.break_transaction_coalescing();
+-        self.select_to(0, cx);
++        self.select_to_with_scroll(0, Some(MoveDirection::Up), false, cx);
++        self.update_preferred_column();
+     }
+ 
+     pub(super) fn select_to_end(
+@@ -2270,7 +2323,8 @@ impl<M: InputModeKind> InputBaseState<M> {
+     ) {
+         self.undo_manager.break_transaction_coalescing();
+         let end = self.text.len();
+-        self.select_to(end, cx);
++        self.select_to_with_scroll(end, Some(MoveDirection::Down), false, cx);
++        self.update_preferred_column();
+     }
+ 
+     pub(super) fn select_to_start_of_line(
+@@ -2280,8 +2334,14 @@ impl<M: InputModeKind> InputBaseState<M> {
+         cx: &mut Context<Self>,
+     ) {
+         self.undo_manager.break_transaction_coalescing();
+-        let offset = self.start_of_line();
+-        self.select_to(offset, cx);
++        if let Some((source, wrap, affinity)) = self.painted_row_boundary(false) {
++            self.cursor_bidi_affinity = affinity;
++            self.select_to_with_scroll(source, Some(MoveDirection::Up), wrap, cx);
++        } else {
++            let offset = self.start_of_line();
++            self.select_to_with_scroll(offset, Some(MoveDirection::Up), false, cx);
++        }
++        self.update_preferred_column();
+     }
+ 
+     pub(super) fn select_to_end_of_line(
+@@ -2291,9 +2351,15 @@ impl<M: InputModeKind> InputBaseState<M> {
+         cx: &mut Context<Self>,
+     ) {
+         self.undo_manager.break_transaction_coalescing();
+-        let offset = self.end_of_line();
+-        // Mirrors MoveEnd: the caret belongs at the end of the visual row it is on.
+-        self.select_to_with_affinity(offset, true, cx);
++        if let Some((source, wrap, affinity)) = self.painted_row_boundary(true) {
++            self.cursor_bidi_affinity = affinity;
++            self.select_to_with_scroll(source, Some(MoveDirection::Down), wrap, cx);
++        } else {
++            let offset = self.end_of_line();
++            // Mirrors MoveEnd: the caret belongs at the end of the visual row it is on.
++            self.select_to_with_scroll(offset, Some(MoveDirection::Down), true, cx);
++        }
++        self.update_preferred_column();
+     }
+ 
+     pub(super) fn select_to_previous_word(
+@@ -2304,7 +2370,8 @@ impl<M: InputModeKind> InputBaseState<M> {
+     ) {
+         self.undo_manager.break_transaction_coalescing();
+         let offset = self.previous_start_of_word();
+-        self.select_to(offset, cx);
++        self.select_to_with_scroll(offset, None, false, cx);
++        self.update_preferred_column();
+     }
+ 
+     pub(super) fn select_to_next_word(
+@@ -2315,7 +2382,8 @@ impl<M: InputModeKind> InputBaseState<M> {
+     ) {
+         self.undo_manager.break_transaction_coalescing();
+         let offset = self.next_end_of_word();
+-        self.select_to(offset, cx);
++        self.select_to_with_scroll(offset, None, false, cx);
++        self.update_preferred_column();
+     }
+ 
+     /// Return the start offset of the previous word.
+@@ -2327,7 +2395,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             return 0;
+         }
+ 
+-        let offset = self.selected_range.start;
++        let offset = self.cursor();
+         let offset = self.offset_from_utf16(self.offset_to_utf16(offset));
+         // FIXME: Avoid to_string
+         let left_part = self.text.slice(0..offset).to_string();
+@@ -3172,7 +3240,6 @@ impl<M: InputModeKind> InputBaseState<M> {
+ 
+         let row = point.row;
+ 
+-        // Calculate row offset by multiplying the number of lines before it with the line height
+         let mut row_offset_y = last_layout
+             .rows
+             .row_top(self.display_map.buffer_line_to_display_row(row));
+@@ -3184,33 +3251,44 @@ impl<M: InputModeKind> InputBaseState<M> {
+             TextAlign::Right => px(0.),
+             TextAlign::Center => CURSOR_WIDTH,
+         };
+-        if let Some(line) = last_layout
+-            .lines
+-            .get(row.saturating_sub(last_layout.visible_range.start))
++        if let Some(vi) = last_layout
++            .visible_buffer_lines
++            .iter()
++            .position(|r| *r == row)
++            && let Some(line) = last_layout.lines.get(vi)
+         {
+             // Check to scroll horizontally and soft wrap lines
+-            let Some(projected) = last_layout.project(offset, ConcealBias::Right) else {
+-                return;
+-            };
+-            let Some(vi) = last_layout
+-                .visible_buffer_lines
+-                .iter()
+-                .position(|r| *r == row)
+-            else {
+-                return;
+-            };
+-            let column = projected.saturating_sub(last_layout.visible_line_byte_offsets[vi]);
+-            if let Some(pos) = line.position_for_caret(column, last_layout, self.cursor_line_end_affinity, self.cursor_bidi_affinity) {
+-                let bounds_width = bounds.size.width - last_layout.line_number_width;
+-                let col_offset_x = pos.x;
+-                row_offset_y += pos.y;
+-                if col_offset_x - safety_margin < -scroll_offset.x {
+-                    // If the position is out of the visible area, scroll to make it visible
+-                    scroll_offset.x = -col_offset_x + safety_margin;
+-                } else if col_offset_x + safety_margin > -scroll_offset.x + bounds_width {
+-                    scroll_offset.x = -(col_offset_x - bounds_width + safety_margin);
++            if let Some(projected) = last_layout.project(offset, ConcealBias::Right) {
++                let column = projected.saturating_sub(last_layout.visible_line_byte_offsets[vi]);
++                if let Some(pos) = line.position_for_caret(
++                    column,
++                    last_layout,
++                    self.cursor_line_end_affinity,
++                    self.cursor_bidi_affinity,
++                ) {
++                    let bounds_width = bounds.size.width - last_layout.line_number_width;
++                    let col_offset_x = pos.x;
++                    row_offset_y += pos.y;
++                    if col_offset_x - safety_margin < -scroll_offset.x {
++                        // If the position is out of the visible area, scroll to make it visible
++                        scroll_offset.x = -col_offset_x + safety_margin;
++                    } else if col_offset_x + safety_margin > -scroll_offset.x + bounds_width {
++                        scroll_offset.x = -(col_offset_x - bounds_width + safety_margin);
++                    }
+                 }
+             }
++        } else {
++            let wrap_point = self
++                .display_map
++                .offset_to_wrap_display_point_with_affinity(offset, self.cursor_line_end_affinity);
++            let display_row = self
++                .display_map
++                .wrap_row_to_display_row(wrap_point.row)
++                .unwrap_or_else(|| {
++                    self.display_map
++                        .nearest_visible_display_row(wrap_point.row)
++                });
++            row_offset_y = last_layout.rows.row_top(display_row);
+         }
+ 
+         // The caret's own row: a heading row is taller than `line_height`.
+@@ -3674,6 +3752,8 @@ impl<M: InputModeKind> InputBaseState<M> {
+ 
+     pub fn select_all(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+         self.undo_manager.break_transaction_coalescing();
++        self.selection_reversed = false;
++        self.selected_word_range = None;
+         self.selected_range = (0..self.text.len()).into();
+         self.sync_projection_active();
+         cx.notify();
+@@ -4003,6 +4083,22 @@ impl<M: InputModeKind> InputBaseState<M> {
+         cx.notify()
+     }
+ 
++    /// Extend the selection to `offset` and scroll the viewport so the active
++    /// selection end remains visible (keyboard selection path; mouse drag uses
++    /// `auto_scroll` instead).
++    pub(crate) fn select_to_with_scroll(
++        &mut self,
++        offset: usize,
++        direction: Option<MoveDirection>,
++        line_end_affinity: bool,
++        cx: &mut Context<Self>,
++    ) {
++        self.select_to_with_affinity(offset, line_end_affinity, cx);
++        self.pause_blink_cursor(cx);
++        let cursor = self.cursor();
++        self.scroll_to(cursor, direction, cx);
++    }
++
+     /// Unselects the currently selected text.
+     pub fn unselect(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+         self.undo_manager.break_transaction_coalescing();
+@@ -5030,6 +5126,8 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
+                     .on_action(window.listener_for(&entity, InputBaseState::down))
+                     .on_action(window.listener_for(&entity, InputBaseState::select_up))
+                     .on_action(window.listener_for(&entity, InputBaseState::select_down))
++                    .on_action(window.listener_for(&entity, InputBaseState::select_page_up))
++                    .on_action(window.listener_for(&entity, InputBaseState::select_page_down))
+                     .on_action(window.listener_for(&entity, InputBaseState::page_up))
+                     .on_action(window.listener_for(&entity, InputBaseState::page_down))
+             })
