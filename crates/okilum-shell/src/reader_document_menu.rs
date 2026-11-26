@@ -66,13 +66,13 @@ impl Reader {
             .map(|status| reader_status_line::render(status, "file-status", None, cx))
     }
 
-    /// Header, sync-conflict banner and encoding notice, in display order.
+    /// Header, sync-conflict banner, encoding notice and archive notice, in display order.
     #[inline(never)]
     fn note_surface_header(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> [Option<AnyElement>; 3] {
+    ) -> [Option<AnyElement>; 4] {
         let header = div()
             .debug_selector(|| "document-header-viewport".into())
             .flex_none()
@@ -87,7 +87,8 @@ impl Reader {
         let notice = self
             .note_encoding_damaged
             .then(|| self.note_encoding_notice(cx));
-        [Some(header), banner, notice]
+        let archive_notice = self.render_archive_lookup_banner(cx);
+        [Some(header), banner, notice, archive_notice]
     }
 
     #[inline(never)]
@@ -200,7 +201,11 @@ impl Reader {
                     .sum::<f32>()
             });
         let compact_parent = if parent_width > 0. { 32. } else { 0. };
-        let fixed_width = 208. + if dirty { 32. } else { 0. };
+        let archive_action = self.archive_successor_action(cx);
+        let archive_action_width = archive_action.as_ref().map_or(0., |action| {
+            toolbar_text_width(&action.label, FontWeight::MEDIUM, window) + 28.
+        });
+        let fixed_width = 208. + if dirty { 32. } else { 0. } + archive_action_width;
         let mut spare = document_width - fixed_width - title_width - compact_parent;
         // Reveal also lives in Document actions. Let it yield its toolbar slot
         // before the title, while Maximize remains directly available (#1909).
@@ -308,6 +313,19 @@ impl Reader {
             .child(self.render_breadcrumbs(collapse_parents, cx));
         if rel.is_empty() {
             return row;
+        }
+        if let Some(action) = archive_action {
+            let selector_id = action.id;
+            row = row.child(
+                Button::new(action.id)
+                    .debug_selector(move || selector_id.into())
+                    .small()
+                    .label(action.label)
+                    .tooltip(action.tooltip)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.invoke_archive_successor_action(window, cx);
+                    })),
+            );
         }
         #[cfg(any(unix, windows))]
         if !is_file || file_editable {
@@ -890,7 +908,7 @@ fn empty_action(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ::core::prelude::v1::test;
+    use core::prelude::v1::test;
 
     #[gpui::test]
     fn nested_note_title_keeps_space_before_optional_editor_controls(cx: &mut TestAppContext) {
@@ -1351,7 +1369,7 @@ fn pinned_surface(pins: AnyElement, surface: AnyElement) -> AnyElement {
 }
 
 #[inline(never)]
-fn note_surface(header: [Option<AnyElement>; 3], main: AnyElement) -> AnyElement {
+fn note_surface(header: [Option<AnyElement>; 4], main: AnyElement) -> AnyElement {
     v_flex()
         .size_full()
         .min_h_0()

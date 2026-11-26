@@ -146,6 +146,11 @@ impl Reader {
             #[cfg(test)]
             incremental_hold: None,
             single_file: false,
+            archive_state: Default::default(),
+            archive_successor_root: None,
+            archive_successor_ambiguous: Vec::new(),
+            archive_lookup_notice: None,
+            quick_viewer_vault: None,
             reader_window: window.window_handle(),
             sidebar_search_focus: cx.focus_handle(),
             recent_switcher: Default::default(),

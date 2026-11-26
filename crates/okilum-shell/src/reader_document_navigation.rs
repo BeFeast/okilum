@@ -133,6 +133,12 @@ impl Reader {
             return;
         }
         self.clear_hover(cx);
+        if request.rel != self.pane.current_rel {
+            self.archive_lookup_notice = None;
+            if self.single_file {
+                self.refresh_quick_viewer_vault(cx);
+            }
+        }
         let prepared_links::PreparedDocument {
             canonical_source,
             encoding_damaged,

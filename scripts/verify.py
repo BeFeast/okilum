@@ -679,6 +679,12 @@ def run(args, scenario, output, result):
         if 'outside_note' in scenario:
             outside_file.parent.mkdir()
             outside_file.write_text(scenario['outside_note'])
+        companion = None
+        if 'companion_vault' in scenario:
+            spec = scenario['companion_vault']
+            companion = root / spec.get('dir', 'companion')
+            companion.mkdir()
+            write_fixtures(companion, spec.get('generate', ()))
         state = root / 'home/state/okilum'
         state.mkdir(parents=True)
         if 'sidebar_state' in scenario:
@@ -764,6 +770,14 @@ def run(args, scenario, output, result):
                                 url = step['open_url'].replace('{outside_file}', quote(str(outside_file)))
                                 require(url.startswith('okilum://'), 'open_url must be an okilum:// URL')
                                 command(binary, url, env=rig.env, stdout=log, stderr=log, timeout=15)
+                            if 'open_args' in step:
+                                argv = [
+                                    a.replace('{vault}', str(vault))
+                                     .replace('{companion}', str(companion or ''))
+                                     .replace('{outside_file}', str(outside_file))
+                                    for a in step['open_args']
+                                ]
+                                command(binary, *argv, env=rig.env, stdout=log, stderr=log, timeout=15)
                             if 'keys' in step:
                                 rig.keys(*step['keys'], mods=step.get('mods', ()))
                             if 'click' in step:

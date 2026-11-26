@@ -1898,7 +1898,8 @@ impl Reader {
         let preserve_document = switching_mode
             && (self.pane.current_rel == pending.rel || preserve_preview)
             && self.document_ready();
-        if self.vault_root != pending.intent.root {
+        let root_changed = self.vault_root != pending.intent.root;
+        if root_changed {
             self.tree_preview.close();
         }
         self.vault_root = pending.intent.root.clone();
@@ -1907,6 +1908,12 @@ impl Reader {
         if self.single_file {
             self.shared_session = None;
             self.shared_version = 0;
+            self.archive_state = Default::default();
+            self.archive_successor_root = None;
+            self.archive_successor_ambiguous.clear();
+            self.archive_lookup_notice = None;
+        } else {
+            self.quick_viewer_vault = None;
         }
         self.index_dir = if self.single_file {
             None
@@ -1974,6 +1981,11 @@ impl Reader {
             .filter(|rel| reader_delimited::previewable(rel) || opens_as_file(rel));
         let created_note = pending.intent.created_note;
         reader_open::register(cx.entity().downgrade(), pending.intent.root, cx);
+        if self.single_file {
+            self.refresh_quick_viewer_vault(cx);
+        } else {
+            self.refresh_archive_state(root_changed, cx);
+        }
         if preserve_document {
             self.link_notice = None;
             self.pane.last_recorded_document = None;

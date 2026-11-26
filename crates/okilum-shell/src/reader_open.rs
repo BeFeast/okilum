@@ -679,11 +679,21 @@ pub(crate) fn readers(cx: &App) -> Vec<Entity<super::Reader>> {
 
 pub(crate) fn register(reader: WeakEntity<super::Reader>, root: PathBuf, cx: &mut App) {
     if cx.try_global::<Readers>().is_some() {
+        let entity_id = reader.entity_id();
         let readers = &mut cx.global_mut::<Readers>().0;
-        readers.retain(|(old, _)| old.entity_id() != reader.entity_id() && old.upgrade().is_some());
+        readers.retain(|(old, _)| old.entity_id() != entity_id && old.upgrade().is_some());
         readers.push((reader, root.clone()));
         super::reader_open_windows::record_soon(cx);
         super::vault_name::watch(root, cx);
+        // Refresh successor resolution on other open archive windows so a newly
+        // opened successor vault flips "Locate vault …" to "Open in vault …".
+        cx.defer(move |cx| {
+            for other in super::reader_open::readers(cx) {
+                if other.entity_id() != entity_id && other.read(cx).archive_state.is_archive() {
+                    other.update(cx, |reader, cx| reader.refresh_archive_state(false, cx));
+                }
+            }
+        });
     }
 }
 
@@ -947,6 +957,74 @@ pub(crate) fn dispatch_urls(urls: Vec<String>, cx: &mut App) {
 }
 
 /// Vault roots this machine knows: open windows first, then reading history.
+pub(crate) fn open_vault_roots_except(except: Option<EntityId>, cx: &App) -> Vec<PathBuf> {
+    cx.try_global::<Readers>()
+        .map(|readers| {
+            readers
+                .0
+                .iter()
+                .rev()
+                .filter(|(reader, _)| {
+                    except != Some(reader.entity_id())
+                        && reader.upgrade().is_some_and(|r| {
+                            let reader = r.read(cx);
+                            !reader.single_file && cx.windows().contains(&reader.reader_window)
+                        })
+                })
+                .map(|(_, root)| root.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub(crate) fn known_vault_roots_except(
+    except: Option<EntityId>,
+    directory: Option<&Path>,
+    cx: &App,
+) -> Vec<PathBuf> {
+    let mut roots = open_vault_roots_except(except, cx);
+    let state_dir = directory
+        .map(Path::to_path_buf)
+        .or_else(|| super::reader_history::state_directory().ok());
+    if let Some(directory) = state_dir.as_deref() {
+        if let Ok(history) = super::reader_history::ReadingHistory::known_vault_roots(directory) {
+            for root in history {
+                if !roots.contains(&root) {
+                    roots.push(root);
+                }
+            }
+        }
+    }
+    roots
+        .into_iter()
+        .map(|root| root.canonicalize().unwrap_or(root))
+        .collect()
+}
+
+/// Focus an already-open full-vault window for `root` (preferring one already
+/// showing `note`, then the most recently focused) or open a new vault window,
+/// without replacing the caller's window.
+pub(crate) fn open_vault_note_reusing_window(
+    root: PathBuf,
+    note: Option<String>,
+    session_directory: Option<PathBuf>,
+    cx: &mut App,
+) {
+    super::reader_startup::supersede(cx);
+    let opts = super::Opts {
+        vault: Some(root),
+        note,
+        session_directory,
+        ..Default::default()
+    };
+    if focus_existing(&opts, cx) {
+        return;
+    }
+    if let Err(error) = create_window(opts, None, None, cx) {
+        show_error(error, cx);
+    }
+}
+
 /// A single-file view's folder is not a vault (#1439): a link to its file
 /// opens the file on its own again, never the folder as a vault.
 fn known_roots(cx: &App) -> Vec<PathBuf> {
@@ -1200,6 +1278,12 @@ pub(crate) fn resolve(mut opts: super::Opts, cx: &mut App) -> gpui::Task<Result<
                     let state = state.or_else(|| super::reader_history::state_directory().ok());
                     !is_known_vault(&path, &opts.reusable_roots, state.as_deref())
                 }));
+        let marked_quick_viewer = plain_open
+            && path.is_file()
+            && path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+            && okilum_core::vault_descriptor::find_enclosing_marked_vault(&path, &[]).is_some();
         let intent = OpenIntent::validate_cached(
             &path,
             if folder_view {
@@ -1207,13 +1291,18 @@ pub(crate) fn resolve(mut opts: super::Opts, cx: &mut App) -> gpui::Task<Result<
             } else {
                 opts.vault.as_deref()
             },
-            opts.reusable_roots
-                .iter()
-                .find(|root| path.starts_with(root))
-                .map(PathBuf::as_path),
+            if marked_quick_viewer {
+                None
+            } else {
+                opts.reusable_roots
+                    .iter()
+                    .find(|root| path.starts_with(root))
+                    .map(PathBuf::as_path)
+            },
         )?;
         opts.vault = Some(intent.root.clone());
         opts.single_file |= intent.single_file || folder_view;
+        opts.prefer_quick_viewer |= marked_quick_viewer;
         if folder_view {
             opts.note = None;
         } else if intent.note.is_some() {
@@ -1546,25 +1635,63 @@ impl Render for VaultDestination {
 }
 
 fn focus_existing(opts: &super::Opts, cx: &mut App) -> bool {
+    if opts.single_file && opts.prefer_quick_viewer {
+        return false;
+    }
+    let active_window = cx.active_window();
+    let last_reader = cx
+        .try_global::<LastReader>()
+        .and_then(|last| last.0.as_ref().map(|weak| weak.entity_id()));
     let existing = cx.try_global::<Readers>().and_then(|readers| {
-        readers.0.iter().rev().find_map(|(weak, root)| {
-            let reader = weak.upgrade()?;
+        let mut best: Option<(u8, Entity<super::Reader>, AnyWindowHandle, Option<String>)> = None;
+        for (weak, root) in readers.0.iter().rev() {
+            let Some(reader) = weak.upgrade() else {
+                continue;
+            };
             let state = reader.read(cx);
             if state.single_file || !cx.windows().contains(&state.reader_window) {
-                return None;
+                continue;
             }
             let note = if opts.single_file {
-                let path = opts.vault.as_ref()?.join(opts.note.as_ref()?);
-                let relative = path.strip_prefix(root).ok()?;
+                let Some(path) = opts
+                    .vault
+                    .as_ref()
+                    .and_then(|v| opts.note.as_ref().map(|n| v.join(n)))
+                else {
+                    continue;
+                };
+                let Ok(relative) = path.strip_prefix(root) else {
+                    continue;
+                };
                 Some(okilum_core::vault::note_path(relative))
             } else {
                 if opts.vault.as_ref() != Some(root) {
-                    return None;
+                    continue;
                 }
                 opts.note.clone()
             };
-            Some((reader.clone(), state.reader_window, note))
-        })
+            // Prefer a window already showing the target note, then the most
+            // recently focused window, then registration order.
+            let rank = if note
+                .as_deref()
+                .is_some_and(|target| state.selected_file() == target)
+            {
+                3
+            } else if Some(state.reader_window) == active_window {
+                2
+            } else if last_reader == Some(reader.entity_id()) {
+                1
+            } else {
+                0
+            };
+            if best
+                .as_ref()
+                .is_none_or(|(best_rank, ..)| rank > *best_rank)
+            {
+                best = Some((rank, reader.clone(), state.reader_window, note));
+            }
+        }
+        best.map(|(_, reader, handle, note)| (reader, handle, note))
     });
     let Some((reader, handle, note)) = existing else {
         return false;

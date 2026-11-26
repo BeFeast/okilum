@@ -55,6 +55,7 @@ mod reader_agent_document;
 #[cfg(not(all(unix, feature = "brain")))]
 mod reader_app_menu;
 mod reader_archive;
+mod reader_archive_vault;
 mod reader_audio;
 mod reader_cache;
 mod reader_canvas;
@@ -533,6 +534,9 @@ struct Opts {
     /// More log files opened with `open_path`, in one view (#1160).
     extra_logs: Vec<PathBuf>,
     single_file: bool,
+    /// OS double-click of a Markdown file inside a marked vault opens the
+    /// instant quick viewer first instead of focusing an open vault window.
+    prefer_quick_viewer: bool,
     defer_loading: bool,
     reusable_roots: Vec<PathBuf>,
     session_directory: Option<PathBuf>,
@@ -589,6 +593,11 @@ struct Reader {
     panel_capture: reader_panel_resize::Capture,
     ui_state: reader_ui_state::Session,
     single_file: bool,
+    archive_state: okilum_core::vault_descriptor::ArchiveState,
+    archive_successor_root: Option<PathBuf>,
+    archive_successor_ambiguous: Vec<PathBuf>,
+    archive_lookup_notice: Option<reader_archive_vault::ArchiveLookupNotice>,
+    quick_viewer_vault: Option<reader_archive_vault::QuickViewerVault>,
     tree_preview: reader_tree_preview::Session,
     tree_sticky: Vec<reader_tree::Row>,
     tree_earlier_roots: Vec<reader_tree::Row>,

@@ -4,7 +4,9 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
-pub use okilum_write_authority::vault_descriptor::{parse, read_bytes, Lifecycle, DIRECTORY, FILE};
+pub use okilum_write_authority::vault_descriptor::{
+    parse, read_bytes, Lifecycle, ARCHIVE_MARKER, DIRECTORY, FILE,
+};
 
 pub fn path(root: &Path) -> PathBuf {
     root.join(DIRECTORY).join(FILE)
@@ -360,6 +362,284 @@ fn relative(path: &str) -> bool {
         })
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Successor {
+    pub vault_id: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PathMap {
+    pub note: String,
+    pub command: Option<String>,
+    pub mcp_tool: Option<String>,
+}
+
+impl PathMap {
+    /// Path of the sibling JSONL lookup file relative to the successor vault.
+    pub fn jsonl_path(&self) -> String {
+        if let Some(stem) = self.note.strip_suffix(".md") {
+            format!("{stem}.jsonl")
+        } else {
+            format!("{}.jsonl", self.note)
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ArchiveState {
+    #[default]
+    Active,
+    Archive {
+        successor: Option<Successor>,
+        path_map: Option<PathMap>,
+    },
+    Uncertain,
+}
+
+impl ArchiveState {
+    pub fn load(root: &Path) -> Self {
+        Self::load_refresh(root).0
+    }
+
+    /// Load archive state together with whether `.okilum/vault.json` explicitly
+    /// declared a valid active lifecycle (which is required to clear a sticky
+    /// archive guard during an open session).
+    pub fn load_refresh(root: &Path) -> (Self, bool) {
+        let marker_archive = match std::fs::symlink_metadata(root.join(ARCHIVE_MARKER)) {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(_) => return (Self::Uncertain, false),
+        };
+        let descriptor = match read_bytes(root) {
+            Ok(None) => {
+                return if marker_archive {
+                    (
+                        Self::Archive {
+                            successor: None,
+                            path_map: None,
+                        },
+                        false,
+                    )
+                } else {
+                    (Self::Active, false)
+                };
+            }
+            Ok(Some(bytes)) => match parse(&bytes) {
+                Ok(Value::Object(descriptor)) => descriptor,
+                _ => {
+                    return if marker_archive {
+                        (
+                            Self::Archive {
+                                successor: None,
+                                path_map: None,
+                            },
+                            false,
+                        )
+                    } else {
+                        (Self::Uncertain, false)
+                    };
+                }
+            },
+            Err(_) => {
+                return if marker_archive {
+                    (
+                        Self::Archive {
+                            successor: None,
+                            path_map: None,
+                        },
+                        false,
+                    )
+                } else {
+                    (Self::Uncertain, false)
+                };
+            }
+        };
+        let Some(lifecycle_value) = descriptor.get("lifecycle") else {
+            return if marker_archive {
+                (
+                    Self::Archive {
+                        successor: None,
+                        path_map: None,
+                    },
+                    false,
+                )
+            } else {
+                (Self::Active, false)
+            };
+        };
+        let Some(lifecycle) = lifecycle_value.as_object() else {
+            return if marker_archive {
+                (
+                    Self::Archive {
+                        successor: None,
+                        path_map: None,
+                    },
+                    false,
+                )
+            } else {
+                (Self::Uncertain, false)
+            };
+        };
+        let state = lifecycle.get("state").and_then(Value::as_str);
+        let mode = lifecycle.get("mode").and_then(Value::as_str);
+        let read_only = lifecycle.get("read_only");
+        let is_archive = marker_archive
+            || state == Some("archive")
+            || mode == Some("archive")
+            || read_only == Some(&Value::Bool(true));
+        if is_archive {
+            let own_id = crate::vault_link_identity::read(root).ok().flatten();
+            let successor = parse_successor(lifecycle.get("successor"), own_id.as_deref());
+            let path_map = parse_path_map(lifecycle.get("path_map"));
+            return (
+                Self::Archive {
+                    successor,
+                    path_map,
+                },
+                false,
+            );
+        }
+        if state == Some("active")
+            && matches!(read_only, None | Some(Value::Bool(false)))
+            && !lifecycle.contains_key("successor")
+            && !lifecycle.contains_key("path_map")
+        {
+            (Self::Active, true)
+        } else {
+            (Self::Uncertain, false)
+        }
+    }
+
+    /// Sticky refresh rule: during an open session, a transient unreadable or
+    /// missing replacement retains an observed archive guard. Only an explicit
+    /// valid active state clears it.
+    pub fn merge_refresh(&self, next: Self, explicit_active: bool) -> Self {
+        match (self, next) {
+            (_, next @ Self::Archive { .. }) => next,
+            (Self::Archive { .. }, Self::Active) if explicit_active => Self::Active,
+            (current @ Self::Archive { .. }, _) => current.clone(),
+            (_, next) => next,
+        }
+    }
+
+    pub fn is_archive(&self) -> bool {
+        matches!(self, Self::Archive { .. })
+    }
+
+    pub fn successor(&self) -> Option<&Successor> {
+        match self {
+            Self::Archive { successor, .. } => successor.as_ref(),
+            _ => None,
+        }
+    }
+
+    pub fn path_map(&self) -> Option<&PathMap> {
+        match self {
+            Self::Archive { path_map, .. } => path_map.as_ref(),
+            _ => None,
+        }
+    }
+}
+
+fn parse_successor(value: Option<&Value>, own_id: Option<&str>) -> Option<Successor> {
+    let object = value?.as_object()?;
+    let vault_id = object.get("vault_id")?.as_str()?;
+    let parsed = uuid::Uuid::parse_str(vault_id).ok()?;
+    if parsed.to_string() != vault_id {
+        return None;
+    }
+    if own_id == Some(vault_id) {
+        return None;
+    }
+    let name = object.get("name")?.as_str()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some(Successor {
+        vault_id: vault_id.to_owned(),
+        name: name.to_owned(),
+    })
+}
+
+fn parse_path_map(value: Option<&Value>) -> Option<PathMap> {
+    let object = value?.as_object()?;
+    let note = object.get("note")?.as_str()?;
+    if !relative(note) || !note.ends_with(".md") {
+        return None;
+    }
+    let command = match object.get("command") {
+        None => None,
+        Some(Value::String(command)) if command == "brain where" => Some(command.clone()),
+        Some(_) => return None,
+    };
+    let mcp_tool = match object.get("mcp_tool") {
+        None => None,
+        Some(Value::String(tool)) if tool == "brain_where" => Some(tool.clone()),
+        Some(_) => return None,
+    };
+    if command.is_none() && mcp_tool.is_none() {
+        return None;
+    }
+    Some(PathMap {
+        note: note.to_owned(),
+        command,
+        mcp_tool,
+    })
+}
+
+/// True when `directory` carries an exact root-level `.okilum/vault.json`
+/// JSON object or a valid `.okilum/link-identity.json`. A bare `.okilum/`
+/// folder or Syncthing conflict copy does not qualify. Never writes.
+pub fn has_vault_marker(directory: &Path) -> bool {
+    let has_descriptor = read_bytes(directory)
+        .ok()
+        .flatten()
+        .is_some_and(|bytes| matches!(parse(&bytes), Ok(Value::Object(_))));
+    if has_descriptor {
+        return true;
+    }
+    crate::vault_link_identity::read(directory)
+        .ok()
+        .flatten()
+        .is_some()
+}
+
+/// Walk ancestors of `file_or_dir` upward (without enumerating descendants)
+/// to find an enclosing marked vault root. For nested marked roots, prefers
+/// the innermost explicitly known root, else the innermost valid marker.
+pub fn find_enclosing_marked_vault(file_or_dir: &Path, known_roots: &[PathBuf]) -> Option<PathBuf> {
+    let canonical = file_or_dir
+        .canonicalize()
+        .unwrap_or_else(|_| file_or_dir.to_path_buf());
+    let start = if canonical.is_file() {
+        canonical.parent()?
+    } else {
+        canonical.as_path()
+    };
+    let marked: Vec<PathBuf> = start
+        .ancestors()
+        .filter(|dir| has_vault_marker(dir))
+        .map(Path::to_path_buf)
+        .collect();
+    if marked.is_empty() {
+        return None;
+    }
+    if !known_roots.is_empty() {
+        let canonical_known: Vec<PathBuf> = known_roots
+            .iter()
+            .map(|root| root.canonicalize().unwrap_or_else(|_| root.clone()))
+            .collect();
+        if let Some(known) = marked
+            .iter()
+            .find(|candidate| canonical_known.iter().any(|root| root == *candidate))
+        {
+            return Some(known.clone());
+        }
+    }
+    marked.into_iter().next()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -513,5 +793,75 @@ mod tests {
                 LayoutState::Unsupported
             ));
         }
+    }
+
+    #[test]
+    fn archive_state_reads_lifecycle_and_marker_and_retains_sticky_guard() {
+        let root = tempfile::tempdir().unwrap();
+        let vault = root.path();
+        assert_eq!(ArchiveState::load(vault), ArchiveState::Active);
+
+        // .brain-read-only alone activates archive mode.
+        std::fs::write(vault.join(ARCHIVE_MARKER), "").unwrap();
+        assert!(ArchiveState::load(vault).is_archive());
+        assert!(ArchiveState::load(vault).successor().is_none());
+
+        // Full archive descriptor with successor and path_map.
+        std::fs::create_dir_all(vault.join(DIRECTORY)).unwrap();
+        let successor_id = "550e8400-e29b-41d4-a716-446655440000";
+        std::fs::write(
+            path(vault),
+            serde_json::json!({
+                "version": 1,
+                "name": "Brain archive",
+                "lifecycle": {
+                    "state": "archive",
+                    "read_only": true,
+                    "successor": {"vault_id": successor_id, "name": " Main Brain "},
+                    "path_map": {"command": "brain where", "note": "@views/path-map.md"}
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let loaded = ArchiveState::load(vault);
+        assert!(loaded.is_archive());
+        assert_eq!(
+            loaded.successor(),
+            Some(&Successor {
+                vault_id: successor_id.into(),
+                name: "Main Brain".into(),
+            })
+        );
+        assert_eq!(
+            loaded.path_map().map(PathMap::jsonl_path).as_deref(),
+            Some("@views/path-map.jsonl")
+        );
+
+        // lifecycle.mode == "archive" is also honoured.
+        std::fs::remove_file(vault.join(ARCHIVE_MARKER)).unwrap();
+        std::fs::write(
+            path(vault),
+            r#"{"lifecycle":{"mode":"archive","read_only":true}}"#,
+        )
+        .unwrap();
+        assert!(ArchiveState::load(vault).is_archive());
+
+        // Sticky guard: transient missing or unreadable vault.json retains Archive.
+        std::fs::remove_file(path(vault)).unwrap();
+        let (missing, explicit) = ArchiveState::load_refresh(vault);
+        assert!(!explicit);
+        assert!(loaded.merge_refresh(missing, explicit).is_archive());
+
+        std::fs::write(path(vault), "not json").unwrap();
+        let (corrupt, explicit) = ArchiveState::load_refresh(vault);
+        assert!(!explicit);
+        assert!(loaded.merge_refresh(corrupt, explicit).is_archive());
+
+        // Explicit valid active state clears the sticky archive guard.
+        std::fs::write(path(vault), r#"{"lifecycle":{"state":"active"}}"#).unwrap();
+        let (active, explicit) = ArchiveState::load_refresh(vault);
+        assert!(explicit);
+        assert_eq!(loaded.merge_refresh(active, explicit), ArchiveState::Active);
     }
 }

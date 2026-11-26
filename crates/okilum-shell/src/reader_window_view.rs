@@ -364,15 +364,50 @@ impl Reader {
                 header_controls()
                     .flex_shrink(1.)
                     .min_w_0()
+                    .when(
+                        !self.single_file && self.archive_state.is_archive(),
+                        |controls| {
+                            controls.child(
+                                div()
+                                    .id("archive-badge")
+                                    .debug_selector(|| "archive-badge".into())
+                                    .flex_none()
+                                    .px_2()
+                                    .py_0p5()
+                                    .mr_1()
+                                    .rounded(px(6.))
+                                    .border_1()
+                                    .border_color(brand::palette(cx).border_subtle)
+                                    .bg(cx.theme().secondary)
+                                    .text_xs()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(reader_archive_vault::READ_ONLY_ARCHIVE_LABEL),
+                            )
+                        },
+                    )
                     .when(self.single_file, |controls| {
-                        controls.child(
-                            Button::new("open-folder-as-vault")
-                                .label("Open folder as vault")
-                                .small()
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.switch_window_mode(window, cx);
-                                })),
-                        )
+                        if let Some(vault) = &self.quick_viewer_vault {
+                            controls.child(
+                                Button::new("open-in-vault")
+                                    .debug_selector(|| "open-in-vault".into())
+                                    .label(reader_archive_vault::open_in_vault_label(&vault.name))
+                                    .tooltip(vault_name::path_tooltip(&vault.root))
+                                    .small()
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_quick_viewer_in_vault(window, cx);
+                                    })),
+                            )
+                        } else {
+                            controls.child(
+                                Button::new("open-folder-as-vault")
+                                    .label("Open folder as vault")
+                                    .small()
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.switch_window_mode(window, cx);
+                                    })),
+                            )
+                        }
                     })
                     .child(self.render_loading(cx))
                     .child(reader_feedback::button(cx))

@@ -1,0 +1,129 @@
+# VD2: Read-only archive UI & quick viewer "Open in vault"
+# State: a synthetic read-only archive vault (with .okilum/vault.json lifecycle
+# archive + .brain-read-only) and a companion successor vault ("Main Brain").
+# Visible:
+# 1. Persistent "Read-only archive" badge and "Locate vault \"Main Brain\"…" when
+#    the successor vault is not yet known locally.
+# 2. Once the successor vault is open/known, "Open in vault \"Main Brain\""
+#    resolves the displayed note through @views/path-map.jsonl and opens it in
+#    the existing successor vault window.
+# 3. Opening a .md file inside a marked vault directly (OS double-click style)
+#    shows the quick viewer first with "Open in vault \"Main Brain\"" in the
+#    header, and clicking it focuses the vault window on that note.
+appearance: light
+preferences:
+  note_open_mode: read
+  vault_open: new
+open: Legacy/Guide.md
+region: [0, 0, 1366, 768]
+ready_text: Archive guide body text
+vault_read_only: true
+rig:
+  persistent_pointer: true
+generate:
+  - path: .brain-read-only
+    kind: text
+    text: "Archived\n"
+  - path: .okilum/link-identity.json
+    kind: text
+    text: '{"version": 1, "id": "cc480ea3-0b98-4783-960f-3a64fa4c274c"}'
+  - path: .okilum/vault.json
+    kind: text
+    text: |
+      {
+        "version": 1,
+        "name": "Brain archive",
+        "lifecycle": {
+          "state": "archive",
+          "read_only": true,
+          "successor": {
+            "vault_id": "550e8400-e29b-41d4-a716-446655440000",
+            "name": "Main Brain"
+          },
+          "path_map": {
+            "command": "brain where",
+            "note": "@views/path-map.md"
+          }
+        }
+      }
+  - path: Legacy/Guide.md
+    kind: text
+    text: |
+      # Legacy Guide
+
+      Archive guide body text for VD2 verification.
+  - path: Legacy/Retired.md
+    kind: text
+    text: |
+      # Retired Note
+
+      This note was retired during migration.
+companion_vault:
+  dir: main-brain
+  generate:
+    - path: .okilum/link-identity.json
+      kind: text
+      text: '{"version": 1, "id": "550e8400-e29b-41d4-a716-446655440000"}'
+    - path: .okilum/vault.json
+      kind: text
+      text: '{"version": 1, "name": "Main Brain", "lifecycle": {"state": "active"}}'
+    - path: state/dev/migrated.md
+      kind: text
+      text: |
+        # Migrated Guide
+
+        Successor vault migrated destination content.
+    - path: state/dev/other.md
+      kind: text
+      text: |
+        # Other Successor Note
+
+        Initial note in Main Brain.
+    - path: state/dev/quick.md
+      kind: text
+      text: |
+        # Quick Viewer Note
+
+        Opened directly as a standalone file inside Main Brain.
+    - path: "@views/path-map.jsonl"
+      kind: text
+      text: |
+        {"old_path":"Legacy/Guide.md","new_path":"state/dev/migrated.md","action":"move","rule":"test","reason":"moved","aliases":[]}
+        {"old_path":"Legacy/Retired.md","new_path":null,"action":"retire","rule":"test","reason":"retired in migration","aliases":[]}
+    - path: "@views/path-map.md"
+      kind: text
+      text: |
+        # Path Map
+
+        Manual lookup fallback note.
+steps:
+  - id: archive-badge
+    wait: 1
+    region: [1120, 0, 160, 46]
+    text: Read-only archive
+  - id: locate-button-visible
+    region: [700, 46, 260, 48]
+    text: Locate vault
+  - id: open-successor-vault
+    open_args: ["--vault", "{companion}", "--note", "state/dev/other.md"]
+    wait: 2
+    text: Initial note in Main Brain
+  - id: archive-shows-open-in-vault
+    region: [320, 46, 220, 48]
+    text: Open in vault "Main Brain"
+  - id: click-open-in-vault-resolves-path-map
+    click: [430, 70]
+    wait: 2
+    region: [683, 0, 683, 768]
+    text: Successor vault migrated destination content
+  - id: quick-viewer-open-in-vault
+    open_args: ["{companion}/state/dev/quick.md"]
+    hover: [680, 400]
+    wait: 2
+    region: [455, 0, 455, 54]
+    text: Open in vault "Main Brain"
+  - id: quick-viewer-click-open-in-vault
+    click: [730, 23]
+    wait: 2
+    region: [910, 0, 456, 768]
+    text_order: [Quick Viewer Note, Opened directly as a standalone file]

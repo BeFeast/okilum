@@ -158,7 +158,14 @@ fn adopt(root: &Path, name: Option<String>, cx: &mut App) {
     // After the current update: a rename made in a vault window runs inside
     // that window's update, where the window cannot be updated again (#1364).
     let root = root.to_owned();
-    cx.defer(move |cx| retitle(&root, cx));
+    cx.defer(move |cx| {
+        retitle(&root, cx);
+        for reader in crate::reader_open::readers(cx) {
+            if reader.read(cx).vault_root == root {
+                reader.update(cx, |reader, cx| reader.refresh_archive_state(false, cx));
+            }
+        }
+    });
     cx.refresh_windows();
 }
 
