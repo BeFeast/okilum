@@ -525,7 +525,7 @@ fn replacement(
         || (target.embedded
             && [
                 "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "pdf", "mp3", "mp4", "wav",
-                "mov",
+                "m4a", "flac", "ogg", "mov",
             ]
             .contains(&extension.as_str()));
     let resolution = if asset {

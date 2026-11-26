@@ -334,6 +334,13 @@ impl FilePreview {
             }
             return;
         }
+        if let Some(audio) = self.audio.as_ref().filter(|_| self.unavailable.is_none()) {
+            let focus = audio.read(cx).focus_handle().clone();
+            if !focus.contains_focused(window, cx) {
+                focus.focus(window, cx);
+            }
+            return;
+        }
         reader.focus(window, cx);
     }
 }
@@ -650,6 +657,10 @@ impl Reader {
                     }));
                 }
                 let log = preview.log.is_some();
+                let audio_focus = preview
+                    .audio
+                    .as_ref()
+                    .map(|audio| audio.read(cx).focus_handle().clone());
                 self.pane.file_preview = Some(preview);
                 self.resolve_json_viewer(tree_had_focus, window, cx);
                 // The notes linking here are this file's, never the last note's (#2885).
@@ -664,7 +675,9 @@ impl Reader {
                 self.show_window_title(Some(self.selected_title()), window, cx);
                 self.record_usable_document(cx);
                 reader_open_windows::record_soon(cx);
-                if !log && !reader_delimited::previewable(rel) {
+                if let Some(focus) = audio_focus {
+                    focus.focus(window, cx);
+                } else if !log && !reader_delimited::previewable(rel) {
                     self.focus_handle.focus(window, cx);
                 }
                 // A code view is read-only: Reader shortcuts keep working (#998).
@@ -713,6 +726,8 @@ impl Reader {
         }
         if let Some(audio) = &preview.audio {
             return v_flex()
+                .id("reader-audio-preview")
+                .key_context("ReaderFile")
                 .size_full()
                 .child(self.render_file_header_viewport(window, cx))
                 .child(div().p_6().child(audio.clone()))

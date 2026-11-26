@@ -21,11 +21,11 @@ fn local_viewers_dispatch_inline_and_as_files_and_canvas_navigates_without_write
     .unwrap();
     std::fs::write(
         root.join("note.md"),
-        "# Media\n\n![[clip.mp4]]\n\n![[tone.mp3]]\n\n![[tone.wav]]\n",
+        "# Media\n\n![[clip.mp4]]\n\n![[tone.mp3]]\n\n![[tone.wav]]\n\n![[tone.flac]]\n\n![[tone.ogg]]\n\n![[tone.m4a]]\n",
     )
     .unwrap();
     std::fs::write(root.join("clip.mp4"), b"synthetic video identity").unwrap();
-    for file in ["tone.mp3", "tone.wav"] {
+    for file in ["tone.mp3", "tone.wav", "tone.flac", "tone.ogg", "tone.m4a"] {
         std::fs::copy(
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../okilum-core/tests/fixtures/viewers/audio")
@@ -73,7 +73,7 @@ fn local_viewers_dispatch_inline_and_as_files_and_canvas_navigates_without_write
         visual.opened_url().is_none(),
         "rendering never launches a system app"
     );
-    for file in ["tone.mp3", "tone.wav"] {
+    for file in ["tone.mp3", "tone.wav", "tone.flac", "tone.ogg", "tone.m4a"] {
         reader.update_in(visual, |r, window, cx| {
             r.preview_file(file, window, cx);
             assert!(r.pane.file_preview.as_ref().unwrap().audio.is_some());

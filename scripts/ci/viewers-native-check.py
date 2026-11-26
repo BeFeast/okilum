@@ -5,7 +5,11 @@ import sys
 GROUPS = {
     "audio": ("okilum-shell", None, "reader_audio::tests", [
         "mp3_and_wav_decode_non_silence_and_seek_without_an_output_device",
+        "expanded_audio_formats_decode_seek_and_probe_duration",
         "real_sink_controls_pause_seek_volume_end_and_replay",
+        "real_sink_mute_and_relative_seek_for_expanded_formats",
+        "single_active_player_coordinator_pauses_previous_player",
+        "audio_view_probes_duration_in_background_and_handles_keys",
     ]),
     "media": ("okilum-shell", None, "reader_media::tests", [
         "media_file_urls_share_the_canonical_vault_identity_and_reject_outside_files",

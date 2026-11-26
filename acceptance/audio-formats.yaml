@@ -1,0 +1,65 @@
+# Audio format expansion (#3289 Slice 1): FLAC, OGG/Vorbis, M4A (AAC-LC / ALAC),
+# background duration probe without opening an audio device, and honest fallback
+# for unsupported codecs (Ogg/Opus).
+vault: crates/okilum-core/tests/fixtures/viewers/audio
+note: |
+  # Audio formats
+
+  ![[tone.flac]]
+
+  ![[tone.ogg]]
+appearance: light
+preferences:
+  note_open_mode: read
+region: [260, 50, 1106, 680]
+ready_text: Audio formats
+wait_for_vault: 20
+steps:
+  - id: inline-probed-duration
+    wait: 1
+    text: "0:03"
+  - id: find-m4a
+    keys: [k]
+    mods: [ctrl]
+  - id: search-m4a
+    type: tone.m4a
+  - id: open-m4a
+    keys: [Return]
+    wait: 1
+    text: "0:03"
+  - id: find-alac
+    keys: [k]
+    mods: [ctrl]
+  - id: search-alac
+    type: tone-alac.m4a
+  - id: open-alac
+    keys: [Return]
+    wait: 1
+    text: "0:03"
+  - id: find-flac
+    keys: [k]
+    mods: [ctrl]
+  - id: search-flac
+    type: tone.flac
+  - id: open-flac
+    keys: [Return]
+    wait: 1
+    text: "0:03"
+  - id: find-ogg
+    keys: [k]
+    mods: [ctrl]
+  - id: search-ogg
+    type: tone.ogg
+  - id: open-ogg
+    keys: [Return]
+    wait: 1
+    text: "0:03"
+  - id: find-unsupported-ogg
+    keys: [k]
+    mods: [ctrl]
+  - id: search-unsupported-ogg
+    type: unsupported.ogg
+  - id: open-unsupported-ogg
+    keys: [Return]
+    wait: 1
+    text: Cannot play audio
