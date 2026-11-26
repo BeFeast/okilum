@@ -1,0 +1,30 @@
+# #3290: open a generated `.tar.gz` archive from Quick Open and verify its
+# entries appear in the archive viewer instead of a generic GZ file card.
+note: |
+  # Archive viewer control
+
+  The Markdown control is ready.
+generate:
+  - path: Bundle.tar.gz
+    kind: tar_gz
+    entries:
+      - path: docs/readme.md
+        text: "# Hello from tar.gz\n"
+      - path: ArchiveTarWitness.txt
+        text: "Visible witness entry inside tar.gz\n"
+appearance: light
+preferences:
+  note_open_mode: read
+region: [260, 50, 1106, 680]
+ready_text: Markdown control is ready
+wait_for_vault: 20
+steps:
+  - id: find-tar-gz
+    keys: [k]
+    mods: [ctrl]
+  - id: search-tar-gz
+    type: Bundle.tar.gz
+  - id: open-tar-gz
+    keys: [Return]
+    wait: 1
+    text: ArchiveTarWitness.txt

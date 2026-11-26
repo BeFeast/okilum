@@ -5,6 +5,7 @@ import base64
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import unicodedata
@@ -285,6 +287,19 @@ def generate_json(spec):
     return data
 
 
+def generate_tar_gz(spec):
+    """Small synthetic `.tar.gz` archive built from `{path, text}` entries."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode='w:gz') as archive:
+        for entry in spec.get('entries', ()):
+            data = entry.get('text', '').encode('utf-8')
+            info = tarfile.TarInfo(name=entry['path'])
+            info.size = len(data)
+            info.mtime = int(entry.get('mtime', 1730000000))
+            archive.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
 def write_fixtures(vault, specs):
     for spec in specs:
         path = spec['path']
@@ -303,6 +318,9 @@ def write_fixtures(vault, specs):
         kind = spec['kind']
         if kind == 'text':
             target.write_text(spec['text'], encoding='utf-8')
+            continue
+        if kind == 'tar_gz':
+            target.write_bytes(generate_tar_gz(spec))
             continue
         require(kind in ('markdown', 'json'), f'Unknown fixture kind: {kind}')
         target.write_bytes(generate_markdown(spec) if kind == 'markdown' else generate_json(spec))

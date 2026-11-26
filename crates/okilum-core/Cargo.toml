@@ -6,7 +6,7 @@ license = "MIT"
 
 [features]
 default = ["brain"]
-brain = ["dep:tar"]
+brain = []
 # Synthetic loopback fixtures for dependent crates, including release-profile tests.
 test-support = []
 
@@ -66,8 +66,11 @@ tempfile = "3"
 zip = { version = "9.5", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 
-# Portable, independently extractable exact brain archives.
-tar = { version = "0.4", optional = true }
+# Portable, independently extractable exact brain archives and TAR archive viewer (#3290).
+tar = "0.4"
+# Pure-Rust XZ and 7z decoders for the archive viewer (#3290), Apache-2.0.
+lzma-rust2 = { version = "0.26", default-features = false, features = ["std", "xz"] }
+sevenz-rust2 = { version = "0.27", default-features = false, features = ["bzip2", "deflate"] }
 url = "2"
 # Explicit Windows OS-trust/PAC policy, also in independent core test builds.
 okilum-http = { path = "../okilum-http" }
@@ -90,6 +93,9 @@ crc32fast = "1"
 # An independent CSV parser for the log CSV export (#1387): the test reads the
 # file back with code that did not write it.
 csv = "1"
+# Pure-Rust XZ and 7z encoders for archive viewer tests (#3290).
+lzma-rust2 = { version = "0.26", default-features = false, features = ["std", "xz", "encoder"] }
+sevenz-rust2 = { version = "0.27", default-features = false, features = ["bzip2", "deflate", "compress"] }
 
 [target.'cfg(unix)'.dependencies]
 # "process": Kubernetes reads end the kubectl process group on cancel (#3009).

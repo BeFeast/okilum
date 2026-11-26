@@ -22,10 +22,7 @@ const LIST_MIN_ROWS: f32 = 4.;
 const ENTRY_MIN_HEIGHT: f32 = 48.;
 
 pub(crate) fn eligible(rel: &str) -> bool {
-    Path::new(rel)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+    archive::format_for_name(rel).is_some()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -513,7 +510,15 @@ impl ArchivePreview {
                     .child(name),
             )
             .child(number(size(entry.size, entry.kind), NUMBER_WIDTH, muted))
-            .child(number(size(entry.packed, entry.kind), NUMBER_WIDTH, muted))
+            .child(number(
+                if entry.packed_known {
+                    size(entry.packed, entry.kind)
+                } else {
+                    String::new()
+                },
+                NUMBER_WIDTH,
+                muted,
+            ))
             .child(number(
                 entry.modified.map(when).unwrap_or_default(),
                 DATE_WIDTH,
@@ -1316,13 +1321,92 @@ mod tests {
     }
 
     #[test]
-    fn only_zip_archives_are_eligible() {
-        for path in ["a.zip", "dir/B.ZIP"] {
+    fn supported_archives_are_eligible() {
+        for path in [
+            "a.zip",
+            "dir/B.ZIP",
+            "a.tar",
+            "a.tar.gz",
+            "dir/B.TAR.GZ",
+            "a.tgz",
+            "a.tar.bz2",
+            "a.tbz2",
+            "a.tar.xz",
+            "a.txz",
+            "a.tar.zst",
+            "a.tzst",
+            "a.7z",
+            "dir/B.7Z",
+        ] {
             assert!(eligible(path), "{path}");
         }
-        for path in ["a.zip.md", "a.tar.gz", "zip", "a.pdf"] {
+        for path in [
+            "a.zip.md",
+            "a.tar.gz.md",
+            "a.gz",
+            "a.bz2",
+            "a.xz",
+            "a.zst",
+            "app.log.gz",
+            ".tar.gz",
+            ".zip",
+            "zip",
+            "a.pdf",
+        ] {
             assert!(!eligible(path), "{path}");
         }
+    }
+
+    #[gpui::test]
+    fn tar_gz_archive_lists_entries_and_previews_entry(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let (reader, visual, temp) = reader_viewer_chrome::tests::fixture(cx, "note.md");
+        let tar_gz_path = temp.path().join("vault/release.tar.gz");
+        {
+            let file = std::fs::File::create(&tar_gz_path).unwrap();
+            let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+            let mut builder = tar::Builder::new(encoder);
+            let data = b"# Release notes\nhello from tar.gz\n";
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_mtime(1_730_000_000);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "docs/notes.md", &data[..])
+                .unwrap();
+            builder.into_inner().unwrap().finish().unwrap();
+        }
+        reader.update_in(visual, |reader, window, cx| {
+            reader.preview_file("release.tar.gz", window, cx)
+        });
+        visual.run_until_parked();
+        let archive = reader.read_with(visual, |reader, _| {
+            reader
+                .pane
+                .file_preview
+                .as_ref()
+                .unwrap()
+                .archive
+                .clone()
+                .expect("tar.gz opens in archive viewer")
+        });
+        archive.read_with(visual, |archive, _| {
+            let listing = archive.listing.as_ref().expect("tar.gz listing loaded");
+            assert_eq!(listing.files, 1);
+            assert_eq!(listing.entries[0].name, "docs/notes.md");
+            assert!(!listing.entries[0].packed_known);
+        });
+        archive.update_in(visual, |archive, window, cx| {
+            archive.open_entry(0, window, cx)
+        });
+        visual.run_until_parked();
+        archive.read_with(visual, |archive, _| {
+            assert!(
+                matches!(archive.entry, Some(EntryView::Text(_))),
+                "tar.gz markdown entry previews in text viewer"
+            );
+        });
     }
 
     #[gpui::test]
