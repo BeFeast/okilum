@@ -188,16 +188,17 @@ mod linux {
 
     /// zbus's method timeout only covers the reply wait, not connection/auth or
     /// sending the call. Bound the whole operation on either executor backend.
-    pub(super) async fn deadline<T>(
+    pub(super) async fn deadline_after<T>(
         stage: &str,
+        timeout: Duration,
         operation: impl Future<Output = anyhow::Result<T>>,
     ) -> anyhow::Result<T> {
-        let timer = async_io::Timer::after(TIMEOUT);
+        let timer = async_io::Timer::after(timeout);
         futures::pin_mut!(operation, timer);
         match futures::future::select(operation, timer).await {
             futures::future::Either::Left((result, _)) => result,
             futures::future::Either::Right(_) => {
-                anyhow::bail!("{stage} timed out after {}s", TIMEOUT.as_secs())
+                anyhow::bail!("{stage} timed out after {}s", timeout.as_secs())
             }
         }
     }
@@ -205,15 +206,30 @@ mod linux {
     pub(super) async fn connect(
         builder: zbus::connection::Builder<'_>,
     ) -> anyhow::Result<zbus::Connection> {
-        deadline("D-Bus connection/authentication", async {
-            Ok(builder.method_timeout(TIMEOUT).build().await?)
+        connect_with_timeout(builder, TIMEOUT).await
+    }
+
+    pub(super) async fn connect_with_timeout(
+        builder: zbus::connection::Builder<'_>,
+        timeout: Duration,
+    ) -> anyhow::Result<zbus::Connection> {
+        deadline_after("D-Bus connection/authentication", timeout, async {
+            Ok(builder.method_timeout(timeout).build().await?)
         })
         .await
     }
 
     pub(super) async fn show_items(bus: &zbus::Connection, path: &Path) -> anyhow::Result<()> {
+        show_items_with_timeout(bus, path, TIMEOUT).await
+    }
+
+    pub(super) async fn show_items_with_timeout(
+        bus: &zbus::Connection,
+        path: &Path,
+        timeout: Duration,
+    ) -> anyhow::Result<()> {
         let uri = item_uri(path)?;
-        deadline("FileManager1.ShowItems", async {
+        deadline_after("FileManager1.ShowItems", timeout, async {
             bus.call_method(
                 Some(SERVICE),
                 OBJECT,
@@ -241,10 +257,19 @@ mod linux {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
-    use super::linux::{connect, deadline, fallback_folder, item_uri, show_items};
+    use super::linux::{
+        connect, connect_with_timeout, deadline_after, fallback_folder, item_uri, show_items,
+        show_items_with_timeout,
+    };
     use std::io::Write as _;
     use std::path::Path;
     use std::process::{Child, Command};
+    use std::time::Duration;
+
+    /// Generous per-stage bound for test D-Bus round-trips under heavy CI load
+    /// (#3285). Production timeout behavior is tested separately with `connect`
+    /// and `show_items`.
+    const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
     #[test]
     fn item_uri_is_an_encoded_file_url() {
@@ -318,10 +343,11 @@ mod tests {
                     "private dbus-daemon exited before printing its address"
                 );
                 assert!(
-                    started.elapsed() < std::time::Duration::from_secs(5),
-                    "private dbus-daemon startup timed out"
+                    started.elapsed() < TEST_TIMEOUT,
+                    "private dbus-daemon startup timed out after {:?}",
+                    started.elapsed()
                 );
-                std::thread::sleep(std::time::Duration::from_millis(10));
+                std::thread::sleep(Duration::from_millis(10));
             }
             bus.1 = bus.1.trim().to_owned();
             assert!(
@@ -331,9 +357,12 @@ mod tests {
             Some(bus)
         }
         async fn connect(&self) -> zbus::Connection {
-            connect(zbus::connection::Builder::address(self.1.as_str()).unwrap())
-                .await
-                .unwrap()
+            connect_with_timeout(
+                zbus::connection::Builder::address(self.1.as_str()).unwrap(),
+                TEST_TIMEOUT,
+            )
+            .await
+            .unwrap()
         }
     }
     impl Drop for Bus {
@@ -390,14 +419,28 @@ mod tests {
     }
 
     #[test]
+    fn deadline_after_reports_stalled_stage() {
+        let error = zbus::block_on(deadline_after(
+            "fake manager reply",
+            Duration::from_millis(50),
+            std::future::pending::<anyhow::Result<()>>(),
+        ))
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("fake manager reply timed out"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
     fn show_items_times_out_when_manager_never_answers() {
-        use std::time::{Duration, Instant};
+        use std::time::Instant;
 
         let bus = Bus::start().expect("dbus-daemon is required for the timeout control");
         zbus::block_on(async {
             // Deliberately omit zbus's method timeout: this must exercise the
             // product ShowItems deadline, not a second, test-only safety net.
-            let client = deadline("control connection", async {
+            let client = deadline_after("control connection", TEST_TIMEOUT, async {
                 Ok(zbus::connection::Builder::address(bus.1.as_str())?
                     .build()
                     .await?)
@@ -407,7 +450,7 @@ mod tests {
             let server = bus.connect().await;
             let (received, receipt) = async_channel::unbounded();
             let (release, blocked) = async_channel::unbounded();
-            deadline("withholding manager setup", async {
+            deadline_after("withholding manager setup", TEST_TIMEOUT, async {
                 server
                     .object_server()
                     .at(
@@ -444,23 +487,30 @@ mod tests {
             diagnostic_error!("skipped: dbus-daemon is not installed");
             return;
         };
-        zbus::block_on(deadline("private bus test", async {
+        zbus::block_on(async {
             diagnostic_error!("reveal: connecting client");
             let client = bus.connect().await;
+            diagnostic_error!("reveal: creating DBusProxy");
+            let daemon = deadline_after("creating DBusProxy", TEST_TIMEOUT, async {
+                Ok(zbus::fdo::DBusProxy::new(&client).await?)
+            })
+            .await
+            .unwrap();
             diagnostic_error!("reveal: listing activatable names");
-            let daemon = zbus::fdo::DBusProxy::new(&client).await.unwrap();
             // A missing-manager error alone could also mean activation failed.
             // Prove that no host service can be activated in the first place.
-            assert!(daemon
-                .list_activatable_names()
-                .await
-                .unwrap()
+            let activatable = deadline_after("listing activatable names", TEST_TIMEOUT, async {
+                Ok(daemon.list_activatable_names().await?)
+            })
+            .await
+            .unwrap();
+            assert!(activatable
                 .iter()
                 .all(|name| name.as_str() == "org.freedesktop.DBus"));
             // Without a FileManager1 owner the call fails, which is what
             // routes Reveal to the xdg-open fallback.
             diagnostic_error!("reveal: calling missing FileManager1");
-            let missing = show_items(&client, Path::new("/vault/a.md"))
+            let missing = show_items_with_timeout(&client, Path::new("/vault/a.md"), TEST_TIMEOUT)
                 .await
                 .unwrap_err();
             assert!(
@@ -477,36 +527,62 @@ mod tests {
             diagnostic_error!("reveal: connecting fake manager");
             let server = bus.connect().await;
             diagnostic_error!("reveal: registering fake manager object");
-            server
-                .object_server()
-                .at(
-                    "/org/freedesktop/FileManager1",
-                    FakeFileManager {
-                        received: sender,
-                        release: None,
-                    },
-                )
-                .await
-                .unwrap();
+            deadline_after("registering fake manager object", TEST_TIMEOUT, async {
+                server
+                    .object_server()
+                    .at(
+                        "/org/freedesktop/FileManager1",
+                        FakeFileManager {
+                            received: sender,
+                            release: None,
+                        },
+                    )
+                    .await?;
+                Ok(())
+            })
+            .await
+            .unwrap();
             diagnostic_error!("reveal: requesting manager name");
-            server
-                .request_name("org.freedesktop.FileManager1")
-                .await
-                .unwrap();
+            deadline_after("requesting manager name", TEST_TIMEOUT, async {
+                server.request_name("org.freedesktop.FileManager1").await?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+            // Confirm client observes the fake manager's bus ownership before
+            // invoking ShowItems so readiness is synchronized (#3285).
+            diagnostic_error!("reveal: confirming fake manager name owner");
+            let owner = deadline_after("confirming fake manager name owner", TEST_TIMEOUT, async {
+                let name: zbus::names::BusName<'_> = "org.freedesktop.FileManager1".try_into()?;
+                Ok(daemon.get_name_owner(name).await?)
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                Some(owner.as_str()),
+                server.unique_name().map(|name| name.as_str()),
+                "fake manager should own org.freedesktop.FileManager1"
+            );
             diagnostic_error!("reveal: calling fake manager");
-            show_items(&client, Path::new("/vault/a note.md"))
-                .await
-                .unwrap();
+            if let Err(error) =
+                show_items_with_timeout(&client, Path::new("/vault/a note.md"), TEST_TIMEOUT).await
+            {
+                let received = receiver.try_recv().ok();
+                panic!(
+                    "stage 'calling fake manager (FileManager1.ShowItems)' failed: {error:#} \
+                     (fake manager received request: {received:?})"
+                );
+            }
             diagnostic_error!("reveal: receiving positive control");
             assert_eq!(
-                deadline("fake manager receipt", async { Ok(receiver.recv().await?) })
-                    .await
-                    .unwrap(),
+                deadline_after("receiving fake manager receipt", TEST_TIMEOUT, async {
+                    Ok(receiver.recv().await?)
+                })
+                .await
+                .unwrap(),
                 (vec!["file:///vault/a%20note.md".to_owned()], String::new())
             );
-            Ok(())
-        }))
-        .unwrap();
+        });
         diagnostic_error!("reveal: finished, reaping private bus");
     }
 }

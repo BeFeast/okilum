@@ -523,7 +523,10 @@ impl Authority {
             if p.extension().is_some_and(|e| e == "json") {
                 let name = entry.file_name();
                 // Read by the migration scan in this same registry.lock hold,
-                // and it cannot concern this root: nothing to do.
+                // and it cannot concern this root: nothing to do. A read
+                // failure occurring only after a successful first read within
+                // this single lock hold is intentionally not observed because
+                // this scan reuses the first read (#3284, #3286).
                 if reads.skip(&name, root, &ancestor_identities) {
                     continue;
                 }

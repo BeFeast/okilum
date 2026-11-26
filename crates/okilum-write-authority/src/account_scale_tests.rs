@@ -129,6 +129,53 @@ fn account_scale_open_cost_by_entry_count() -> Result<()> {
     Ok(())
 }
 
+/// Sets `done` when dropped so a probing loop never hangs if the worker thread
+/// returns early with an error or unwinds on panic (#3286).
+struct SetOnDrop(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for SetOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Probes `lock_path` every millisecond while `work` runs on a background
+/// thread, returning the worker's output and the recorded lock wait durations.
+fn probe_lock_while<T: Send + 'static>(
+    lock_path: &Path,
+    work: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<(T, Vec<Duration>)> {
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker = {
+        let done = done.clone();
+        std::thread::spawn(move || -> Result<T> {
+            let _done = SetOnDrop(done);
+            work()
+        })
+    };
+    let lock = file(lock_path, true)?;
+    let mut waits = Vec::new();
+    while !done.load(std::sync::atomic::Ordering::SeqCst) && !worker.is_finished() {
+        let start = Instant::now();
+        lock.lock()?;
+        waits.push(start.elapsed());
+        lock.unlock()?;
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let result = match worker.join() {
+        Ok(result) => result?,
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("non-string panic payload");
+            anyhow::bail!("registering thread panicked: {message}");
+        }
+    };
+    Ok((result, waits))
+}
+
 /// How long a registration of a new folder can keep another registration or
 /// rebind waiting on `registry.lock` (#3272 review): another thread takes and
 /// releases the lock every millisecond while folders are registered, and the
@@ -152,10 +199,9 @@ fn account_scale_registry_lock_wait() -> Result<()> {
         fs::create_dir(&root)?;
         Authority::open_in(&account, &root)?;
     }
-    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let registering = {
-        let (account, base, done) = (account.clone(), temp.path().to_owned(), done.clone());
-        std::thread::spawn(move || -> Result<Duration> {
+    let (registration, mut waits) = {
+        let (account, base) = (account.clone(), temp.path().to_owned());
+        probe_lock_while(&account.join("registry.lock"), move || {
             let runs = 10;
             let start = Instant::now();
             for run in 0..runs {
@@ -163,20 +209,9 @@ fn account_scale_registry_lock_wait() -> Result<()> {
                 fs::create_dir(&root)?;
                 Authority::open_in(&account, &root)?;
             }
-            done.store(true, std::sync::atomic::Ordering::SeqCst);
             Ok(start.elapsed() / runs)
-        })
+        })?
     };
-    let lock = file(&account.join("registry.lock"), true)?;
-    let mut waits = Vec::new();
-    while !done.load(std::sync::atomic::Ordering::SeqCst) {
-        let start = Instant::now();
-        lock.lock()?;
-        waits.push(start.elapsed());
-        lock.unlock()?;
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    let registration = registering.join().expect("registering thread")?;
     waits.sort();
     let longest = waits.last().copied().unwrap_or_default();
     let p95 = waits
@@ -189,6 +224,34 @@ fn account_scale_registry_lock_wait() -> Result<()> {
         ms(longest),
         ms(p95),
         waits.len()
+    );
+    Ok(())
+}
+
+#[test]
+fn lock_wait_probe_stops_when_worker_returns_error() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let error = probe_lock_while::<()>(&temp.path().join("registry.lock"), || {
+        anyhow::bail!("simulated registration error")
+    })
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("simulated registration error"),
+        "{error:#}"
+    );
+    Ok(())
+}
+
+#[test]
+fn lock_wait_probe_stops_when_worker_panics() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let error = probe_lock_while::<()>(&temp.path().join("registry.lock"), || {
+        panic!("simulated registration panic")
+    })
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("simulated registration panic"),
+        "{error:#}"
     );
     Ok(())
 }
