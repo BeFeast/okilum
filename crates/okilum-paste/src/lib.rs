@@ -18,7 +18,10 @@ mod render;
 mod text;
 
 pub use html::html_to_markdown;
-pub use links::{extract_title, link_over_selection, single_url, titled_link};
+pub use links::{
+    extract_page_metadata, extract_title, link_over_selection, single_url, titled_link,
+    PageMetadata,
+};
 pub use render::fence_code;
 pub use text::{adapt_to_context, guess_language, tsv_to_table, vscode_language};
 

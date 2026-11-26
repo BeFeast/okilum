@@ -58,6 +58,7 @@ impl Reader {
         if !preview.image
             && !reader_pdf::is_pdf(&preview.rel)
             && !reader_canvas::eligible(&preview.path)
+            && !reader_url::eligible(&preview.rel)
         {
             return;
         }
@@ -162,6 +163,11 @@ impl Reader {
                 }
                 if let Some(canvas) = &preview.canvas {
                     canvas.update(cx, |canvas, cx| canvas.reload(cx));
+                }
+                if let Some(url) = &preview.url {
+                    let path = preview.path.clone();
+                    let details = preview.details.clone();
+                    url.update(cx, |url, cx| url.reload(path, details, cx));
                 }
                 #[cfg(target_os = "macos")]
                 if preview.thumbnail.is_some() {

@@ -61,10 +61,17 @@ fn collapse_ws(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// The page title from the first bytes of a response: `og:title`, else
-/// `<title>`. The charset comes from the Content-Type header, a BOM, or a
-/// `<meta>` in the head; entities are decoded and whitespace collapsed.
-pub fn extract_title(head: &[u8], content_type: Option<&str>) -> Option<String> {
+/// Structured preview metadata extracted from an HTML document's `<head>`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PageMetadata {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub site_name: Option<String>,
+    pub image_url: Option<String>,
+    pub favicon_url: Option<String>,
+}
+
+fn decode_head<'a>(head: &'a [u8], content_type: Option<&str>) -> std::borrow::Cow<'a, str> {
     let encoding = content_type
         .and_then(charset_param)
         .and_then(|label| encoding_rs::Encoding::for_label(label.as_bytes()))
@@ -82,6 +89,178 @@ pub fn extract_title(head: &[u8], content_type: Option<&str>) -> Option<String> 
         encoding
     };
     let (text, _, _) = encoding.decode(head);
+    text
+}
+
+fn clean_text(raw: Option<String>, max_chars: usize) -> Option<String> {
+    let cleaned = collapse_ws(&raw?.replace('\u{a0}', " "));
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned.chars().take(max_chars).collect())
+    }
+}
+
+fn resolve_http_url(raw: &str, base_url: Option<&url::Url>) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.len() > 4096 {
+        return None;
+    }
+    let parsed = match base_url {
+        Some(base) => base.join(trimmed).ok()?,
+        None => url::Url::parse(trimmed).ok()?,
+    };
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return None;
+    }
+    Some(parsed.into())
+}
+
+/// Extract Open Graph, Twitter Card, standard HTML title/description, and
+/// favicon metadata from the head bytes of an HTML response.
+pub fn extract_page_metadata(
+    head: &[u8],
+    content_type: Option<&str>,
+    base_url: Option<&url::Url>,
+) -> PageMetadata {
+    if head.is_empty() {
+        return PageMetadata::default();
+    }
+    let text = decode_head(head, content_type);
+    // Only the head matters; cut at </head> to keep the parse cheap.
+    let html = match find_ci(&text, "</head") {
+        Some(end) => &text[..end],
+        None => &text[..],
+    };
+    let dom = parse_document(RcDom::default(), ParseOpts::default()).one(html);
+    let mut doc_title: Option<String> = None;
+    let mut og_title: Option<String> = None;
+    let mut twitter_title: Option<String> = None;
+    let mut og_description: Option<String> = None;
+    let mut twitter_description: Option<String> = None;
+    let mut meta_description: Option<String> = None;
+    let mut og_site_name: Option<String> = None;
+    let mut og_image: Option<String> = None;
+    let mut twitter_image: Option<String> = None;
+    let mut preferred_icon: Option<String> = None;
+    let mut fallback_icon: Option<String> = None;
+    let mut apple_icon: Option<String> = None;
+
+    let mut stack: Vec<Handle> = vec![dom.document.clone()];
+    while let Some(node) = stack.pop() {
+        if let NodeData::Element { name, attrs, .. } = &node.data {
+            match &*name.local {
+                "title" if doc_title.is_none() => {
+                    let mut s = String::new();
+                    for c in node.children.borrow().iter() {
+                        if let NodeData::Text { contents } = &c.data {
+                            s.push_str(&contents.borrow());
+                        }
+                    }
+                    doc_title = Some(s);
+                }
+                "meta" => {
+                    let attrs = attrs.borrow();
+                    let get = |k: &str| {
+                        attrs
+                            .iter()
+                            .find(|a| &*a.name.local == k)
+                            .map(|a| a.value.to_string())
+                    };
+                    let key = get("property")
+                        .or_else(|| get("name"))
+                        .unwrap_or_default()
+                        .trim()
+                        .to_ascii_lowercase();
+                    let content = get("content");
+                    match key.as_str() {
+                        "og:title" if og_title.is_none() => og_title = content,
+                        "twitter:title" if twitter_title.is_none() => twitter_title = content,
+                        "og:description" if og_description.is_none() => og_description = content,
+                        "twitter:description" if twitter_description.is_none() => {
+                            twitter_description = content
+                        }
+                        "description" if meta_description.is_none() => meta_description = content,
+                        "og:site_name" if og_site_name.is_none() => og_site_name = content,
+                        "og:image" | "og:image:secure_url" | "og:image:url"
+                            if og_image.is_none() =>
+                        {
+                            og_image = content
+                        }
+                        "twitter:image" | "twitter:image:src" if twitter_image.is_none() => {
+                            twitter_image = content
+                        }
+                        _ => {}
+                    }
+                }
+                "link" => {
+                    let attrs = attrs.borrow();
+                    let get = |k: &str| {
+                        attrs
+                            .iter()
+                            .find(|a| &*a.name.local == k)
+                            .map(|a| a.value.to_string())
+                    };
+                    if let (Some(rel), Some(href)) = (get("rel"), get("href")) {
+                        let rel_lower = rel.to_ascii_lowercase();
+                        let tokens: Vec<&str> = rel_lower.split_ascii_whitespace().collect();
+                        let mime = get("type").unwrap_or_default().to_ascii_lowercase();
+                        let is_raster_or_svg = mime.contains("png")
+                            || mime.contains("svg")
+                            || mime.contains("webp")
+                            || mime.contains("jpeg")
+                            || href.to_ascii_lowercase().ends_with(".png")
+                            || href.to_ascii_lowercase().ends_with(".svg")
+                            || href.to_ascii_lowercase().ends_with(".webp");
+                        if tokens.iter().any(|t| *t == "apple-touch-icon") {
+                            if apple_icon.is_none() {
+                                apple_icon = Some(href);
+                            }
+                        } else if tokens.iter().any(|t| *t == "icon") {
+                            if is_raster_or_svg && preferred_icon.is_none() {
+                                preferred_icon = Some(href);
+                            } else if fallback_icon.is_none() {
+                                fallback_icon = Some(href);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        stack.extend(node.children.borrow().iter().rev().cloned());
+    }
+
+    let title = [og_title, twitter_title, doc_title]
+        .into_iter()
+        .find_map(|candidate| clean_text(candidate, 300));
+    let description = [og_description, twitter_description, meta_description]
+        .into_iter()
+        .find_map(|candidate| clean_text(candidate, 600));
+    let site_name = clean_text(og_site_name, 120);
+    let image_url = [og_image, twitter_image]
+        .into_iter()
+        .flatten()
+        .find_map(|raw| resolve_http_url(&raw, base_url));
+    let favicon_url = [preferred_icon, apple_icon, fallback_icon]
+        .into_iter()
+        .flatten()
+        .find_map(|raw| resolve_http_url(&raw, base_url));
+
+    PageMetadata {
+        title,
+        description,
+        site_name,
+        image_url,
+        favicon_url,
+    }
+}
+
+/// The page title from the first bytes of a response: `og:title`, else
+/// `<title>`. The charset comes from the Content-Type header, a BOM, or a
+/// `<meta>` in the head; entities are decoded and whitespace collapsed.
+pub fn extract_title(head: &[u8], content_type: Option<&str>) -> Option<String> {
+    let text = decode_head(head, content_type);
     // Only the head matters; cut at </head> to keep the parse cheap.
     let lower_end = find_ci(&text, "</head");
     let html = match lower_end {
@@ -266,5 +445,73 @@ mod tests {
             "[A \\*title\\*](https://x.org)"
         );
         assert_eq!(titled_link("  ", "https://x.org"), "https://x.org");
+    }
+
+    #[test]
+    fn page_metadata_extracts_og_twitter_fallback_and_resolves_urls() {
+        let base = url::Url::parse("https://docs.example.org/guides/start.html").unwrap();
+        let html = br#"<!doctype html>
+        <html>
+        <head>
+            <title>Fallback Title</title>
+            <meta property="og:title" content="  Rich &amp; Fast&#x2014;Preview  ">
+            <meta property="og:description" content="  Local-first   knowledge base. ">
+            <meta property="og:site_name" content="Example Docs">
+            <meta property="og:image" content="/assets/card.png">
+            <link rel="icon" type="image/png" href="../icons/site.png">
+        </head>
+        <body><p>Body</p></body>
+        </html>"#;
+        let meta = extract_page_metadata(html, Some("text/html; charset=utf-8"), Some(&base));
+        assert_eq!(meta.title.as_deref(), Some("Rich & Fast\u{2014}Preview"));
+        assert_eq!(
+            meta.description.as_deref(),
+            Some("Local-first knowledge base.")
+        );
+        assert_eq!(meta.site_name.as_deref(), Some("Example Docs"));
+        assert_eq!(
+            meta.image_url.as_deref(),
+            Some("https://docs.example.org/assets/card.png")
+        );
+        assert_eq!(
+            meta.favicon_url.as_deref(),
+            Some("https://docs.example.org/icons/site.png")
+        );
+    }
+
+    #[test]
+    fn page_metadata_falls_back_to_twitter_and_rejects_non_http_images() {
+        let base = url::Url::parse("https://example.org/post").unwrap();
+        let html = br#"<html><head>
+            <title>HTML Title</title>
+            <meta name="description" content="Plain meta description">
+            <meta property="og:image" content="javascript:alert(1)">
+            <meta name="twitter:image" content="//cdn.example.org/thumb.webp">
+            <link rel="shortcut icon" href="file:///etc/passwd">
+            <link rel="apple-touch-icon" href="/apple-icon.png">
+        </head></html>"#;
+        let meta = extract_page_metadata(html, None, Some(&base));
+        assert_eq!(meta.title.as_deref(), Some("HTML Title"));
+        assert_eq!(meta.description.as_deref(), Some("Plain meta description"));
+        assert_eq!(
+            meta.image_url.as_deref(),
+            Some("https://cdn.example.org/thumb.webp")
+        );
+        assert_eq!(
+            meta.favicon_url.as_deref(),
+            Some("https://example.org/apple-icon.png")
+        );
+    }
+
+    #[test]
+    fn page_metadata_handles_malformed_and_empty_html() {
+        assert_eq!(
+            extract_page_metadata(b"", None, None),
+            PageMetadata::default()
+        );
+        let malformed =
+            b"<head><title>Broken <b>Tag</title><meta name=description content='Still works";
+        let meta = extract_page_metadata(malformed, None, None);
+        assert_eq!(meta.title.as_deref(), Some("Broken <b>Tag"));
     }
 }

@@ -271,6 +271,11 @@ const MIGRATED: &[(&str, &str, Option<&str>)] = &[
         Some(".connect_timeout(TIMEOUT)"),
     ),
     (
+        "crates/okilum-shell/src/reader_url.rs",
+        "okilum_http::per_request_builder(",
+        Some(".connect_timeout(CONNECT_TIMEOUT)"),
+    ),
+    (
         "crates/okilum-t3/src/projects/icon.rs",
         "okilum_http::local_network_per_request_builder(",
         Some(".connect_timeout(std::time::Duration::from_secs(5))"),

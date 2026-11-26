@@ -279,6 +279,8 @@ pub(crate) struct FilePreview {
     pub log: Option<Entity<reader_log::LogView>>,
     /// A saved virtual log definition, using the same source UI as Logs.
     pub virtual_log: Option<Entity<reader_log::virtual_sources::Panel>>,
+    /// Rich preview card for `.url` Internet Shortcut files (#3288).
+    pub url: Option<Entity<reader_url::UrlPreview>>,
 }
 impl FilePreview {
     pub fn load(root: &Path, rel: &str) -> anyhow::Result<Self> {
@@ -296,6 +298,7 @@ impl FilePreview {
             pdf: None,
             log: None,
             virtual_log: None,
+            url: None,
             text: None,
             unavailable: None,
             image_cache: None,
@@ -609,6 +612,10 @@ impl Reader {
                     let path = preview.path.clone();
                     preview.archive =
                         Some(cx.new(|cx| reader_archive::ArchivePreview::new(path, window, cx)));
+                } else if reader_url::eligible(rel) {
+                    let path = preview.path.clone();
+                    let details = preview.details.clone();
+                    preview.url = Some(cx.new(|cx| reader_url::UrlPreview::new(path, details, cx)));
                 } else if reader_code_file::eligible(rel) {
                     let (root, path) = (self.vault_root.clone(), preview.path.clone());
                     preview.code = Some(cx.new(|cx| {
@@ -631,6 +638,7 @@ impl Reader {
                     && preview.text.is_none()
                     && preview.code.is_none()
                     && preview.archive.is_none()
+                    && preview.url.is_none()
                     && preview.har.is_none()
                     && !reader_media::is_video(&preview.path)
                     && preview.audio.is_none()
@@ -748,6 +756,17 @@ impl Reader {
                 .min_h_0()
                 .child(self.render_file_header_viewport(window, cx))
                 .child(archive.clone())
+                .into_any_element();
+        }
+        if let Some(url) = &preview.url {
+            return v_flex()
+                .id("reader-url-preview")
+                .key_context("ReaderFile")
+                .track_focus(&self.focus_handle)
+                .size_full()
+                .min_h_0()
+                .child(self.render_file_header_viewport(window, cx))
+                .child(url.clone())
                 .into_any_element();
         }
         if let Some(canvas) = &preview.canvas {

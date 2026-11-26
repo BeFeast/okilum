@@ -156,6 +156,7 @@ mod reader_service_storage;
 mod reader_session;
 mod reader_settings;
 mod reader_status_line;
+mod reader_url;
 mod reader_viewer_chrome;
 #[cfg(feature = "data-view-native-harness")]
 mod reader_viewer_native;

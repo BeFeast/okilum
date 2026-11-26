@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Small data-driven Linux acceptance runner, using the existing Wayland rig."""
 import argparse
+import base64
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 import hashlib
@@ -673,6 +674,16 @@ def run(args, scenario, output, result):
         }))
         if 'features' in scenario:
             (state / 'features.json').write_text(json.dumps(scenario['features']))
+        for spec in scenario.get('state_files', ()):
+            rel = spec['path']
+            require(not Path(rel).is_absolute() and '..' not in Path(rel).parts,
+                    f'State fixture path must stay inside state: {rel}')
+            target = state / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if 'base64' in spec:
+                target.write_bytes(base64.b64decode(spec['base64']))
+            else:
+                target.write_text(spec['text'], encoding='utf-8')
         rig_options = scenario.get('rig', {})
         require(set(rig_options) <= {'output_scale', 'floating', 'persistent_pointer'},
                 f'Unknown rig keys: {rig_options}')

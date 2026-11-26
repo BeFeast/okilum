@@ -1,0 +1,64 @@
+# Open .url shortcuts: a cached shortcut renders its rich preview card (title,
+# description, site info, target URL, and emerald thumbnail) immediately and
+# keeps reusing the cached thumbnail on reopen; an uncached offline shortcut
+# renders a clean fallback card with its parsed URL.
+note: |
+  # URL Preview Control
+
+  The URL shortcut acceptance fixture is ready.
+generate:
+  - path: Example.url
+    kind: text
+    text: "[InternetShortcut]\r\nURL=https://example.invalid/articles/okilum-preview\r\n"
+  - path: Offline.url
+    kind: text
+    text: "[InternetShortcut]\nURL=https://offline.invalid/reference\n"
+state_files:
+  - path: cache/url-previews/92759bbd578923afb3d85be05c99f59d8612d2c9742ea51bfd6e38ad0bdfec61.json
+    text: |
+      {
+        "version": 1,
+        "url": "https://example.invalid/articles/okilum-preview",
+        "title": "Okilum Preview Guide",
+        "description": "Local-first desktop knowledge environment for fast reading.",
+        "site_name": "Example Docs",
+        "thumbnail_file": "92759bbd578923afb3d85be05c99f59d8612d2c9742ea51bfd6e38ad0bdfec61.png",
+        "thumbnail_is_icon": false,
+        "fetched_at_unix": 1795640000
+      }
+  - path: cache/url-previews/92759bbd578923afb3d85be05c99f59d8612d2c9742ea51bfd6e38ad0bdfec61.png
+    base64: iVBORw0KGgoAAAANSUhEUgAAAUAAAACgCAIAAADywSLLAAABa0lEQVR42u3TQQkAAAgEwQthMGMbyxC+hIFJsLCpaeCpSAAGBgwMGBgMDBgYMDBgYDAwYGDAwGBgwMCAgQEDg4EBAwMGBgwMBgYMDBgYDAwYGDAwYGAwMGBgwMCAgcHAgIEBA4OBAQMDBgYMDAYGDAwYGAysAhgYMDBgYDAwYGDAwICBwcCAgQEDg4EBAwMGBgwMBgYMDBgYMDAYGDAwYGAwMGBgwMCAgcHAgIEBAwMGBgMDBgYMDAYGDAwYGDAwGBgwMGBgMDBgYMDAgIHBwICBAQMDBgYDAwYGDAwGBgwMGBgwMBgYMDBgYMDAYGDAwICBwcCAgQEDAwYGAwMGBgwMGBgMDBgYMDAYGDAwYGDAwGBgwMCAgcHAgIEBAwMGBgMDBgYMDBgYDAwYGDAwGBgwMGBgwMBgYMDAgIEBA4OBAQMDBgYDAwYGDAwYGAwMGBgwMBhYBTAwYGDAwGBgwMCAgQEDg4EBAwM3C5HSbbcF8MwjAAAAAElFTkSuQmCC
+appearance: light
+preferences:
+  note_open_mode: read
+region: [260, 50, 1106, 680]
+ready_text: URL shortcut acceptance fixture is ready
+wait_for_vault: 20
+steps:
+  - id: find-cached-url
+    keys: [k]
+    mods: [ctrl]
+  - id: search-cached-url
+    type: Example.url
+  - id: open-cached-url
+    keys: [Return]
+    wait: 1
+    text: Okilum Preview Guide
+    pixels: &thumb
+      region: [280, 90, 1060, 500]
+      expression: 'g>0.65&&r<0.25&&b<0.45?1:0'
+      min: 8000
+      max: 500000
+  - id: reopen-cached-url
+    restart: session
+    text: Okilum Preview Guide
+    pixels: *thumb
+  - id: find-offline-url
+    keys: [k]
+    mods: [ctrl]
+  - id: search-offline-url
+    type: Offline.url
+  - id: open-offline-url
+    keys: [Return]
+    wait: 1.5
+    text: offline.invalid
