@@ -145,6 +145,7 @@ mod reader_window_view;
 // it macro-expanded on macOS only, so `use super::*` plus an explicit
 // `use ::core::prelude::v1::test` was E0659-ambiguous there (#2589).
 mod reader_keymap;
+mod reader_now_feed;
 mod reader_now_waiting;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod reader_settings_sync;
@@ -794,6 +795,8 @@ struct Reader {
     workbench_scroll: ScrollHandle,
     /// Now's Waiting for me, read from bound manager threads (#2346).
     waiting: reader_now_waiting::Waiting,
+    /// Unified feed from `@views/out/now.json` plus live manager questions (#3296).
+    now_feed: reader_now_feed::Cache,
     inbox_source: Option<Arc<Vault>>,
     recent_expanded: bool,
     sidebar_save_sequence: Arc<std::sync::atomic::AtomicU64>,

@@ -1,0 +1,90 @@
+# Now replaces the activity lists with the unified feed when
+# @views/out/now.json is present. The note pane stays on the fixture note.
+# Sidebar text comes only from the snapshot groups.
+note: |
+  # Feed fixture
+
+  The editor shows this note. The sidebar feed is separate.
+sidebar_state:
+  left_mode: now
+  now_enabled: true
+  now_collapsed: [changes, pins]
+generate:
+  - path: notes/ship-patch.md
+    kind: text
+    text: |
+      # Ship patch
+
+      A note the urgent row can open.
+  - path: "@Schema/people.yaml"
+    kind: text
+    text: |
+      roles:
+        coordinator:
+          display_name: Coordinator
+        external: {}
+  - path: "@views/out/now.json"
+    kind: text
+    text: |
+      {
+        "version": 2,
+        "generated_at": "2026-11-27T18:05:00Z",
+        "warnings": [],
+        "groups": [
+          {
+            "id": "urgent",
+            "items": [
+              {
+                "id": "u1",
+                "group": "urgent",
+                "kind": "task",
+                "title": "Ship patch",
+                "area": "lab",
+                "project": "alpha",
+                "source_path": "notes/ship-patch.md",
+                "due": null,
+                "next_check": null,
+                "overdue": true,
+                "waiting_on": {"who": "external", "what": "release window"},
+                "decider": "owner",
+                "response": "act"
+              }
+            ]
+          },
+          {
+            "id": "answer",
+            "items": [
+              {
+                "id": "a1",
+                "group": "answer",
+                "kind": "question",
+                "title": "Reply draft",
+                "area": "lab",
+                "project": null,
+                "source_path": "notes/ship-patch.md",
+                "due": null,
+                "next_check": null,
+                "overdue": false,
+                "waiting_on": null,
+                "decider": "owner",
+                "response": "answer"
+              }
+            ]
+          },
+          {"id": "hands", "items": []},
+          {"id": "available", "items": []},
+          {"id": "waiting", "items": [], "hidden_count": 0, "hidden_items": []}
+        ]
+      }
+appearance: light
+rig:
+  persistent_pointer: true
+preferences:
+  note_open_mode: read
+region: [300, 90, 800, 540]
+ready_text: Feed fixture
+steps:
+  - id: feed-sidebar
+    wait: 2.5
+    region: [0, 45, 279, 700]
+    text: Ship patch

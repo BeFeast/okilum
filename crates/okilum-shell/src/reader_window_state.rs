@@ -280,6 +280,7 @@ impl Reader {
             workbench_times: Default::default(),
             workbench_scroll: ScrollHandle::new(),
             waiting: Default::default(),
+            now_feed: Default::default(),
             inbox_source: None,
             recent_expanded: false,
             sidebar_save_sequence: Arc::default(),
@@ -474,6 +475,9 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if okilum_core::now_feed::snapshot_changed(&changes) {
+            self.refresh_now_feed(cx);
+        }
         if !changes.metadata.is_empty() && self.shared_session.is_none() {
             self.refresh_service_metadata(window, cx);
             changes.metadata.clear();

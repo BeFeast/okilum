@@ -262,6 +262,7 @@ impl Reader {
                             .spawn(async move { drop(retired) })
                             .detach();
                         if initialized_now || this.sidebar.left_mode == LeftMode::Now {
+                            this.refresh_now_feed(cx);
                             cx.notify();
                         }
                     }
@@ -311,6 +312,7 @@ impl Reader {
         self.save_sidebar(cx);
         if mode == LeftMode::Now {
             self.refresh_waiting(window, cx);
+            self.refresh_now_feed(cx);
         }
         cx.notify();
     }
@@ -331,6 +333,7 @@ impl Reader {
         self.save_sidebar(cx);
         if enabled {
             self.refresh_waiting(window, cx);
+            self.refresh_now_feed(cx);
         } else {
             // Disabling Now stops Waiting reads at once; nothing is written.
             self.waiting.cancel();
@@ -421,7 +424,7 @@ impl Reader {
             .into_any_element()
     }
 
-    fn toggle_now_section(&mut self, key: &str, expanded: bool, cx: &mut Context<Self>) {
+    pub(super) fn toggle_now_section(&mut self, key: &str, expanded: bool, cx: &mut Context<Self>) {
         let store = if expanded {
             &mut self.sidebar.now_expanded
         } else {
@@ -658,8 +661,123 @@ impl Reader {
             .into_any_element()
     }
 
+    pub(super) fn now_toolbar(
+        &self,
+        label: String,
+        live: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tokens = brand::palette(cx);
+        let reader = cx.entity().downgrade();
+        let menu_reader = reader.clone();
+        let settings_reader = reader.clone();
+        let reveal_reader = reader.clone();
+        h_flex()
+            .w_full()
+            .flex_none()
+            .h(px(28.))
+            .px_3()
+            .gap_1()
+            .text_size(px(10.))
+            .text_color(tokens.text_muted)
+            .child(div().size(px(5.)).rounded_full().bg(if live {
+                tokens.success
+            } else {
+                tokens.text_muted
+            }))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(label),
+            )
+            .child(
+                Button::new("now-rescan")
+                    .ghost()
+                    .xsmall()
+                    .label("Rescan")
+                    .debug_selector(|| "now-rescan".into())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.refresh_inventory_with_read(
+                            okilum_core::Changes::default(),
+                            true,
+                            window,
+                            cx,
+                        );
+                        this.refresh_waiting(window, cx);
+                        this.refresh_now_feed(cx);
+                    })),
+            )
+            .child(
+                Button::new("now-menu")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Ellipsis)
+                    .tooltip("Now actions")
+                    .debug_selector(|| "now-menu".into())
+                    .dropdown_menu(move |menu, _, _| {
+                        let collapse_reader = menu_reader.clone();
+                        let settings_reader = settings_reader.clone();
+                        let reveal_reader = reveal_reader.clone();
+                        menu.item(
+                            PopupMenuItem::new("New note").on_click(sidebar_action_click(
+                                menu_reader.clone(),
+                                SidebarAction::NewNote,
+                            )),
+                        )
+                        .item(
+                            PopupMenuItem::new("Today's note").on_click(sidebar_action_click(
+                                menu_reader.clone(),
+                                SidebarAction::DailyNote,
+                            )),
+                        )
+                        .item(PopupMenuItem::new("Reveal current note in Tree").on_click(
+                            move |_, window, cx| {
+                                let _ = reveal_reader.update(cx, |this, cx| {
+                                    let path = this.pane.current_rel.clone();
+                                    this.reveal_in_tree(&path, window, cx);
+                                });
+                            },
+                        ))
+                        .item(
+                            PopupMenuItem::new("Collapse sections").on_click(move |_, _, cx| {
+                                let _ = collapse_reader.update(cx, |this, cx| {
+                                    let keys: &[&str] = if this.now_feed_ready() {
+                                        &[
+                                            "feed-urgent",
+                                            "feed-answer",
+                                            "feed-hands",
+                                            "feed-available",
+                                            "feed-waiting",
+                                        ]
+                                    } else {
+                                        &["waiting", "active", "changes", "pins"]
+                                    };
+                                    this.sidebar
+                                        .now_collapsed
+                                        .extend(keys.iter().map(|key| (*key).to_owned()));
+                                    this.save_sidebar(cx);
+                                    cx.notify();
+                                });
+                            }),
+                        )
+                        .item(
+                            PopupMenuItem::new("Vault settings").on_click(move |_, _, cx| {
+                                reader_settings::show_vault(Some(settings_reader.clone()), cx)
+                            }),
+                        )
+                    }),
+            )
+            .into_any_element()
+    }
+
     pub(super) fn render_workbench(&self, _: &Window, cx: &mut Context<Self>) -> AnyElement {
         let tokens = brand::palette(cx);
+        if self.now_feed_ready() {
+            return self.render_now_feed(cx);
+        }
         let Some(index) = &self.workbench_ready else {
             return div()
                 .p_2()
@@ -676,97 +794,13 @@ impl Reader {
                 .into_any_element();
         }
         let reader = cx.entity().downgrade();
-        let menu_reader = reader.clone();
-        let settings_reader = reader.clone();
-        let reveal_reader = reader.clone();
         let network = self.loading.as_ref().is_some_and(|load| load.network);
         let fresh = format!(
             "{} · snapshot {}",
             if network { "NFS" } else { "live" },
             self.workbench_time(index.observed_at)
         );
-        let freshness =
-            h_flex()
-                .w_full()
-                .flex_none()
-                .h(px(28.))
-                .px_3()
-                .gap_1()
-                .text_size(px(10.))
-                .text_color(tokens.text_muted)
-                .child(div().size(px(5.)).rounded_full().bg(if network {
-                    tokens.text_muted
-                } else {
-                    tokens.success
-                }))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .child(fresh),
-                )
-                .child(
-                    Button::new("now-rescan")
-                        .ghost()
-                        .xsmall()
-                        .label("Rescan")
-                        .debug_selector(|| "now-rescan".into())
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.refresh_inventory_with_read(
-                                okilum_core::Changes::default(),
-                                true,
-                                window,
-                                cx,
-                            );
-                            this.refresh_waiting(window, cx);
-                        })),
-                )
-                .child(
-                    Button::new("now-menu")
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Ellipsis)
-                        .tooltip("Now actions")
-                        .debug_selector(|| "now-menu".into())
-                        .dropdown_menu(move |menu, _, _| {
-                            let collapse_reader = menu_reader.clone();
-                            let settings_reader = settings_reader.clone();
-                            let reveal_reader = reveal_reader.clone();
-                            menu.item(PopupMenuItem::new("New note").on_click(
-                                sidebar_action_click(menu_reader.clone(), SidebarAction::NewNote),
-                            ))
-                            .item(PopupMenuItem::new("Today's note").on_click(
-                                sidebar_action_click(menu_reader.clone(), SidebarAction::DailyNote),
-                            ))
-                            .item(PopupMenuItem::new("Reveal current note in Tree").on_click(
-                                move |_, window, cx| {
-                                    let _ = reveal_reader.update(cx, |this, cx| {
-                                        let path = this.pane.current_rel.clone();
-                                        this.reveal_in_tree(&path, window, cx);
-                                    });
-                                },
-                            ))
-                            .item(PopupMenuItem::new("Collapse sections").on_click(
-                                move |_, _, cx| {
-                                    let _ = collapse_reader.update(cx, |this, cx| {
-                                        this.sidebar.now_collapsed.extend(
-                                            ["waiting", "active", "changes", "pins"]
-                                                .map(str::to_owned),
-                                        );
-                                        this.save_sidebar(cx);
-                                        cx.notify();
-                                    });
-                                },
-                            ))
-                            .item(
-                                PopupMenuItem::new("Vault settings").on_click(move |_, _, cx| {
-                                    reader_settings::show_vault(Some(settings_reader.clone()), cx)
-                                }),
-                            )
-                        }),
-                );
+        let freshness = self.now_toolbar(fresh, !network, cx);
         let current_unit = index.unit_for(&self.pane.current_rel);
         let order = view.ordered(&self.now_t3_activity());
         // Groups follow their newest project: `order.active` is newest first,
@@ -1061,6 +1095,7 @@ impl Reader {
             .min_h_0()
             .text_size(px(brand::READER_CHROME_FONT_SIZE))
             .child(freshness)
+            .children(self.render_now_feed_warning(cx))
             .children(self.render_now_waiting(cx))
             .child(self.now_heading(
                 "active".into(),
