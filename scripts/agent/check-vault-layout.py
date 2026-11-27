@@ -11,6 +11,8 @@ CRATES = ("okilum-core", "okilum-shell")
 # Fixtures live under tests/; inline #[cfg(test)] modules are skipped below.
 # Exact non-vault strings, keyed by filename.
 ALLOW = {
+    "archive.rs": {"archive"},  # Fallback display name for a compressed file.
+    "vault_descriptor.rs": {"archive"},  # Vault lifecycle state and mode values.
     "open_in.rs": {
         "Contents/Resources/app/bin/cursor",
         "Contents/Resources/app/bin/code",
