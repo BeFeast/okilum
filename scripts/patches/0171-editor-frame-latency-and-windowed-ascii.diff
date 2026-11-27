@@ -1,0 +1,824 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+index 1b87a484..482294b4 100644
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -1548,7 +1548,7 @@ impl<M: InputModeKind> TextElement<M> {
+                     });
+                 }
+ 
+-                offset_y += line.rows(&last_layout.rows).rows_height(line.wrapped_lines.len());
++                offset_y += line.rows(&last_layout.rows).rows_height(line.row_count());
+             }
+ 
+             infos
+@@ -1741,11 +1741,12 @@ impl<M: InputModeKind> TextElement<M> {
+                 .expect("line should exists in wrapper");
+             // Keep the existing wrapped/projected/IME paths. A complete source
+             // row can reuse the last frame's layout before materializing bytes.
+-            if line_item.wrapped_lines.len() == 1
++            let plain_unwrapped = line_item.wrapped_lines.len() == 1
+                 && line_item.wrapped_lines[0] == (0..row.len())
+                 && state.display_map.line_scale(buffer_line) == 1.
+                 && state.display_map.line_hang(buffer_line) == 0
+-                && line_item.prefix_hang == px(0.) {
++                && line_item.prefix_hang == px(0.);
++            if plain_unwrapped {
+                 if let Some(line) = previous.and_then(|cache| cache.source_row(
+                     last_layout, buffer_line, row, runs, run_offset,
+                     state.display_map.buffer_line_to_display_row(buffer_line))) {
+@@ -1759,6 +1760,46 @@ impl<M: InputModeKind> TextElement<M> {
+                     lines.push(line.align_right(align_right));
+                     continue;
+                 }
++                if !state.soft_wrap
++                    && row.len() >= crate::input::display_map::WINDOWED_ASCII_MIN_BYTES
++                    && last_layout.projection.is_none()
++                    && state.ime_marked_range.is_none()
++                    && bg_segments.is_empty()
++                    && whitespace_indicators.is_none()
++                    && line_item.indent == 0
++                    && last_layout.text_align == TextAlign::Left
++                    && !state.paragraph_rtl_at(buffer_line)
++                    && crate::input::display_map::is_printable_ascii_slice(row)
++                {
++                    let line_runs = runs_for_range(runs, run_offset, &(0..row.len()));
++                    if line_runs.len() == 1 && line_runs[0].len == row.len() {
++                        if let Some(cell_width) =
++                            crate::input::display_map::monospace_ascii_cell_width(
++                                window,
++                                &line_runs[0].font,
++                                font_size,
++                            )
++                        {
++                            let line_start = last_layout.visible_line_byte_offsets[vi];
++                            let windowed =
++                                crate::input::display_map::WindowedMonospaceAscii::new(
++                                    display_text.clone(),
++                                    line_start,
++                                    row.len(),
++                                    cell_width,
++                                    font_size,
++                                    line_runs[0].clone(),
++                                );
++                            let line_layout = LineLayout::new()
++                                .first_row(state.display_map.buffer_line_to_display_row(buffer_line))
++                                .with_background(has_background(&line_runs))
++                                .windowed_ascii(windowed);
++                            run_offset += row.len() + 1;
++                            lines.push(line_layout);
++                            continue;
++                        }
++                    }
++                }
+             }
+             state.record_layout_diagnostic(|d| d.source_row_materialized_bytes += row.len() as u64);
+             let line_text: String = row.into();
+@@ -2659,10 +2700,13 @@ impl<M: InputModeKind> Element for TextElement<M> {
+         let whitespace_indicators =
+             Self::layout_whitespace_indicators(&state, text_size, &text_style, window, cx);
+ 
+-        let cacheable = !state.soft_wrap && !state.is_single_line()
+-            && state.text.len() > 256 * 1024 && last_layout.projection.is_none()
+-            && state.ime_marked_range.is_none() && document_colors.is_empty()
++        let cacheable = !state.is_single_line()
++            && !is_empty
++            && !state.masked
++            && state.ime_marked_range.is_none()
++            && document_colors.is_empty()
+             && whitespace_indicators.is_none();
++        let row_reuse = cacheable && !state.soft_wrap && last_layout.projection.is_none();
+         let cached = cacheable.then(|| {
+             state.source_shape_cache.borrow().as_ref()
+                 .filter(|cache| cache.matches(&last_layout, &runs))
+@@ -2682,7 +2726,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+             &runs,
+             &document_colors,
+             whitespace_indicators,
+-            if cacheable && !state.masked { previous.as_ref() } else { None },
++            if row_reuse { previous.as_ref() } else { None },
+             window,
+         )
+         };
+@@ -2692,30 +2736,48 @@ impl<M: InputModeKind> Element for TextElement<M> {
+         // 2. Multi-line with soft wrap disabled.
+         if state.is_single_line() || !state.soft_wrap {
+             let longest_row = state.display_map.longest_row();
+-            if let Some(visible) = cacheable.then(|| last_layout.visible_buffer_lines.iter()
+-                .position(|row| *row == longest_row)).flatten() {
++            if let Some(visible) = (!state.soft_wrap && last_layout.projection.is_none())
++                .then(|| last_layout.visible_buffer_lines.iter()
++                    .position(|row| *row == longest_row)).flatten() {
+                 // layout_lines already shaped this exact unwrapped source row.
+                 // Reuse its geometry instead of cloning/hashing the line twice
+                 // on every edit (the minified-JSON case).
+                 longest_line_width = lines[visible].longest_width;
+             } else {
+-            let longest_line: SharedString = state.text.slice_line(longest_row).to_string().into();
+-            longest_line_width = window
+-                .text_system()
+-                .shape_line(
+-                    longest_line.clone(),
+-                    text_size,
+-                    &[TextRun {
+-                        len: longest_line.len(),
+-                        font: style.font(),
+-                        color: gpui::black(),
+-                        background_color: None,
+-                        underline: None,
+-                        strikethrough: None,
+-                    }],
+-                    wrap_width,
+-                )
+-                .width;
++                let longest_slice = state.text.slice_line(longest_row);
++                let fast_width = (!state.is_single_line()
++                    && longest_slice.len() >= crate::input::display_map::WINDOWED_ASCII_MIN_BYTES
++                    && crate::input::display_map::is_printable_ascii_slice(longest_slice))
++                    .then(|| {
++                        crate::input::display_map::monospace_ascii_cell_width(
++                            window,
++                            &style.font(),
++                            text_size,
++                        )
++                        .map(|cell_width| cell_width * (longest_slice.len() as f32))
++                    })
++                    .flatten();
++                if let Some(width) = fast_width {
++                    longest_line_width = width;
++                } else {
++                    let longest_line: SharedString = longest_slice.to_string().into();
++                    longest_line_width = window
++                        .text_system()
++                        .shape_line(
++                            longest_line.clone(),
++                            text_size,
++                            &[TextRun {
++                                len: longest_line.len(),
++                                font: style.font(),
++                                color: gpui::black(),
++                                background_color: None,
++                                underline: None,
++                                strikethrough: None,
++                            }],
++                            wrap_width,
++                        )
++                        .width;
++                }
+             }
+         }
+         last_layout.lines = Rc::new(lines);
+@@ -2871,7 +2933,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+                         .text_system()
+                         .shape_line(line_no, text_size, &runs, None),
+                 );
+-                for _ in 0..line.wrapped_lines.len().saturating_sub(1) {
++                for _ in 0..line.row_count().saturating_sub(1) {
+                     sub_lines.push(ShapedLine::default());
+                 }
+                 line_numbers.push(sub_lines);
+diff --git a/crates/base/src/input/base/layout.rs b/crates/base/src/input/base/layout.rs
+index 45fc1275..d49db71d 100644
+--- a/crates/base/src/input/base/layout.rs
++++ b/crates/base/src/input/base/layout.rs
+@@ -464,8 +464,7 @@ impl SourceShapeCache {
+         }
+         let vi = old.visible_buffer_lines.binary_search(&row).ok()?;
+         let line = old.lines.get(vi)?;
+-        let shaped = line.wrapped_lines.first()?;
+-        if shaped.font_size != next.font_size || text != shaped.text.as_ref() {
++        if !line.matches_source_row(next.font_size, text) {
+             return None;
+         }
+         // Runs use the concatenated visible-row byte space, including LF even
+@@ -481,14 +480,21 @@ impl SourceShapeCache {
+ 
+     pub(super) fn matches(&self, next: &LastLayout, runs: &[gpui::TextRun]) -> bool {
+         let old = &self.layout;
++        let same_projection = match (&old.projection, &next.projection) {
++            (None, None) => true,
++            (Some(a), Some(b)) => std::sync::Arc::ptr_eq(&a.projection, &b.projection),
++            _ => false,
++        };
+         old.source_stamp == next.source_stamp
+             && old.presentation_epoch == next.presentation_epoch
++            && same_projection
+             && old.font == next.font && old.font_size == next.font_size
+             && old.scale_factor == next.scale_factor
+             && old.visible_buffer_lines == next.visible_buffer_lines
+             && old.rows == next.rows && old.wrap_width == next.wrap_width
+             && old.wrapping_indent == next.wrapping_indent
+             && old.text_align == next.text_align && old.content_width == next.content_width
++            && old.line_number_width == next.line_number_width
+             && self.runs == runs
+     }
+ }
+diff --git a/crates/base/src/input/base/row_copy_tests.rs b/crates/base/src/input/base/row_copy_tests.rs
+index e7d1af7d..59d0f1c8 100644
+--- a/crates/base/src/input/base/row_copy_tests.rs
++++ b/crates/base/src/input/base/row_copy_tests.rs
+@@ -112,7 +112,9 @@ fn large2803_row_full_actual_layout_avoids_intermediate_string(cx: &mut gpui::Te
+             gpui::div().size_full().child(self.0.clone())
+         }
+     }
+-    let text = "abc 0123456789 ".repeat(160_000);
++    // Non-ASCII exercises the full-row SharedString conversion path (monospace
++    // printable-ASCII rows >= 64 KiB use windowed shaping with 0 full-row copies).
++    let text = "abc שלום 0123456789 ".repeat(120_000);
+     let mut input = None;
+     let handle = cx.update(|cx| {
+         cx.set_global(crate::theme::Theme::default());
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index 86af6366..908b5658 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -1165,8 +1165,13 @@ impl<M: InputModeKind> InputBaseState<M> {
+     /// Buffer line ranges that keep one alignment even with
+     /// [`Self::paragraph_direction`]: a code block or a table must not move
+     /// line by line. Sorted, not overlapping; the app updates them on edit.
+-    pub fn set_direction_exempt_lines(&mut self, lines: Vec<std::ops::Range<usize>>) {
++    pub fn set_direction_exempt_lines(&mut self, lines: Vec<std::ops::Range<usize>>) -> bool {
++        if self.direction_exempt == lines {
++            return false;
++        }
+         self.direction_exempt = lines;
++        self.source_shape_cache.borrow_mut().take();
++        true
+     }
+ 
+     /// Whether buffer `line` is laid out right-to-left: a paragraph whose
+diff --git a/crates/base/src/input/editor/display_map/mod.rs b/crates/base/src/input/editor/display_map/mod.rs
+index 234da728..83cd68da 100644
+--- a/crates/base/src/input/editor/display_map/mod.rs
++++ b/crates/base/src/input/editor/display_map/mod.rs
+@@ -16,7 +16,10 @@ mod wrap_map;
+ 
+ // Re-export public API
+ pub use self::display_map::{DisplayMap, WrappingIndent};
+-pub(crate) use self::text_wrapper::LineLayout;
++pub(crate) use self::text_wrapper::{
++    LineLayout, WINDOWED_ASCII_MIN_BYTES, WindowedMonospaceAscii, is_printable_ascii_slice,
++    monospace_ascii_cell_width,
++};
+ pub use self::text_wrapper::wrap_ascii_line;
+ 
+ // Re-export FoldRange and extract_fold_ranges
+diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/base/src/input/editor/display_map/text_wrapper.rs
+index 2c212da3..026ea54b 100644
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -3,11 +3,14 @@ use crate::input::layout::{LineRows, RowMetrics};
+ use crate::input::attribution::{self, Identity as TraceIdentity, Span as TraceSpan};
+ use gpui::Half;
+ use std::borrow::Cow;
++use std::cell::RefCell;
++use std::collections::HashMap;
+ use std::ops::Range;
+ use std::rc::Rc;
+ 
+ use gpui::{
+-    App, Font, LineFragment, Pixels, Point, ShapedLine, Size, TextAlign, Window, point, px, size,
++    App, Font, LineFragment, Pixels, Point, ShapedLine, SharedString, Size, TextAlign, TextRun,
++    Window, point, px, size,
+ };
+ use ropey::Rope;
+ use smallvec::SmallVec;
+@@ -1161,6 +1164,261 @@ impl WrapDisplayPoint {
+     }
+ }
+ 
++/// Minimum byte length for windowed shaping of unwrapped monospace printable-ASCII rows (#2803).
++pub(crate) const WINDOWED_ASCII_MIN_BYTES: usize = 64 * 1024;
++
++/// Zero-allocation printable ASCII check (0x20..=0x7e) over a rope slice.
++/// Tabs, control bytes and any non-ASCII UTF-8 immediately reject this fast path.
++pub(crate) fn is_printable_ascii_slice(slice: ropey::RopeSlice<'_>) -> bool {
++    slice
++        .chunks()
++        .all(|chunk| chunk.bytes().all(|b| (b' '..=b'~').contains(&b)))
++}
++
++/// Probe and cache whether `(font, font_size)` renders every printable ASCII
++/// character with one uniform cell width and no fallback font.
++pub(crate) fn monospace_ascii_cell_width(
++    window: &mut Window,
++    font: &Font,
++    font_size: Pixels,
++) -> Option<Pixels> {
++    thread_local! {
++        static CACHE: RefCell<HashMap<(gpui::FontId, u32, u32), Option<Pixels>>> =
++            RefCell::new(HashMap::new());
++    }
++    let font_id = window.text_system().resolve_font(font);
++    let key = (
++        font_id,
++        f32::from(font_size).to_bits(),
++        window.scale_factor().to_bits(),
++    );
++    if let Some(cached) = CACHE.with(|cache| cache.borrow().get(&key).copied()) {
++        return cached;
++    }
++    let measure = |text: &str, window: &mut Window| {
++        let run = TextRun {
++            len: text.len(),
++            font: font.clone(),
++            color: gpui::black(),
++            background_color: None,
++            underline: None,
++            strikethrough: None,
++        };
++        window
++            .text_system()
++            .shape_line(SharedString::from(text.to_owned()), font_size, &[run], None)
++    };
++    let mut cell_width: Option<Pixels> = None;
++    let mut resolved_font: Option<gpui::FontId> = None;
++    let mut ok = true;
++    for byte in b' '..=b'~' {
++        let buf = [byte];
++        let s = std::str::from_utf8(&buf).unwrap();
++        let shaped = measure(s, window);
++        if shaped.runs.len() != 1
++            || shaped.runs[0].glyphs.len() != 1
++            || shaped.width <= px(0.)
++        {
++            ok = false;
++            break;
++        }
++        let run_font = shaped.runs[0].font_id;
++        match (cell_width, resolved_font) {
++            (None, None) => {
++                cell_width = Some(shaped.width);
++                resolved_font = Some(run_font);
++            }
++            (Some(w), Some(f)) if (w - shaped.width).abs() <= px(0.005) && f == run_font => {}
++            _ => {
++                ok = false;
++                break;
++            }
++        }
++    }
++    let verified = if ok {
++        cell_width.filter(|&w| {
++            let eps = px(0.01);
++            let pair = measure("aa", window);
++            let punct = measure("{}[],:\"", window);
++            pair.runs.len() == 1
++                && pair.runs[0].glyphs.len() == 2
++                && (pair.runs[0].glyphs[1].position.x - w).abs() <= eps
++                && (pair.width - w * 2.).abs() <= eps
++                && punct.runs.len() == 1
++                && (punct.width - w * 7.).abs() <= eps
++        })
++    } else {
++        None
++    };
++    CACHE.with(|cache| {
++        let mut cache = cache.borrow_mut();
++        if cache.len() >= 128 {
++            cache.clear();
++        }
++        cache.insert(key, verified);
++    });
++    verified
++}
++
++/// Viewport-windowed layout for a huge unwrapped printable-ASCII row in a
++/// verified monospace font (#2803). Avoids materializing or shaping megabytes
++/// of offscreen text on the UI thread while shaping the visible slice natively.
++#[derive(Clone)]
++pub(crate) struct WindowedMonospaceAscii {
++    rope: Rope,
++    line_start: usize,
++    len: usize,
++    cell_width: Pixels,
++    font_size: Pixels,
++    run: TextRun,
++    window: Rc<RefCell<Option<(usize, ShapedLine)>>>,
++}
++
++impl WindowedMonospaceAscii {
++    pub(crate) fn new(
++        rope: Rope,
++        line_start: usize,
++        len: usize,
++        cell_width: Pixels,
++        font_size: Pixels,
++        run: TextRun,
++    ) -> Self {
++        Self {
++            rope,
++            line_start,
++            len,
++            cell_width,
++            font_size,
++            run,
++            window: Rc::new(RefCell::new(None)),
++        }
++    }
++
++    #[inline]
++    pub(crate) fn width(&self) -> Pixels {
++        self.cell_width * (self.len as f32)
++    }
++
++    fn matches(&self, font_size: Pixels, text: ropey::RopeSlice<'_>) -> bool {
++        self.font_size == font_size
++            && self.len == text.len()
++            && self.rope.slice(self.line_start..self.line_start + self.len) == text
++    }
++
++    fn x_for_index(&self, index: usize) -> Pixels {
++        let index = index.min(self.len);
++        if let Some((start, shaped)) = self.window.borrow().as_ref() {
++            if index >= *start && index <= start + shaped.len {
++                return self.cell_width * (*start as f32) + shaped.x_for_index(index - start);
++            }
++        }
++        self.cell_width * (index as f32)
++    }
++
++    fn closest_index_for_x(&self, x: Pixels) -> usize {
++        if x <= px(0.) {
++            return 0;
++        }
++        if let Some((start, shaped)) = self.window.borrow().as_ref() {
++            let slice_x = self.cell_width * (*start as f32);
++            if x >= slice_x && x <= slice_x + shaped.width {
++                return start + shaped.closest_index_for_x(x - slice_x);
++            }
++        }
++        let cell = f32::from(self.cell_width);
++        if cell <= 0. {
++            return 0;
++        }
++        ((f32::from(x) / cell).round() as usize).min(self.len)
++    }
++
++    fn index_for_x(&self, x: Pixels) -> Option<usize> {
++        if x < px(0.) || x >= self.width() {
++            return None;
++        }
++        if let Some((start, shaped)) = self.window.borrow().as_ref() {
++            let slice_x = self.cell_width * (*start as f32);
++            if x >= slice_x && x < slice_x + shaped.width {
++                return shaped.index_for_x(x - slice_x).map(|i| start + i);
++            }
++        }
++        let cell = f32::from(self.cell_width);
++        if cell <= 0. {
++            return None;
++        }
++        Some(((f32::from(x) / cell).floor() as usize).min(self.len.saturating_sub(1)))
++    }
++
++    fn shape_window(
++        &self,
++        vis_start: usize,
++        vis_end: usize,
++        window: &mut Window,
++    ) -> (usize, ShapedLine) {
++        let vis_start = vis_start.min(self.len);
++        let vis_end = vis_end.min(self.len);
++        if let Some((start, shaped)) = self.window.borrow().as_ref() {
++            if *start <= vis_start && vis_end <= start + shaped.len {
++                return (*start, shaped.clone());
++            }
++        }
++        let mut start = vis_start.saturating_sub(64);
++        let mut end = (vis_end + 64).min(self.len);
++        let mut step = 0;
++        while start > 0
++            && step < 16
++            && self
++                .rope
++                .byte(self.line_start + start - 1)
++                .is_ascii_punctuation()
++        {
++            start -= 1;
++            step += 1;
++        }
++        let mut step = 0;
++        while end < self.len
++            && step < 16
++            && self.rope.byte(self.line_start + end).is_ascii_punctuation()
++        {
++            end += 1;
++            step += 1;
++        }
++        let slice: SharedString = self
++            .rope
++            .slice(self.line_start + start..self.line_start + end)
++            .to_string()
++            .into();
++        let mut run = self.run.clone();
++        run.len = slice.len();
++        let shaped = window
++            .text_system()
++            .shape_line(slice, self.font_size, &[run], None);
++        *self.window.borrow_mut() = Some((start, shaped.clone()));
++        (start, shaped)
++    }
++
++    fn visible_slice(&self, origin_x: Pixels, window: &mut Window) -> Option<(usize, ShapedLine)> {
++        let cell = f32::from(self.cell_width);
++        if cell <= 0. || self.len == 0 {
++            return None;
++        }
++        let mask = window.content_mask().bounds;
++        let left_px = (mask.left() - origin_x).max(px(0.));
++        let right_px = (mask.right() - origin_x).max(px(0.));
++        if right_px <= px(0.) {
++            return None;
++        }
++        let vis_start = ((f32::from(left_px) / cell).floor() as usize)
++            .saturating_sub(8)
++            .min(self.len);
++        let vis_end = (((f32::from(right_px) / cell).ceil() as usize) + 8).min(self.len);
++        if vis_start >= vis_end {
++            return None;
++        }
++        Some(self.shape_window(vis_start, vis_end, window))
++    }
++}
++
+ /// The layout info of a line with soft wrapped lines.
+ #[derive(Clone)]
+ pub(crate) struct LineLayout {
+@@ -1168,6 +1426,8 @@ pub(crate) struct LineLayout {
+     len: usize,
+     /// The soft wrapped lines of this line (Include the first line).
+     pub(crate) wrapped_lines: SmallVec<[ShapedLine; 1]>,
++    /// Optional viewport-windowed representation for huge unwrapped monospace ASCII rows.
++    windowed: Option<WindowedMonospaceAscii>,
+     /// Extra left offset applied to continuation wrapped lines, used to reserve the first line's
+     /// indentation when [`WrappingIndent::Same`] is used.
+     pub(crate) wrap_indent: Pixels,
+@@ -1197,6 +1457,7 @@ impl LineLayout {
+             len: 0,
+             longest_width: px(0.),
+             wrapped_lines: SmallVec::new(),
++            windowed: None,
+             wrap_indent: px(0.),
+             hang: px(0.),
+             align_right: None,
+@@ -1208,10 +1469,38 @@ impl LineLayout {
+         }
+     }
+ 
++    pub(crate) fn windowed_ascii(mut self, windowed: WindowedMonospaceAscii) -> Self {
++        self.len = windowed.len;
++        self.longest_width = windowed.width();
++        self.bidi.clear();
++        self.wrapped_lines.clear();
++        self.windowed = Some(windowed);
++        self
++    }
++
++    #[inline]
++    pub(crate) fn row_count(&self) -> usize {
++        if self.windowed.is_some() {
++            1
++        } else {
++            self.wrapped_lines.len()
++        }
++    }
++
++    pub(crate) fn matches_source_row(&self, font_size: Pixels, text: ropey::RopeSlice<'_>) -> bool {
++        if let Some(windowed) = &self.windowed {
++            return windowed.matches(font_size, text);
++        }
++        let Some(shaped) = self.wrapped_lines.first() else {
++            return false;
++        };
++        shaped.font_size == font_size && text == shaped.text.as_ref()
++    }
++
+     /// Reuse only plain, complete unwrapped rows. Display-row metadata belongs
+     /// to this frame; glyphs and immutable bidi cells retain their exact owners.
+     pub(crate) fn clone_source_row(&self, first_row: usize) -> Option<Self> {
+-        if self.wrapped_lines.len() != 1 || self.wrap_indent != px(0.)
++        if self.row_count() != 1 || self.wrap_indent != px(0.)
+             || self.hang != px(0.) || self.whitespace_indicators.is_some()
+             || !self.whitespace_chars.is_empty() {
+             return None;
+@@ -1258,7 +1547,14 @@ impl LineLayout {
+     /// left alignment: right-aligned rows start at `edge - width`.
+     fn row_offset(&self, ix: usize) -> Pixels {
+         match self.align_right {
+-            Some(edge) => (edge - self.wrapped_lines[ix].width).max(px(0.)),
++            Some(edge) => {
++                let width = if self.windowed.is_some() {
++                    self.longest_width
++                } else {
++                    self.wrapped_lines[ix].width
++                };
++                (edge - width).max(px(0.))
++            }
+             None => self.line_indent(ix),
+         }
+     }
+@@ -1365,8 +1661,15 @@ impl LineLayout {
+ 
+     pub(crate) fn position_for_caret(&self, offset: usize, last_layout: &LastLayout,
+         line_end_affinity: bool, affinity: Affinity) -> Option<Point<Pixels>> {
+-        let mut acc_len = 0;
+         let rows = self.rows(&last_layout.rows);
++        if let Some(windowed) = &self.windowed {
++            if offset <= windowed.len {
++                let x = windowed.x_for_index(offset) + self.row_x(0, last_layout);
++                return Some(point(x, rows.row_top(0)));
++            }
++            return None;
++        }
++        let mut acc_len = 0;
+ 
+         for (i, line) in self.wrapped_lines.iter().enumerate() {
+             let is_last = i + 1 == self.wrapped_lines.len();
+@@ -1410,8 +1713,14 @@ impl LineLayout {
+         pos: Point<Pixels>,
+         last_layout: &LastLayout,
+     ) -> Option<(usize, usize, Pixels)> {
+-        let mut offset = 0;
+         let rows = self.rows(&last_layout.rows);
++        if self.windowed.is_some() {
++            if pos.y >= rows.row_top(0) && pos.y < rows.row_top(1) {
++                return Some((0, 0, pos.x - self.row_x(0, last_layout)));
++            }
++            return None;
++        }
++        let mut offset = 0;
+ 
+         // Row tops, not accumulated heights: the same y maps to the same row
+         // here as in `LineRows::row_at`.
+@@ -1433,6 +1742,13 @@ impl LineLayout {
+     pub(crate) fn logical_row_boundary(&self, pos: Point<Pixels>, last: &LastLayout,
+         end: bool) -> Option<(usize, bool, Affinity)> {
+         let (row, start, _) = self.wrapped_line_at(pos, last)?;
++        if let Some(windowed) = &self.windowed {
++            return Some(if end {
++                (windowed.len, false, Affinity::After)
++            } else {
++                (0, false, Affinity::Before)
++            });
++        }
+         let line = &self.wrapped_lines[row];
+         Some(if end {
+             (start + line.len, row + 1 < self.wrapped_lines.len(), Affinity::After)
+@@ -1469,6 +1785,9 @@ impl LineLayout {
+     pub(crate) fn closest_caret_extending(&self, pos: Point<Pixels>, last_layout: &LastLayout,
+         anchor: Option<isize>) -> Option<(usize, bool, Affinity)> {
+         let (i, offset, x) = self.wrapped_line_at(pos, last_layout)?;
++        if let Some(windowed) = &self.windowed {
++            return Some((windowed.closest_index_for_x(x), false, Affinity::Before));
++        }
+         let line = &self.wrapped_lines[i];
+         let hit = self.bidi[i].as_ref().and_then(|map| match anchor {
+             Some(anchor) => map.hit_extending(x, anchor - offset as isize),
+@@ -1484,6 +1803,9 @@ impl LineLayout {
+     /// to this buffer line. Empty unless the row has bidi geometry.
+     pub(crate) fn edge_carets_at(&self, pos: Point<Pixels>, last_layout: &LastLayout)
+         -> Vec<(usize, Range<usize>)> {
++        if self.windowed.is_some() {
++            return Vec::new();
++        }
+         let Some((i, offset, x)) = self.wrapped_line_at(pos, last_layout) else {
+             return Vec::new();
+         };
+@@ -1529,6 +1851,9 @@ impl LineLayout {
+     }
+ 
+     pub(crate) fn visual_edge(&self, right: bool) -> Option<(usize, bool, Affinity)> {
++        if let Some(windowed) = &self.windowed {
++            return Some((if right { windowed.len } else { 0 }, false, Affinity::Before));
++        }
+         self.visual_row_edge(if right { self.wrapped_lines.len().checked_sub(1)? } else { 0 }, right)
+     }
+ 
+@@ -1542,6 +1867,25 @@ impl LineLayout {
+     pub(crate) fn selection_rects(&self, range: Range<usize>, last: &LastLayout)
+         -> Vec<gpui::Bounds<Pixels>> {
+         let mut result = Vec::new();
++        if let Some(windowed) = &self.windowed {
++            if range.start < windowed.len && range.end > 0 {
++                let s = range.start.min(windowed.len);
++                let e = range.end.min(windowed.len);
++                let x = self.row_x(0, last);
++                let x0 = windowed.x_for_index(s);
++                let x1 = windowed.x_for_index(e);
++                result.push(gpui::Bounds::new(
++                    point(x + x0, self.rows(&last.rows).row_top(0)),
++                    size(x1 - x0, self.rows(&last.rows).row_height(0)),
++                ));
++            }
++            if range.start <= self.len && range.end > self.len {
++                if let Some(pos) = self.position_for_caret(self.len, last, true, Affinity::After) {
++                    result.push(gpui::Bounds::new(pos, size(px(6.), self.rows(&last.rows).row_height(0))));
++                }
++            }
++            return result;
++        }
+         let mut start = 0;
+         for (i, line) in self.wrapped_lines.iter().enumerate() {
+             let end = start + line.len;
+@@ -1572,6 +1916,9 @@ impl LineLayout {
+         last_layout: &LastLayout,
+     ) -> Option<usize> {
+         let (i, offset, x) = self.wrapped_line_at(pos, last_layout)?;
++        if let Some(windowed) = &self.windowed {
++            return windowed.index_for_x(x);
++        }
+ 
+         if let Some(map) = &self.bidi[i] {
+             return map.hit(x).map(|caret| offset + caret.index);
+@@ -1580,6 +1927,9 @@ impl LineLayout {
+     }
+ 
+     pub(crate) fn size(&self, rows: &RowMetrics) -> Size<Pixels> {
++        if self.windowed.is_some() {
++            return size(self.longest_width, self.rows(rows).rows_height(1));
++        }
+         let width = self
+             .wrapped_lines
+             .iter()
+@@ -1609,6 +1959,22 @@ impl LineLayout {
+         if !self.has_background {
+             return;
+         }
++        if let Some(windowed) = &self.windowed {
++            let (x, text_align, align_width) = self.row_paint(0, text_align, align_width);
++            let origin = pos + point(x, rows.row_top(0));
++            if let Some((slice_start, shaped)) = windowed.visible_slice(origin.x, window) {
++                let slice_origin = origin + point(windowed.cell_width * (slice_start as f32), px(0.));
++                _ = shaped.paint_background(
++                    slice_origin,
++                    rows.row_height(0),
++                    text_align,
++                    align_width,
++                    window,
++                    cx,
++                );
++            }
++            return;
++        }
+ 
+         for (ix, line) in self.wrapped_lines.iter().enumerate() {
+             let (x, text_align, align_width) = self.row_paint(ix, text_align, align_width);
+@@ -1633,6 +1999,22 @@ impl LineLayout {
+         cx: &mut App,
+     ) {
+         let rows = self.rows(rows);
++        if let Some(windowed) = &self.windowed {
++            let (x, text_align, align_width) = self.row_paint(0, text_align, align_width);
++            let origin = pos + point(x, rows.row_top(0));
++            if let Some((slice_start, shaped)) = windowed.visible_slice(origin.x, window) {
++                let slice_origin = origin + point(windowed.cell_width * (slice_start as f32), px(0.));
++                _ = shaped.paint(
++                    slice_origin,
++                    rows.row_height(0),
++                    text_align,
++                    align_width,
++                    window,
++                    cx,
++                );
++            }
++            return;
++        }
+         for (ix, line) in self.wrapped_lines.iter().enumerate() {
+             let (x, text_align, align_width) = self.row_paint(ix, text_align, align_width);
+             let origin = pos + point(x, rows.row_top(ix));
+diff --git a/crates/base/src/input/editor/indent.rs b/crates/base/src/input/editor/indent.rs
+index ced22b25..cb870c24 100644
+--- a/crates/base/src/input/editor/indent.rs
++++ b/crates/base/src/input/editor/indent.rs
+@@ -153,7 +153,7 @@ impl<M: InputModeKind> TextElement<M> {
+                 current_indents = last_indents.clone();
+             }
+ 
+-            offset_y += line_layout.rows(&last_layout.rows).rows_height(line_layout.wrapped_lines.len());
++            offset_y += line_layout.rows(&last_layout.rows).rows_height(line_layout.row_count());
+             last_indents = current_indents;
+         }
+ 
+diff --git a/crates/component/src/menu/popup_menu.rs b/crates/component/src/menu/popup_menu.rs
+index a438555b..661ec0e0 100644
+--- a/crates/component/src/menu/popup_menu.rs
++++ b/crates/component/src/menu/popup_menu.rs
+@@ -1198,6 +1198,7 @@ impl PopupMenu {
+             .items_center()
+             .selected(selected)
+             .on_hover(cx.listener(move |this, hovered, _, cx| {
++                let prev = this.selected_index;
+                 if *hovered {
+                     this.selected_index = Some(ix);
+                 } else if !is_submenu && this.selected_index == Some(ix) {
+@@ -1205,7 +1206,9 @@ impl PopupMenu {
+                     this.selected_index = None;
+                 }
+ 
+-                cx.notify();
++                if this.selected_index != prev {
++                    cx.notify();
++                }
+             }))
+             .when_some(item.a11y_label(), |this, label| this.aria_label(label));
+ 

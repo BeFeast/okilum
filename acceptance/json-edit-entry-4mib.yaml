@@ -1,0 +1,21 @@
+# #2803 / #2804: entering Edit on a 4.2 MB single-line JSON must not block UI
+# (~0.9 s in release, ~18.6 s in debug before windowed monospace ASCII layout).
+generate:
+  - path: big.json
+    kind: json
+    bytes: 4194411
+    valid: true
+    single_line: true
+open: big.json
+region: [260, 0, 1106, 768]
+ready_text: big.json
+steps:
+  - id: enter-edit
+    keys: [e]
+    mods: [ctrl]
+    text: record-0000000
+    max_ms: 2000
+  - id: edit-4mib
+    keys: [Home, e, d, i, t, e, d]
+    text: edited
+    max_ms: 1500

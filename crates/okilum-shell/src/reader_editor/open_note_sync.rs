@@ -197,13 +197,16 @@ impl Reader {
                                         Ok(inventory) => (inventory.copies, inventory.complete),
                                         Err(_) => (vec![], false),
                                     };
-                                    reader.sync_note_conflicts = Some((
+                                    let next_conflicts = Some((
                                         selection.root.clone(),
                                         selection.rel.clone(),
                                         copies,
                                         complete,
                                     ));
-                                    cx.notify();
+                                    if reader.sync_note_conflicts != next_conflicts {
+                                        reader.sync_note_conflicts = next_conflicts;
+                                        cx.notify();
+                                    }
                                 }
                                 #[cfg(not(target_os = "linux"))]
                                 let _ = conflicts;

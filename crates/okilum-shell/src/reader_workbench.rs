@@ -247,7 +247,8 @@ impl Reader {
                         && this.watcher_generation == generation
                         && this.workbench_pending == pending
                     {
-                        if this.sidebar.initialize_now() {
+                        let initialized_now = this.sidebar.initialize_now();
+                        if initialized_now {
                             this.save_sidebar(cx);
                         }
                         let (index, labels) = publication.take().unwrap();
@@ -260,7 +261,9 @@ impl Reader {
                         cx.background_executor()
                             .spawn(async move { drop(retired) })
                             .detach();
-                        cx.notify();
+                        if initialized_now || this.sidebar.left_mode == LeftMode::Now {
+                            cx.notify();
+                        }
                     }
                 })
             };

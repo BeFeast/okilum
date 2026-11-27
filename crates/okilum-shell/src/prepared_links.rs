@@ -730,6 +730,7 @@ impl Reader {
                     {
                         return;
                     }
+                    let links_changed = *this.pane.link_presentations != *states;
                     let retired_states =
                         std::mem::replace(&mut this.pane.link_presentations, states.clone());
                     let retired_identities =
@@ -740,6 +741,9 @@ impl Reader {
                             drop((retired_states, retired_identities));
                         })
                         .detach();
+                    if !links_changed && this.pane.editing.is_some() {
+                        return;
+                    }
                     // TextView caches its entity render independently of Reader.
                     // Refresh paint without replacing the parse, scroll or selection.
                     this.pane.content.update(cx, |_, cx| cx.notify());

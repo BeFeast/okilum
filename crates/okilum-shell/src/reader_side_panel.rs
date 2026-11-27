@@ -135,12 +135,12 @@ thread_local! {
 }
 
 #[cfg(test)]
-fn cache_panels() -> bool {
+pub(super) fn cache_panels() -> bool {
     CACHE_IN_TESTS.with(std::cell::Cell::get)
 }
 
 #[cfg(not(test))]
-fn cache_panels() -> bool {
+pub(super) fn cache_panels() -> bool {
     true
 }
 
@@ -175,6 +175,15 @@ impl Reader {
     /// Called on every Reader render: the outline marks the section at the
     /// top of the note, which moves without a Reader notify while scrolling.
     pub(super) fn sync_outline_section(&mut self, cx: &mut Context<Self>) {
+        if let Some(editing) = &self.pane.editing {
+            if self.draft_outline.pending || editing.input().read(cx).top_visible_line().is_none() {
+                // Keep the last highlighted section while the background draft
+                // outline or editor layout is updating instead of flickering
+                // Some(s) -> None -> Some(s) and redrawing the right panel
+                // twice on every keystroke (#2803).
+                return;
+            }
+        }
         let section = self.current_section(cx);
         if self.outline_section == section {
             return;

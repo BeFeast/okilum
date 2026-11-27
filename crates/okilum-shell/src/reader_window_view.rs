@@ -1232,9 +1232,17 @@ impl Reader {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         #[cfg(target_os = "linux")]
-        if self.board_manager_header_cache(available) {
-            self.header_cache
-                .update(cx, |header, cx| header.set_available(available, cx));
+        let board_cache = self.board_manager_header_cache(available);
+        #[cfg(not(target_os = "linux"))]
+        let board_cache = false;
+        let edit_cache = self.pane.editing.is_some() && reader_side_panel::cache_panels();
+        if board_cache || edit_cache {
+            let viewport_width = f32::from(window.viewport_size().width);
+            let scale_factor = window.scale_factor();
+            let theme_mode = cx.theme().mode;
+            self.header_cache.update(cx, |header, cx| {
+                header.sync(available, viewport_width, scale_factor, theme_mode, cx)
+            });
             return self
                 .header_cache
                 .clone()

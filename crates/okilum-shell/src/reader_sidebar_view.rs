@@ -530,6 +530,8 @@ impl Reader {
                 {
                     return;
                 }
+                let inbox_changed =
+                    this.inbox != items || this.inbox_ready_root.as_ref() != Some(&this.vault_root);
                 this.inbox = items;
                 if this.inbox_ready_root.as_ref() != Some(&this.vault_root) {
                     // Rows above the tree changed height; place the current
@@ -541,7 +543,9 @@ impl Reader {
                 this.sidebar.baseline_taken = true;
                 this.sidebar.prune(&vault);
                 this.save_sidebar(cx);
-                cx.notify();
+                if inbox_changed {
+                    cx.notify();
+                }
             });
         })
         .detach();

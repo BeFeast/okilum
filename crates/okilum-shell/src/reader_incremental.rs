@@ -273,14 +273,18 @@ impl Reader {
                             }
                             #[cfg(not(any(unix, windows)))]
                             let _ = candidates;
+                            let new_backlinks = this.vault.backlinks(this.selected_file());
+                            let backlinks_changed = this.pane.backlinks != new_backlinks
+                                || this.backlink_titles != titles;
                             this.backlink_titles = titles;
-                            this.set_backlinks(this.vault.backlinks(this.selected_file()), false);
+                            this.set_backlinks(new_backlinks, false);
                             if batch.topology_changed {
                                 this.sync_tree();
                             }
                             this.quick_open.inventory = Some(inventory);
                             this.refresh_quick_open(cx);
-                            if !this.apply_live_moves(&path_moves, window, cx)
+                            let live_moved = this.apply_live_moves(&path_moves, window, cx);
+                            if !live_moved
                                 && (sources.contains_key(&this.pane.current_rel)
                                     || batch.removed.contains(&this.pane.current_rel)
                                     || (graph_changed && reader_loading::render_depends_on_inventory(&this.pane.note_source)))
@@ -291,15 +295,33 @@ impl Reader {
                             // even when aliases/backlink contexts are unchanged.
                             this.refresh_link_preparation(cx);
                             if graph_changed { this.refresh_link_complete(window, cx); }
-                            if this.link_notice.as_deref() == Some("Updating search data…") {
+                            let notice_cleared =
+                                this.link_notice.as_deref() == Some("Updating search data…");
+                            if notice_cleared {
                                 this.link_notice = None;
                             }
                             if let Some(trace) = &publish_trace {
                                 trace.event("incremental_ui_publish", serde_json::json!({"duration_ms":publish_started.elapsed().as_secs_f64()*1000.,"queued_duration_ms":requested.elapsed().as_secs_f64()*1000.,"epoch":epoch}));
                             }
                             cx.background_executor().spawn(async move { drop(retired); }).detach();
-                            cx.notify();
-                            Some((state, searcher, !batch.affected.is_empty() || batch.topology_changed, !batch.affected.is_empty()))
+                            // Autosaving the open note without topology, backlink, or notice
+                            // changes does not change Reader chrome; avoid invalidating cached
+                            // SidePanels and Header (#2803).
+                            let own_silent_save = this.pane.editing.is_some()
+                                && this.project_navigation.active.is_none()
+                                && !this.project_open
+                                && !this.quick_open.open
+                                && !batch.topology_changed
+                                && !backlinks_changed
+                                && !notice_cleared
+                                && !live_moved
+                                && batch.removed.is_empty()
+                                && sources.len() <= 1
+                                && sources.keys().all(|k| k == &this.pane.current_rel);
+                            if !own_silent_save {
+                                cx.notify();
+                            }
+                            Some((state, searcher, !batch.affected.is_empty() || batch.topology_changed, !batch.affected.is_empty(), own_silent_save))
                         }
                         Err(error) => {
                             if let Some(trace) = this
@@ -327,7 +349,7 @@ impl Reader {
                 })
                 .ok()
                 .flatten();
-            let Some((mut state, searcher, persist, search_changed)) = ready else {
+            let Some((mut state, searcher, persist, search_changed, own_silent_save)) = ready else {
                 return;
             };
             // Publish committed search/graph first; checkpoint persistence has
@@ -403,6 +425,7 @@ impl Reader {
                 }
                 this.incremental_active = false;
                 this.incremental_cancel = None;
+                let persist_failed = persisted.is_err();
                 match persisted {
                     Ok(state) => this.incremental_state = Some(state),
                     Err(_) => this.refresh_inventory(changes, window, cx),
@@ -410,7 +433,9 @@ impl Reader {
                 if !this.deferred_vault_changes.is_empty() {
                     this.poll_vault(window, cx);
                 }
-                cx.notify();
+                if !own_silent_save || persist_failed {
+                    cx.notify();
+                }
             });
         })
         .detach();

@@ -723,7 +723,6 @@ impl Reader {
                     }
                 }
                 this.start_live_preview(cx);
-                cx.notify();
             });
         }));
     }

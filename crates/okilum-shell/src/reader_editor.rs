@@ -1204,16 +1204,26 @@ impl Reader {
                     let handle = this.reader_window;
                     cx.spawn(async move |_, cx| {
                         let _ = handle.update(cx, |_, window, _| {
-                            // The first callback is before the draw. The second
-                            // observes completion of that draw, including stalls.
-                            window.on_next_frame(move |window, _| {
-                                window.on_next_frame(move |_, _| {
-                                    latency::record(&trace, stamp, bytes, started.elapsed(),
-                                        SOURCE_READER_RENDERS.load(std::sync::atomic::Ordering::Relaxed).saturating_sub(renders));
-                                });
+                            // Runs right before this frame's draw+present; the
+                            // spawned foreground task runs immediately after
+                            // draw+present return without forcing a second vsync.
+                            window.on_next_frame(move |_, cx| {
+                                cx.spawn(async move |_| {
+                                    latency::record(
+                                        &trace,
+                                        stamp,
+                                        bytes,
+                                        started.elapsed(),
+                                        SOURCE_READER_RENDERS
+                                            .load(std::sync::atomic::Ordering::Relaxed)
+                                            .saturating_sub(renders),
+                                    );
+                                })
+                                .detach();
                             });
                         });
-                    }).detach();
+                    })
+                    .detach();
                 }
             }
             let Some(editing) = &mut this.pane.editing else {
@@ -1352,13 +1362,22 @@ impl Reader {
                         }
                         // Save retires recovery ownership, not same-revision
                         // presentation preparation. New typing invalidates both.
+                        let updated_context = prepared_context.is_some();
                         if let Some(prepared_context) = prepared_context {
                             *context.borrow_mut() = BlockNote::from_prepared(prepared_context);
                         }
-                        editing.input.update(cx, |input, cx| {
-                            input.set_direction_exempt_lines(directions);
-                            cx.notify();
-                        });
+                        if updated_context || !directions.is_empty() {
+                            editing.input.update(cx, |input, cx| {
+                                input.set_direction_exempt_lines(directions);
+                                cx.notify();
+                            });
+                        } else if !plain_file {
+                            editing.input.update(cx, |input, cx| {
+                                if input.set_direction_exempt_lines(directions) {
+                                    cx.notify();
+                                }
+                            });
+                        }
                         if editing.recovery_epoch != epoch {
                             return;
                         }
@@ -1880,6 +1899,9 @@ impl Reader {
                     cx.notify(); return;
                 }
                 let was_conflict = editing.conflict_detected;
+                let was_save_failed = editing.save_failed;
+                let was_compare = editing.compare;
+                let had_notice = this.link_notice.clone();
                 let mut resume = None;
                 match refresh {
                     Ok(Some(okilum_core::file_editor::PublicationRefresh { editor: store, outcome: result, conflict, replacement })) => {
@@ -1887,22 +1909,36 @@ impl Reader {
                         editing.source_status.set(None);
                         editing.conflict = conflict;
                         editing.conflict_detected = result == Save::Conflict;
-                        if result == Save::Conflict {
-                            this.link_notice = Some(format!("{CONFLICT_NOTICE} Your edits are still here. Reload, keep your version, or compare before saving.").into());
-                            this.describe_source_conflict(cx);
-                        } else {
+                        let replaced = replacement.is_some();
+                        let save_status = editing.save_status.clone();
+                        if result != Save::Conflict {
                             editing.save_failed = false;
                             editing.compare = false;
                             if was_conflict && editing.store.has_pending_revision() {
                                 resume = Some((editing.input.entity_id(), editing.recovery_epoch));
                             }
-                            if this.link_notice.as_deref().is_some_and(|n| n.starts_with(CONFLICT_NOTICE)) { this.link_notice = None; }
+                            if this.link_notice.as_deref().is_some_and(|n| n.starts_with(CONFLICT_NOTICE)) {
+                                this.link_notice = None;
+                            }
                             if let Some(updated) = replacement {
                                 editing.replace_clean_source(updated, window, cx);
                                 editing.saved_at = None;
                             }
                         }
-                        cx.notify();
+                        let state_changed = editing.conflict_detected != was_conflict
+                            || editing.save_failed != was_save_failed
+                            || editing.compare != was_compare;
+                        if result == Save::Conflict {
+                            this.link_notice = Some(format!("{CONFLICT_NOTICE} Your edits are still here. Reload, keep your version, or compare before saving.").into());
+                            this.describe_source_conflict(cx);
+                        }
+                        let chrome_changed =
+                            replaced || state_changed || this.link_notice != had_notice;
+                        if chrome_changed {
+                            cx.notify();
+                        } else {
+                            save_status.update(cx, |_, cx| cx.notify());
+                        }
                     }
                     Ok(None) if !retained || retained_cleared => this.refresh_source_in_background(window, cx),
                     Ok(None) => {},
@@ -2429,7 +2465,8 @@ impl Reader {
         };
         editing.autosaving = Some(text.clone());
         let saves = editing.saves;
-        cx.notify();
+        // Only SaveStatus displays autosaving; avoid invalidating cached SidePanels/Header.
+        editing.save_status.update(cx, |_, cx| cx.notify());
         let worker = cx.background_executor().spawn(async move {
             let mut copy = copy;
             let rules_revision = pending_agents_revision(&copy, copy.dirty(), rules_scope);
@@ -2503,6 +2540,9 @@ impl Reader {
             self.refresh_after_autosave(cx);
         }
         let editing = self.pane.editing.as_mut().unwrap();
+        let had_save_failed = editing.save_failed;
+        let had_conflict = editing.conflict_detected;
+        let had_notice = self.link_notice.clone();
         // A save on the UI thread came after this one started; it decided.
         editing.source_status.set(None);
         if editing.saves != saves {
@@ -2530,7 +2570,7 @@ impl Reader {
                             return;
                         };
                         editing.protecting = false;
-                        editing.input.update(cx, |_, cx| cx.notify());
+                        editing.save_status.update(cx, |_, cx| cx.notify());
                         if let Err(error) = result {
                             editing.save_failed = true;
                             diagnostic_error!(
@@ -2574,17 +2614,26 @@ impl Reader {
                 }
                 self.link_notice = Some(format!("{CONFLICT_NOTICE} Your edits are still here. Reload, keep your version, or compare before saving.").into());
             }
-            Err(error) => {
+            Err(ref error) => {
                 editing.save_failed = true;
                 diagnostic_error!("Autosave failed: {error:#}");
-                self.link_notice = Some(file_access_notice(&error).into());
+                self.link_notice = Some(file_access_notice(error).into());
             }
         }
         if focus_followup {
             self.queue_focus_save_followup(input_id, cx);
         }
         self.describe_source_conflict(cx);
-        cx.notify();
+        let chrome_changed = self.link_notice != had_notice
+            || self.pane.editing.as_ref().is_some_and(|editing| {
+                editing.save_failed != had_save_failed || editing.conflict_detected != had_conflict
+            })
+            || !matches!(result, Ok(Save::Saved));
+        if chrome_changed {
+            cx.notify();
+        } else if let Some(editing) = &self.pane.editing {
+            editing.save_status.update(cx, |_, cx| cx.notify());
+        }
     }
 
     /// Run the refresh that came while an autosave was writing, after the

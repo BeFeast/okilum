@@ -529,7 +529,7 @@ pub(crate) struct DraftOutline {
     pub(super) entries: Vec<HeadingEntry>,
     pub(super) signature: [u8; 32],
     pub(super) lines: Vec<usize>,
-    pub(super) pending: bool,
+    pub(crate) pending: bool,
     pub(super) worker: Option<gpui::Task<()>>,
 }
 
@@ -555,7 +555,8 @@ impl DraftOutline {
             })
             .collect();
         // A repaint hint only: click authority still checks exact source and
-        // HeadingEntry identity. Compute it here, on the outline worker.
+        // HeadingEntry identity. Exclude byte offsets so typing above a heading
+        // does not invalidate cached SidePanels/Header on every keystroke (#2803).
         use sha2::{Digest, Sha256};
         let mut signature = Sha256::new();
         for heading in &entries {
@@ -565,7 +566,6 @@ impl DraftOutline {
                 heading.target.setext as u8,
             ]);
             signature.update(heading.target.block.to_le_bytes());
-            signature.update(heading.target.offset.to_le_bytes());
             signature.update(heading.text.len().to_le_bytes());
             signature.update(heading.text.as_bytes());
         }

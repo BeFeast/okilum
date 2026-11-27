@@ -563,10 +563,13 @@ impl Tree {
         (self.kinds.get(&path) == Some(&EntryKind::Markdown)).then_some(path)
     }
 
-    pub(crate) fn set_agent_shims(&mut self, shims: BTreeSet<String>) {
+    pub(crate) fn set_agent_shims(&mut self, shims: BTreeSet<String>) -> bool {
         if self.agent_shims != shims {
             self.agent_shims = shims;
             self.flatten();
+            true
+        } else {
+            false
         }
     }
 

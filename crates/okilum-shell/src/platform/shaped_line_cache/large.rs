@@ -4,7 +4,7 @@ use super::*;
 
 pub(super) const MIN_TEXT: usize = 64 * 1024;
 pub(super) const CACHE_MIN_TEXT: usize = 32 * 1024;
-const MAX_TEXT: usize = 4 * 1024 * 1024;
+const MAX_TEXT: usize = 8 * 1024 * 1024;
 pub(super) const MAX_BYTES: usize = 160 * 1024 * 1024;
 const MAX_RESHAPE: usize = 64 * 1024;
 

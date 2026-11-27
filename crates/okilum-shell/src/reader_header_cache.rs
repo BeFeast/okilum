@@ -4,6 +4,9 @@ use super::*;
 pub(super) struct Header {
     parent: WeakEntity<Reader>,
     available: f32,
+    viewport_width: f32,
+    scale_factor: f32,
+    theme_mode: gpui_component::ThemeMode,
     _source: Option<Subscription>,
     #[cfg(test)]
     pub(crate) render_calls: std::cell::Cell<usize>,
@@ -16,14 +19,31 @@ impl Header {
         Self {
             parent,
             available: 0.,
+            viewport_width: 0.,
+            scale_factor: 0.,
+            theme_mode: gpui_component::ThemeMode::Light,
             _source: source,
             #[cfg(test)]
             render_calls: std::cell::Cell::new(0),
         }
     }
-    pub fn set_available(&mut self, available: f32, cx: &mut Context<Self>) {
-        if self.available != available {
+    pub fn sync(
+        &mut self,
+        available: f32,
+        viewport_width: f32,
+        scale_factor: f32,
+        theme_mode: gpui_component::ThemeMode,
+        cx: &mut Context<Self>,
+    ) {
+        if self.available != available
+            || self.viewport_width != viewport_width
+            || self.scale_factor != scale_factor
+            || self.theme_mode != theme_mode
+        {
             self.available = available;
+            self.viewport_width = viewport_width;
+            self.scale_factor = scale_factor;
+            self.theme_mode = theme_mode;
             cx.notify();
         }
     }

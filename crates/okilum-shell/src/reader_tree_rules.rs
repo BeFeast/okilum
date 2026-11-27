@@ -58,8 +58,9 @@ impl Reader {
                     // This cache must not retain the full graph after a switch
                     // to single-file mode (the reader_loading release controls).
                     this.tree_rules_source = Some((Arc::downgrade(&vault), epoch));
-                    this.tree.set_agent_shims(shims);
-                    cx.notify();
+                    if this.tree.set_agent_shims(shims) {
+                        cx.notify();
+                    }
                 }
                 this.refresh_tree_rules(cx);
             });
