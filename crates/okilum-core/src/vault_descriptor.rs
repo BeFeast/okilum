@@ -16,6 +16,54 @@ pub fn read(root: &Path) -> Option<Value> {
     parse(&read_bytes(root).ok()??).ok()
 }
 
+/// Read the optional start note independently of the other descriptor fields.
+pub fn start_note(root: &Path) -> Option<String> {
+    let descriptor = read(root)?;
+    let start = descriptor.get("start")?;
+    let Some(start) = start.as_object() else {
+        diagnostic_error!("Ignoring vault descriptor start: expected an object");
+        return None;
+    };
+    let note = start.get("note")?;
+    let target = note
+        .as_str()
+        .and_then(|note| resolve_start_note(root, note));
+    if target.is_none() {
+        diagnostic_error!(
+            "Ignoring vault descriptor start.note: expected an existing file inside the vault"
+        );
+    }
+    target
+}
+
+fn resolve_start_note(root: &Path, note: &str) -> Option<String> {
+    if note.trim().is_empty() || note.contains('\\') || note.chars().any(char::is_control) {
+        return None;
+    }
+    let root = crate::vault::canonical_root(root).ok()?;
+    let mut resolved = root.clone();
+    for part in note.split('/') {
+        if !matches!(
+            Path::new(part).components().next(),
+            Some(Component::Normal(_))
+        ) || matches!(part.as_bytes(), [drive, b':', ..] if drive.is_ascii_alphabetic())
+            || (cfg!(windows) && part.contains(':'))
+        {
+            return None;
+        }
+        // Check each prefix so an outside directory cannot link back into the vault.
+        resolved = crate::vault::canonical_root(&resolved.join(part)).ok()?;
+        if !resolved.starts_with(&root) {
+            return None;
+        }
+    }
+    let relative = resolved.strip_prefix(root).ok()?;
+    relative.to_str()?;
+    resolved
+        .is_file()
+        .then(|| crate::vault::note_path(relative))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Layout {
     pub schema_version: u32,
@@ -643,6 +691,93 @@ pub fn find_enclosing_marked_vault(file_or_dir: &Path, known_roots: &[PathBuf]) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn start_note_is_optional_and_leaves_descriptor_extensions_intact() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        std::fs::create_dir(root.join(DIRECTORY)).unwrap();
+        std::fs::create_dir(root.join("Daily")).unwrap();
+        std::fs::write(root.join("Daily/Feed.md"), "# Feed").unwrap();
+        assert_eq!(start_note(root), None);
+        std::fs::write(path(root), r#"{"name":"Example","start":{}}"#).unwrap();
+        assert_eq!(start_note(root), None);
+
+        let bytes = br#"{"name":"Example","start":{"note":"Daily/Feed.md","future":true},"extension":{"extra":1}}"#;
+        std::fs::write(path(root), bytes).unwrap();
+        assert_eq!(start_note(root).as_deref(), Some("Daily/Feed.md"));
+        assert_eq!(std::fs::read(path(root)).unwrap(), bytes);
+        let descriptor = read(root).unwrap();
+        assert_eq!(descriptor["start"]["future"], true);
+        assert_eq!(descriptor["extension"]["extra"], 1);
+    }
+
+    #[test]
+    fn invalid_start_note_does_not_hide_other_descriptor_fields() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        std::fs::create_dir(root.join(DIRECTORY)).unwrap();
+        std::fs::create_dir(root.join("Daily")).unwrap();
+        std::fs::write(root.join("Feed.md"), "# Feed").unwrap();
+        for start in [
+            serde_json::json!(null),
+            serde_json::json!([]),
+            serde_json::json!("Feed.md"),
+            serde_json::json!({"note": false}),
+            serde_json::json!({"note": null}),
+        ]
+        .into_iter()
+        .chain(
+            [
+                "",
+                " ",
+                "/Feed.md",
+                "./Feed.md",
+                "Daily/../Feed.md",
+                "Daily/./Feed.md",
+                "Daily//Feed.md",
+                r"Daily\Feed.md",
+                "C:Feed.md",
+                "C:/Feed.md",
+                "Feed\n.md",
+                "Daily",
+                "Missing.md",
+            ]
+            .map(|note| serde_json::json!({"note": note})),
+        ) {
+            let descriptor = serde_json::json!({"start": start, "name": "Example"});
+            std::fs::write(path(root), descriptor.to_string()).unwrap();
+            assert_eq!(start_note(root), None, "{start}");
+            assert_eq!(own_name(root), "Example");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn start_note_rejects_symlink_escapes_and_resolves_local_aliases() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = root.path();
+        std::fs::create_dir(root.join(DIRECTORY)).unwrap();
+        std::fs::write(root.join("Feed.md"), "# Feed").unwrap();
+        std::fs::write(outside.path().join("Other.md"), "# Other").unwrap();
+        symlink("Feed.md", root.join("Alias.md")).unwrap();
+        symlink(outside.path().join("Other.md"), root.join("Escape.md")).unwrap();
+        symlink(outside.path(), root.join("Outside")).unwrap();
+        symlink(root, outside.path().join("Back")).unwrap();
+        for (note, expected) in [
+            ("Alias.md", Some("Feed.md")),
+            ("Escape.md", None),
+            ("Outside/Other.md", None),
+            ("Outside/Back/Feed.md", None),
+        ] {
+            let descriptor = serde_json::json!({"start": {"note": note}});
+            std::fs::write(path(root), descriptor.to_string()).unwrap();
+            assert_eq!(start_note(root).as_deref(), expected, "{note}");
+        }
+    }
 
     #[test]
     fn vd4_review_malformed_nested_entries_preserve_the_layout_and_valid_roots() {

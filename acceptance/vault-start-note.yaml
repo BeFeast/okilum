@@ -1,0 +1,73 @@
+# Start on the Feed, then select Other in Tree. A session restart keeps Other.
+# Select Now, reopen Other via Quick Open, then reopen the vault by its root
+# and by session restore. Both launches show Feed with the Now sidebar.
+open: Feed.md
+generate:
+  - path: .okilum/vault.json
+    kind: text
+    text: '{"start":{"note":"Feed.md"}}'
+  - path: Feed.md
+    kind: text
+    text: |
+      # Morning briefing
+  - path: Other.md
+    kind: text
+    text: |
+      # Field notebook
+appearance: light
+rig:
+  persistent_pointer: true
+preferences:
+  note_open_mode: read
+region: [282, 100, 900, 550]
+ready_text: Morning briefing
+wait_for_vault: 20
+steps:
+  - id: quick-open-in-tree
+    keys: [k]
+    mods: [ctrl]
+  - id: find-other-in-tree
+    type: Other
+  - id: other-in-tree
+    keys: [Return]
+    text: Field notebook
+  - id: tree-session-restore
+    restart: session
+    text: Field notebook
+  - id: tree-mode-restored
+    region: [0, 45, 279, 690]
+    text: Feed
+    text_absent: Rescan
+  - id: select-now
+    click: [245, 70]
+    wait: 1
+    region: [0, 45, 279, 690]
+    text: Rescan
+  - id: quick-open-in-now
+    keys: [k]
+    mods: [ctrl]
+  - id: find-other-in-now
+    type: Other
+  - id: other-in-now
+    keys: [Return]
+    text: Field notebook
+  - id: now-session-restore
+    restart: session
+    text: Morning briefing
+  - id: now-mode-restored
+    region: [0, 45, 279, 690]
+    text: Rescan
+  - id: quick-open-after-session-restore
+    keys: [k]
+    mods: [ctrl]
+  - id: find-other-after-session-restore
+    type: Other
+  - id: other-before-root-open
+    keys: [Return]
+    text: Field notebook
+  - id: now-root-open
+    restart: true
+    text: Morning briefing
+  - id: now-mode-after-root-open
+    region: [0, 45, 279, 690]
+    text: Rescan

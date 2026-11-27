@@ -19,6 +19,14 @@ the tree's expanded folders, cursor and scroll position. Search, Files and
 Reveal in Tree (Cmd/Ctrl+Shift+L) show Tree temporarily. Areas is also
 session-local. Reopening the vault restores the saved mode.
 
+With **Now** saved, opening the vault by its root or restoring its windows on
+launch opens the Feed note declared by `start.note` in `.okilum/vault.json`.
+Set it to an existing file relative to the vault root, such as
+`{"start":{"note":"Feed.md"}}`. If the target is absent or invalid, the usual
+restore and discovery rules apply. **Tree** uses those rules regardless of
+`start.note`. Explicit file opens, deep links, exact restores and single-file
+windows keep their requested targets.
+
 Now keeps the In progress, Changes and Pinned section headers visible, with
 counts and collapse controls. In a vault with a lifecycle layout summary in
 `.okilum/vault.json`, In progress groups compact context rows by the
