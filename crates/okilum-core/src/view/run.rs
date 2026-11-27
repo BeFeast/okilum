@@ -400,6 +400,9 @@ impl Runner<'_, '_> {
                 .collect();
             if let Some(declared) = declared {
                 for (key, field) in declared {
+                    if field.field_type.is_opaque() {
+                        continue;
+                    }
                     if let Some(raw) = bind::get(&fields, key) {
                         let text = bind::value_text(raw);
                         let value = bind::field_literal(field, &text, self.clock.zone).ok_or_else(

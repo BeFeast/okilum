@@ -17,11 +17,21 @@ pub enum FieldType {
     DateTime,
     Enum,
     Link,
+    Object,
+    Opaque(String),
     List(Box<FieldType>),
 }
 
 impl FieldType {
-    fn parse(name: &str) -> Result<Self> {
+    pub fn is_opaque(&self) -> bool {
+        match self {
+            Self::Object | Self::Opaque(_) => true,
+            Self::List(inner) => inner.is_opaque(),
+            _ => false,
+        }
+    }
+
+    fn parse(name: &str, indexed: bool) -> Result<Self> {
         Ok(match name {
             "string" => Self::String,
             "number" => Self::Number,
@@ -30,9 +40,11 @@ impl FieldType {
             "datetime" => Self::DateTime,
             "enum" => Self::Enum,
             "link" => Self::Link,
+            "object" => Self::Object,
             name if name.starts_with("list<") && name.ends_with('>') => {
-                Self::List(Box::new(Self::parse(&name[5..name.len() - 1])?))
+                Self::List(Box::new(Self::parse(&name[5..name.len() - 1], indexed)?))
             }
+            name if !indexed && !name.trim().is_empty() => Self::Opaque(name.to_owned()),
             _ => bail!("Unknown field type {name:?}"),
         })
     }
@@ -114,6 +126,16 @@ pub(super) struct Required {
     pub except_domain_root_state: bool,
 }
 
+#[derive(Deserialize)]
+struct RawIndex {
+    #[serde(default = "default_true")]
+    indexed: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Default, Deserialize)]
 #[serde(default)]
 struct RawField {
@@ -131,6 +153,7 @@ struct RawField {
     format: Option<String>,
     allow_http_urls: bool,
     writable_by_actions: bool,
+    index: Option<RawIndex>,
     legacy_keys: Vec<String>,
     legacy_repo_keys: Vec<String>,
     required: Required,
@@ -438,8 +461,9 @@ impl<F: FnMut(&str) -> Result<String>> References<F> {
                         .then_some(kind)
                 }));
         }
+        let indexed = raw.index.as_ref().is_none_or(|index| index.indexed);
         Ok(Field {
-            field_type: FieldType::parse(&raw.kind)?,
+            field_type: FieldType::parse(&raw.kind, indexed)?,
             values,
             values_by_layer,
             aliases,

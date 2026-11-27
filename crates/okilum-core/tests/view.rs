@@ -744,3 +744,150 @@ fn near_reuses_only_a_compatible_vault_snapshot() {
     fs::remove_file(&path).unwrap();
     assert_unavailable();
 }
+
+#[test]
+fn opaque_and_object_fields_run_views_and_reject_where_eq_and_set_actions() {
+    let root = Path::new(FIXTURE);
+    let schema = Arc::new(
+        FieldSchema::from_documents(|name| {
+            let mut text = fs::read_to_string(root.join("@Schema").join(name))?;
+            if name == "fields.yaml" {
+                text = text.replace(
+                    "\nbuiltin_defaults:\n",
+                    concat!(
+                        "\n  waits:\n",
+                        "    type: list<object>\n",
+                        "    index: {indexed: false}\n",
+                        "    writable_by_actions: true\n",
+                        "  custom_blob_field:\n",
+                        "    type: custom_blob\n",
+                        "    index: {indexed: false}\n",
+                        "    writable_by_actions: true\n\n",
+                        "builtin_defaults:\n",
+                    ),
+                );
+            }
+            Ok(text)
+        })
+        .unwrap(),
+    );
+
+    let note_path = "state/dev/okilum/wait-note.md";
+    let note_src = concat!(
+        "---\n",
+        "type: note\n",
+        "area: Dev\n",
+        "waits:\n",
+        "  - on: \"vendor\"\n",
+        "    since: 2026-11-27\n",
+        "    next_check: 2026-11-27\n",
+        "---\n",
+        "# Wait note\n",
+    );
+    let projection = Projection::build(
+        Arc::clone(&schema),
+        [Source {
+            path: note_path,
+            bytes: note_src.as_bytes(),
+            mtime: None,
+        }],
+    );
+    let vault = Vault::from_note_paths([note_path.into()]);
+    let ctx = RunContext::new(&projection, &vault, timestamp("2026-11-27T10:00:00+02:00"));
+
+    let ok_view = doc("```view\nfrom: notes\nshow: table\n```\n");
+    assert!(
+        view::validate(&ok_view, &schema)
+            .iter()
+            .all(|f| !f.is_error()),
+        "valid view should have no errors"
+    );
+    let ok_result = view::run(&ok_view, &ctx);
+    assert_eq!(ok_result.sections[0].status, view::Status::Ok);
+    assert_eq!(ok_result.sections[0].total, 1);
+    assert_eq!(ok_result.sections[0].rows[0].path, note_path);
+    assert!(ok_result.sections[0]
+        .diagnostics
+        .iter()
+        .all(|f| !f.is_error()));
+
+    // Existence check on opaque fields should work cleanly without panicking.
+    let exists_view = doc("```view\nfrom: notes\nwhere: waits?\nshow: table\n```\n");
+    assert!(view::validate(&exists_view, &schema)
+        .iter()
+        .all(|f| !f.is_error()));
+    let exists_result = view::run(&exists_view, &ctx);
+    assert_eq!(exists_result.sections[0].status, view::Status::Ok);
+    assert_eq!(exists_result.sections[0].total, 0);
+
+    // Exact comparison on opaque fields (literal and parameter) must emit a validation error and never panic.
+    let eq_view = doc("```view\nfrom: notes\nwhere: waits = \"vendor\"\nshow: table\n```\n");
+    let eq_findings = view::validate(&eq_view, &schema);
+    assert!(eq_findings.iter().any(|f| f.is_error()), "{eq_findings:?}");
+    let eq_result = view::run(&eq_view, &ctx);
+    assert_eq!(eq_result.sections[0].status, view::Status::Error);
+
+    let param_view = view::parse(
+        "@views/param-opaque.md",
+        "---\ntype: view\nparams: {p: text}\n---\n```view\nfrom: notes\nwhere: waits = $p\nshow: table\n```\n",
+    )
+    .unwrap();
+    let param_findings = view::validate(&param_view, &schema);
+    assert!(
+        param_findings.iter().any(|f| f.is_error()),
+        "{param_findings:?}"
+    );
+    let mut param_ctx = ctx;
+    param_ctx.args.insert("p".into(), "vendor".into());
+    let param_result = view::run(&param_view, &param_ctx);
+    assert_eq!(param_result.sections[0].status, view::Status::Error);
+
+    // `set` actions targeting opaque fields must be rejected even if writable_by_actions is true.
+    for field in ["waits", "custom_blob_field"] {
+        let action_view = doc(&format!(
+            "```view\nfrom: notes\nactions:\n  - {{set: {field}}}\nshow: table\n```\n"
+        ));
+        let findings = view::validate(&action_view, &schema);
+        assert!(
+            findings.iter().any(|f| f.is_error()),
+            "expected error finding for set:{field}: {findings:?}"
+        );
+    }
+
+    // Also verify `is_opaque()` rejects an allowlisted `set` field (`owner`) when declared opaque.
+    let original_owner = concat!(
+        "  owner:\n",
+        "    type: string\n",
+        "    format: slug\n",
+        "    origin: stored\n",
+        "    rule: identifies the person or assistant expected to act\n",
+        "    writeback: none\n",
+        "    writers: [people, agents]\n",
+        "    required: {}\n",
+        "    index: {indexed: true, facet: true, sort: true}\n",
+        "    writable_by_actions: true",
+    );
+    let opaque_owner = concat!(
+        "  owner:\n",
+        "    type: custom_blob\n",
+        "    origin: stored\n",
+        "    index: {indexed: false}\n",
+        "    writable_by_actions: true",
+    );
+    let opaque_owner_schema = FieldSchema::from_documents(|name| {
+        let mut text = fs::read_to_string(root.join("@Schema").join(name))?;
+        if name == "fields.yaml" {
+            assert!(text.contains(original_owner));
+            text = text.replace(original_owner, opaque_owner);
+        }
+        Ok(text)
+    })
+    .unwrap();
+    let owner_action_view =
+        doc("```view\nfrom: notes\nactions:\n  - {set: owner}\nshow: table\n```\n");
+    let owner_findings = view::validate(&owner_action_view, &opaque_owner_schema);
+    assert!(
+        owner_findings.iter().any(|f| f.is_error()),
+        "expected error finding when owner is opaque: {owner_findings:?}"
+    );
+}

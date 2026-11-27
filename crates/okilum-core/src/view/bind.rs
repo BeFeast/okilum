@@ -174,12 +174,20 @@ pub(super) fn params(
 }
 
 pub(super) fn field_literal(field: &Field, text: &str, zone: Tz) -> Option<Value> {
+    if field.field_type.is_opaque() {
+        return None;
+    }
     let mut kind = &field.field_type;
     while let FieldType::List(element) = kind {
         kind = element;
     }
     Some(match kind {
-        FieldType::String if field.valid_string(text) => Value::String(text.to_owned()),
+        FieldType::String => {
+            if !field.valid_string(text) {
+                return None;
+            }
+            Value::String(text.to_owned())
+        }
         FieldType::Enum => Value::String(
             field
                 .enum_value(text, None, false)
@@ -210,7 +218,7 @@ pub(super) fn field_literal(field: &Field, text: &str, zone: Tz) -> Option<Value
                 external,
             })
         }
-        _ => return None,
+        FieldType::Object | FieldType::Opaque(_) | FieldType::List(_) => return None,
     })
 }
 
@@ -249,6 +257,12 @@ pub(super) fn operand(
         clock.relative(text)?
     };
     if let Some(field) = field {
+        if field.field_type.is_opaque() {
+            return Err(format!(
+                "Opaque field type {:?} cannot be compared in a query",
+                field.field_type
+            ));
+        }
         if let Some(value) = &normalized {
             let mut kind = &field.field_type;
             while let FieldType::List(item) = kind {
@@ -497,6 +511,22 @@ fn compile_predicate(
         block.field(schema, &predicate.field)
     };
     let fail = |i: usize, error| (predicate.operands[i].span.start, error);
+    let exact = matches!(
+        predicate.op,
+        ViewOp::Eq | ViewOp::Ne | ViewOp::In | ViewOp::NotIn | ViewOp::Compare(_)
+    );
+    if exact {
+        if let Some(field) = field.filter(|f| f.field_type.is_opaque()) {
+            let offset = predicate.operands.first().map_or(0, |op| op.span.start);
+            return Err((
+                offset,
+                format!(
+                    "Opaque field type {:?} cannot be compared in a query",
+                    field.field_type
+                ),
+            ));
+        }
+    }
     let mut values = Vec::new();
     let mut unbound = false;
     for (i, authored) in predicate.operands.iter().enumerate() {
@@ -504,10 +534,6 @@ fn compile_predicate(
             unbound = true;
             continue;
         }
-        let exact = matches!(
-            predicate.op,
-            ViewOp::Eq | ViewOp::Ne | ViewOp::In | ViewOp::NotIn | ViewOp::Compare(_)
-        );
         let value = if exact {
             operand(&authored.text, authored.quoted, vars, clock, field)
         } else if authored.quoted {

@@ -77,7 +77,10 @@ pub(super) fn build_actions(row: &Row, projection: &Projection) -> Vec<SetAction
         let Some(def) = schema.fields.get(field.name()) else {
             continue;
         };
-        if !def.writable_by_actions || matches!(def.field_type, FieldType::List(_)) {
+        if !def.writable_by_actions
+            || matches!(def.field_type, FieldType::List(_))
+            || def.field_type.is_opaque()
+        {
             continue;
         }
         let current = match note.fields.get(field.name()) {
@@ -1144,5 +1147,64 @@ mod tests {
         assert_eq!(built[0].field, SetField::Status);
         assert_eq!(built[0].current.as_deref(), Some("active"));
         assert_eq!(built[0].options, vec!["active", "parked", "done"]);
+    }
+
+    #[test]
+    fn build_actions_skips_opaque_fields_even_when_marked_writable() {
+        use okilum_core::records::Source;
+
+        let original_owner = concat!(
+            "  owner:\n",
+            "    type: string\n",
+            "    format: slug\n",
+            "    origin: stored\n",
+            "    rule: identifies the person or assistant expected to act\n",
+            "    writeback: none\n",
+            "    writers: [people, agents]\n",
+            "    required: {}\n",
+            "    index: {indexed: true, facet: true, sort: true}\n",
+            "    writable_by_actions: true",
+        );
+        let note = "---\ntype: project\nkind: project\narea: Dev\nstatus: active\n---\n# Okilum\n";
+
+        for owner_def in [
+            "  owner:\n    type: custom_blob\n    index: {indexed: false}\n    writable_by_actions: true",
+            "  owner:\n    type: object\n    writable_by_actions: true",
+        ] {
+            let schema = Arc::new(
+                FieldSchema::from_documents(|name| {
+                    let mut text = std::fs::read_to_string(
+                        Path::new(FIXTURE_VIEWS).join("@Schema").join(name),
+                    )?;
+                    if name == "fields.yaml" {
+                        assert!(text.contains(original_owner));
+                        text = text.replace(original_owner, owner_def);
+                    }
+                    Ok(text)
+                })
+                .unwrap(),
+            );
+            let projection = Projection::build(
+                schema,
+                [Source {
+                    path: "state/dev/okilum/index.md",
+                    bytes: note.as_bytes(),
+                    mtime: None,
+                }],
+            );
+            let row = Row {
+                path: "state/dev/okilum/index.md".into(),
+                line: None,
+                anchor: None,
+                rev: okilum_core::frontmatter_edit::revision(note),
+                group: Vec::new(),
+                fields: BTreeMap::new(),
+                actions: vec!["open".into(), "set:owner".into(), "set:status".into()],
+                markdown: None,
+            };
+            let built = build_actions(&row, &projection);
+            assert_eq!(built.len(), 1);
+            assert_eq!(built[0].field, SetField::Status);
+        }
     }
 }

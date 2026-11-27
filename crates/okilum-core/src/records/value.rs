@@ -211,6 +211,9 @@ pub(super) fn convert(
             }
         }
         FieldType::List(element) => {
+            if element.is_opaque() {
+                return None;
+            }
             let list = match raw {
                 PropertyValue::List(items) => items.as_slice(),
                 _ => std::slice::from_ref(raw),
@@ -221,6 +224,7 @@ pub(super) fn convert(
                     .collect::<Option<_>>()?,
             )
         }
+        FieldType::Object | FieldType::Opaque(_) => return None,
     })
 }
 
