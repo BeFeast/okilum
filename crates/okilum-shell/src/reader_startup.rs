@@ -1,6 +1,8 @@
 //! Local Reader startup. Saved managed identities are never read on this path.
 use super::{
-    reader_history, reader_open, reader_path_moves,
+    reader_history,
+    reader_loading::now_start_note,
+    reader_open, reader_path_moves,
     reader_recent_vaults::{self, Status, Unavailable},
     Opts,
 };
@@ -335,7 +337,8 @@ fn history(
                     });
                 match mapped {
                     Some((grove, target)) => {
-                        reader_open::OpenIntent::validate(&grove.join(target), Some(&grove), None)
+                        let note = now_start_note(&directory, &grove).unwrap_or(target);
+                        reader_open::OpenIntent::validate(&grove.join(note), Some(&grove), None)
                     }
                     None => reader_open::OpenIntent::validate(&root, Some(&root), None),
                 }
@@ -383,19 +386,25 @@ fn restorable_windows(
                     .get(&root)
                     .and_then(|cutover| Some((cutover, cutover.target(note.as_deref()?)?)))
                 {
-                    return ((cutover.grove.clone(), Some(target)), false);
+                    let note = now_start_note(directory, &cutover.grove).unwrap_or(target);
+                    return ((cutover.grove.clone(), Some(note)), false);
                 }
             }
-            let note = note.and_then(|note| {
-                if let Some(target) = plans.get(&root).and_then(|plan| plan.target(&note)) {
-                    return Some(target.to_owned());
-                }
-                if root.join(&note).is_file() {
-                    Some(note)
-                } else {
-                    // Keep the window in its original mode with no selected file.
-                    (!single_file).then(String::new)
-                }
+            let start = (!single_file)
+                .then(|| now_start_note(directory, &root))
+                .flatten();
+            let note = start.or_else(|| {
+                note.and_then(|note| {
+                    if let Some(target) = plans.get(&root).and_then(|plan| plan.target(&note)) {
+                        return Some(target.to_owned());
+                    }
+                    if root.join(&note).is_file() {
+                        Some(note)
+                    } else {
+                        // Keep the window in its original mode with no selected file.
+                        (!single_file).then(String::new)
+                    }
+                })
             });
             ((root, note), single_file)
         })
@@ -1123,6 +1132,42 @@ mod tests {
     use super::*;
     // `gpui::*` brings its own `test`, which `#[gpui::test]` expands into.
     use ::core::prelude::v1::test;
+
+    #[test]
+    fn session_restore_uses_the_start_note_only_for_vault_windows_in_saved_now_mode() {
+        use crate::reader_sidebar::{LeftMode, State};
+
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let root = fixture.path().join("vault");
+        std::fs::create_dir_all(root.join(".okilum")).unwrap();
+        let root = root.canonicalize().unwrap();
+        std::fs::write(
+            okilum_core::vault_descriptor::path(&root),
+            r#"{"start":{"note":"Feed.md"}}"#,
+        )
+        .unwrap();
+        for note in ["Feed.md", "Other.md"] {
+            std::fs::write(root.join(note), "# Note").unwrap();
+        }
+        let window = (root.clone(), Some("Other.md".to_owned()));
+        let windows = vec![(window.clone(), false), (window, true)];
+        let sidebar_path = State::path(&state, &root);
+        let mut sidebar = State::default();
+        sidebar.choose_now(true);
+        sidebar.select_left_mode(LeftMode::Tree);
+        sidebar.save(&sidebar_path).unwrap();
+        assert_eq!(restorable_windows(&state, windows.clone()), windows);
+
+        sidebar.select_left_mode(LeftMode::Now);
+        sidebar.save(&sidebar_path).unwrap();
+        let restored = restorable_windows(&state, windows.clone());
+        assert_eq!(restored[0], ((root.clone(), Some("Feed.md".into())), false));
+        assert_eq!(restored[1], windows[1]);
+
+        std::fs::remove_file(root.join("Feed.md")).unwrap();
+        assert_eq!(restorable_windows(&state, windows.clone()), windows);
+    }
 
     #[gpui::test]
     fn restore_keeps_vault_and_quick_windows_of_the_same_file(cx: &mut TestAppContext) {

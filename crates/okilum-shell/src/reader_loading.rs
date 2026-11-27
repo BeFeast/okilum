@@ -351,6 +351,14 @@ fn prepare_first_with_last_document(
     Ok(event)
 }
 
+pub(super) fn now_start_note(directory: &Path, root: &Path) -> Option<String> {
+    let saved = reader_sidebar::State::load(&reader_sidebar::State::path(directory, root));
+    if saved.now_enabled() && saved.left_mode == reader_sidebar::LeftMode::Now {
+        return okilum_core::vault_descriptor::start_note(root);
+    }
+    None
+}
+
 fn prepare_first_existing_document(
     opts: &Opts,
     cancel: &Cancellation,
@@ -495,7 +503,10 @@ fn prepare_first_existing_document(
     {
         bail!("Saved Reader path changed identity");
     }
-    let selected = match &intent.note {
+    let start = (intent.note.is_none() && opts.note.is_none() && !opts.exact_restore)
+        .then(|| now_start_note(opts.session_directory.as_deref()?, &intent.root))
+        .flatten();
+    let selected = match intent.note.as_ref().or(start.as_ref()) {
         Some(note) => Some(note.clone()),
         None if opts.exact_restore => {
             if Vault::discover_document(&intent.root, &mut || cancel.check())?.is_some() {
@@ -6750,6 +6761,81 @@ mod tests {
             assert_eq!(std::fs::read(root.join("first.md")).unwrap(), b"# First");
         }
         std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn root_open_uses_start_note_only_in_saved_now_mode() {
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let root = fixture.path().join("vault");
+        std::fs::create_dir_all(root.join(".okilum")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let descriptor = okilum_core::vault_descriptor::path(&root);
+        std::fs::write(&descriptor, r#"{"start":{"note":"Feed.md"}}"#).unwrap();
+        std::fs::write(root.join("Feed.md"), "# Feed").unwrap();
+        std::fs::write(root.join("Other.md"), "# Other").unwrap();
+        let sidebar_path = reader_sidebar::State::path(&state, &root);
+        let opts = Opts {
+            vault: Some(root.clone()),
+            session_directory: Some(state),
+            ..Default::default()
+        };
+        let opens = |opts: &Opts, expected: &str, reads_history: bool| {
+            let Event::First { document, .. } =
+                prepare_first_with_last_document(opts, &Cancellation::default(), |_| {
+                    assert!(reads_history, "history must not supply this target");
+                    Ok(Some("Other.md".into()))
+                })
+                .unwrap()
+            else {
+                panic!("first document expected");
+            };
+            assert_eq!(document.unwrap().0, expected);
+        };
+        opens(&opts, "Other.md", true);
+        let mut saved = reader_sidebar::State::default();
+        saved.choose_now(true);
+        saved.select_left_mode(reader_sidebar::LeftMode::Tree);
+        saved.save(&sidebar_path).unwrap();
+        opens(&opts, "Other.md", true);
+        saved.select_left_mode(reader_sidebar::LeftMode::Now);
+        saved.save(&sidebar_path).unwrap();
+        opens(&opts, "Feed.md", false);
+
+        let explicit = Opts {
+            note: Some("Other.md".into()),
+            ..opts.clone()
+        };
+        opens(&explicit, "Other.md", false);
+        opens(
+            &Opts {
+                exact_restore: true,
+                ..explicit.clone()
+            },
+            "Other.md",
+            false,
+        );
+        opens(
+            &Opts {
+                single_file: true,
+                ..explicit
+            },
+            "Other.md",
+            false,
+        );
+        opens(
+            &Opts {
+                open_path: Some(root.join("Other.md")),
+                ..opts.clone()
+            },
+            "Other.md",
+            false,
+        );
+
+        std::fs::write(&descriptor, r#"{"start":{"note":"../Feed.md"}}"#).unwrap();
+        opens(&opts, "Other.md", true);
+        std::fs::remove_file(descriptor).unwrap();
+        opens(&opts, "Other.md", true);
     }
 
     #[test]
