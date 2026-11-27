@@ -28,8 +28,24 @@ use std::collections::BTreeMap;
 
 /// Pinned results; see the module docs. The gap matrix behind these numbers
 /// is `Dev/Areas/okilum/specs/2026-11-24-markdown-conformance.md`.
-const PINNED_COMMONMARK_PASS: usize = 639;
-const PINNED_GFM_PASS: usize = 658;
+///
+/// Remaining spec deviations (11 CommonMark, 12 GFM):
+/// - Deliberate product deviations (CommonMark 96, 98, 559, 590, 602, 608, 611,
+///   612; GFM 66, 68, 567, 598, 610, 616, 619, 620, 652): leading `---` is YAML
+///   front matter; `[[...]]`/`![[...]]` are Obsidian wikilinks/embeds; GFM
+///   autolink literals are enabled everywhere; tagfilter is off because Okilum
+///   hides `<script>`/`<style>` content instead of escaping raw HTML.
+/// - Deliberate `<textarea>` rendering (CommonMark 171): preserves line breaks
+///   like a browser text area rather than collapsing whitespace.
+/// - Parser limitation (GFM 628): `markdown-rs` does not autolink `ftp://`,
+///   matching github.com today.
+/// - HTML-only malformed table DOM quirks (CommonMark 148, 191; GFM 118, 160):
+///   148/118 outputs misnested `<pre>...<p>...</pre></p>` inside `<td>` while
+///   `TableCell` is inline-only (`Paragraph`); 191/160 outputs `<pre><code>`
+///   directly inside `<tr>` outside `<td>`, which HTML5 (`html5ever` and
+///   browsers) foster-parents before `<table>`.
+const PINNED_COMMONMARK_PASS: usize = 641;
+const PINNED_GFM_PASS: usize = 660;
 const PINNED_OBSIDIAN_GAPS: usize = 0;
 const PINNED_EXTRA_GAPS: usize = 0;
 
@@ -196,7 +212,7 @@ fn canonical(html: &str) -> String {
     // `<!-->` and `<!--->` are complete comments (CommonMark 0.31); a tag
     // left open at the end of the input is dropped by browsers.
     let token = regex::Regex::new(
-        r"(?s)<!--->|<!-->|<!--.*?-->|<[/!?A-Za-z][^>]*>|<[A-Za-z][^>]*$|[^<]+|<",
+        r#"(?s)<!--->|<!-->|<!--.*?-->|<[/!?][^>]*>|<[A-Za-z](?:[^>"']|"[^"]*"|'[^']*')*>|<[A-Za-z][^>]*$|[^<]+|<"#,
     )
     .unwrap();
     let mut hidden: Option<String> = None;
@@ -737,6 +753,24 @@ const PROBES: &[Probe] = &[
         markdown: "a\n\n<br />\n<br />\n\nb",
         expect: |m| m.matches('⏎').count() == 2,
     },
+    Probe {
+        obsidian: false,
+        name: "block-level inline html across blank lines",
+        markdown: "<del>\n\n*foo*\n\n</del>",
+        expect: |m| m == "<p>{del,em}foo</p>",
+    },
+    Probe {
+        obsidian: false,
+        name: "markdown inside blank-line raw html table",
+        markdown: "<table>\n<tr>\n<td>\n\n*italic* and **bold**\n\n</td>\n</tr>\n</table>",
+        expect: |m| m.contains("<td>{em}italic {}and {strong}bold</td>"),
+    },
+    Probe {
+        obsidian: false,
+        name: "inline html tag with gt in quoted attribute",
+        markdown: "Link <a href=\"https://example.com\" title=\"a > b\">quoted</a> end",
+        expect: |m| m == "<p>Link {a=https://example.com}quoted {}end</p>",
+    },
 ];
 
 #[test]
@@ -813,6 +847,10 @@ fn canonical_form_ignores_presentation_only_differences() {
     assert_eq!(
         canonical("<pre><code>a\n</code></pre>"),
         canonical("<pre><code>a</code></pre>")
+    );
+    assert_eq!(
+        canonical("<p><a foo=\"bar\" bam = 'baz <em>\"</em>'\n_boolean zoop:33=zoop:33 /></p>"),
+        canonical("<p></p>")
     );
     // Negative controls: different documents do not.
     assert_ne!(canonical("<p><em>a</em></p>"), canonical("<p>a</p>"));

@@ -1,0 +1,313 @@
+diff --git a/crates/base/src/text/format/markdown.rs b/crates/base/src/text/format/markdown.rs
+index 7de699e8..ec14a129 100644
+--- a/crates/base/src/text/format/markdown.rs
++++ b/crates/base/src/text/format/markdown.rs
+@@ -722,9 +722,26 @@ const INLINE_HTML_ELEMENTS: &[&str] = &[
+     "s", "samp", "small", "span", "strike", "strong", "sub", "sup", "time", "u", "var",
+ ];
+ 
++fn has_unquoted_gt(s: &str) -> bool {
++    let mut quote: Option<u8> = None;
++    for b in s.bytes() {
++        match quote {
++            Some(q) if b == q => quote = None,
++            Some(_) => {}
++            None if b == b'"' || b == b'\'' => quote = Some(b),
++            None if b == b'>' => return true,
++            None => {}
++        }
++    }
++    false
++}
++
+ fn inline_html_tag(value: &str, cx: &mut NodeContext) -> Option<InlineHtmlTag> {
+     let tag = value.trim();
+     let inner = tag.strip_prefix('<')?.strip_suffix('>')?;
++    if has_unquoted_gt(inner) {
++        return None;
++    }
+     let (closing, inner) = match inner.strip_prefix('/') {
+         Some(rest) => (true, rest),
+         None => (false, inner),
+@@ -998,7 +1015,7 @@ fn ast_to_document(source: &str, root: mdast::Node, cx: &mut NodeContext) -> Par
+         _ => panic!("expected root node"),
+     };
+ 
+-    let blocks = root_blocks(source, root.children, cx);
++    let blocks = parse_block_children(source, root.children, cx);
+     ParsedDocument {
+         source: source.to_string().into(),
+         blocks: Arc::new(blocks),
+@@ -1041,38 +1058,123 @@ fn track_open_tables(html: &str, depth: &mut usize) {
+     }
+ }
+ 
+-/// The root's children as blocks. Markdown ends an HTML block at a blank
+-/// line, but a browser parses the whole document as one, so a `<table>` with
+-/// blank lines inside it falls apart into pieces. An HTML block that leaves a
+-/// table open is joined, with every block up to the one that closes it and the
+-/// Markdown between them, into one HTML fragment. The blocks keep the span of
+-/// the whole range. A table that is never closed stays as it was.
++/// Apply an outer block-level inline HTML mark (`<del>`, `<mark>`,
++/// `<span style="color:…">`, ...) to every inline run in `paragraph`, keeping
++/// inner marks on top so nested colours or links win.
++fn apply_mark_to_paragraph(paragraph: &mut Paragraph, mark: &TextMark) {
++    for node in &mut paragraph.children {
++        if let Some(image) = &mut node.image {
++            if image.link.is_none()
++                && let Some(link) = &mark.link
++            {
++                image.link = Some(link.clone());
++            }
++            continue;
++        }
++        if node.text.is_empty() {
++            continue;
++        }
++        let len = node.text.len();
++        if node.marks.len() == 1
++            && node.marks[0].0.start == 0
++            && node.marks[0].0.end == len
++        {
++            let mut combined = mark.clone();
++            combined.merge(node.marks[0].1.clone());
++            node.marks[0].1 = combined;
++        } else {
++            node.marks.insert(0, (0..len, mark.clone()));
++        }
++    }
++}
++
++fn apply_mark_to_block(block: &mut BlockNode, mark: &TextMark) {
++    match block {
++        BlockNode::Root { children, .. }
++        | BlockNode::Blockquote { children, .. }
++        | BlockNode::List { children, .. }
++        | BlockNode::ListItem { children, .. } => {
++            for child in children {
++                apply_mark_to_block(child, mark);
++            }
++        }
++        BlockNode::Paragraph(paragraph) | BlockNode::Heading { children: paragraph, .. } => {
++            apply_mark_to_paragraph(paragraph, mark);
++        }
++        BlockNode::Table(table) => {
++            for row in &mut table.children {
++                for cell in &mut row.children {
++                    apply_mark_to_paragraph(&mut cell.children, mark);
++                }
++            }
++        }
++        _ => {}
++    }
++}
++
++/// A container's block children.
+ ///
+-/// Only tables are joined: elsewhere (a `<div>` around Markdown, say) the
+-/// blocks between are Markdown, and CommonMark renders them as such.
+-fn root_blocks(source: &str, children: Vec<Node>, cx: &mut NodeContext) -> Vec<BlockNode> {
++/// 1. Markdown ends an HTML block at a blank line, but a browser parses the
++///    whole document as one, so a `<table>` with blank lines inside it falls
++///    apart into pieces. An HTML block that leaves a table open is joined with
++///    every block up to the one that closes it into one HTML fragment, keeping
++///    raw HTML blocks verbatim and rendering intervening Markdown blocks as
++///    HTML so Markdown inside cells (`*em*`, `==mark==`) and indented code
++///    blocks still parse as Markdown.
++/// 2. A standalone inline-HTML open tag block (`<del>\n\n*foo*\n\n</del>`,
++///    CommonMark example 167) keeps its mark on a stack across sibling blocks
++///    until the matching close tag block.
++fn parse_block_children(
++    source: &str,
++    children: Vec<Node>,
++    cx: &mut NodeContext,
++) -> Vec<BlockNode> {
+     let mut pending: std::collections::VecDeque<Node> = children.into();
+     let mut blocks = Vec::with_capacity(pending.len());
++    let mut open_marks: Vec<(String, TextMark)> = Vec::new();
+     while let Some(node) = pending.pop_front() {
+-        if let Some(joined) = join_open_table(source, &node, &pending, cx) {
+-            let (count, block) = joined;
+-            pending.drain(..count);
+-            blocks.push(block);
+-            continue;
++        let mut block = if let Some(joined) = join_open_table(source, &node, &mut pending, cx) {
++            joined
++        } else {
++            if let Node::Html(html) = &node
++                && let Some(tag) = inline_html_tag(&html.value, cx)
++            {
++                match tag {
++                    InlineHtmlTag::Open { name, mark } => open_marks.push((name, mark)),
++                    InlineHtmlTag::Close { name } => {
++                        if let Some(at) = open_marks.iter().rposition(|(open, _)| *open == name) {
++                            open_marks.remove(at);
++                        }
++                    }
++                }
++                continue;
++            }
++            ast_to_node(source, node, cx)
++        };
++        if !open_marks.is_empty() {
++            let mark = open_marks
++                .iter()
++                .fold(TextMark::default(), |mut acc, (_, m)| {
++                    acc.merge(m.clone());
++                    acc
++                });
++            if mark != TextMark::default() {
++                apply_mark_to_block(&mut block, &mark);
++            }
+         }
+-        blocks.push(ast_to_node(source, node, cx));
++        blocks.push(block);
+     }
+     blocks
+ }
+ 
+-/// The block for `first` (an HTML block opening a table) and the `count`
+-/// following nodes that belong to the same table, if it is closed later.
++/// The block for `first` (an HTML block opening a table) and the following
++/// nodes that belong to the same table, if it is closed later.
+ fn join_open_table(
+     source: &str,
+     first: &Node,
+-    following: &std::collections::VecDeque<Node>,
++    following: &mut std::collections::VecDeque<Node>,
+     cx: &mut NodeContext,
+-) -> Option<(usize, BlockNode)> {
++) -> Option<BlockNode> {
+     let Node::Html(html) = first else {
+         return None;
+     };
+@@ -1094,15 +1196,26 @@ fn join_open_table(
+     let last = last?;
+     let start = html.position.as_ref()?.start.clone();
+     let end = following[last].position()?.end.clone();
+-    let fragment = source.get(start.offset..end.offset)?;
+-    let parsed = super::html::parse(fragment, cx).ok()?;
+-    Some((
+-        last + 1,
+-        BlockNode::Root {
+-            children: Arc::unwrap_or_clone(parsed.blocks),
+-            span: new_span(Some(markdown::unist::Position { start, end }), cx),
+-        },
+-    ))
++    let mut fragment = String::new();
++    fragment.push_str(&html.value);
++    fragment.push('\n');
++    for node in following.drain(..=last) {
++        match node {
++            Node::Html(html) => {
++                fragment.push_str(&html.value);
++                fragment.push('\n');
++            }
++            other => {
++                let block = ast_to_node(source, other, cx);
++                crate::text::render_model::write_block(&mut fragment, &block, cx, false);
++            }
++        }
++    }
++    let parsed = super::html::parse(&fragment, cx).ok()?;
++    Some(BlockNode::Root {
++        children: Arc::unwrap_or_clone(parsed.blocks),
++        span: new_span(Some(markdown::unist::Position { start, end }), cx),
++    })
+ }
+ 
+ fn new_span(pos: Option<markdown::unist::Position>, cx: &NodeContext) -> Option<Span> {
+@@ -1137,11 +1250,7 @@ fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockN
+             BlockNode::Paragraph(paragraph)
+         }
+         Node::Blockquote(val) => {
+-            let children = val
+-                .children
+-                .into_iter()
+-                .map(|c| ast_to_node(source, c, cx))
+-                .collect();
++            let children = parse_block_children(source, val.children, cx);
+             BlockNode::Blockquote {
+                 children,
+                 span: new_span(val.position, cx),
+@@ -1169,11 +1278,7 @@ fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockN
+             }
+         }
+         Node::ListItem(val) => {
+-            let children = val
+-                .children
+-                .into_iter()
+-                .map(|c| ast_to_node(source, c, cx))
+-                .collect();
++            let children = parse_block_children(source, val.children, cx);
+             BlockNode::ListItem {
+                 children,
+                 spread: val.spread,
+@@ -2096,4 +2201,54 @@ mod tests {
+             assert_eq!((code.as_str(), copy.as_str()), (shown, copied), "{source:?}");
+         }
+     }
++
++    #[test]
++    fn test_block_level_inline_html_marks_across_blank_lines() {
++        let paragraph = first_paragraph("<del>\n\n*foo*\n\n</del>\n");
++        let mark = mark_at(&paragraph, "foo");
++        assert!(mark.strikethrough, "outer <del> applies across blank lines");
++        assert!(mark.italic, "inner *foo* emphasis is preserved");
++
++        let coloured = first_paragraph("<span style=\"color:red\">\n\n*Crimson*\n\n</span>\n");
++        let mark = mark_at(&coloured, "Crimson");
++        assert_eq!(mark.color, Some(gpui::rgb(0xff0000).into()));
++        assert!(mark.italic);
++    }
++
++    #[test]
++    fn test_html_table_with_blank_lines_renders_inner_markdown() {
++        fn first_table<'a>(block: &'a BlockNode) -> Option<&'a Table> {
++            match block {
++                BlockNode::Root { children, .. } => children.iter().find_map(first_table),
++                BlockNode::Table(table) => Some(table),
++                _ => None,
++            }
++        }
++        let source = "<table>\n<tr>\n<td>\n\n*italic* and **bold**\n\n</td>\n</tr>\n</table>\n";
++        let mut cx = NodeContext::default();
++        let document = parse(source, &mut cx).unwrap();
++        let table = document
++            .blocks
++            .iter()
++            .find_map(first_table)
++            .expect("table");
++        let cell = &table.children[0].children[0].children;
++        assert_eq!(cell.text().as_ref(), "italic and bold");
++        assert!(mark_at(cell, "italic").italic);
++        assert!(mark_at(cell, "bold").bold);
++    }
++
++    #[test]
++    fn test_inline_html_tag_with_quoted_gt() {
++        let paragraph = first_paragraph(
++            "Link <a href=\"https://example.com\" title=\"a > b\">quoted</a> end",
++        );
++        let mark = mark_at(&paragraph, "quoted");
++        assert_eq!(
++            mark.link.as_ref().map(|link| link.url.as_ref()),
++            Some("https://example.com")
++        );
++        assert!(has_unquoted_gt("del >foo</del"));
++        assert!(!has_unquoted_gt("a href=\"x\" title=\"a > b\""));
++    }
+ }
+diff --git a/crates/base/src/text/render_model.rs b/crates/base/src/text/render_model.rs
+index d8c6d795..cf94651e 100644
+--- a/crates/base/src/text/render_model.rs
++++ b/crates/base/src/text/render_model.rs
+@@ -26,7 +26,7 @@ fn escape(text: &str) -> String {
+         .replace('"', "&quot;")
+ }
+ 
+-fn write_block(out: &mut String, block: &BlockNode, cx: &NodeContext, tight: bool) {
++pub(crate) fn write_block(out: &mut String, block: &BlockNode, cx: &NodeContext, tight: bool) {
+     match block {
+         BlockNode::Root { children, .. } => {
+             for child in children {

@@ -1,0 +1,67 @@
+# Markdown conformance tail (#3260):
+# - Block-level inline raw HTML tags across blank lines (`<span style="color:red">`,
+#   `<mark>`, `<del>`) apply their formatting to the enclosed Markdown blocks
+#   (CommonMark 167 / GFM 137).
+# - Blank-line raw HTML tables render intervening Markdown blocks instead of
+#   showing raw Markdown syntax (`*...*`, `==...==`).
+# - Raw HTML inline tags with `>` inside quoted attributes render their text
+#   cleanly without leaking attribute syntax (CommonMark 616 / GFM 635).
+appearance: light
+note: |
+  # Conformance tail
+
+  <span style="color:red">
+
+  *Crimson* block
+
+  </span>
+
+  <mark>
+
+  *Highlighted* block
+
+  </mark>
+
+  <del>
+
+  *Struck* block
+
+  </del>
+
+  <table>
+  <tr>
+  <td>
+
+  *ItalicCell* ==MarkedCell==
+
+  </td>
+  </tr>
+  </table>
+
+  Link <a href="https://example.com" title="a > b">QuotedAttr</a> end
+region: [300, 60, 800, 640]
+ready_text: Conformance tail
+steps:
+  - id: conformance-tail-block-color
+    text: Crimson block
+    text_absent: '<span'
+    # `<span style="color:red">` across blank lines colours the enclosed paragraph.
+    pixels:
+      region: [300, 120, 800, 500]
+      expression: 'r>0.8 && g<0.3 && b<0.3 ? 1 : 0'
+      min: 10
+      max: 10000
+  - id: conformance-tail-block-mark
+    text_absent: '<mark'
+    # `<mark>` across blank lines paints yellow highlight on the enclosed paragraph.
+    pixels:
+      region: [300, 220, 400, 45]
+      expression: 'r>0.97 && g>0.88 && g<0.97 && b>0.5 && b<0.68 ? 1 : 0'
+      min: 200
+      max: 15000
+  - id: conformance-tail-table-and-attrs
+    text: ItalicCell MarkedCell
+    text_absent: '*ItalicCell*'
+  - id: conformance-tail-quoted-attr
+    text: Link QuotedAttr
+    text_absent: 'title='
