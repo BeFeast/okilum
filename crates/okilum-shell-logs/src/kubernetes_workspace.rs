@@ -6,7 +6,7 @@
 //! resource, the pinned log session and the log viewport. Selecting rows or
 //! changing scope never starts, stops or retargets logs; only Open logs does,
 //! after confirming a retarget. Nothing reads the cluster until Load.
-use crate::*;
+use crate::prelude::*;
 use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectState};
 use okilum_core::kubernetes::{choose_namespace, Contexts, Failure, NamespaceOrigin};
 
@@ -14,7 +14,7 @@ mod backend;
 mod dock;
 pub(crate) mod evidence;
 #[cfg(feature = "kubernetes-ui-harness")]
-pub(crate) mod harness;
+pub mod harness;
 mod inspector;
 mod lens_view;
 pub(crate) mod lenses;
@@ -37,7 +37,7 @@ actions!(
 
 /// Supplementary keys, only while the resource list has focus: inputs and
 /// the LogView keep their own bindings.
-pub(crate) fn bind_keys(cx: &mut App) {
+pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("j", SelectNextResource, Some(CONTEXT)),
         KeyBinding::new("down", SelectNextResource, Some(CONTEXT)),
@@ -52,7 +52,7 @@ pub(crate) fn bind_keys(cx: &mut App) {
 struct Windows(std::collections::BTreeMap<String, WindowHandle<Root>>);
 impl Global for Windows {}
 
-pub(crate) fn show(vault: PathBuf, cx: &mut App) {
+pub fn show(vault: PathBuf, cx: &mut App) {
     let scope = okilum_core::remote_log::vault_scope(&vault);
     if let Some(handle) = cx
         .try_global::<Windows>()
@@ -382,8 +382,8 @@ impl Workspace {
             tail_lines: self.dock.tail,
             view,
             generated_at: std::time::SystemTime::now(),
-            app_version: env!("OKILUM_RELEASE_VERSION"),
-            app_source: env!("OKILUM_SOURCE_COMMIT"),
+            app_version: crate::hooks::release_version(cx),
+            app_source: crate::hooks::source_commit(cx),
         }
     }
 

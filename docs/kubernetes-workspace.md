@@ -9,7 +9,7 @@ inspector, log dock and a status line, with the GUI V2 neutral tokens, Noto
 Sans for UI text and Cascadia Code for identifiers and logs. Triage and
 Service path are slice 3.
 
-Code: `crates/okilum-shell/src/kubernetes_workspace.rs` and
+Code: `crates/okilum-shell-logs/src/kubernetes_workspace.rs` and
 `kubernetes_workspace/` (`model.rs` pure model, `backend.rs` reads,
 `inspector.rs`, `dock.rs`). Entry: Logs section → **Kubernetes workspace…**;
 **Kubernetes logs…** (the explicit-target panel) is unchanged.

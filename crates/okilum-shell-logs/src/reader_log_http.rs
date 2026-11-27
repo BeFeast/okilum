@@ -1,5 +1,5 @@
 //! Explicit, vault-scoped HTTPS file sessions over the ordinary LogView.
-use crate::*;
+use crate::prelude::*;
 use anyhow::Result;
 use gpui_component::menu::DropdownMenu as _;
 #[path = "reader_log_http/model.rs"]
@@ -12,7 +12,7 @@ use model::Source;
 struct Windows(std::collections::BTreeMap<String, WindowHandle<Root>>);
 impl Global for Windows {}
 
-pub(crate) fn show(vault: PathBuf, cx: &mut App) {
+pub fn show(vault: PathBuf, cx: &mut App) {
     let scope = okilum_core::remote_log::vault_scope(&vault);
     if let Some(handle) = cx
         .try_global::<Windows>()

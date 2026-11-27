@@ -1,5 +1,5 @@
 //! Explicit read-only SFTP sessions using existing OpenSSH configuration.
-use crate::*;
+use crate::prelude::*;
 use okilum_core::log::{sftp::Target, stream::Snapshot};
 mod worker;
 
@@ -7,7 +7,7 @@ mod worker;
 struct Windows(std::collections::BTreeMap<String, WindowHandle<Root>>);
 impl Global for Windows {}
 
-pub(crate) fn show(vault: PathBuf, cx: &mut App) {
+pub fn show(vault: PathBuf, cx: &mut App) {
     let scope = okilum_core::remote_log::vault_scope(&vault);
     if let Some(handle) = cx
         .try_global::<Windows>()

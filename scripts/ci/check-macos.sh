@@ -49,7 +49,7 @@ run_tests() {
     local package="$1" target="$2" filter="$3"
     shift 3
     local selection=(-p "$package")
-    case "$package" in okilum-core|okilum-shell|okilum-shell-kit|okilum-shell-platform|okilum-shell-text|okilum-shell-viewers|okilum-shell-project|okilum-shell-brain) selection=("${SHARED[@]}") ;; esac
+    case "$package" in okilum-core|okilum-shell|okilum-shell-kit|okilum-shell-platform|okilum-shell-text|okilum-shell-viewers|okilum-shell-logs|okilum-shell-project|okilum-shell-brain) selection=("${SHARED[@]}") ;; esac
     # Positive control: a renamed/removed filter must not silently run zero tests.
     if ! cargo "${cargo_args[@]}" "${selection[@]}" "$target" "$filter" -- --list "$@" \
         | tee "${RUNNER_TEMP}/macos-test-list.txt"; then
@@ -117,7 +117,7 @@ run_tests okilum-t3 --lib session::
 run_tests okilum-t3 --lib board::
 
 # #2442: release-profile dependency fixtures and Sync macro imports must also run.
-run_tests okilum-shell --bins reader_log::remote::
+run_tests okilum-shell-logs --lib reader_log::remote::
 run_tests okilum-shell --bins reader_settings_sync::
 run_tests okilum-sync-controller --test=first_computer ""
 run_tests okilum-sync-controller --lib direct::lan::tests::

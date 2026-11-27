@@ -280,7 +280,7 @@ impl LogView {
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum MenuKind {
+pub enum MenuKind {
     Level,
     Time,
     Saved,
@@ -289,7 +289,7 @@ pub(super) enum MenuKind {
     Files,
 }
 
-pub(super) struct CommandMenu {
+pub struct CommandMenu {
     menu: Entity<PopupMenu>,
     position: Point<Pixels>,
     _dismiss: Subscription,
@@ -305,12 +305,12 @@ fn menu_builder(owner: WeakEntity<LogView>, kind: MenuKind) -> BuildMenu {
     })
 }
 
-pub(crate) fn describe(view: &Entity<LogView>, cx: &App) -> ViewerChrome {
+pub fn describe(view: &Entity<LogView>, cx: &App) -> ViewerChrome {
     view.read(cx).describe(view.downgrade(), cx)
 }
 
 impl LogView {
-    pub(crate) fn without_header(mut self) -> Self {
+    pub fn without_header(mut self) -> Self {
         self.hosted_header = true;
         self
     }
@@ -614,12 +614,7 @@ impl LogView {
         }
     }
 
-    pub(super) fn show_menu(
-        &mut self,
-        kind: MenuKind,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn show_menu(&mut self, kind: MenuKind, window: &mut Window, cx: &mut Context<Self>) {
         let owner = cx.entity().downgrade();
         let focus = self.focus.clone();
         let build = self.build_menu(kind, owner, cx);
@@ -674,7 +669,7 @@ impl LogView {
             || self.investigation.request.is_some()
     }
 
-    pub(super) fn toggle_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn toggle_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.query_open = !self.query_open;
         if self.query_open {
             self.query_input

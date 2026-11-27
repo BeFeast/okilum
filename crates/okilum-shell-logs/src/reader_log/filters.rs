@@ -11,7 +11,7 @@ use okilum_core::log::chips::{
     FilterValue, LoadedRowCountProvider,
 };
 
-pub(super) struct FilterUi {
+pub struct FilterUi {
     pub chips: Vec<FilterChip>,
     pub advanced: Vec<Expr>,
     pub provider: Arc<dyn ColumnCountProvider>,
@@ -375,7 +375,7 @@ impl LogView {
     }
     /// Source adapters install their server-count adapter here.
     #[allow(dead_code)]
-    pub(crate) fn set_count_provider(
+    pub fn set_count_provider(
         &mut self,
         provider: Arc<dyn ColumnCountProvider>,
         cx: &mut Context<Self>,
@@ -391,7 +391,7 @@ impl LogView {
             .map(|q| q.for_source(&self.source_name(source)));
         filter
     }
-    pub(super) fn sync_chips(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn sync_chips(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.filter_ui.server {
             for chip in &mut self.filter_ui.chips {
                 if chip.execution == FilterExecution::Server {
@@ -414,12 +414,7 @@ impl LogView {
         self.remember_query(cx);
         cx.notify();
     }
-    pub(super) fn add_chip(
-        &mut self,
-        mut chip: FilterChip,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn add_chip(&mut self, mut chip: FilterChip, window: &mut Window, cx: &mut Context<Self>) {
         if self.filter_ui.server {
             chip.execution = FilterExecution::Server;
         }
@@ -748,8 +743,8 @@ impl LogView {
         )
     }
 
-    #[cfg(test)]
-    pub(super) fn cell_menu_handle(&self) -> Option<WeakEntity<PopupMenu>> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn cell_menu_handle(&self) -> Option<WeakEntity<PopupMenu>> {
         self.filter_ui
             .cell_menu
             .as_ref()
@@ -823,7 +818,7 @@ impl LogView {
 
 /// Ephemeral state handed to a replacement view only for the same source.
 #[derive(Clone)]
-pub(crate) struct FilterViewState {
+pub struct FilterViewState {
     filter: LogFilter,
     chips: Vec<FilterChip>,
     advanced: Vec<Expr>,
@@ -831,7 +826,7 @@ pub(crate) struct FilterViewState {
     query_error: Option<(usize, String)>,
 }
 impl LogView {
-    pub(crate) fn filter_view_state(&self) -> FilterViewState {
+    pub fn filter_view_state(&self) -> FilterViewState {
         FilterViewState {
             filter: self.filter.clone(),
             chips: self.filter_ui.chips.clone(),
@@ -840,7 +835,7 @@ impl LogView {
             query_error: self.query_error.clone(),
         }
     }
-    pub(crate) fn restore_filter_view(
+    pub fn restore_filter_view(
         &mut self,
         state: FilterViewState,
         window: &mut Window,
@@ -872,7 +867,7 @@ impl LogView {
     /// controls. An enabled remote adapter owns Server execution; those chips
     /// are excluded from the local matcher.
     #[allow(dead_code)]
-    pub(crate) fn filter_chips(&self) -> &[FilterChip] {
+    pub fn filter_chips(&self) -> &[FilterChip] {
         &self.filter_ui.chips
     }
 }
@@ -881,15 +876,15 @@ impl LogView {
 pub(crate) struct FilterChipsChanged(pub Vec<FilterChip>);
 impl EventEmitter<FilterChipsChanged> for LogView {}
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl LogView {
-    pub(super) fn filter_picker_for_test(&self) -> Option<Entity<ValuePicker>> {
+    pub fn filter_picker_for_test(&self) -> Option<Entity<ValuePicker>> {
         self.filter_ui.picker.borrow().clone()
     }
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl ValuePicker {
-    pub(super) fn counts_for_test(&self) -> Option<Result<Arc<ColumnCounts>, String>> {
+    pub fn counts_for_test(&self) -> Option<Result<Arc<ColumnCounts>, String>> {
         self.counts.clone()
     }
 }

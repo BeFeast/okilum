@@ -325,7 +325,7 @@ fn plan() -> Option<Plan> {
 }
 
 /// Opens the harness window when asked; `false` leaves startup unchanged.
-pub(crate) fn open(cx: &mut App) -> bool {
+pub fn open(cx: &mut App) -> bool {
     let Some(plan) = plan() else {
         return false;
     };

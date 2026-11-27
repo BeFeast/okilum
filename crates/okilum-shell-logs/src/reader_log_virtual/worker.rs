@@ -27,7 +27,7 @@ pub(super) enum Frame {
     Failed(String),
     Stopped,
 }
-pub(super) struct Worker {
+pub struct Worker {
     cancel: Arc<AtomicBool>,
     wake: mpsc::SyncSender<()>,
 }

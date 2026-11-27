@@ -369,6 +369,24 @@ pub(crate) fn test_init(cx: &mut App) {
         },
         cx,
     );
+    okilum_shell_logs::hooks::install(
+        okilum_shell_logs::hooks::LogsHooks {
+            release_version: env!("OKILUM_RELEASE_VERSION"),
+            source_commit: env!("OKILUM_SOURCE_COMMIT"),
+            toast_error: |message, window, cx| crate::reader_toast::error(message, window, cx),
+            toast_transient: |message, window, cx| {
+                crate::reader_toast::transient(message, window, cx)
+            },
+            diagnostics_trace: |cx| {
+                crate::reader_diagnostics::trace(cx).map(|trace| {
+                    Arc::new(move |phase: &'static str, details: serde_json::Value| {
+                        trace.event(phase, details);
+                    }) as okilum_shell_logs::hooks::DiagnosticsEventFn
+                })
+            },
+        },
+        cx,
+    );
     okilum_shell_project::hooks::install(
         okilum_shell_project::hooks::ProjectHooks {
             show_t3: crate::reader_settings::show_t3,

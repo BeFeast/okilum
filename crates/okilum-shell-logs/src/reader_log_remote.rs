@@ -1,5 +1,5 @@
 //! Kibana controls around the existing LogView, not a second event renderer.
-use crate::*;
+use crate::prelude::*;
 #[path = "reader_log_remote/investigation.rs"]
 mod investigation;
 use anyhow::Context as _;
@@ -16,19 +16,19 @@ mod credentials;
 struct Windows(std::collections::BTreeMap<String, WindowHandle<Root>>);
 impl Global for Windows {}
 
-pub(crate) fn show(vault: PathBuf, cx: &mut App) {
+pub fn show(vault: PathBuf, cx: &mut App) {
     show_inner(vault, None, cx);
 }
 
 /// `reader_open` resolves `link.vault_id` to this exact root among vaults the
 /// user opened, without guessing a name or writing an identity.
-pub(crate) fn show_link(vault: PathBuf, link: remote_log::link::RemoteLink, cx: &mut App) {
+pub fn show_link(vault: PathBuf, link: remote_log::link::RemoteLink, cx: &mut App) {
     show_inner(vault, Some(link), cx);
 }
 
 /// The Kibana window of `vault`, if open: its pending link and status text.
-#[cfg(test)]
-pub(crate) fn test_window_state(
+#[cfg(any(test, feature = "test-support"))]
+pub fn test_window_state(
     vault: &Path,
     cx: &mut App,
 ) -> Option<(Option<remote_log::link::RemoteLink>, String)> {

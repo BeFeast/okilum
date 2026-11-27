@@ -12,8 +12,8 @@ pub(crate) enum Navigation {
 impl EventEmitter<Navigation> for LogView {}
 
 #[derive(Default)]
-pub(crate) struct Investigation {
-    pub(super) frames: Vec<ViewFrame>,
+pub struct Investigation {
+    pub frames: Vec<ViewFrame>,
     pub request: Option<correlation::RequestId>,
     pub remote: Option<Arc<Loaded>>,
     pub guided: Option<RemoteGuided>,
@@ -22,7 +22,7 @@ pub(crate) struct Investigation {
     restore: Option<Viewport>,
     fields: std::cell::RefCell<Option<(u64, Vec<String>)>>,
 }
-pub(super) struct ViewFrame {
+pub struct ViewFrame {
     filters: filters::FilterViewState,
     columns: Vec<String>,
     widths: Vec<(String, f32)>,
@@ -39,17 +39,12 @@ struct Viewport {
     pinned: bool,
 }
 impl LogView {
-    pub(super) fn field_choices(&self, cx: &App) -> FieldChoices {
+    pub fn field_choices(&self, cx: &App) -> FieldChoices {
         self.history_key()
             .map(|key| reader_ui_state::log_fields(&key, cx))
             .unwrap_or_default()
     }
-    pub(crate) fn choose_field(
-        &mut self,
-        key: Option<String>,
-        message: bool,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn choose_field(&mut self, key: Option<String>, message: bool, cx: &mut Context<Self>) {
         let Some(source) = self.history_key() else {
             return;
         };
@@ -105,14 +100,14 @@ impl LogView {
             }),
         )
     }
-    pub(crate) fn message_field(&self, cx: &App) -> Option<String> {
+    pub fn message_field(&self, cx: &App) -> Option<String> {
         self.field_choices(cx).message.or_else(|| {
             self.string_fields()
                 .into_iter()
                 .find(|key| key == "message")
         })
     }
-    pub(super) fn string_fields(&self) -> Vec<String> {
+    pub fn string_fields(&self) -> Vec<String> {
         if let Some((revision, fields)) = self.investigation.fields.borrow().as_ref() {
             if *revision == self.window_revision {
                 return fields.clone();
@@ -159,7 +154,7 @@ impl LogView {
             .into_iter()
             .next()
     }
-    pub(crate) fn follow_request(
+    pub fn follow_request(
         &mut self,
         request: correlation::RequestId,
         window: &mut Window,
@@ -330,7 +325,7 @@ impl LogView {
         }
         cx.notify();
     }
-    pub(crate) fn investigation_label(&self) -> Option<String> {
+    pub fn investigation_label(&self) -> Option<String> {
         let request = self.investigation.request.as_ref()?;
         let count = self.visible_len();
         let id = short_id(&request.value);

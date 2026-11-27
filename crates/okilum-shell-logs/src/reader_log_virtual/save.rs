@@ -7,7 +7,7 @@ use okilum_core::{
 };
 use std::path::Path;
 
-pub(super) struct Session {
+pub struct Session {
     editor: FileEditor,
     original: String,
     review_required: bool,

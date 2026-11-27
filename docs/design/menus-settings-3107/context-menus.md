@@ -98,8 +98,8 @@ Trash wording is Move to Trash (Mac/Linux) / Move to Recycle Bin (Windows).
 
 ## Log menus
 
-All desktop platforms; source: [log chrome](../../../crates/okilum-shell/src/reader_log/chrome.rs),
-[cell context](../../../crates/okilum-shell/src/reader_log/filters.rs#L596).
+All desktop platforms; source: [log chrome](../../../crates/okilum-shell-logs/src/reader_log/chrome.rs),
+[cell context](../../../crates/okilum-shell-logs/src/reader_log/filters.rs#L596).
 
 | Menu | Ordered entries / dynamic expansion |
 | --- | --- |
@@ -111,9 +111,9 @@ All desktop platforms; source: [log chrome](../../../crates/okilum-shell/src/rea
 | Time | All time; Last 5 minutes; Last hour; Last 24 hours. |
 | Query history | Each stored query string. |
 | Cell | Include this value; Exclude this value; Copy value; Show as a column (where eligible); Mark row/Remove mark; Next mark; Previous mark; Clear all marks (disabled when empty). |
-| HTTPS saved sources: [reader_log_http](../../../crates/okilum-shell/src/reader_log_http.rs#L261) | Each saved source label; selecting loads configuration before explicit Start. |
-| Virtual log sort: [reader_log_virtual](../../../crates/okilum-shell/src/reader_log_virtual.rs#L674) | Each sort mode from [model](../../../crates/okilum-shell/src/reader_log_virtual/model.rs); current checked. |
-| Remote guided selectors: [guided](../../../crates/okilum-shell/src/reader_log_remote/guided.rs) | Hour/minute choices and dynamic source fields/values within the source/time/scope picker. These are value selectors, not global actions. |
+| HTTPS saved sources: [reader_log_http](../../../crates/okilum-shell-logs/src/reader_log_http.rs#L261) | Each saved source label; selecting loads configuration before explicit Start. |
+| Virtual log sort: [reader_log_virtual](../../../crates/okilum-shell-logs/src/reader_log_virtual.rs#L674) | Each sort mode from [model](../../../crates/okilum-shell-logs/src/reader_log_virtual/model.rs); current checked. |
+| Remote guided selectors: [guided](../../../crates/okilum-shell-logs/src/reader_log_remote/guided.rs) | Hour/minute choices and dynamic source fields/values within the source/time/scope picker. These are value selectors, not global actions. |
 
 ## Settings-local menus and platform summary
 

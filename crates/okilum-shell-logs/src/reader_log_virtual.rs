@@ -8,22 +8,22 @@ mod follow;
 #[path = "reader_log_virtual/model.rs"]
 mod model;
 #[path = "reader_log_virtual/save.rs"]
-mod save;
+pub mod save;
 #[path = "reader_log_virtual/worker.rs"]
-mod worker;
+pub mod worker;
 
 #[derive(Default)]
 struct Windows(std::collections::BTreeMap<String, WindowHandle<Root>>);
 impl Global for Windows {}
 
-pub(crate) fn eligible(path: &Path) -> bool {
+pub fn eligible(path: &Path) -> bool {
     path.extension()
         .is_some_and(|extension| extension == "okilog")
 }
 
 /// The ordinary file route owns this entity. Replacing/closing the preview drops
 /// its selection/watcher worker just as closing the standalone source window does.
-pub(crate) fn embedded(
+pub fn embedded(
     vault: PathBuf,
     path: PathBuf,
     state: Option<PathBuf>,
@@ -39,7 +39,7 @@ pub(crate) fn embedded(
     })
 }
 
-pub(crate) fn show(vault: PathBuf, state: Option<PathBuf>, cx: &mut App) {
+pub fn show(vault: PathBuf, state: Option<PathBuf>, cx: &mut App) {
     let scope = okilum_core::remote_log::vault_scope(&vault);
     if let Some(handle) = cx
         .try_global::<Windows>()
@@ -77,20 +77,20 @@ pub(crate) fn show(vault: PathBuf, state: Option<PathBuf>, cx: &mut App) {
     }
 }
 
-struct Pending {
+pub struct Pending {
     files: Vec<LogFile>,
     elapsed: Duration,
 }
-pub(crate) struct Panel {
+pub struct Panel {
     vault: PathBuf,
-    embedded: bool,
+    pub embedded: bool,
     state: Option<PathBuf>,
-    session: Option<save::Session>,
+    pub session: Option<save::Session>,
     save_error: Option<String>,
     saving: bool,
     save_task: Option<Task<()>>,
-    loaded: Option<PathBuf>,
-    path: Entity<InputState>,
+    pub loaded: Option<PathBuf>,
+    pub path: Entity<InputState>,
     name: Entity<InputState>,
     glob: Entity<InputState>,
     query: Entity<InputState>,
@@ -100,25 +100,25 @@ pub(crate) struct Panel {
     to: Entity<InputState>,
     time: model::TimeMode,
     vault_root: bool,
-    watch: bool,
+    pub watch: bool,
     following: bool,
     details: bool,
     loading: bool,
-    active: bool,
+    pub active: bool,
     stopping: bool,
-    generation: u64,
+    pub generation: u64,
     load_generation: u64,
     run_name: String,
     applied_name: String,
-    message: String,
-    error: bool,
+    pub message: String,
+    pub error: bool,
     candidates: Vec<Candidate>,
-    pending: Option<Pending>,
+    pub pending: Option<Pending>,
     pending_follow: Option<Vec<follow::Source>>,
     pending_path: Option<String>,
     pending_load: Option<model::Loaded>,
-    view: Option<Entity<LogView>>,
-    worker: Option<worker::Worker>,
+    pub view: Option<Entity<LogView>>,
+    pub worker: Option<worker::Worker>,
     events: Option<Task<()>>,
     load: Option<Task<()>>,
 }
@@ -295,7 +295,7 @@ impl Panel {
         }
         .definition()
     }
-    pub(crate) fn release_for_source(&mut self, cx: &mut Context<Self>) -> bool {
+    pub fn release_for_source(&mut self, cx: &mut Context<Self>) -> bool {
         if self.loading || self.saving || self.active {
             return false;
         }

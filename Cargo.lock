@@ -6326,6 +6326,7 @@ dependencies = [
  "okilum-paste",
  "okilum-shell-brain",
  "okilum-shell-kit",
+ "okilum-shell-logs",
  "okilum-shell-platform",
  "okilum-shell-project",
  "okilum-shell-text",
@@ -6431,6 +6432,37 @@ dependencies = [
  "tempfile",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "okilum-shell-logs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-channel",
+ "chrono",
+ "csv",
+ "futures",
+ "gpui-base",
+ "gpui-component",
+ "gpui-pre-wgpu",
+ "libc",
+ "log",
+ "okilum-core",
+ "okilum-gpui",
+ "okilum-shell-kit",
+ "okilum-shell-platform",
+ "okilum-shell-viewers",
+ "okilum-write-authority",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "shell-words",
+ "tempfile",
+ "time",
+ "url",
+ "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

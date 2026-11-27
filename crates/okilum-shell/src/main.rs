@@ -33,7 +33,7 @@ mod build_info;
 mod desktop_app_menu;
 #[cfg(target_os = "macos")]
 mod folder_service;
-mod kubernetes_workspace;
+use okilum_shell_logs::{kubernetes_workspace, reader_log_kubernetes, reader_log_sftp};
 mod linux_sprint;
 mod open_in;
 mod prepared_links;
@@ -91,8 +91,6 @@ mod reader_layout;
 mod reader_link_navigation;
 mod reader_loading;
 mod reader_log;
-mod reader_log_kubernetes;
-mod reader_log_sftp;
 #[cfg(any(native_manager, test))]
 mod reader_manager_links;
 #[cfg(test)]
@@ -1278,6 +1276,22 @@ fn main() {
                 start_thumbnail: Some(reader_thumbnail::native::start),
                 #[cfg(not(target_os = "macos"))]
                 start_thumbnail: None,
+            },
+            cx,
+        );
+        okilum_shell_logs::hooks::install(
+            okilum_shell_logs::hooks::LogsHooks {
+                release_version: env!("OKILUM_RELEASE_VERSION"),
+                source_commit: env!("OKILUM_SOURCE_COMMIT"),
+                toast_error: |message, window, cx| reader_toast::error(message, window, cx),
+                toast_transient: |message, window, cx| reader_toast::transient(message, window, cx),
+                diagnostics_trace: |cx| {
+                    reader_diagnostics::trace(cx).map(|trace| {
+                        Arc::new(move |phase: &'static str, details: serde_json::Value| {
+                            trace.event(phase, details);
+                        }) as okilum_shell_logs::hooks::DiagnosticsEventFn
+                    })
+                },
             },
             cx,
         );

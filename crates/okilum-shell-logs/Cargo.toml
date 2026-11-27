@@ -1,0 +1,63 @@
+[package]
+name = "okilum-shell-logs"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Structured log viewer, HTTP/remote/SFTP/Kubernetes/virtual log sources, and
+# Kubernetes workspace below the okilum app crate (#3239, epic #3241). Never
+# depends on the app crate or `Reader`.
+
+[features]
+default = []
+# Test seams the app crate's Reader-integration tests rely on. okilum-shell
+# enables it as a dev-dependency only; `okilum --build-info` reports it and
+# native_binary_guard.py refuses it.
+test-support = []
+# Non-publishing Kubernetes Workspace visual harness (#3012): synthetic
+# in-process data, no kubectl; opened only by OKILUM_KUBERNETES_HARNESS.
+kubernetes-ui-harness = []
+
+[dependencies]
+anyhow = "1"
+async-channel = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+futures = "0.3"
+gpui = { package = "okilum-gpui", path = "../okilum-gpui" }
+gpui-base = { path = "../../vendor/gpui-component/crates/base" }
+gpui-component = { workspace = true, features = ["tree-sitter-languages"] }
+log = "0.4"
+okilum-core = { workspace = true, default-features = false }
+okilum-shell-kit = { path = "../okilum-shell-kit" }
+okilum-shell-platform = { path = "../okilum-shell-platform" }
+okilum-shell-viewers = { path = "../okilum-shell-viewers" }
+okilum-write-authority = { path = "../okilum-write-authority" }
+serde.workspace = true
+serde_json = "1"
+sha2 = "0.10"
+shell-words = "1.1"
+tempfile = "3"
+time = { version = "0.3", features = ["formatting", "parsing", "local-offset"] }
+url = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+# Reads the log CSV export back with a parser that did not write it (#1387).
+csv = "1"
+# Private writer state and temp directory per test process (#3271).
+okilum-write-authority = { path = "../okilum-write-authority", features = ["test-isolation"] }
+okilum-core = { workspace = true, features = ["test-support"] }
+okilum-shell-kit = { path = "../okilum-shell-kit", features = ["test-support"] }
+okilum-shell-platform = { path = "../okilum-shell-platform", features = ["test-support"] }
+okilum-shell-viewers = { path = "../okilum-shell-viewers", features = ["test-support"] }
+gpui = { package = "okilum-gpui", path = "../okilum-gpui", features = ["test-support"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+gpui_wgpu = { package = "gpui-pre-wgpu", version = "0.3.3" }
