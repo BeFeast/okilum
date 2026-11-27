@@ -341,6 +341,34 @@ pub(crate) fn test_init(cx: &mut App) {
         crate::reader_fonts::note,
         cx,
     );
+    okilum_shell_viewers::hooks::install(
+        okilum_shell_viewers::hooks::ViewerHooks {
+            code_font: crate::reader_fonts::code,
+            note_font: crate::reader_fonts::note,
+            toast_error: |message, window, cx| crate::reader_toast::error(message, window, cx),
+            toast_transient: |message, window, cx| {
+                crate::reader_toast::transient(message, window, cx)
+            },
+            toast_duckdb_error: |message, window, cx| {
+                crate::reader_toast::duckdb_error(message, window, cx)
+            },
+            open_file: |root, rel, window, cx| {
+                crate::reader_files::run(
+                    crate::reader_files::FileAction::Open,
+                    root,
+                    rel,
+                    window,
+                    cx,
+                )
+            },
+            image_source: crate::reader_files::image_source,
+            #[cfg(target_os = "macos")]
+            start_thumbnail: Some(crate::reader_thumbnail::native::start),
+            #[cfg(not(target_os = "macos"))]
+            start_thumbnail: None,
+        },
+        cx,
+    );
     okilum_shell_project::hooks::install(
         okilum_shell_project::hooks::ProjectHooks {
             show_t3: crate::reader_settings::show_t3,

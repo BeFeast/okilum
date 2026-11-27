@@ -76,7 +76,7 @@ impl Reader {
     }
 }
 
-mod commands;
+pub(crate) use okilum_shell_viewers::reader_read_menu::commands;
 #[cfg(test)]
 mod rich_tests;
 use commands::{commands, Command};

@@ -23,8 +23,8 @@ ENV = {k:v for k,v in os.environ.items() if k != 'OKILUM_TREE2813_CONTROL'}
 original = {}
 patches = []
 
-def edit(name, old, new, count=1):
-    p = ROOT / ('crates/okilum-shell/src/' + name)
+def edit(name, old, new, count=1, crate='okilum-shell-viewers'):
+    p = ROOT / (f'crates/{crate}/src/' + name)
     # Bytes in and out: no platform codepage and no newline translation.
     s = p.read_bytes().decode('utf-8')
     assert s.count(old) == count, (name, old, s.count(old))
@@ -59,13 +59,13 @@ CONTROLS = [
  ('tree-json-only', 'data2813_tree_find_in_normal_size_yaml_and_xml_opens_parents_and_marks_the_row'),
 ]
 TESTS = 'data2813_ xml2813_ toml2813_ yaml2813_ verdicts2813_ corpus2813_'.split()
-CONTROL_FN = '''#[cfg(test)]
-fn tree2813_control(name: &str) -> bool {
+CONTROL_FN = '''#[allow(dead_code)]
+pub(crate) fn tree2813_control(name: &str) -> bool {
     std::env::var("OKILUM_TREE2813_CONTROL").is_ok_and(|v| v == name)
 }
-fn main() {'''
+pub mod hooks;'''
 try:
-    edit('main.rs', 'fn main() {', CONTROL_FN)
+    edit('lib.rs', 'pub mod hooks;', CONTROL_FN)
     tree = 'reader_code_file/document/data_tree.rs'
     edit(tree, 'aside = attribute("id").or_else(|| attribute("name"));',
          'aside = if crate::tree2813_control("name-before-id") { attribute("name").or_else(|| attribute("id")) } else { attribute("id").or_else(|| attribute("name")) };')

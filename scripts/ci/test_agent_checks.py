@@ -759,7 +759,7 @@ class HelperFlowTests(unittest.TestCase):
         self.assertEqual(workspace.COMMAND[:3], ["cargo", "test", "--locked"])
         self.assertEqual([workspace.COMMAND[i + 1] for i, arg in enumerate(workspace.COMMAND)
                           if arg == "-p"],
-                         ["okilum-core", "okilum-shell", "okilum-shell-kit", "okilum-shell-platform", "okilum-shell-text", "okilum-shell-project", "okilum-shell-brain", "okilum-sync", "okilum-t3"])
+                         ["okilum-core", "okilum-shell", "okilum-shell-kit", "okilum-shell-platform", "okilum-shell-text", "okilum-shell-viewers", "okilum-shell-project", "okilum-shell-brain", "okilum-sync", "okilum-t3"])
         self.assertEqual(workspace.COMMAND[-2:], ["--no-fail-fast", "--"])
 
     def test_workspace_census_rejects_missing_failed_and_unfired_controls(self):
@@ -868,7 +868,7 @@ class HelperFlowTests(unittest.TestCase):
                          'if [[ "$FAIL_FIRST" = 1 && ! -e "$FAIL_MARKER" ]]; then\n'
                          '  touch "$FAIL_MARKER"; exit 7\n'
                          'fi\n'
-                         'if [[ " $* " == *" -p okilum-core -p okilum-shell -p okilum-shell-kit -p okilum-shell-platform -p okilum-shell-text -p okilum-shell-project -p okilum-shell-brain -p okilum-sync -p okilum-t3 "* ]]; then\n'
+                         'if [[ " $* " == *" -p okilum-core -p okilum-shell -p okilum-shell-kit -p okilum-shell-platform -p okilum-shell-text -p okilum-shell-viewers -p okilum-shell-project -p okilum-shell-brain -p okilum-sync -p okilum-t3 "* ]]; then\n'
                          '  if [[ " $* " == *" --list "* ]]; then\n'
                          '    printf "ordinary::case0: test\\nordinary::case2: test\\nreader_log::sample: test\\nplatform::reveal::tests::sample: test\\n"\n'
                          '  else\n'
@@ -920,7 +920,7 @@ class HelperFlowTests(unittest.TestCase):
                 self.assertIn('sidecar::macos::preparation::', calls[-1])
                 wrapped = groups.read_text().splitlines()
                 workspace_calls = [call for call in calls if
-                                   '-p okilum-core -p okilum-shell -p okilum-shell-kit -p okilum-shell-platform -p okilum-shell-text -p okilum-shell-project -p okilum-shell-brain -p okilum-sync -p okilum-t3' in call]
+                                   '-p okilum-core -p okilum-shell -p okilum-shell-kit -p okilum-shell-platform -p okilum-shell-text -p okilum-shell-viewers -p okilum-shell-project -p okilum-shell-brain -p okilum-sync -p okilum-t3' in call]
                 self.assertEqual(len(workspace_calls), 5)  # census + four disjoint runs
                 self.assertIn('--list', workspace_calls[0])
                 ordinary_calls = [call for call in workspace_calls if '--exact' in call]
@@ -968,7 +968,7 @@ class HelperFlowTests(unittest.TestCase):
             self.assertEqual([group for group in everything if group.startswith('workspace-')], workspace)
             # The census selection is compiled before the census deadline starts.
             self.assertIn('--no-run', workspace_calls[0])
-            self.assertIn('-p okilum-core -p okilum-shell -p okilum-shell-kit -p okilum-shell-platform -p okilum-shell-text -p okilum-shell-project -p okilum-shell-brain -p okilum-sync -p okilum-t3', workspace_calls[0])
+            self.assertIn('-p okilum-core -p okilum-shell -p okilum-shell-kit -p okilum-shell-platform -p okilum-shell-text -p okilum-shell-viewers -p okilum-shell-project -p okilum-shell-brain -p okilum-sync -p okilum-t3', workspace_calls[0])
             self.assertFalse(any('--no-run' in call for call in calls + checks_calls))
             result, calls, groups = run('bogus')
             self.assertEqual((result.returncode, calls, groups), (2, [], []))

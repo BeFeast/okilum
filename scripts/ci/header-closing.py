@@ -23,8 +23,8 @@ ENV = {k:v for k,v in os.environ.items() if k != 'OKILUM_CLOSE2813_CONTROL'}
 original = {}
 patches = []
 
-def edit(name, old, new, count=1):
-    p = ROOT / ('crates/okilum-shell/src/' + name)
+def edit(name, old, new, count=1, crate='okilum-shell'):
+    p = ROOT / (f'crates/{crate}/src/' + name)
     # Bytes in and out: no platform codepage and no newline translation.
     s = p.read_bytes().decode('utf-8')
     assert s.count(old) == count, (name, old, s.count(old))
@@ -68,11 +68,16 @@ fn close2813_control(name: &str) -> bool {
 fn main() {'''
 try:
     edit('main.rs', 'fn main() {', CONTROL_FN)
+    edit('lib.rs', 'pub mod hooks;', '''#[allow(dead_code)]
+pub(crate) fn close2813_control(name: &str) -> bool {
+    std::env::var("OKILUM_CLOSE2813_CONTROL").is_ok_and(|v| v == name)
+}
+pub mod hooks;''', crate='okilum-shell-viewers')
     edit('reader_code_file/toolbar.rs', '                action.labelled = true;\n                if let Availability::Disabled(reason) = &folding {',
-         '                action.labelled = !crate::close2813_control("fold-unlabelled");\n                if let Availability::Disabled(reason) = &folding {')
+         '                action.labelled = !crate::close2813_control("fold-unlabelled");\n                if let Availability::Disabled(reason) = &folding {', crate='okilum-shell-viewers')
     edit('main.rs', 'fn bind_keys(cx: &mut App) {', 'fn bind_keys(cx: &mut App) {' + INJECT)
-    edit('reader_viewer_chrome.rs', '                step.priority = self.collapse_priority;', '                step.priority = if crate::close2813_control("labels-after-overflow") { 60_000 } else { self.collapse_priority };')
-    edit('reader_viewer_chrome/overflow.rs', '            steps.push(OverflowStep {\n                priority: 0,\n                width: minimum,', '            steps.push(OverflowStep {\n                priority: if crate::close2813_control("labels-after-overflow") { 60_000 } else { 0 },\n                width: minimum,')
+    edit('reader_viewer_chrome.rs', '                step.priority = self.collapse_priority;', '                step.priority = if crate::close2813_control("labels-after-overflow") { 60_000 } else { self.collapse_priority };', crate='okilum-shell-viewers')
+    edit('reader_viewer_chrome/overflow.rs', '            steps.push(OverflowStep {\n                priority: 0,\n                width: minimum,', '            steps.push(OverflowStep {\n                priority: if crate::close2813_control("labels-after-overflow") { 60_000 } else { 0 },\n                width: minimum,', crate='okilum-shell-viewers')
     (OUT / 'mutations.diff').write_text('\n'.join(patches))
     if '--audit' in sys.argv:
         print('CLOSE2813_MUTATION_ANCHORS_PASS', flush=True)

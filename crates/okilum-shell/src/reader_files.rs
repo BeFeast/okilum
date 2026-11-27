@@ -547,8 +547,19 @@ impl Reader {
                 }
                 let mut preview = preview;
                 if okilum_core::excalidraw::is_drawing(rel) {
-                    let reader = cx.entity().downgrade();
-                    preview.drawing = Some(cx.new(|_| reader_drawing::FileHandle::new(reader)));
+                    let reader_edit = cx.entity().downgrade();
+                    let reader_notify = reader_edit.clone();
+                    preview.drawing = Some(cx.new(|_| {
+                        reader_drawing::FileHandle::new(
+                            Rc::new(move |path, window, cx| {
+                                let _ = reader_edit
+                                    .update(cx, |reader, cx| reader.edit_drawing(path, window, cx));
+                            }),
+                            Rc::new(move |cx| {
+                                let _ = reader_notify.update(cx, |_, cx| cx.notify());
+                            }),
+                        )
+                    }));
                 }
                 self.observe_preview_file(&mut preview, window, cx);
                 if reader_canvas::eligible(&preview.path) {
@@ -557,7 +568,9 @@ impl Reader {
                         reader_canvas::CanvasView::new(
                             self.vault_root.clone(),
                             rel.into(),
-                            reader,
+                            Rc::new(move |url, window, cx| {
+                                handle_link(&reader, &url, window, cx);
+                            }),
                             cx,
                         )
                     }));
@@ -613,7 +626,18 @@ impl Reader {
                     let (root, path) = (self.vault_root.clone(), preview.path.clone());
                     let reader = cx.entity().downgrade();
                     preview.har = Some(cx.new(|cx| {
-                        reader_har::HarView::new(root, rel.into(), path, reader, window, cx)
+                        reader_har::HarView::new(
+                            root,
+                            rel.into(),
+                            path,
+                            Rc::new(move |source, window, cx| {
+                                let _ = reader.update(cx, |reader, cx| {
+                                    reader.show_har_source(source, window, cx)
+                                });
+                            }),
+                            window,
+                            cx,
+                        )
                     }));
                 } else if reader_archive::eligible(rel) {
                     let path = preview.path.clone();

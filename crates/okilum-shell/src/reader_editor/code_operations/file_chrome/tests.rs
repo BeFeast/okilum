@@ -1654,15 +1654,15 @@ fn xml2912_corpus_files_keep_tokens_and_reformat_idempotently() {
     for (name, source) in [
         (
             "pom.xml",
-            include_str!("../../../reader_code_file/document/corpus/pom.xml"),
+            include_str!("../../../../../okilum-shell-viewers/src/reader_code_file/document/corpus/pom.xml"),
         ),
         (
             "atom.xml",
-            include_str!("../../../reader_code_file/document/corpus/atom.xml"),
+            include_str!("../../../../../okilum-shell-viewers/src/reader_code_file/document/corpus/atom.xml"),
         ),
         (
             "schema.xsd",
-            include_str!("../../../reader_code_file/document/corpus/schema.xsd"),
+            include_str!("../../../../../okilum-shell-viewers/src/reader_code_file/document/corpus/schema.xsd"),
         ),
     ] {
         let result = match format("xml", source) {

@@ -26,8 +26,8 @@ ENV = {k:v for k,v in os.environ.items() if k != 'OKILUM_CONTENTS2814_CONTROL'}
 original = {}
 patches = []
 
-def edit(name, old, new, count=1):
-    p = ROOT / ('crates/okilum-shell/src/' + name)
+def edit(name, old, new, count=1, crate='okilum-shell'):
+    p = ROOT / (f'crates/{crate}/src/' + name)
     # Bytes in and out: no platform codepage and no newline translation.
     s = p.read_bytes().decode('utf-8')
     assert s.count(old) == count, (name, old, s.count(old))
@@ -104,6 +104,11 @@ fn contents2814_control(name: &str) -> bool {
 fn main() {"""
 try:
     edit('main.rs', 'fn main() {', CONTROL_FN)
+    edit('lib.rs', 'pub mod hooks;', '''#[allow(dead_code)]
+pub(crate) fn contents2814_control(name: &str) -> bool {
+    std::env::var("OKILUM_CONTENTS2814_CONTROL").is_ok_and(|v| v == name)
+}
+pub mod hooks;''', crate='okilum-shell-viewers')
     tree = 'reader_file_outline/tree.rs'
     edit(tree, 'children > 0 && children <= OPEN_CHILDREN && doc.structure[index].depth <= OPEN_DEPTH',
          'children > 0 && (crate::contents2814_control("open-all-depths") || children <= OPEN_CHILDREN && doc.structure[index].depth <= OPEN_DEPTH)')
@@ -142,22 +147,22 @@ try:
     edit('reader_right_panel.rs', 'let service = service_file(reader) && reader.pane.backlinks.is_empty();', 'let service = service_file(reader) && (reader.pane.backlinks.is_empty() || crate::contents2814_control("hide-linked-backlinks"));')
     edit('reader_right_panel.rs', '    reader.pane.file_preview.as_ref().is_some_and(|preview| {', '    !crate::contents2814_control("linked-from-everywhere") && reader.pane.file_preview.as_ref().is_some_and(|preview| {')
     code = 'reader_code_file/contents.rs'
-    edit(code, '                    caret: self.structure.selected.map(|row| (0, row)),', '                    caret: self.structure.selected.map(|row| (0, row)).filter(|_| !crate::contents2814_control("tree-selection-ignored")),')
-    edit(code, '                    caret: Some((self.page, cursor)),', '                    caret: Some((if crate::contents2814_control("local-caret") { 0 } else { self.page }, cursor)),')
-    edit(code, '        self.contents_jumps += 1;', '        if !crate::contents2814_control("jump-gen-ignored") {\n            self.contents_jumps += 1;\n        }')
-    edit(code, '            || matches!(language(&self.rel), Some("yaml" | "toml" | "xml"))', '            || (!crate::contents2814_control("json-only-contents") && matches!(language(&self.rel), Some("yaml" | "toml" | "xml")))')
-    edit(code, ".take_while(|b| *b == b' ' || *b == b'\\t')", ".take_while(|b| !crate::contents2814_control(\"indent-current\") && (*b == b' ' || *b == b'\\t'))")
-    edit(code, '        let index = if Arc::ptr_eq(&raw, rows) {', '        let index = if Arc::ptr_eq(&raw, rows) || crate::contents2814_control("click-by-index") {')
-    edit(code, '            View::Tree => {\n                self.structure.reveal_node(index, &active);', '            View::Tree => {\n                if crate::contents2814_control("click-switches-view") {\n                    self.apply_view(View::Raw, window, cx);\n                }\n                self.structure.reveal_node(index, &active);')
-    edit(code, '        self.table.clone().filter(|_| self.view == View::Table)', '        self.table.clone().filter(|_| self.view == View::Table && !crate::contents2814_control("table-no-columns"))')
+    edit(code, '                    caret: self.structure.selected.map(|row| (0, row)),', '                    caret: self.structure.selected.map(|row| (0, row)).filter(|_| !crate::contents2814_control("tree-selection-ignored")),', crate='okilum-shell-viewers')
+    edit(code, '                    caret: Some((self.page, cursor)),', '                    caret: Some((if crate::contents2814_control("local-caret") { 0 } else { self.page }, cursor)),', crate='okilum-shell-viewers')
+    edit(code, '        self.contents_jumps += 1;', '        if !crate::contents2814_control("jump-gen-ignored") {\n            self.contents_jumps += 1;\n        }', crate='okilum-shell-viewers')
+    edit(code, '            || matches!(language(&self.rel), Some("yaml" | "toml" | "xml"))', '            || (!crate::contents2814_control("json-only-contents") && matches!(language(&self.rel), Some("yaml" | "toml" | "xml")))', crate='okilum-shell-viewers')
+    edit(code, ".take_while(|b| *b == b' ' || *b == b'\\t')", ".take_while(|b| !crate::contents2814_control(\"indent-current\") && (*b == b' ' || *b == b'\\t'))", crate='okilum-shell-viewers')
+    edit(code, '        let index = if Arc::ptr_eq(&raw, rows) {', '        let index = if Arc::ptr_eq(&raw, rows) || crate::contents2814_control("click-by-index") {', crate='okilum-shell-viewers')
+    edit(code, '            View::Tree => {\n                self.structure.reveal_node(index, &active);', '            View::Tree => {\n                if crate::contents2814_control("click-switches-view") {\n                    self.apply_view(View::Raw, window, cx);\n                }\n                self.structure.reveal_node(index, &active);', crate='okilum-shell-viewers')
+    edit(code, '        self.table.clone().filter(|_| self.view == View::Table)', '        self.table.clone().filter(|_| self.view == View::Table && !crate::contents2814_control("table-no-columns"))', crate='okilum-shell-viewers')
     edit(view, '            (None, Some(_)) => {\n                self.snapshot.columns = None;', '            (None, Some(_)) => {\n                if crate::contents2814_control("columns-stay") {\n                    return;\n                }\n                self.snapshot.columns = None;')
     dl = 'reader_delimited/chrome.rs'
-    edit(dl, '        self.end.map(|cell| cell.column)\n    }', '        self.end.map(|cell| cell.column).filter(|_| !crate::contents2814_control("columns-no-mark"))\n    }')
-    edit(dl, '            .unwrap_or(first);', '            .unwrap_or(first);\n        let row = if crate::contents2814_control("column-jump-row") { first } else { row };')
-    edit(dl, '        self.reveal_column_offset(column);\n        self.focus', '        if !crate::contents2814_control("column-no-scroll") {\n            self.reveal_column_offset(column);\n        }\n        self.focus')
-    edit(dl, '                let cell = if self.header {', '                let cell = if self.header || crate::contents2814_control("columns-ignore-header") {')
-    edit(dl, '                    (visible(cell), cell.to_owned())', '                    (visible(cell), if crate::contents2814_control("column-tooltip-cut") { visible(cell) } else { cell.to_owned() })')
-    edit(dl, '        if self.order.is_empty() {', '        if self.order.is_empty() && !crate::contents2814_control("column-no-rows-select") {')
+    edit(dl, '        self.end.map(|cell| cell.column)\n    }', '        self.end.map(|cell| cell.column).filter(|_| !crate::contents2814_control("columns-no-mark"))\n    }', crate='okilum-shell-viewers')
+    edit(dl, '            .unwrap_or(first);', '            .unwrap_or(first);\n        let row = if crate::contents2814_control("column-jump-row") { first } else { row };', crate='okilum-shell-viewers')
+    edit(dl, '        self.reveal_column_offset(column);\n        self.focus', '        if !crate::contents2814_control("column-no-scroll") {\n            self.reveal_column_offset(column);\n        }\n        self.focus', crate='okilum-shell-viewers')
+    edit(dl, '                let cell = if self.header {', '                let cell = if self.header || crate::contents2814_control("columns-ignore-header") {', crate='okilum-shell-viewers')
+    edit(dl, '                    (visible(cell), cell.to_owned())', '                    (visible(cell), if crate::contents2814_control("column-tooltip-cut") { visible(cell) } else { cell.to_owned() })', crate='okilum-shell-viewers')
+    edit(dl, '        if self.order.is_empty() {', '        if self.order.is_empty() && !crate::contents2814_control("column-no-rows-select") {', crate='okilum-shell-viewers')
     (OUT / 'mutations.diff').write_text('\n'.join(patches))
     if '--audit' in sys.argv:
         print('CONTENTS2814_MUTATION_ANCHORS_PASS', flush=True)

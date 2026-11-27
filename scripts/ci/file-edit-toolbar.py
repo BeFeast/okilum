@@ -104,9 +104,15 @@ CONTROLS = [
 ]
 
 try:
+    edit('lib.rs', 'pub mod hooks;', '''#[allow(dead_code)]
+pub(crate) fn file2811_control(name: &str) -> bool {
+    std::env::var("OKILUM_FILE2811_CONTROL").is_ok_and(|v|v==name)
+}
+pub mod hooks;''', crate='okilum-shell-viewers')
     edit('reader_code_file/view.rs',
          '        self.restored_presentation = None;\n        self.provisional_interacted.set(true);',
-         '        if !crate::file2811_control("restore-overrides-choice") {self.restored_presentation = None;}\n        self.provisional_interacted.set(true);')
+         '        if !crate::file2811_control("restore-overrides-choice") {self.restored_presentation = None;}\n        self.provisional_interacted.set(true);',
+         crate='okilum-shell-viewers')
     edit('platform/shaped_line_cache.rs',
          '    fn same_native_geometry(a: &LineLayout, b: &LineLayout) -> bool {',
          '    fn same_native_geometry(a: &LineLayout, b: &LineLayout) -> bool {\n        if crate::file2811_control("geometry-partition") { return native_ascii::exact_geometry(a, b); }')
@@ -170,7 +176,8 @@ reader.editing.as_ref().map(|e| if crate::file2811_control("source-header") {for
     edit('reader_editor.rs', 'code.restore_presentation(saved, window, cx)',
          'if !crate::file2811_control("lost-presentation") {code.restore_presentation(saved, window, cx)}')
     edit('reader_code_file/presentation.rs', 'self.show_page(saved.page, window, cx);',
-         'self.show_page(if crate::file2811_control("lost-page") {0} else {saved.page}, window, cx);')
+         'self.show_page(if crate::file2811_control("lost-page") {0} else {saved.page}, window, cx);',
+         crate='okilum-shell-viewers')
     edit('main.rs', 'for context in ["ReaderFileEdit", "ReaderFileEdit > Input"] {',
          'for context in if crate::file2811_control("dead-shortcuts") {["Unused", "Unused > Input"]} else {["ReaderFileEdit", "ReaderFileEdit > Input"]} {')
     edit(base, 'reader_toast::transient(toast, window, cx);',

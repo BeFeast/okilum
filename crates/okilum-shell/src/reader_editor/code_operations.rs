@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-gpui::actions!(okilum, [FormatCode, ValidateCode, RepairCode]);
+pub(crate) use okilum_shell_kit::actions::{FormatCode, RepairCode, ValidateCode};
 
 #[derive(Default)]
 pub(super) struct State {

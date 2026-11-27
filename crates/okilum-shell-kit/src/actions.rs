@@ -2,7 +2,34 @@
 //! (#3237, epic #3241). Action names remain `okilum::*` so user keymaps and
 //! the action inventory golden list are unchanged.
 
-gpui::actions!(okilum, [Dismiss, DismissManagerModel]);
+gpui::actions!(
+    okilum,
+    [
+        Dismiss,
+        DismissManagerModel,
+        FindInNote,
+        FindNext,
+        FindPrev,
+        ToggleSoftWrap,
+        CopyFileContent,
+        CopyViewerImage,
+        CanvasFit,
+        CanvasZoomIn,
+        CanvasZoomOut,
+        ArchiveExtractSelected,
+        ArchiveExtractAll,
+        ExpandDrawing,
+        OpenDrawingExternally,
+        CopyDrawingDetails,
+        ShowDrawingDetails,
+        PdfZoomIn,
+        PdfZoomOut,
+        PdfZoomFit,
+        FormatCode,
+        ValidateCode,
+        RepairCode,
+    ]
+);
 
 /// Open in terminal (#2837). Not Win+Alt+T on Windows: the Xbox Game Bar
 /// shows or hides its recording timer there and the key never reaches Okilum

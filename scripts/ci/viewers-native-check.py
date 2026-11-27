@@ -3,7 +3,7 @@ import subprocess
 import sys
 
 GROUPS = {
-    "audio": ("okilum-shell", None, "reader_audio::tests", [
+    "audio": ("okilum-shell-viewers", "--lib", "reader_audio::tests", [
         "mp3_and_wav_decode_non_silence_and_seek_without_an_output_device",
         "expanded_audio_formats_decode_seek_and_probe_duration",
         "real_sink_controls_pause_seek_volume_end_and_replay",
@@ -11,7 +11,7 @@ GROUPS = {
         "single_active_player_coordinator_pauses_previous_player",
         "audio_view_probes_duration_in_background_and_handles_keys",
     ]),
-    "media": ("okilum-shell", None, "reader_media::tests", [
+    "media": ("okilum-shell-viewers", "--lib", "reader_media::tests", [
         "media_file_urls_share_the_canonical_vault_identity_and_reject_outside_files",
         "video_extensions_do_not_capture_audio_or_images",
         "video_card_only_opens_its_checked_file_after_an_explicit_click",

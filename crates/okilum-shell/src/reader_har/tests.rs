@@ -572,8 +572,14 @@ fn har2836_sorting_cycles_and_arrow_keys_select(cx: &mut TestAppContext) {
 fn har2836_viewer_sources_never_log_content() {
     for (name, source) in [
         ("reader_har.rs", include_str!("../reader_har.rs")),
-        ("details.rs", include_str!("details.rs")),
-        ("model.rs", include_str!("model.rs")),
+        (
+            "details.rs",
+            include_str!("../../../okilum-shell-viewers/src/reader_har/details.rs"),
+        ),
+        (
+            "model.rs",
+            include_str!("../../../okilum-shell-viewers/src/reader_har/model.rs"),
+        ),
         ("har.rs", include_str!("../../../okilum-core/src/har.rs")),
     ] {
         for forbidden in [
@@ -714,7 +720,7 @@ fn fix2888_detail_values_select_and_copy_in_full(cx: &mut TestAppContext) {
     draw(visual);
     assert_eq!(har.read_with(visual, |har, _| har.detail_row), Some(url));
     let items: Vec<String> = har.read_with(visual, |har, _| match &har.detail {
-        Some(Detail::Ready(rows)) => copy_items(rows, url)
+        Some(Detail::Ready(rows)) => copy_items(&rows, url)
             .into_iter()
             .map(|(l, _)| l.to_string())
             .collect(),

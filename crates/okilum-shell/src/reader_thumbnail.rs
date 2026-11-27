@@ -1,150 +1,13 @@
-//! A selection-owned bitmap: dropping the view cancels native provider work.
-use super::*;
-use std::os::unix::fs::MetadataExt;
-
-const MAX_PIXELS: u32 = 2048;
-const TIMEOUT: Duration = Duration::from_secs(10);
-
-#[derive(Debug, PartialEq, Eq)]
-struct Revision {
-    path: PathBuf,
-    device: u64,
-    inode: u64,
-    size: u64,
-    modified: (i64, i64),
-    changed: (i64, i64),
-}
-impl Revision {
-    fn read(root: &Path, rel: &str) -> anyhow::Result<Self> {
-        let path = reader_files::checked_path(root, rel)?;
-        let meta = std::fs::metadata(&path)?;
-        anyhow::ensure!(meta.is_file(), "Not a regular file");
-        Ok(Self {
-            path,
-            device: meta.dev(),
-            inode: meta.ino(),
-            size: meta.len(),
-            modified: (meta.mtime(), meta.mtime_nsec()),
-            changed: (meta.ctime(), meta.ctime_nsec()),
-        })
-    }
-}
-
-pub(super) fn eligible(rel: &str) -> bool {
-    let ext = Path::new(rel)
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    // Keep vector fidelity and animation in the existing image renderer.
-    // HEIC/HEIF use the image viewer's bounded decoder on every platform, so
-    // its live refresh and decoder messages reach the preview (#3064).
-    !matches!(
-        ext.as_str(),
-        "svg" | "gif" | "webp" | "apng" | "heic" | "heif"
-    ) && !okilum_core::excalidraw::is_drawing(rel)
-}
-
-enum State {
-    Loading,
-    Ready(Arc<RenderImage>),
-    Unavailable,
-}
-
-pub(super) struct Thumbnail {
-    state: State,
-    _task: Option<Task<()>>,
-}
-impl Thumbnail {
-    pub(super) fn new(root: PathBuf, rel: String, cx: &mut Context<Self>) -> Self {
-        let renderer = cx.svg_renderer();
-        let task = cx.spawn(async move |this, cx| {
-            let source_root = root.clone();
-            let source_rel = rel.clone();
-            let revision = cx
-                .background_executor()
-                .spawn(async move { Revision::read(&source_root, &source_rel) })
-                .await;
-            let result = async {
-                let before = revision?;
-                let request = native::Request::start(&before.path)?;
-                let started = std::time::Instant::now();
-                let png = loop {
-                    if let Some(png) = request.poll()? {
-                        break png;
-                    }
-                    anyhow::ensure!(started.elapsed() < TIMEOUT, "Thumbnail timed out");
-                    cx.background_executor()
-                        .timer(Duration::from_millis(50))
-                        .await;
-                };
-                drop(request);
-                cx.background_executor()
-                    .spawn(async move {
-                        anyhow::ensure!(before == Revision::read(&root, &rel)?, "File changed");
-                        // Validate geometry before GPUI allocates a decoded frame.
-                        let decoder = image::ImageReader::with_format(
-                            std::io::Cursor::new(&png),
-                            image::ImageFormat::Png,
-                        );
-                        let (width, height) = decoder.into_dimensions()?;
-                        anyhow::ensure!(
-                            width > 0 && height > 0 && width <= MAX_PIXELS && height <= MAX_PIXELS,
-                            "Thumbnail dimensions exceed the limit"
-                        );
-                        let image =
-                            Image::from_bytes(ImageFormat::Png, png).to_image_data(renderer)?;
-                        anyhow::ensure!(before == Revision::read(&root, &rel)?, "File changed");
-                        Ok(image)
-                    })
-                    .await
-            }
-            .await;
-            let _ = this.update(cx, |this, cx| {
-                this.state = match result {
-                    Ok(image) => State::Ready(image),
-                    Err(_) => State::Unavailable,
-                };
-                cx.notify();
-            });
-        });
-        Self {
-            state: State::Loading,
-            _task: Some(task),
-        }
-    }
-}
-impl Render for Thumbnail {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let content = match &self.state {
-            State::Ready(image) => {
-                reader_image::ReaderImage::new(image.clone().into()).into_any_element()
-            }
-            State::Loading => div()
-                .id("file-preview-loading")
-                .p_6()
-                .text_color(cx.theme().muted_foreground)
-                .child("Loading preview…")
-                .into_any_element(),
-            State::Unavailable => v_flex()
-                .id("file-preview-unavailable")
-                .p_6()
-                .gap_3()
-                .text_color(cx.theme().muted_foreground)
-                .child(Icon::new(IconName::File).size(px(48.)))
-                .child("Preview unavailable. Press Space for Quick Look, or open the file.")
-                .into_any_element(),
-        };
-        div().w_full().flex_none().child(content)
-    }
-}
+//! macOS Quick Look thumbnail FFI bridge (#3238).
+pub(crate) use okilum_shell_viewers::reader_thumbnail::*;
 
 #[cfg(target_os = "macos")]
-mod native {
-    use super::*;
+pub(crate) mod native {
+    use okilum_shell_viewers::hooks::ThumbnailRequest;
     use std::{
         ffi::{c_char, c_void, CString},
         os::unix::ffi::OsStrExt,
+        path::Path,
     };
 
     unsafe extern "C" {
@@ -158,20 +21,13 @@ mod native {
         fn okilum_thumbnail_cancel(handle: *mut c_void);
     }
 
-    pub(super) struct Request(*mut c_void);
-    impl Request {
-        pub(super) fn start(path: &Path) -> anyhow::Result<Self> {
-            let path = CString::new(path.as_os_str().as_bytes())?;
-            // The bridge copies the path and returns one owned retain.
-            let handle = unsafe { okilum_thumbnail_start(path.as_ptr()) };
-            anyhow::ensure!(!handle.is_null(), "Cannot request thumbnail");
-            Ok(Self(handle))
-        }
-        pub(super) fn poll(&self) -> anyhow::Result<Option<Vec<u8>>> {
+    pub(crate) struct Request(*mut c_void);
+    unsafe impl Send for Request {}
+
+    impl ThumbnailRequest for Request {
+        fn poll(&self) -> anyhow::Result<Option<Vec<u8>>> {
             let mut bytes = std::ptr::null_mut();
             let mut length = 0;
-            // No Rust callback or borrow escapes this call. The bridge lock
-            // synchronizes provider completion; a successful poll transfers bytes.
             let status = unsafe { okilum_thumbnail_poll(self.0, &mut bytes, &mut length) };
             match status {
                 0 => Ok(None),
@@ -184,148 +40,34 @@ mod native {
             }
         }
     }
+
     impl Drop for Request {
         fn drop(&mut self) {
-            // Exactly one release, including future cancellation and timeout.
             unsafe { okilum_thumbnail_cancel(self.0) };
         }
     }
-}
 
-#[cfg(not(target_os = "macos"))]
-mod native {
-    use super::*;
-    pub(super) struct Request;
-    impl Drop for Request {
-        fn drop(&mut self) {}
-    }
-    impl Request {
-        pub(super) fn start(_: &Path) -> anyhow::Result<Self> {
-            anyhow::bail!("macOS only")
-        }
-        pub(super) fn poll(&self) -> anyhow::Result<Option<Vec<u8>>> {
-            unreachable!()
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ::core::prelude::v1::test;
-
-    #[gpui::test]
-    fn preview_states_fit_the_column_and_release_on_navigation(cx: &mut TestAppContext) {
-        struct Host {
-            preview: Option<Entity<Thumbnail>>,
-            width: f32,
-        }
-        impl Render for Host {
-            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-                div()
-                    .id("thumbnail-scroll")
-                    .size_full()
-                    .overflow_y_scroll()
-                    .child(
-                        v_flex()
-                            .flex_none()
-                            .w(px(self.width))
-                            .debug_selector(|| "thumbnail-box".into())
-                            .children(self.preview.clone()),
-                    )
-            }
-        }
-        cx.update(crate::test_init);
-        let (host, visual) = cx.add_window_view(|_, cx| Host {
-            preview: Some(
-                cx.new(|cx| Thumbnail::new(PathBuf::from("/missing"), "file.pdf".into(), cx)),
-            ),
-            width: 640.,
-        });
-        // Cancel the real task; supply controlled completed states to test layout.
-        let preview = host.read_with(visual, |host, _| host.preview.clone().unwrap());
-        preview.update(visual, |preview, cx| {
-            preview._task = None;
-            preview.state = State::Loading;
-            cx.notify();
-        });
-        visual.run_until_parked();
-        visual.update(|window, cx| window.draw(cx).clear(cx));
-        assert!(visual.debug_bounds("thumbnail-box").unwrap().size.height > px(20.));
-        let image = Arc::new(RenderImage::new(vec![image::Frame::new(
-            image::RgbaImage::from_pixel(1200, 1600, image::Rgba([80, 100, 180, 255])),
-        )]));
-        preview.update(visual, |preview, cx| {
-            preview.state = State::Ready(image);
-            cx.notify();
-        });
-        for width in [640., 280., 920.] {
-            host.update(visual, |host, cx| {
-                host.width = width;
-                cx.notify();
-            });
-            visual.run_until_parked();
-            visual.update(|window, cx| window.draw(cx).clear(cx));
-            let bounds = visual.debug_bounds("thumbnail-box").unwrap();
-            assert!((bounds.size.width - px(width)).abs() < px(1.));
-            assert!(
-                (bounds.size.height - px(width * 1600. / 1200.)).abs() < px(1.),
-                "width={width}, bounds={bounds:?}"
-            );
-        }
-        preview.update(visual, |preview, cx| {
-            preview.state = State::Unavailable;
-            cx.notify();
-        });
-        visual.run_until_parked();
-        visual.update(|window, cx| window.draw(cx).clear(cx));
-        assert!(visual.debug_bounds("thumbnail-box").unwrap().size.height > px(48.));
-        let weak = preview.downgrade();
-        drop(preview);
-        host.update(visual, |host, cx| {
-            host.preview = None;
-            cx.notify();
-        });
-        visual.run_until_parked();
-        assert!(
-            weak.upgrade().is_none(),
-            "leaving a file releases its thumbnail/task"
-        );
-    }
-
-    #[test]
-    fn revision_rejects_replace_change_and_escape() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("vault");
-        std::fs::create_dir(&root).unwrap();
-        let path = root.join("file.pdf");
-        std::fs::write(&path, b"before").unwrap();
-        let before = Revision::read(&root, "file.pdf").unwrap();
-        assert_eq!(before, Revision::read(&root, "file.pdf").unwrap());
-        std::fs::write(root.join("replacement"), b"after!").unwrap();
-        std::fs::rename(root.join("replacement"), &path).unwrap();
-        assert_ne!(before, Revision::read(&root, "file.pdf").unwrap());
-        std::fs::remove_file(&path).unwrap();
-        assert!(Revision::read(&root, "file.pdf").is_err());
-        std::fs::write(dir.path().join("outside.pdf"), b"outside").unwrap();
-        std::os::unix::fs::symlink(dir.path().join("outside.pdf"), &path).unwrap();
-        assert!(Revision::read(&root, "file.pdf").is_err());
-        assert!(eligible("report.pdf"));
-        assert!(eligible("deck.pptx"));
-        assert!(!eligible("animated.GIF"));
-        assert!(!eligible("diagram.svg"));
-        assert!(!eligible("photo.HEIC"));
-        assert!(!eligible("photo.heif"));
+    pub(crate) fn start(path: &Path) -> anyhow::Result<Box<dyn ThumbnailRequest>> {
+        let path = CString::new(path.as_os_str().as_bytes())?;
+        let handle = unsafe { okilum_thumbnail_start(path.as_ptr()) };
+        anyhow::ensure!(!handle.is_null(), "Cannot request thumbnail");
+        Ok(Box::new(Request(handle)))
     }
 }
 
 #[cfg(all(test, target_os = "macos"))]
 mod native_tests {
-    use super::*;
+    use super::native;
     use ::core::prelude::v1::test;
+    use okilum_shell_viewers::hooks::ThumbnailRequest as _;
+    use std::path::Path;
+    use std::time::Duration;
+
+    const MAX_PIXELS: u32 = 2048;
+    const TIMEOUT: Duration = Duration::from_secs(10);
 
     fn generate(path: &Path) -> anyhow::Result<Vec<u8>> {
-        let request = native::Request::start(path)?;
+        let request = native::start(path)?;
         let start = std::time::Instant::now();
         loop {
             if let Some(png) = request.poll()? {
@@ -383,7 +125,7 @@ mod native_tests {
         // Cancellation must not leave a dangling Rust callback or prevent the
         // next selection from succeeding. The last request is the positive control.
         for _ in 0..8 {
-            drop(native::Request::start(&pdf).unwrap());
+            drop(native::start(&pdf).unwrap());
         }
         assert!(generate(&pdf).is_ok());
         let bad = directory.path().join("broken.pdf");

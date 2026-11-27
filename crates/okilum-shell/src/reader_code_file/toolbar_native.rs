@@ -1,7 +1,7 @@
 //! Opt-in real Reader timing gate for toolbar step 5. No test-support platform.
 use super::*;
+pub(super) use okilum_shell_viewers::reader_code_file::toolbar_native::trace;
 use std::time::Duration;
-pub(super) mod trace;
 
 fn submit_frame(window: &mut Window) -> f64 {
     let mut frames = gpui::profiler::FrameTimingCollector::new();

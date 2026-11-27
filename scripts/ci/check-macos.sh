@@ -49,7 +49,7 @@ run_tests() {
     local package="$1" target="$2" filter="$3"
     shift 3
     local selection=(-p "$package")
-    case "$package" in okilum-core|okilum-shell|okilum-shell-kit|okilum-shell-platform|okilum-shell-text|okilum-shell-project|okilum-shell-brain) selection=("${SHARED[@]}") ;; esac
+    case "$package" in okilum-core|okilum-shell|okilum-shell-kit|okilum-shell-platform|okilum-shell-text|okilum-shell-viewers|okilum-shell-project|okilum-shell-brain) selection=("${SHARED[@]}") ;; esac
     # Positive control: a renamed/removed filter must not silently run zero tests.
     if ! cargo "${cargo_args[@]}" "${selection[@]}" "$target" "$filter" -- --list "$@" \
         | tee "${RUNNER_TEMP}/macos-test-list.txt"; then

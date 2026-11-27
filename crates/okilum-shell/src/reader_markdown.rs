@@ -267,7 +267,12 @@ fn markdown_plugins_at(
                     &root,
                     &path,
                     image.drawing_size,
-                    image_actions.clone(),
+                    image_actions.clone().map(|reader| {
+                        Rc::new(move |path: PathBuf, window: &mut Window, cx: &mut App| {
+                            let _ = reader
+                                .update(cx, |reader, cx| reader.edit_drawing(path, window, cx));
+                        }) as reader_drawing::EditDrawingFn
+                    }),
                     window,
                     cx,
                 ),

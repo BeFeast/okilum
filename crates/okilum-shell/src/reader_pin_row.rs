@@ -17,26 +17,9 @@ use super::*;
 use gpui_component::menu::{ContextMenuExt as _, PopupMenuItem};
 
 /// Height of the row; it appears only while a pinned file exists.
-pub(crate) const PIN_ROW_HEIGHT: f32 = 34.;
+pub(crate) use okilum_shell_viewers::reader_pin_row::{pin_label, PinnedFile, PIN_ROW_HEIGHT};
 /// A long name is cut so several pins share the row.
 const PIN_MAX_WIDTH: f32 = 220.;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PinnedFile {
-    pub path: String,
-    pub label: String,
-    /// Moved or deleted outside Okilum: not in the complete inventory.
-    pub missing: bool,
-}
-
-/// The menu label for `rel`'s pin.
-pub(crate) fn pin_label(pinned: bool) -> &'static str {
-    if pinned {
-        "Unpin"
-    } else {
-        "Pin"
-    }
-}
 
 /// «Pin» or «Unpin» for `rel`, shared by every file menu. None where pins do
 /// not exist: a single file opened without its vault, or no file.

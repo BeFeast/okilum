@@ -30,8 +30,12 @@ def suite(filter_, expected=None):
 # Compile the three controls together rather than rebuilding the large UI crate
 # for each mutation. Every default-positive suite and fired negative uses that
 # same instrumented binary. No compilation failure counts as a fired control.
-paths = {name: pathlib.Path('crates/okilum-shell/src') / name for name in
-         ['main.rs', 'reader_delimited.rs', 'reader_code_file.rs', 'reader_code_file/toolbar.rs']}
+paths = {
+    'lib.rs': pathlib.Path('crates/okilum-shell-viewers/src/lib.rs'),
+    'reader_delimited.rs': pathlib.Path('crates/okilum-shell-viewers/src/reader_delimited.rs'),
+    'reader_code_file.rs': pathlib.Path('crates/okilum-shell-viewers/src/reader_code_file.rs'),
+    'reader_code_file/toolbar.rs': pathlib.Path('crates/okilum-shell-viewers/src/reader_code_file/toolbar.rs'),
+}
 original = {name: path.read_bytes() for name, path in paths.items()}
 mutations = {
     'reader_delimited.rs': (b'this.sort_column(column, cx);',
@@ -44,9 +48,9 @@ try:
     for name, (before, after) in mutations.items():
         assert original[name].count(before) == 1, name
         paths[name].write_bytes(original[name].replace(before, after))
-    paths['main.rs'].write_bytes(original['main.rs'] + b'''
-#[cfg(test)]
-fn data_view_native_control(name: &str) -> bool {
+    paths['lib.rs'].write_bytes(original['lib.rs'] + b'''
+#[allow(dead_code)]
+pub(crate) fn data_view_native_control(name: &str) -> bool {
     std::env::var("OKILUM_DATA_VIEW_NATIVE_CONTROL").is_ok_and(|value| value == name)
 }
 ''')
@@ -69,7 +73,6 @@ fn data_view_native_control(name: &str) -> bool {
         'yaml2813_',
         'verdicts2813_',
         'corpus2813_',
-        'reader_status_line::',
         'reader_editor::mode_navigation_tests::',
         'reader_loading::quick_view_tests::window_mode_switch_keeps_typed_preview_entities_in_both_directions',
         'reader_files::tests::delimited_attachment_edit_saves_only_changed_bytes_and_conflicts_keep_drafts',

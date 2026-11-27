@@ -6329,6 +6329,7 @@ dependencies = [
  "okilum-shell-platform",
  "okilum-shell-project",
  "okilum-shell-text",
+ "okilum-shell-viewers",
  "okilum-sync-controller",
  "okilum-t3",
  "okilum-write-authority",
@@ -6554,6 +6555,48 @@ dependencies = [
  "unicode-width",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "okilum-shell-viewers"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-channel",
+ "base64 0.22.1",
+ "chrono",
+ "flate2",
+ "futures",
+ "gpui-base",
+ "gpui-component",
+ "gpui-pre-wgpu",
+ "hayro",
+ "image",
+ "log",
+ "okilum-core",
+ "okilum-gpui",
+ "okilum-shell-kit",
+ "okilum-shell-platform",
+ "okilum-shell-text",
+ "okilum-write-authority",
+ "percent-encoding",
+ "regex",
+ "resvg 0.45.1",
+ "rodio",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "tar",
+ "tempfile",
+ "tree-sitter",
+ "unicode-bidi",
+ "unicode-linebreak",
+ "unicode-segmentation",
+ "url",
+ "uuid",
+ "webp",
+ "zip 9.5.1",
 ]
 
 [[package]]

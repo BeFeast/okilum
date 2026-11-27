@@ -122,7 +122,7 @@ suite issue2044 120 cargo test --locked -p okilum-shell --bin okilum issue2044_ 
 if [[ $part == workspace ]]; then
     # Alone in a cold job: compile the census selection (same packages and
     # features as workspace-rust-tests.py COMMAND) before its deadline starts.
-    cargo test --locked -p okilum-core -p okilum-shell -p okilum-shell-kit -p okilum-shell-platform -p okilum-shell-text -p okilum-shell-project -p okilum-shell-brain -p okilum-sync -p okilum-t3 --no-run || failed=1
+    cargo test --locked -p okilum-core -p okilum-shell -p okilum-shell-kit -p okilum-shell-platform -p okilum-shell-text -p okilum-shell-viewers -p okilum-shell-project -p okilum-shell-brain -p okilum-sync -p okilum-t3 --no-run || failed=1
 fi
 suite workspace-full 1320 python3 scripts/ci/workspace-rust-tests.py
 # #1915: explicit filters make unsupported-flag coverage inspectable in CI.

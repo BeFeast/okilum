@@ -44,11 +44,13 @@ mod reader_actions;
 mod reader_agent_document;
 #[cfg(not(all(unix, feature = "brain")))]
 mod reader_app_menu;
+use okilum_shell_viewers::{
+    reader_audio, reader_canvas, reader_drawing, reader_image, reader_media, reader_plain_text,
+    reader_segmented, reader_status_line,
+};
 mod reader_archive;
 mod reader_archive_vault;
-mod reader_audio;
 mod reader_cache;
-mod reader_canvas;
 mod reader_capture;
 mod reader_code_file;
 #[cfg(any(unix, windows))]
@@ -65,7 +67,6 @@ mod reader_diagnostics;
 mod reader_document;
 mod reader_document_menu;
 mod reader_document_navigation;
-mod reader_drawing;
 mod reader_drawing_edit;
 #[cfg(any(unix, windows))]
 mod reader_editor;
@@ -83,7 +84,6 @@ mod reader_header_cache;
 mod reader_hover;
 #[cfg(any(target_os = "macos", test))]
 mod reader_icloud;
-mod reader_image;
 mod reader_image_actions;
 mod reader_incremental;
 mod reader_instance;
@@ -102,7 +102,6 @@ use okilum_shell_project::reader_t3_settings;
 mod reader_markdown;
 #[cfg(test)]
 mod reader_markdown_conformance_tests;
-mod reader_media;
 #[cfg(any(unix, windows))]
 mod reader_move;
 #[cfg(any(unix, windows))]
@@ -122,7 +121,6 @@ mod reader_path_moves;
 mod reader_pdf;
 mod reader_perf_probe;
 mod reader_pin_row;
-mod reader_plain_text;
 mod reader_project_create;
 mod reader_project_navigation;
 mod reader_properties;
@@ -137,7 +135,6 @@ mod reader_service_storage;
 mod reader_session;
 mod reader_settings;
 mod reader_sidebar_view;
-mod reader_status_line;
 mod reader_url;
 mod reader_viewer_chrome;
 #[cfg(feature = "data-view-native-harness")]
@@ -151,7 +148,6 @@ mod reader_window_view;
 // `use ::core::prelude::v1::test` was E0659-ambiguous there (#2589).
 mod reader_keymap;
 mod reader_now_waiting;
-mod reader_segmented;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod reader_settings_sync;
 mod reader_settings_vaults;
@@ -1263,6 +1259,26 @@ fn main() {
             },
             reader_text_zoom::document_style,
             reader_fonts::note,
+            cx,
+        );
+        okilum_shell_viewers::hooks::install(
+            okilum_shell_viewers::hooks::ViewerHooks {
+                code_font: reader_fonts::code,
+                note_font: reader_fonts::note,
+                toast_error: |message, window, cx| reader_toast::error(message, window, cx),
+                toast_transient: |message, window, cx| reader_toast::transient(message, window, cx),
+                toast_duckdb_error: |message, window, cx| {
+                    reader_toast::duckdb_error(message, window, cx)
+                },
+                open_file: |root, rel, window, cx| {
+                    reader_files::run(reader_files::FileAction::Open, root, rel, window, cx)
+                },
+                image_source: reader_files::image_source,
+                #[cfg(target_os = "macos")]
+                start_thumbnail: Some(reader_thumbnail::native::start),
+                #[cfg(not(target_os = "macos"))]
+                start_thumbnail: None,
+            },
             cx,
         );
         okilum_shell_project::hooks::install(

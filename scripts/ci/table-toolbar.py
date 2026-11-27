@@ -23,8 +23,8 @@ ENV = {k:v for k,v in os.environ.items() if k != 'OKILUM_TABLE2812_CONTROL'}
 original = {}
 patches = []
 
-def edit(name, old, new, count=1):
-    p = ROOT / ('crates/okilum-shell/src/' + name)
+def edit(name, old, new, count=1, crate='okilum-shell-viewers'):
+    p = ROOT / (f'crates/{crate}/src/' + name)
     # Bytes in and out: no platform codepage and no newline translation.
     s = p.read_bytes().decode('utf-8')
     assert s.count(old) == count, (name, old, s.count(old))
@@ -80,7 +80,12 @@ try:
 fn table2812_control(name: &str) -> bool {
     std::env::var("OKILUM_TABLE2812_CONTROL").is_ok_and(|v|v==name)
 }
-fn main() {''')
+fn main() {''', crate='okilum-shell')
+    edit('lib.rs', 'pub mod hooks;', '''#[allow(dead_code)]
+pub(crate) fn table2812_control(name: &str) -> bool {
+    std::env::var("OKILUM_TABLE2812_CONTROL").is_ok_and(|v|v==name)
+}
+pub mod hooks;''')
     edit('reader_code_file.rs', 'if initial == View::Raw {', 'if initial == View::Raw || crate::table2812_control("eager-raw") {')
     edit('reader_code_file/view.rs', 'if focused_table && self.view != View::Table {', 'if focused_table && self.view != View::Table && !crate::table2812_control("strand-focus") {')
     edit('reader_code_file/toolbar.rs', 'None => table_chrome.state = Some(own),', 'None if crate::table2812_control("drop-lock") => {}\n                        None => table_chrome.state = Some(own),')
@@ -107,11 +112,11 @@ fn main() {''')
     edit(chrome, 'fn grouped(value: usize) -> String {', 'fn grouped(value: usize) -> String {\n    if crate::table2812_control("ungrouped-count") {return value.to_string();}')
     edit(chrome, '            reader_toast::transient(', '            if crate::table2812_control("no-copy-toast") {return;}\n            reader_toast::transient(')
     edit(chrome, 's.load(true, cx)', 'if !crate::table2812_control("dead-load-more") {s.load(true, cx)}')
-    edit(chrome, 'pub(super) fn go_to_bad_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {', 'pub(super) fn go_to_bad_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {\n        if crate::table2812_control("dead-badge") {return;}')
+    edit(chrome, 'pub fn go_to_bad_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {', 'pub fn go_to_bad_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {\n        if crate::table2812_control("dead-badge") {return;}')
     edit('reader_code_file/loading.rs', 'this.apply_view(View::Raw, window, cx);', 'if !crate::table2812_control("no-raw-fallback") {this.apply_view(View::Raw, window, cx);}')
     edit(chrome, 'if !self.json() {', 'if !self.json() || crate::table2812_control("json-header-toggle") {')
-    edit('reader_viewer_chrome.rs', 'reader.selected_title(),', 'reader.selected_title()+&if crate::table2812_control("query-in-header-key") {reader.viewer_find_target(cx).map(|f|f.input.read(cx).value().to_string()).unwrap_or_default()} else {String::new()},')
-    edit('reader_toast.rs', 'pub(super) fn duckdb_error(message: String, window: &mut Window, cx: &mut App) {', 'pub(super) fn duckdb_error(message: String, window: &mut Window, cx: &mut App) {\n    if crate::table2812_control("no-duckdb-toast") {return;}')
+    edit('reader_viewer_chrome.rs', 'reader.selected_title(),', 'reader.selected_title()+&if crate::table2812_control("query-in-header-key") {reader.viewer_find_target(cx).map(|f|f.input.read(cx).value().to_string()).unwrap_or_default()} else {String::new()},', crate='okilum-shell')
+    edit('reader_toast.rs', 'pub(super) fn duckdb_error(message: String, window: &mut Window, cx: &mut App) {', 'pub(super) fn duckdb_error(message: String, window: &mut Window, cx: &mut App) {\n    if crate::table2812_control("no-duckdb-toast") {return;}', crate='okilum-shell')
     edit('reader_code_file/view.rs', 'reader_ui_state::set_code_view(kind, view, cx);', 'if !crate::table2812_control("no-view-memory") {reader_ui_state::set_code_view(kind, view, cx);}')
     edit('reader_code_file/view.rs', 'self.source_bytes.is_some_and(|n| n as u64 > MAX_BYTES)', 'self.source_bytes.is_some_and(|n| n as u64 > MAX_BYTES) && !crate::table2812_control("no-raw-cap")')
     edit('reader_code_file.rs', '&chrome,\n                        bounds.size.width.as_f32(),', '&chrome,\n                        if crate::table2812_control("window-sized-compact") {window.viewport_size().width.as_f32()} else {bounds.size.width.as_f32()},')

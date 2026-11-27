@@ -306,8 +306,19 @@ impl Reader {
             reader_files::FilePreview::load(&self.vault_root, rel)
                 .ok()
                 .map(|mut preview| {
-                    let reader = cx.entity().downgrade();
-                    preview.drawing = Some(cx.new(|_| reader_drawing::FileHandle::new(reader)));
+                    let reader_edit = cx.entity().downgrade();
+                    let reader_notify = reader_edit.clone();
+                    preview.drawing = Some(cx.new(|_| {
+                        reader_drawing::FileHandle::new(
+                            Rc::new(move |path, window, cx| {
+                                let _ = reader_edit
+                                    .update(cx, |reader, cx| reader.edit_drawing(path, window, cx));
+                            }),
+                            Rc::new(move |cx| {
+                                let _ = reader_notify.update(cx, |_, cx| cx.notify());
+                            }),
+                        )
+                    }));
                     preview
                 })
         } else {
