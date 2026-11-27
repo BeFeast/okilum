@@ -1,7 +1,7 @@
 //! Explicit remote editing in the existing window. Draft protection is local only.
 use super::view::Panel;
 use super::*;
-use crate::*;
+use crate::prelude::*;
 use base64::Engine as _;
 use gpui_component::input::{projection::SourceMutation, Editor, EditorState};
 use okilum_core::remote_markdown::{
@@ -10,20 +10,19 @@ use okilum_core::remote_markdown::{
 };
 use std::path::PathBuf;
 
-pub(super) type Saver =
-    Arc<dyn Fn(&Source, &Attempt, &AtomicBool) -> io::Result<Outcome> + Send + Sync>;
-pub(super) struct Editing {
-    pub(super) record: Record,
-    pub(super) recovery: Recovery,
-    pub(super) input: Entity<EditorState>,
-    pub(super) _changed: Subscription,
-    pub(super) epoch: u64,
-    pub(super) protecting: bool,
-    pub(super) protection: Option<Task<()>>,
-    pub(super) saving: Option<Attempt>,
-    pub(super) conflict: Option<Outcome>,
-    pub(super) compared: bool,
-    pub(super) unsupported: bool,
+pub type Saver = Arc<dyn Fn(&Source, &Attempt, &AtomicBool) -> io::Result<Outcome> + Send + Sync>;
+pub struct Editing {
+    pub record: Record,
+    pub recovery: Recovery,
+    pub input: Entity<EditorState>,
+    pub _changed: Subscription,
+    pub epoch: u64,
+    pub protecting: bool,
+    pub protection: Option<Task<()>>,
+    pub saving: Option<Attempt>,
+    pub conflict: Option<Outcome>,
+    pub compared: bool,
+    pub unsupported: bool,
 }
 impl Panel {
     fn edit_owner(&self, source: &Source, generation: u64) -> bool {
@@ -38,7 +37,7 @@ impl Panel {
             )
     }
 
-    pub(super) fn begin_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn begin_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.edit.is_some() || self.edit_task.is_some() {
             return;
         }
@@ -106,7 +105,7 @@ impl Panel {
     }
     /// Synchronous barrier only for explicit Save/Retry/close/navigation. Typing
     /// coalesces local protection on a background worker; it never saves remotely.
-    pub(super) fn protect(&mut self, cx: &mut Context<Self>) -> bool {
+    pub fn protect(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(edit) = &mut self.edit else {
             return true;
         };
@@ -127,7 +126,7 @@ impl Panel {
             }
         }
     }
-    pub(super) fn explicit_save(&mut self, cx: &mut Context<Self>) {
+    pub fn explicit_save(&mut self, cx: &mut Context<Self>) {
         if self
             .edit
             .as_ref()
@@ -194,13 +193,13 @@ impl Panel {
         }));
         cx.notify();
     }
-    pub(super) fn compare(&mut self, cx: &mut Context<Self>) {
+    pub fn compare(&mut self, cx: &mut Context<Self>) {
         if let Some(edit) = &mut self.edit {
             edit.compared = true;
         }
         cx.notify();
     }
-    pub(super) fn resolve_conflict(
+    pub fn resolve_conflict(
         &mut self,
         keep_mine: bool,
         window: &mut Window,
@@ -241,7 +240,7 @@ impl Panel {
         self.notice=Some(if keep_mine { "Reviewed remote version selected as the new base. Click Save to keep your changes." } else { "Remote version selected. The earlier local draft remains in local recovery history." }.into());
         cx.notify();
     }
-    pub(super) fn edit_controls(&self, cx: &Context<Self>) -> AnyElement {
+    pub fn edit_controls(&self, cx: &Context<Self>) -> AnyElement {
         let Some(edit) = &self.edit else {
             return Button::new("remote-edit")
                 .debug_selector(|| "remote-edit".into())
@@ -281,7 +280,7 @@ impl Panel {
             })
             .into_any_element()
     }
-    pub(super) fn editor(&self, cx: &Context<Self>) -> Option<AnyElement> {
+    pub fn editor(&self, cx: &Context<Self>) -> Option<AnyElement> {
         self.edit.as_ref().map(|edit| {
             let mut body = v_flex().flex_1().min_h_0().gap_2();
             if let Some(Outcome::Conflict {
@@ -362,11 +361,11 @@ impl Panel {
         })
     }
 }
-pub(super) fn default_saver() -> Saver {
+pub fn default_saver() -> Saver {
     Arc::new(|source, attempt, cancel| {
         save::save(source, attempt, || cancel.load(Ordering::Acquire))
     })
 }
-pub(super) fn recovery_root() -> Option<PathBuf> {
-    crate::reader_layout::config_base().map(|base| base.join("okilum/remote-drafts"))
+pub fn recovery_root() -> Option<PathBuf> {
+    okilum_shell_kit::reader_layout::config_base().map(|base| base.join("okilum/remote-drafts"))
 }

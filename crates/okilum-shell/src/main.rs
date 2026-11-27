@@ -52,9 +52,7 @@ mod reader_audio;
 mod reader_cache;
 mod reader_canvas;
 mod reader_capture;
-mod reader_code;
 mod reader_code_file;
-mod reader_code_language;
 #[cfg(any(unix, windows))]
 mod reader_confirm;
 mod reader_context_menu;
@@ -73,7 +71,6 @@ mod reader_drawing;
 mod reader_drawing_edit;
 #[cfg(any(unix, windows))]
 mod reader_editor;
-mod reader_embeds;
 mod reader_encoding;
 #[cfg(any(unix, windows))]
 mod reader_external_changes;
@@ -108,13 +105,13 @@ mod reader_markdown;
 #[cfg(test)]
 mod reader_markdown_conformance_tests;
 mod reader_media;
-mod reader_mermaid;
 #[cfg(any(unix, windows))]
 mod reader_move;
 #[cfg(any(unix, windows))]
 mod reader_move_picker;
 mod reader_navigation;
-mod reader_obsidian;
+#[cfg(test)]
+mod reader_obsidian_reader_tests;
 mod reader_open;
 mod reader_open_windows;
 mod reader_outline;
@@ -187,14 +184,11 @@ mod input_navigation_tests;
 mod input_newline_tests;
 #[cfg(test)]
 mod issue3073_tests;
-mod reader_agent_imports;
 #[cfg(test)]
 mod reader_agent_imports_tests;
-mod reader_agent_language;
 #[cfg(test)]
 mod reader_agent_language_tests;
 mod reader_agent_search;
-mod reader_agents_context;
 mod reader_agents_offer;
 mod reader_document_decorations;
 mod reader_features;
@@ -213,7 +207,6 @@ mod reader_recovery_rows;
 mod reader_reminder;
 mod reader_reminder_notify;
 mod reader_reminder_settings;
-mod reader_remote_markdown;
 #[cfg(test)]
 mod reader_scroll_geometry_tests;
 #[cfg(any(unix, windows))]
@@ -246,8 +239,6 @@ mod reader_view_query;
 mod reader_welcome;
 mod search_label;
 mod sidebar_view_tree;
-#[cfg(any(unix, windows))]
-mod source_presentation;
 mod text_ranges;
 mod theme_picker;
 mod ui_zoom;
@@ -344,6 +335,12 @@ use okilum_shell_platform::own_window_capture;
 use okilum_shell_platform::{markdown_handler, url_protocol};
 use okilum_shell_platform::{
     note_paste, note_upload, pdf_engine, platform, reader_ssh_askpass, reader_trash_fs,
+};
+// Former app modules, now in okilum-shell-text (#3235).
+use okilum_shell_text::{
+    reader_agent_imports, reader_agent_language, reader_agents_context, reader_code,
+    reader_code_language, reader_embeds, reader_mermaid, reader_obsidian, reader_remote_markdown,
+    source_presentation,
 };
 
 /// Body size for the reader; the heading scale and the sidebar derive from it.
@@ -1258,6 +1255,17 @@ fn main() {
             open_in::prepare_open_note,
             reader_shortcuts::shortcut,
             reader_shortcuts::hint,
+            cx,
+        );
+        okilum_shell_text::hooks::install(
+            reader_diagnostics::window_close_requested,
+            |image, logical_size| {
+                reader_image::ReaderImage::new(image.into())
+                    .with_logical_size(logical_size)
+                    .into_any_element()
+            },
+            reader_text_zoom::document_style,
+            reader_fonts::note,
             cx,
         );
         source_presentation::code_languages::install();

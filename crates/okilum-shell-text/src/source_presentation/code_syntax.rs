@@ -8,7 +8,7 @@ use gpui_component::Rope;
 type Captures = Vec<(Range<usize>, SharedString)>;
 
 #[derive(Default)]
-pub(super) struct CodeSyntax {
+pub struct CodeSyntax {
     source: Option<SourceSnapshot>,
     spans: Captures,
     ranges: Vec<Range<usize>>,
@@ -17,7 +17,7 @@ pub(super) struct CodeSyntax {
 }
 
 impl CodeSyntax {
-    pub(super) fn new(source: &SourceSnapshot, classified: &Classification) -> Self {
+    pub fn new(source: &SourceSnapshot, classified: &Classification) -> Self {
         super::code_languages::install();
         if source.text.len() > source_classifier::MAX_BYTES {
             return Self::default();
@@ -141,7 +141,7 @@ impl CodeSyntax {
     }
 
     #[cfg(test)]
-    pub(super) fn project(
+    pub fn project(
         &self,
         source: &SourceSnapshot,
         map: &impl PresentationMap,
@@ -151,7 +151,7 @@ impl CodeSyntax {
         self.project_retained(source, map, theme, styles, None);
     }
 
-    pub(super) fn project_retained(
+    pub fn project_retained(
         &self,
         source: &SourceSnapshot,
         map: &impl PresentationMap,

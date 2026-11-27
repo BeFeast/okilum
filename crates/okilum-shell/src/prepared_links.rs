@@ -1,5 +1,5 @@
-//! Source-bound link presentation. Jobs own immutable source/root snapshots;
-//! changing the document or accepting any refresh invalidates the whole result.
+//! Source-bound link presentation (`impl Reader` glue; non-Reader types and
+//! helpers live in `okilum_shell_text::prepared_links`, #3235).
 use super::*;
 use okilum_core::document_links::{
     self,
@@ -9,234 +9,10 @@ use std::collections::BTreeMap;
 #[cfg(target_os = "macos")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
-pub(crate) type States = Arc<BTreeMap<String, LinkState>>;
-pub(crate) type SnippetLinks = Vec<(std::ops::Range<usize>, String)>;
-
-#[cfg(test)]
-thread_local! {
-    static PAINTED_LINKS: std::cell::RefCell<Option<Vec<(String, bool, bool)>>> = const { std::cell::RefCell::new(None) };
-}
-
-/// External protocol links have a visible destination, never an internal-note guess.
-pub(crate) fn external_tooltip(url: &str) -> Option<String> {
-    let parsed = url::Url::parse(url).ok()?;
-    match parsed.scheme() {
-        "http" | "https" | "ftp" | "mailto" | "tel" => {
-            // Display only: link targets and open/copy actions keep authored bytes.
-            // Keep controls, invisible formatting (including bidi overrides),
-            // and Unicode line separators escaped in the displayed address.
-            use std::fmt::Write as _;
-            static HIDDEN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-                regex::Regex::new(r"[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]").unwrap()
-            });
-            let decoded = document_links::decode(url);
-            let shown = HIDDEN.replace_all(&decoded, |matched: &regex::Captures<'_>| {
-                let mut escaped = String::new();
-                for byte in matched[0].as_bytes() {
-                    write!(escaped, "%{byte:02X}").expect("writing a String cannot fail");
-                }
-                escaped
-            });
-            Some(match parsed.host_str() {
-                Some(host) => format!("{host}\n{shown}"),
-                None => shown.into_owned(),
-            })
-        }
-        _ => None,
-    }
-}
-
-/// Preserve authored-link identity while stripping snippet Markdown. Markers
-/// are temporary and collision-free; they never enter the displayed string.
-pub(crate) fn snippet_links(source: &str, plain: &str) -> SnippetLinks {
-    let markers: Vec<char> = ('\u{e000}'..='\u{f8ff}')
-        .filter(|c| !source.contains(*c))
-        .take(2)
-        .collect();
-    if markers.len() != 2 {
-        return Vec::new();
-    }
-    let links: Vec<_> = okilum_core::document_links::parse(source)
-        .into_iter()
-        .filter(|l| !l.wiki && external_tooltip(&l.target).is_some())
-        .collect();
-    let mut marked = source.to_owned();
-    for link in links.iter().rev() {
-        marked.insert(link.range.end, markers[1]);
-        marked.insert(link.range.start, markers[0]);
-    }
-    let stripped = okilum_core::render::strip_inline_markdown(&marked);
-    let mut unmarked = String::new();
-    let mut ranges = Vec::new();
-    let mut start = None;
-    for ch in stripped.chars() {
-        if ch == markers[0] {
-            start = Some(unmarked.len());
-        } else if ch == markers[1] {
-            if let Some(start) = start.take() {
-                ranges.push(start..unmarked.len());
-            }
-        } else {
-            unmarked.push(ch);
-        }
-    }
-    if unmarked != okilum_core::render::strip_inline_markdown(source) || ranges.len() != links.len()
-    {
-        return Vec::new();
-    }
-    ranges
-        .into_iter()
-        .zip(links)
-        .filter_map(|(range, link)| {
-            // Truncation keeps a prefix; do not turn a partial label/ellipsis into
-            // a clickable destination or decorate a separately formatted property.
-            (plain.get(range.clone()) == unmarked.get(range.clone()) && range.end <= plain.len())
-                .then_some((range, link.target))
-        })
-        .collect()
-}
-
-pub(crate) fn decorate_snippet(
-    mut text: String,
-    mut highlight: Option<std::ops::Range<usize>>,
-    links: SnippetLinks,
-) -> (String, Option<std::ops::Range<usize>>, SnippetLinks) {
-    let original_highlight = highlight.clone();
-    let mut decorated = Vec::new();
-    let mut added = 0;
-    for (range, url) in links {
-        // Destination marks retain their established muted appearance.
-        if original_highlight
-            .as_ref()
-            .is_some_and(|h| h.start < range.end && range.start < h.end)
-        {
-            continue;
-        }
-        let end = range.end + added;
-        text.insert_str(end, " ↗");
-        if let Some(h) = &mut highlight {
-            if h.start >= end {
-                h.start += " ↗".len();
-                h.end += " ↗".len();
-            }
-        }
-        decorated.push((range.start + added..end + " ↗".len(), url));
-        added += " ↗".len();
-    }
-    (text, highlight, decorated)
-}
-
-pub(crate) fn presentation(
-    url: &str,
-    states: &BTreeMap<String, LinkState>,
-) -> gpui_component::text::LinkPresentation {
-    use gpui_component::text::LinkPresentation;
-    if let Some(tooltip) = external_tooltip(url) {
-        return LinkPresentation {
-            external: true,
-            tooltip: Some(tooltip.into()),
-            ..Default::default()
-        };
-    }
-    let fallback = LinkState::unknown();
-    let state = states.get(url).unwrap_or(&fallback);
-    let mut style = gpui::HighlightStyle::default();
-    if state.status.is_missing() {
-        style.color = Some(crate::brand::reader_palette_current().missing_link);
-        style.underline = Some(gpui::UnderlineStyle {
-            thickness: px(1.),
-            wavy: true,
-            ..Default::default()
-        });
-    }
-    let presentation = LinkPresentation {
-        style,
-        tooltip: Some(
-            match state
-                .action_url
-                .as_deref()
-                .and_then(|u| u.strip_prefix("okilum://missing-file/"))
-            {
-                Some(path) => format!("File not found\n{}", document_links::decode(path)).into(),
-                None => state.reason.clone().into(),
-            },
-        ),
-        inert: state.status.is_missing()
-            && state.status != document_links::prepared::LinkStatus::MissingFile,
-        ..Default::default()
-    };
-    #[cfg(test)]
-    PAINTED_LINKS.with(|painted| {
-        if let Some(painted) = &mut *painted.borrow_mut() {
-            painted.push((
-                url.into(),
-                presentation.inert,
-                presentation
-                    .style
-                    .underline
-                    .is_some_and(|underline| underline.wavy),
-            ));
-        }
-    });
-    presentation
-}
-
-pub(crate) struct PreparedDocument {
-    pub canonical_source: Option<Arc<str>>,
-    pub encoding_damaged: bool,
-    /// Shipped content with no on-disk note, even when a view path is assigned.
-    pub built_in: bool,
-    pub source: String,
-    pub original: Option<String>,
-    pub identities: Vec<document_links::prepared::LinkIdentity>,
-    /// Leading frontmatter YAML for the Properties view (#386).
-    pub frontmatter: Option<String>,
-    /// The «On this page» headings of `source`, when they were prepared off
-    /// the UI thread; a 10 MiB note takes over 100 ms to scan (#3073).
-    pub outline: Option<Vec<document_links::HeadingEntry>>,
-}
-
-impl From<okilum_core::render::ReaderDocument> for PreparedDocument {
-    fn from(document: okilum_core::render::ReaderDocument) -> Self {
-        Self {
-            canonical_source: (!document.encoding_damaged).then_some(document.canonical_source),
-            encoding_damaged: document.encoding_damaged,
-            built_in: false,
-            source: document.rendered,
-            original: Some(document.original_body),
-            identities: document.links,
-            frontmatter: document.frontmatter,
-            outline: None,
-        }
-    }
-}
-
-impl PreparedDocument {
-    pub(crate) fn html(vault: &Vault, rel: &str, source: Option<String>) -> anyhow::Result<Self> {
-        let source = match source {
-            Some(text) => okilum_core::vault::DisplayNote {
-                text,
-                encoding_damaged: vault.note_encoding_damaged(rel),
-            },
-            None => vault.read_note_display(rel)?,
-        };
-        Ok(Self {
-            encoding_damaged: source.encoding_damaged,
-            built_in: false,
-            source: okilum_core::render::render_html_from_source(
-                vault,
-                rel,
-                &source.text,
-                "InspiredGitHub",
-            )?,
-            canonical_source: None,
-            original: None,
-            identities: Vec::new(),
-            frontmatter: None,
-            outline: None,
-        })
-    }
-}
+pub(crate) use okilum_shell_text::prepared_links::{
+    decorate_snippet, external_tooltip, presentation, snippet_links, PreparedDocument,
+    SnippetLinks, States,
+};
 
 /// Where to land once the document is rendered.
 pub(crate) enum Landing {
@@ -845,7 +621,7 @@ mod tests {
         });
         let reader = reader.unwrap();
         visual.run_until_parked();
-        PAINTED_LINKS.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+        okilum_shell_text::prepared_links::start_painted_links_trace();
         let (first_send, first_hold) = async_channel::bounded(1);
         reader.update_in(visual, |v, window, cx| {
             v.incremental_hold = Some(first_hold);
@@ -870,23 +646,18 @@ mod tests {
                 .clone()
         });
         let drawn = || {
-            PAINTED_LINKS.with(|trace| {
-                trace
-                    .borrow()
-                    .as_ref()
-                    .unwrap()
-                    .iter()
-                    .filter(|(u, _, _)| u == &url)
-                    .map(|(_, inert, wavy)| (*inert, *wavy))
-                    .collect::<Vec<_>>()
-            })
+            okilum_shell_text::prepared_links::painted_links_snapshot()
+                .into_iter()
+                .filter(|(u, _, _)| u == &url)
+                .map(|(_, inert, wavy)| (inert, wavy))
+                .collect::<Vec<_>>()
         };
         assert_eq!(
             drawn().last(),
             Some(&(true, true)),
             "positive control: actual renderer sees the initial missing style"
         );
-        PAINTED_LINKS.with(|trace| trace.borrow_mut().as_mut().unwrap().clear());
+        okilum_shell_text::prepared_links::clear_painted_links_trace();
         let (second_send, second_hold) = async_channel::bounded(1);
         reader.update_in(visual, |v, window, cx| {
             v.incremental_hold = Some(second_hold);
@@ -939,7 +710,7 @@ mod tests {
             assert_eq!(v.pane.current_rel, "target.md");
             assert!(v.pane.prepared_links.is_empty() && v.pane.link_presentations.is_empty());
         });
-        PAINTED_LINKS.with(|trace| *trace.borrow_mut() = None);
+        okilum_shell_text::prepared_links::stop_painted_links_trace();
     }
 
     #[test]
@@ -1689,7 +1460,7 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("okilum-prepared-reader-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
-        PAINTED_LINKS.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+        okilum_shell_text::prepared_links::start_painted_links_trace();
         let source =
             "# Start\n\n[Absent](target.md#Landing)\n\n> [!note]\n> [[target#Landing|Nested]]\n";
         std::fs::write(root.as_path().join("start.md"), source).unwrap();
@@ -1725,20 +1496,17 @@ mod tests {
             "positive control: document and nested callout links"
         );
         let assert_paint = |missing: bool| {
-            PAINTED_LINKS.with(|trace| {
-                let trace = trace.borrow();
-                let trace = trace.as_ref().unwrap();
-                for url in &urls {
-                    assert_eq!(
-                        trace
-                            .iter()
-                            .rfind(|(u, _, _)| u == url)
-                            .map(|(_, inert, wavy)| (*inert, *wavy)),
-                        Some((missing, missing)),
-                        "actual paint for {url}"
-                    );
-                }
-            });
+            let trace = okilum_shell_text::prepared_links::painted_links_snapshot();
+            for url in &urls {
+                assert_eq!(
+                    trace
+                        .iter()
+                        .rfind(|(u, _, _)| u == url)
+                        .map(|(_, inert, wavy)| (*inert, *wavy)),
+                    Some((missing, missing)),
+                    "actual paint for {url}"
+                );
+            }
         };
         assert_paint(true);
         let content = reader.update_in(visual, |v, _, cx| {
@@ -1776,7 +1544,7 @@ mod tests {
                 )
                 .unwrap();
             }
-            PAINTED_LINKS.with(|trace| trace.borrow_mut().as_mut().unwrap().clear());
+            okilum_shell_text::prepared_links::clear_painted_links_trace();
             reader.update_in(visual, |v, window, cx| {
                 let mut changes = okilum_core::Changes::default();
                 changes.changed.insert("target.md".into());
@@ -1806,7 +1574,7 @@ mod tests {
             std::fs::read_to_string(root.join("start.md")).unwrap(),
             source
         );
-        PAINTED_LINKS.with(|trace| *trace.borrow_mut() = None);
+        okilum_shell_text::prepared_links::stop_painted_links_trace();
         std::fs::remove_dir_all(root).unwrap();
     }
     #[gpui::test]

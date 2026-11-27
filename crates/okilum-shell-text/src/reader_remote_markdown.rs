@@ -13,7 +13,7 @@ use std::{
 };
 
 #[derive(Debug)]
-pub(crate) enum State {
+pub enum State {
     Idle,
     Loading { target: String },
     Ready { source: Source, markdown: String },
@@ -22,7 +22,7 @@ pub(crate) enum State {
 }
 impl State {
     /// Visible status for Reader chrome; errors must not masquerade as empty text.
-    pub(crate) fn message(&self) -> String {
+    pub fn message(&self) -> String {
         match self {
             Self::Idle => "Choose a remote Markdown file".into(),
             Self::Loading { target } => format!("Opening {target}…"),
@@ -33,16 +33,16 @@ impl State {
     }
 }
 
-pub(crate) struct Reply {
+pub struct Reply {
     generation: u64,
     source: Source,
     result: io::Result<String>,
 }
 
-pub(crate) struct Controller {
+pub struct Controller {
     generation: u64,
     cancel: Option<Arc<AtomicBool>>,
-    pub(crate) state: State,
+    pub state: State,
 }
 impl Default for Controller {
     fn default() -> Self {
@@ -56,7 +56,7 @@ impl Default for Controller {
 impl Controller {
     /// Call only for an explicit user Open action. Parsing finishes before any
     /// child is spawned. Parent receives replies asynchronously, then notifies UI.
-    pub(crate) fn open(&mut self, url: &str) -> io::Result<async_channel::Receiver<Reply>> {
+    pub fn open(&mut self, url: &str) -> io::Result<async_channel::Receiver<Reply>> {
         let source = Source::parse(url)?;
         // Stop/close sets this flag: a request waiting on authentication is
         // aborted, ssh is killed and its askpass dialog closes (#1610).
@@ -98,7 +98,7 @@ impl Controller {
     }
     /// Returns false for completion of a replaced/cancelled source. No stale
     /// completion can change either the displayed target or its Markdown.
-    pub(crate) fn receive(&mut self, reply: Reply) -> bool {
+    pub fn receive(&mut self, reply: Reply) -> bool {
         if reply.generation != self.generation {
             return false;
         }
@@ -115,7 +115,7 @@ impl Controller {
     }
     /// Cancels publication immediately. An in-flight transport operation retains
     /// its existing bounded deadline and disconnects on the background worker.
-    pub(crate) fn cancel(&mut self) {
+    pub fn cancel(&mut self) {
         if let Some(cancel) = self.cancel.take() {
             cancel.store(true, Ordering::Release);
         }
@@ -131,7 +131,7 @@ impl Controller {
     }
     /// Returns a remote target plus preserved heading intent. The caller must
     /// explicitly handle heading landing; never silently report a note-top hit.
-    pub(crate) fn resolve_link(&self, link: &str) -> io::Result<(Source, Option<String>)> {
+    pub fn resolve_link(&self, link: &str) -> io::Result<(Source, Option<String>)> {
         match &self.state {
             State::Ready { source, .. } => source.resolve(link),
             _ => Err(io::Error::new(
@@ -149,7 +149,7 @@ impl Drop for Controller {
 
 /// Recognize the scheme even for invalid targets, so a rejected SSH link never
 /// falls through into local note handling or an external system URL launcher.
-pub(crate) fn is_ssh_url(url: &str) -> bool {
+pub fn is_ssh_url(url: &str) -> bool {
     url.split_once(':')
         .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("ssh"))
 }
@@ -157,7 +157,7 @@ pub(crate) fn is_ssh_url(url: &str) -> bool {
 /// Reader rewrites unsupported schemes before the click callback. Recover an
 /// SSH target only from the exact current document's captured link identity;
 /// never parse a diagnostic string as navigation authority.
-pub(crate) fn authored_ssh_url<'a>(
+pub fn authored_ssh_url<'a>(
     url: &str,
     identities: impl IntoIterator<Item = (&'a str, bool, &'a str)>,
 ) -> io::Result<Option<String>> {
@@ -232,15 +232,15 @@ fn literal_remote_html(body: &str) -> String {
 mod editing;
 #[path = "reader_remote_markdown/folders.rs"]
 mod folders;
-pub(crate) use view::show;
+pub use view::show;
 
 // Window-owned GPUI integration. Kept separate from the injectable controller:
 // closing the window releases its entity and cancels the transport publication.
 mod view {
     use super::*;
-    use crate::*;
+    use crate::prelude::*;
 
-    pub(super) struct Prepared {
+    pub struct Prepared {
         rendered: String,
         headings: okilum_core::document_links::HeadingInventory,
     }
@@ -259,10 +259,10 @@ mod view {
         Prepared { rendered, headings }
     }
 
-    pub(crate) fn show(url: &str, cx: &mut App) -> io::Result<()> {
+    pub fn show(url: &str, cx: &mut App) -> io::Result<()> {
         let target = location(url)?;
         // OpenSSH may need a passphrase, password or host trust (#1610).
-        crate::reader_ssh_askpass::ensure(cx);
+        okilum_shell_platform::reader_ssh_askpass::ensure(cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(window_state::default_bounds(
                 size(px(900.), px(700.)),
@@ -283,11 +283,7 @@ mod view {
             });
             let weak = panel.downgrade();
             window.on_window_should_close(cx, move |window, cx| {
-                crate::reader_diagnostics::window_close_requested(
-                    window,
-                    cx,
-                    "native platform request",
-                );
+                crate::hooks::window_close_requested(window, cx, "native platform request");
                 weak.update(cx, |panel, cx| panel.stop(cx)).unwrap_or(true)
             });
             cx.new(|cx| Root::new(panel, window, cx))
@@ -299,29 +295,29 @@ mod view {
     #[cfg(test)]
     type FixtureLoader = fn(&mut Controller, &str) -> io::Result<async_channel::Receiver<Reply>>;
 
-    pub(super) struct Panel {
-        pub(super) browser: Option<folders::Browser>,
-        pub(super) folder_serial: u64,
-        pub(super) folder_task: Option<Task<()>>,
-        pub(super) folder_cancel: Option<Arc<AtomicBool>>,
-        pub(super) lister: folders::Lister,
+    pub struct Panel {
+        pub browser: Option<folders::Browser>,
+        pub folder_serial: u64,
+        pub folder_task: Option<Task<()>>,
+        pub folder_cancel: Option<Arc<AtomicBool>>,
+        pub lister: folders::Lister,
         #[cfg(test)]
         fixture_loader: Option<FixtureLoader>,
-        pub(super) controller: Controller,
-        pub(super) content: Option<Entity<TextViewState>>,
-        pub(super) prepared: Option<Prepared>,
-        pub(super) notice: Option<String>,
-        pub(super) landing: Option<usize>,
-        pub(super) reply_task: Option<Task<()>>,
-        pub(super) landing_task: Option<Task<()>>,
-        pub(super) landing_serial: u64,
-        pub(super) requested_source: Option<Source>,
-        pub(super) edit: Option<editing::Editing>,
-        pub(super) edit_task: Option<Task<()>>,
-        pub(super) save_task: Option<Task<()>>,
-        pub(super) write_cancel: Option<Arc<AtomicBool>>,
-        pub(super) saver: editing::Saver,
-        pub(super) recovery_root: Option<std::path::PathBuf>,
+        pub controller: Controller,
+        pub content: Option<Entity<TextViewState>>,
+        pub prepared: Option<Prepared>,
+        pub notice: Option<String>,
+        pub landing: Option<usize>,
+        pub reply_task: Option<Task<()>>,
+        pub landing_task: Option<Task<()>>,
+        pub landing_serial: u64,
+        pub requested_source: Option<Source>,
+        pub edit: Option<editing::Editing>,
+        pub edit_task: Option<Task<()>>,
+        pub save_task: Option<Task<()>>,
+        pub write_cancel: Option<Arc<AtomicBool>>,
+        pub saver: editing::Saver,
+        pub recovery_root: Option<std::path::PathBuf>,
     }
     impl Panel {
         fn new() -> Self {
@@ -351,12 +347,7 @@ mod view {
             }
         }
 
-        pub(super) fn open(
-            &mut self,
-            source: Source,
-            heading: Option<String>,
-            cx: &mut Context<Self>,
-        ) {
+        pub fn open(&mut self, source: Source, heading: Option<String>, cx: &mut Context<Self>) {
             #[cfg(test)]
             if let Some(loader) = self.fixture_loader {
                 self.open_with(source, heading, loader, cx);
@@ -453,7 +444,7 @@ mod view {
             }));
             cx.notify();
         }
-        pub(super) fn stop(&mut self, cx: &mut Context<Self>) -> bool {
+        pub fn stop(&mut self, cx: &mut Context<Self>) -> bool {
             if !self.protect(cx) {
                 return false;
             }
@@ -605,7 +596,7 @@ mod view {
                     // GNOME's drawn close button stops like the platform close (#2805).
                     let panel = cx.entity().downgrade();
                     move |_, window, cx| {
-                        crate::reader_diagnostics::window_close_requested(window, cx, "title bar close button");
+                        crate::hooks::window_close_requested(window, cx, "title bar close button");
                         if panel.update(cx, |panel, cx| panel.stop(cx)).unwrap_or(true) {
                             window.remove_window();
                         }

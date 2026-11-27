@@ -1,16 +1,16 @@
 //! Shared Reader/LP Mermaid rendering. Every unavailable render stays code.
-use super::*;
+use crate::prelude::*;
 use gpui_component::highlighter::{LanguageConfig, LanguageRegistry};
 mod render;
 use render::{Diagram, Key};
 
 /// The language name a ```` ```mermaid ```` fence resolves to.
-pub(super) const MERMAID: &str = "mermaid";
+pub const MERMAID: &str = "mermaid";
 
 /// Register the Mermaid grammar with the shared highlighter registry. Code
 /// blocks look languages up by name, and Markdown injects fenced code the same
 /// way, so this one registration covers every view. Idempotent.
-pub(super) fn register() {
+pub fn register() {
     LanguageRegistry::singleton().register(
         MERMAID,
         &LanguageConfig::new(
@@ -30,7 +30,7 @@ struct Block {
     markdown: SharedString,
     offset: usize,
 }
-pub(super) fn parse(
+pub fn parse(
     node: &markdown_ast::Node,
     cx: &gpui_component::text::MarkdownParseContext<'_>,
 ) -> Option<MarkdownNode> {
@@ -141,7 +141,7 @@ struct ViewState {
     width: f32,
 }
 
-pub(super) fn render(node: &MarkdownNode, live: bool, _: &mut Window, _: &mut App) -> AnyElement {
+pub fn render(node: &MarkdownNode, live: bool, _: &mut Window, _: &mut App) -> AnyElement {
     let Some(block) = node.data::<Block>() else {
         return div().into_any_element();
     };
@@ -208,10 +208,11 @@ impl RenderOnce for MermaidView {
             div()
                 .debug_selector(|| "mermaid-diagram".into())
                 .max_w(px(image.width))
-                .child(
-                    reader_image::ReaderImage::new(image.image.clone().into())
-                        .with_logical_size(size(px(image.width), px(image.height))),
-                )
+                .child(crate::hooks::render_mermaid_image(
+                    image.image.clone(),
+                    size(px(image.width), px(image.height)),
+                    cx,
+                ))
                 .into_any_element()
         } else {
             // Deliberately no Mermaid parser on this nested view: the exact
@@ -223,7 +224,7 @@ impl RenderOnce for MermaidView {
             .code_block_language(reader_code_language::resolver())
             .code_block_actions(reader_code::actions)
             .selectable(!self.live)
-            .style(reader_text_zoom::document_style(cx))
+            .style(crate::hooks::document_style(cx))
             .text_size(px(reader_ui_state::font_size(cx)))
             .w_full()
             .into_any_element()

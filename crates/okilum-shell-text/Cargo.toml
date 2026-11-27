@@ -1,0 +1,58 @@
+[package]
+name = "okilum-shell-text"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Text presentation, Markdown style/plugins, prepared link presentation, code
+# block actions/languages, Mermaid rendering, agent imports/language/context,
+# Obsidian syntax, block embeds, remote Markdown, and non-Reader text zoom
+# (#3235, epic #3241). Never depends on the app crate or `Reader`.
+
+[features]
+default = []
+# Test seams the app crate's tests rely on (prepared_links painted-link trace).
+# okilum-shell enables it as a dev-dependency only; `okilum --build-info`
+# reports it and native_binary_guard.py refuses it.
+test-support = []
+
+[dependencies]
+anyhow = "1"
+async-channel = "2"
+base64 = "0.22"
+gpui = { package = "okilum-gpui", path = "../okilum-gpui" }
+gpui-base = { path = "../../vendor/gpui-component/crates/base" }
+gpui-component = { workspace = true, features = ["tree-sitter-languages"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "tiff", "webp"] }
+merman = "=0.9.2"
+okilum-core = { workspace = true, default-features = false }
+okilum-shell-kit = { path = "../okilum-shell-kit" }
+okilum-shell-platform = { path = "../okilum-shell-platform" }
+okilum-t3 = { path = "../okilum-t3" }
+regex = "1"
+resvg = "=0.45.1"
+rustybuzz = "=0.20.1"
+serde.workspace = true
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+sysinfo = { version = "=0.31.4", default-features = false, features = ["system"] }
+tempfile = "3"
+tree-sitter = "0.26"
+tree-sitter-mermaid = "=0.2.0"
+tree-sitter-xml = "=0.7.0"
+unicode-segmentation = "1.12.0"
+unicode-width = "=0.2.2"
+url = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+okilum-write-authority = { path = "../okilum-write-authority", features = ["test-isolation"] }
+okilum-core = { workspace = true, features = ["test-support"] }
+okilum-shell-kit = { path = "../okilum-shell-kit", features = ["test-support"] }
+okilum-shell-platform = { path = "../okilum-shell-platform", features = ["test-support"] }
+gpui = { package = "okilum-gpui", path = "../okilum-gpui", features = ["test-support"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+gpui_wgpu = { package = "gpui-pre-wgpu", version = "0.3.3" }

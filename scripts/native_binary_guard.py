@@ -35,7 +35,7 @@ def require_app_binary(binary):
         print(f'warning: {binary} predates --build-info (#1043); '
               'cannot verify it was built without GPUI test-support', file=sys.stderr)
         return
-    # The kit and platform crates' test seams (#3233, #3234) leak the same way as GPUI's.
+    # The kit, platform and text crates' test seams (#3233, #3234, #3235) leak the same way as GPUI's.
     if info.get('shell-kit-test-support', 'no') != 'no':
         print(f'INVALID run: {binary} was built with okilum-shell-kit test-support '
               '(app and a test or example in one cargo invocation). Rebuild it alone: '
@@ -43,6 +43,11 @@ def require_app_binary(binary):
         sys.exit(INVALID)
     if info.get('shell-platform-test-support', 'no') != 'no':
         print(f'INVALID run: {binary} was built with okilum-shell-platform test-support '
+              '(app and a test or example in one cargo invocation). Rebuild it alone: '
+              'cargo build -p okilum-shell --bin okilum', file=sys.stderr)
+        sys.exit(INVALID)
+    if info.get('shell-text-test-support', 'no') != 'no':
+        print(f'INVALID run: {binary} was built with okilum-shell-text test-support '
               '(app and a test or example in one cargo invocation). Rebuild it alone: '
               'cargo build -p okilum-shell --bin okilum', file=sys.stderr)
         sys.exit(INVALID)

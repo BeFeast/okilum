@@ -1,5 +1,5 @@
 //! Code-block actions. Copy is distinct from Markdown selection/copy.
-use super::*;
+use crate::prelude::*;
 use gpui_base::text::CodeBlock;
 
 struct CopyState {
@@ -8,7 +8,7 @@ struct CopyState {
     generation: u64,
 }
 
-pub(crate) fn actions(block: &CodeBlock, _: &mut Window, _: &mut App) -> AnyElement {
+pub fn actions(block: &CodeBlock, _: &mut Window, _: &mut App) -> AnyElement {
     let Some(value) = block.copy_code() else {
         return div().into_any_element();
     };
@@ -201,7 +201,11 @@ mod tests {
                 });
                 Root::new(view, window, cx)
             });
-            visual.update(|window, cx| crate::set_appearance(Some(mode), None, window, cx));
+            visual.update(|window, cx| {
+                Theme::change(mode, Some(window), cx);
+                brand::apply_theme(cx);
+                window.refresh();
+            });
             visual.simulate_mouse_move(
                 point(px(690.), px(400.)),
                 MouseButton::Left,

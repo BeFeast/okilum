@@ -3,7 +3,7 @@ use gpui::SharedString;
 use gpui_base::text::{CodeBlock, CodeBlockLanguageFn};
 use std::sync::{Arc, OnceLock};
 
-pub(super) fn resolver() -> Arc<CodeBlockLanguageFn> {
+pub fn resolver() -> Arc<CodeBlockLanguageFn> {
     crate::source_presentation::code_languages::install();
     static RESOLVER: OnceLock<Arc<CodeBlockLanguageFn>> = OnceLock::new();
     RESOLVER.get_or_init(|| Arc::new(language)).clone()
@@ -211,7 +211,7 @@ mod tests {
 #[cfg(test)]
 mod rendered_tests {
     use super::*;
-    use crate::*;
+    use crate::prelude::*;
     use ::core::prelude::v1::test;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},

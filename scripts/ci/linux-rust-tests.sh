@@ -98,7 +98,7 @@ suite board-peek-model 120 cargo test --locked -p okilum-t3 peek_2531_ -- --noca
 # distinguish Local from Utc without mutating global environment in Rust tests.
 suite issue2486 120 env TZ=Pacific/Auckland cargo test --locked "${packages[@]}" -p okilum-shell --bin okilum issue2486_ -- --nocapture --test-threads=1
 suite direct-origin-tests 120 cargo test --locked -p okilum-sync-controller --lib direct::origin::tests:: -- --nocapture
-suite source-presentation 120 cargo test --locked -p okilum-shell --bin okilum source_presentation:: -- --nocapture
+suite source-presentation 120 cargo test --locked -p okilum-shell-text --lib source_presentation:: -- --nocapture
 # Match hosted concurrency rather than starting a native fixture per heavy CPU.
 suite reader-editor-live-preview 120 cargo test --locked -p okilum-shell --bin okilum reader_editor::live_preview:: -- --nocapture --test-threads=4
 suite input-anchor-tests 120 cargo test --locked -p okilum-shell --bin okilum input_anchor_tests:: -- --nocapture
@@ -122,7 +122,7 @@ suite issue2044 120 cargo test --locked -p okilum-shell --bin okilum issue2044_ 
 if [[ $part == workspace ]]; then
     # Alone in a cold job: compile the census selection (same packages and
     # features as workspace-rust-tests.py COMMAND) before its deadline starts.
-    cargo test --locked -p okilum-core -p okilum-shell -p okilum-shell-kit -p okilum-shell-platform -p okilum-sync -p okilum-t3 --no-run || failed=1
+    cargo test --locked -p okilum-core -p okilum-shell -p okilum-shell-kit -p okilum-shell-platform -p okilum-shell-text -p okilum-sync -p okilum-t3 --no-run || failed=1
 fi
 suite workspace-full 1320 python3 scripts/ci/workspace-rust-tests.py
 # #1915: explicit filters make unsupported-flag coverage inspectable in CI.

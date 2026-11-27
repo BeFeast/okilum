@@ -28,7 +28,7 @@ def main():
     ]:
         assert original.count(before) == 1
         cases = [('okilum-core', ['--test', 'tex_showcase'], core),
-                 ('okilum-shell', ['--bin', 'okilum'], shell)]
+                 ('okilum-shell-text', ['--lib'], shell)]
         try:
             path.write_bytes(original.replace(before, old, 1))
             for package, target, name in cases:

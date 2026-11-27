@@ -330,6 +330,17 @@ pub(crate) fn test_init(cx: &mut App) {
         crate::reader_shortcuts::hint,
         cx,
     );
+    okilum_shell_text::hooks::install(
+        crate::reader_diagnostics::window_close_requested,
+        |image, logical_size| {
+            crate::reader_image::ReaderImage::new(image.into())
+                .with_logical_size(logical_size)
+                .into_any_element()
+        },
+        crate::reader_text_zoom::document_style,
+        crate::reader_fonts::note,
+        cx,
+    );
     enable_test_modules(cx);
 }
 

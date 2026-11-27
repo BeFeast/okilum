@@ -5,19 +5,19 @@
 //! `okilum_core::obsidian`); these plugins give the tagged fences their
 //! Reader look. Every plugin replaces exactly one top-level block, so block
 //! indices from core land on the right list item.
-use super::*;
+use crate::prelude::*;
 use okilum_core::callout::Fold;
 use okilum_core::obsidian::{self, FOOTNOTE_BACK_SCHEME, FOOTNOTE_LANG, MATH_LANG};
 
 #[derive(Clone)]
-pub(super) struct Footnote {
+pub struct Footnote {
     pub number: usize,
     pub id: String,
     pub offset: usize,
 }
 
 /// Parse a [`FOOTNOTE_LANG`] fence into a `"footnote"` node.
-pub(super) fn parse_footnote(
+pub fn parse_footnote(
     node: &markdown_ast::Node,
     cx: &gpui_component::text::MarkdownParseContext<'_>,
 ) -> Option<MarkdownNode> {
@@ -39,7 +39,7 @@ pub(super) fn parse_footnote(
 
 /// Number, body, and a glyph back to the reference: Obsidian's footnote
 /// list, without a frame.
-pub(super) fn render_footnote(
+pub fn render_footnote(
     node: &MarkdownNode,
     link: &MarkdownLinkHandler,
     window: &mut Window,
@@ -96,13 +96,13 @@ pub(super) fn render_footnote(
 }
 
 #[derive(Clone)]
-pub(super) struct Math {
+pub struct Math {
     pub offset: usize,
     pub parsed: Result<okilum_core::tex::Display, okilum_core::tex::Error>,
 }
 
 /// Parse a [`MATH_LANG`] fence into a `"math"` node.
-pub(super) fn parse_math(
+pub fn parse_math(
     node: &markdown_ast::Node,
     cx: &gpui_component::text::MarkdownParseContext<'_>,
 ) -> Option<MarkdownNode> {
@@ -129,7 +129,7 @@ pub(super) fn parse_math(
 
 /// Shared native two-dimensional layout, with visible source and a reason
 /// when the bounded TeX subset cannot draw the formula.
-pub(super) fn render_math(node: &MarkdownNode, window: &mut Window, cx: &mut App) -> AnyElement {
+pub fn render_math(node: &MarkdownNode, window: &mut Window, cx: &mut App) -> AnyElement {
     let Some(data) = node.data::<Math>() else {
         return div().into_any_element();
     };
@@ -144,11 +144,7 @@ pub(super) fn render_math(node: &MarkdownNode, window: &mut Window, cx: &mut App
             .child(
                 div()
                     .debug_selector(move || format!("reader-math-body-{offset}"))
-                    .child(reader_editor::math_preview::row(
-                        &formula.nodes,
-                        size,
-                        color,
-                    )),
+                    .child(crate::math_layout::row(&formula.nodes, size, color)),
             )
             .when_some(formula.tag.as_ref(), |row, tag| {
                 row.child(
@@ -175,7 +171,7 @@ pub(super) fn render_math(node: &MarkdownNode, window: &mut Window, cx: &mut App
         .px_3()
         .py_2()
         .justify_center()
-        .font_family(reader_fonts::note(cx))
+        .font_family(crate::hooks::note_font_family(cx))
         .text_color(color)
         .debug_selector(move || format!("reader-math-{offset}"))
         .child(body)
@@ -184,7 +180,7 @@ pub(super) fn render_math(node: &MarkdownNode, window: &mut Window, cx: &mut App
 
 /// Internal math images become ordinary styled text, sharing Live Preview's
 /// linear renderer and paragraph selection/wrapping. Authored code is untouched.
-pub(super) fn parse_inline_math(
+pub fn parse_inline_math(
     node: &markdown_ast::Node,
 ) -> Option<gpui_component::text::MarkdownInline> {
     use gpui_component::text::{MarkdownInline, TextMark};
@@ -220,7 +216,7 @@ pub(super) fn parse_inline_math(
 
 /// A block ID alone on its line, left by core as a marker: it occupies no
 /// space, but stays its own block so landing indices match core's.
-pub(super) fn parse_block_marker(
+pub fn parse_block_marker(
     node: &markdown_ast::Node,
     _cx: &gpui_component::text::MarkdownParseContext<'_>,
 ) -> Option<MarkdownNode> {
@@ -240,7 +236,7 @@ struct CalloutFolds(std::collections::HashMap<u64, bool>);
 impl Global for CalloutFolds {}
 
 /// A key that tells callouts in one document apart and survives re-renders.
-pub(super) fn callout_key(offset: usize, source: &str) -> u64 {
+pub fn callout_key(offset: usize, source: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     offset.hash(&mut hasher);
@@ -248,20 +244,20 @@ pub(super) fn callout_key(offset: usize, source: &str) -> u64 {
     hasher.finish()
 }
 
-pub(super) fn callout_open(key: u64, fold: Fold, cx: &App) -> bool {
+pub fn callout_open(key: u64, fold: Fold, cx: &App) -> bool {
     cx.try_global::<CalloutFolds>()
         .and_then(|folds| folds.0.get(&key).copied())
         .unwrap_or(fold != Fold::Closed)
 }
 
-pub(super) fn toggle_callout(key: u64, fold: Fold, window: &mut Window, cx: &mut App) {
+pub fn toggle_callout(key: u64, fold: Fold, window: &mut Window, cx: &mut App) {
     let open = callout_open(key, fold, cx);
     cx.default_global::<CalloutFolds>().0.insert(key, !open);
     window.refresh();
 }
 
 /// Handle the in-document footnote links. `None` when `url` is not one.
-pub(super) fn footnote_landing(url: &str, source: &str) -> Option<Result<usize, &'static str>> {
+pub fn footnote_landing(url: &str, source: &str) -> Option<Result<usize, &'static str>> {
     if let Some(id) = url.strip_prefix(obsidian::FOOTNOTE_SCHEME) {
         let id = okilum_core::document_links::decode(id);
         return Some(
@@ -684,110 +680,6 @@ mod tests {
         assert!(visual
             .debug_bounds(sel(format!("reader-callout-body-{open}")))
             .is_none());
-    }
-
-    #[gpui::test]
-    fn reader_lands_block_references_and_footnotes(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| {
-            crate::test_init(cx);
-            bind_keys(cx);
-        });
-        let root = std::env::temp_dir().join(format!("okilum-651-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        let filler = "Filler paragraph for scrolling.\n\n".repeat(60);
-        std::fs::write(
-            root.join("long.md"),
-            format!("# Long\n\nClaim.[^1]\n\n{filler}Target paragraph. ^target\n\n{filler}[^1]: Source.\n"),
-        )
-        .unwrap();
-        let mut reader = None;
-        let (_, visual) = cx.add_window_view(|window, cx| {
-            let view = cx.new(|cx| {
-                Reader::new(
-                    Opts {
-                        vault: Some(root.clone()),
-                        note: Some("long.md".into()),
-                        ..Opts::default()
-                    },
-                    window,
-                    cx,
-                )
-            });
-            reader = Some(view.clone());
-            Root::new(view, window, cx)
-        });
-        let view = reader.unwrap();
-        let settle = |visual: &mut gpui::VisualTestContext| {
-            visual.run_until_parked();
-            visual.executor().advance_clock(Duration::from_millis(300));
-            visual.run_until_parked();
-        };
-        settle(visual);
-        let top = |visual: &mut gpui::VisualTestContext| {
-            view.read_with(visual, |v, cx| {
-                v.pane
-                    .content
-                    .read(cx)
-                    .list_state()
-                    .logical_scroll_top()
-                    .item_ix
-            })
-        };
-        assert_eq!(top(visual), 0, "positive control: opens at the top");
-        // Find-in-note sees rendered text: the block ID is not in it.
-        let matches = |visual: &mut gpui::VisualTestContext, query: &'static str| {
-            view.update(visual, |v, cx| {
-                v.pane
-                    .content
-                    .update(cx, |s, cx| s.set_search_query(query, cx));
-            });
-            visual.run_until_parked();
-            view.read_with(visual, |v, cx| v.pane.content.read(cx).search_status().1)
-        };
-        assert_eq!(matches(visual, "Target paragraph."), 1, "positive control");
-        assert_eq!(matches(visual, "^target"), 0, "the block ID is hidden");
-        assert_eq!(matches(visual, "!--"), 0, "the marker is not shown either");
-        assert_eq!(matches(visual, ""), 0);
-        let (target, definition, reference) = view.read_with(visual, |v, _| {
-            let inventory = okilum_core::document_links::HeadingInventory::new(&v.pane.note_source);
-            (
-                inventory.locate("^target").unwrap().block,
-                okilum_core::obsidian::footnote_block(&v.pane.note_source, "1").unwrap(),
-                okilum_core::obsidian::footnote_reference_block(&v.pane.note_source, "1").unwrap(),
-            )
-        });
-        assert_eq!(reference, 1);
-        assert!(target > 30 && definition > target);
-        view.update_in(visual, |v, window, cx| {
-            v.open_note_at("long.md", None, Some("^target"), window, cx)
-        });
-        settle(visual);
-        assert_eq!(top(visual), target, "[[long#^target]] lands on the block");
-        let weak = view.downgrade();
-        visual.update(|window, cx| handle_link(&weak, "okilum://footnote/1", window, cx));
-        settle(visual);
-        // The footnote is the last block: the list clamps at its end rather
-        // than lifting it to the top, so it lands in view, not at the top.
-        let landed = top(visual);
-        assert!(
-            landed > target && landed <= definition,
-            "a reference scrolls to its footnote ({landed})"
-        );
-        view.read_with(visual, |v, _| assert_eq!(v.link_notice, None));
-        visual.update(|window, cx| handle_link(&weak, "okilum://footnote-back/1", window, cx));
-        settle(visual);
-        assert_eq!(top(visual), reference, "the back-link returns to the text");
-        view.update_in(visual, |v, window, cx| {
-            v.open_note_at("long.md", None, Some("^missing"), window, cx)
-        });
-        settle(visual);
-        view.read_with(visual, |v, _| {
-            assert_eq!(
-                v.link_notice.as_deref(),
-                Some("No block with that ID exists in the current document.")
-            );
-        });
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

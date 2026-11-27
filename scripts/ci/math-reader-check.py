@@ -5,7 +5,7 @@ import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
-COMMAND = ['cargo', 'test', '--locked', '-p', 'okilum-shell', '--bin', 'okilum']
+COMMAND = ['cargo', 'test', '--locked', '-p', 'okilum-shell-text', '--lib']
 PREFIX = 'reader_obsidian::tests::math_2596_read_'
 
 
@@ -18,13 +18,13 @@ def run(name, *args):
 
 
 def main():
-    path = ROOT / 'crates/okilum-shell/src/reader_markdown.rs'
+    path = ROOT / 'crates/okilum-shell-text/src/markdown_style.rs'
     original = path.read_bytes()
     try:
         text = original.decode()
         for registration in (
-            '    .markdown_inline_parser(reader_obsidian::parse_inline_math)\n',
-            '    .markdown_block_renderer("math", reader_obsidian::render_math)\n',
+            '        .markdown_inline_parser(reader_obsidian::parse_inline_math)\n',
+            '        .markdown_block_renderer("math", reader_obsidian::render_math)\n',
         ):
             assert text.count(registration) == 1, 'expected one renderer registration'
             text = text.replace(registration, '')

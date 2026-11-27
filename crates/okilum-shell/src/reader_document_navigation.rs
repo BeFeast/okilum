@@ -1,29 +1,6 @@
 use super::*;
 
-#[derive(Debug, PartialEq, Eq)]
-pub(super) enum ReaderLanding {
-    Cancelled,
-    Waiting,
-    Failed,
-    Ready,
-}
-pub(super) fn reader_landing_state(
-    current: bool,
-    same_content: bool,
-    count: usize,
-    target: usize,
-    attempt: usize,
-) -> ReaderLanding {
-    if !current || !same_content {
-        ReaderLanding::Cancelled
-    } else if target < count {
-        ReaderLanding::Ready
-    } else if attempt >= 99 {
-        ReaderLanding::Failed
-    } else {
-        ReaderLanding::Waiting
-    }
-}
+pub(super) use okilum_shell_text::{reader_landing_state, ReaderLanding};
 
 impl Reader {
     pub(super) fn open_note(

@@ -1,9 +1,9 @@
 //! Quiet block embeds; source identity stays in the click target, not the label.
-use super::*;
-use crate::reader_markdown::Embed;
+use crate::markdown_style::Embed;
+use crate::prelude::*;
 use okilum_core::render::block_embed::Status;
 
-pub(super) fn explanation(status: Status) -> &'static str {
+pub fn explanation(status: Status) -> &'static str {
     match status {
         Status::Ready => "",
         Status::MissingBlock => "Block not found in ",
@@ -15,7 +15,7 @@ pub(super) fn explanation(status: Status) -> &'static str {
     }
 }
 
-pub(super) fn render_block(
+pub fn render_block(
     node: &MarkdownNode,
     link: &MarkdownLinkHandler,
     window: &mut Window,

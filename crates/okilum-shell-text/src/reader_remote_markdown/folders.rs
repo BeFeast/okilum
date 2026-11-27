@@ -1,16 +1,15 @@
 //! On-demand browsing in the existing remote window, without a local vault.
 use super::{view::Panel, *};
-use crate::*;
+use crate::prelude::*;
 use okilum_core::remote_markdown::folder::{self, Folder, Kind, Listing};
 
-pub(super) type Lister =
-    Arc<dyn Fn(&Folder, &Arc<AtomicBool>) -> io::Result<Listing> + Send + Sync>;
-pub(super) struct Browser {
-    pub(super) folder: Folder,
-    pub(super) result: Option<io::Result<Listing>>,
+pub type Lister = Arc<dyn Fn(&Folder, &Arc<AtomicBool>) -> io::Result<Listing> + Send + Sync>;
+pub struct Browser {
+    pub folder: Folder,
+    pub result: Option<io::Result<Listing>>,
 }
 impl Panel {
-    pub(super) fn revoke_folder(&mut self) {
+    pub fn revoke_folder(&mut self) {
         self.folder_serial = self
             .folder_serial
             .checked_add(1)
@@ -20,7 +19,7 @@ impl Panel {
         }
         self.folder_task = None;
     }
-    pub(super) fn browse(&mut self, folder: Folder, cx: &mut Context<Self>) {
+    pub fn browse(&mut self, folder: Folder, cx: &mut Context<Self>) {
         if !self.stop(cx) {
             return;
         }
@@ -100,7 +99,7 @@ impl Panel {
             }
         }
     }
-    pub(super) fn folder_controls(&self, cx: &Context<Self>) -> AnyElement {
+    pub fn folder_controls(&self, cx: &Context<Self>) -> AnyElement {
         let folder = self.browser.as_ref().map(|b| b.folder.clone()).or_else(|| {
             self.requested_source
                 .as_ref()
@@ -143,7 +142,7 @@ impl Panel {
         }
         controls.into_any_element()
     }
-    pub(super) fn folder_view(&self, cx: &Context<Self>) -> Option<AnyElement> {
+    pub fn folder_view(&self, cx: &Context<Self>) -> Option<AnyElement> {
         let browser = self.browser.as_ref()?;
         let mut body = v_flex()
             .flex_1()
@@ -213,7 +212,7 @@ impl Panel {
         Some(body.into_any_element())
     }
 }
-pub(super) fn default_lister() -> Lister {
+pub fn default_lister() -> Lister {
     Arc::new(|folder, cancel| {
         // The same flag aborts a connection waiting in an askpass dialog.
         folder::list(folder, &mut OpenSsh::cancellable(cancel.clone()), || {

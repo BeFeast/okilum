@@ -6326,6 +6326,7 @@ dependencies = [
  "okilum-paste",
  "okilum-shell-kit",
  "okilum-shell-platform",
+ "okilum-shell-text",
  "okilum-sync-controller",
  "okilum-t3",
  "okilum-write-authority",
@@ -6453,6 +6454,42 @@ dependencies = [
  "windows-sys 0.61.2",
  "x11rb",
  "zbus",
+]
+
+[[package]]
+name = "okilum-shell-text"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-channel",
+ "base64 0.22.1",
+ "gpui-base",
+ "gpui-component",
+ "gpui-pre-wgpu",
+ "image",
+ "merman",
+ "okilum-core",
+ "okilum-gpui",
+ "okilum-shell-kit",
+ "okilum-shell-platform",
+ "okilum-t3",
+ "okilum-write-authority",
+ "regex",
+ "resvg 0.45.1",
+ "rustybuzz",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "sysinfo",
+ "tempfile",
+ "tree-sitter",
+ "tree-sitter-mermaid",
+ "tree-sitter-xml",
+ "unicode-segmentation",
+ "unicode-width",
+ "url",
+ "uuid",
 ]
 
 [[package]]

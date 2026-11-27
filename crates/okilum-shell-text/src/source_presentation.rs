@@ -30,15 +30,15 @@ mod display_metadata;
 mod punctuation_editor_tests;
 
 #[path = "source_presentation/code_languages.rs"]
-pub(crate) mod code_languages;
+pub mod code_languages;
 
 #[allow(dead_code)] // Full authored metadata is separate from display backend selection.
 #[path = "source_presentation/navigation_inventory.rs"]
-pub(crate) mod navigation_inventory;
+pub mod navigation_inventory;
 
 #[allow(dead_code)] // Explicitly unselected until the consumer activation contract is proven.
 #[path = "source_presentation/publication_adapter.rs"]
-pub(crate) mod publication_adapter;
+pub mod publication_adapter;
 
 pub const BODY_FONT: &str = "Noto Sans";
 pub const CODE_FONT: &str = "Cascadia Code";
@@ -113,7 +113,7 @@ const FORMULA_CACHE: usize = 512;
 
 /// The inline formula holding the caret: its `$…$` source range and TeX.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct FormulaAt {
+pub struct FormulaAt {
     pub range: Range<usize>,
     pub tex: String,
 }
@@ -187,13 +187,13 @@ impl CachedProvider {
     /// One authored-link producer for the Brain's actual worker. Reading a
     /// completion here checks its immutable input; UI admission remains separate.
     #[allow(dead_code)] // Standalone projection examples still use classify.
-    pub(crate) fn classify_navigation(
+    pub fn classify_navigation(
         request: navigation_inventory::Request,
         input: navigation_inventory::Input,
     ) -> Result<(Self, navigation_inventory::Completion), navigation_inventory::Error> {
         Self::classify_navigation_reusing(request, input, None)
     }
-    pub(crate) fn classify_navigation_reusing(
+    pub fn classify_navigation_reusing(
         request: navigation_inventory::Request,
         input: navigation_inventory::Input,
         previous: Option<&Self>,
@@ -294,7 +294,7 @@ impl CachedProvider {
     /// projection has been composed for exactly this source revision. Looks
     /// at the caret's line only: inline formulas never span lines.
     #[allow(dead_code)] // Standalone projection examples have no preview card.
-    pub(crate) fn formula_at(
+    pub fn formula_at(
         &self,
         stamp: gpui_component::input::projection::SourceStamp,
         cursor: usize,
@@ -341,7 +341,7 @@ impl CachedProvider {
     /// Off-thread preparation keeps standalone list continuations from turning
     /// a fence indented by four spaces into literal indented code.
     #[allow(dead_code)] // Standalone projection examples do not render blocks.
-    pub(crate) fn block_markdown(&self, source: &str) -> Option<&str> {
+    pub fn block_markdown(&self, source: &str) -> Option<&str> {
         self.fenced_blocks.get(source).map(String::as_str)
     }
 
@@ -929,7 +929,7 @@ impl CachedProvider {
     /// The ranges drawn as rendered blocks in `source` when the caret and
     /// selection do not touch them: tables, images, callouts and code (#1642).
     #[allow(dead_code)] // The bidi and marker examples include this file without the editor.
-    pub(crate) fn rendered_blocks(&self, source: &SourceSnapshot) -> Vec<Range<usize>> {
+    pub fn rendered_blocks(&self, source: &SourceSnapshot) -> Vec<Range<usize>> {
         if source.text.len() > source_classifier::MAX_BYTES {
             return Vec::new();
         }
@@ -1020,7 +1020,7 @@ fn table_blocks_indexed(
 /// row; body rows follow the delimiter row. Cells split on unescaped `|`, as in
 /// GFM (also inside code spans). None when the cell is not written out.
 #[allow(dead_code)] // The bidi and marker examples include this file without the editor.
-pub(crate) fn table_cell_offset(source: &str, row: usize, column: usize) -> Option<usize> {
+pub fn table_cell_offset(source: &str, row: usize, column: usize) -> Option<usize> {
     let line_ix = if row == 0 { 0 } else { row + 1 };
     let mut start = 0;
     let mut line = None;
@@ -1084,7 +1084,7 @@ pub(crate) fn table_cell_offset(source: &str, row: usize, column: usize) -> Opti
 /// Heading sizes in units of the body font size, shared by the Reader and Live
 /// Preview so a note reads the same in both (#1076). docs/design/reader.md:
 /// 15.5 body -> H1 30, H2 21, H3 17, H4-H6 body size.
-pub(crate) fn heading_scale(level: u8) -> f32 {
+pub fn heading_scale(level: u8) -> f32 {
     const BODY: f32 = 15.5;
     match level {
         1 => 30. / BODY,
@@ -1201,7 +1201,7 @@ fn heading_line_scales(
 /// slot is dropped, so no gradient colour or span is produced.
 // Standalone projection examples include this module without app fonts.
 #[allow(dead_code)]
-pub(crate) fn live_preview_decorations(
+pub fn live_preview_decorations(
     mut decorations: gpui_base::text::TextDecorations,
     family: &str,
     font_id: impl Fn(&gpui::Font) -> gpui::FontId,
@@ -1298,7 +1298,7 @@ fn projection_decorations(
 /// bullet, number, task box or `>` forms a gutter (#1641). Container syntax
 /// is never concealed, so caret reveal leaves the prefix and the rows alone.
 /// Only each line's first bytes are read; the newline scan is a byte search.
-pub(crate) fn container_line_indents(display: &str) -> Vec<LineIndent> {
+pub fn container_line_indents(display: &str) -> Vec<LineIndent> {
     display
         .split('\n')
         .enumerate()
@@ -2216,7 +2216,7 @@ mod tests {
     /// line but the one being typed (its own syntax waits for the parse).
     #[test]
     fn enter_at_the_end_of_a_list_projects_every_frame_before_adoption() {
-        let base = include_str!("../examples/decoration784/fixture.md");
+        let base = include_str!("../../okilum-shell/examples/decoration784/fixture.md");
         for (item, indent) in [
             ("    - Third level", "    "),
             ("- [ ] Task stays unchanged", ""),

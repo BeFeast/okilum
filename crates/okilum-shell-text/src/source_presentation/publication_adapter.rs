@@ -27,12 +27,12 @@ fn core_active(active: &ActiveSource) -> NativeActive {
 
 /// Owns an already prepared immutable trait result. Construction must occur
 /// AFTER explicit root/publication compute/adopt, outside the native compose path.
-pub(crate) struct PreparedProvider {
+pub struct PreparedProvider {
     active: ActiveSource,
     projection: Arc<PreparedProjection>,
 }
 impl PreparedProvider {
-    pub(crate) fn new(
+    pub fn new(
         source: SourceSnapshot,
         active: ActiveSource,
         publication: Publication,

@@ -1,6 +1,6 @@
 //! Isolated shared-editor acceptance fixture. Never reads or saves user notes.
 #[allow(dead_code)] // Shared module contains app-only palette and diagnostics APIs.
-#[path = "../src/source_presentation.rs"]
+#[path = "../../okilum-shell-text/src/source_presentation.rs"]
 mod adapter;
 use gpui::*;
 use gpui_component::{

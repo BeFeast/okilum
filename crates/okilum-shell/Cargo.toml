@@ -39,6 +39,7 @@ okilum-write-authority = { path = "../okilum-write-authority" }
 # Shared components below the app (epic #3241).
 okilum-shell-kit = { path = "../okilum-shell-kit" }
 okilum-shell-platform = { path = "../okilum-shell-platform" }
+okilum-shell-text = { path = "../okilum-shell-text" }
 tokio = { version = "1", features = ["rt", "net", "time", "fs", "io-util"] }
 tokio-util = { version = "0.7", features = ["io"] }
 futures-util = "0.3"
@@ -120,6 +121,7 @@ okilum-write-authority = { path = "../okilum-write-authority", features = ["test
 okilum-core = { workspace = true, features = ["test-support"] }
 okilum-shell-kit = { path = "../okilum-shell-kit", features = ["test-support"] }
 okilum-shell-platform = { path = "../okilum-shell-platform", features = ["test-support"] }
+okilum-shell-text = { path = "../okilum-shell-text", features = ["test-support"] }
 tungstenite = "0.28"
 # Builds ZIP/TAR fixtures for the archive viewer tests (#1149, #3290); okilum-core already uses them.
 zip = { version = "9.5", default-features = false, features = ["deflate-flate2-zlib-rs"] }

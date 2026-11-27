@@ -10,7 +10,7 @@ struct Lifetime;
 /// Actual app-consumer lifetime plus entity. Reopening even the same entity
 /// creates a new value; clones refer to the original lifetime, not a display name.
 #[derive(Clone)]
-pub(crate) struct Owner {
+pub struct Owner {
     lifetime: Arc<Lifetime>,
     entity: EntityId,
 }
@@ -31,13 +31,13 @@ impl Eq for Owner {}
 
 /// Complete app binding, not a display name or digest of workspace identity.
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct Binding {
+pub struct Binding {
     pub owner: Owner,
     pub workspace: Value,
     pub path: String,
 }
 #[derive(Clone)]
-pub(crate) struct Input {
+pub struct Input {
     pub binding: Binding,
     pub source: SourceSnapshot,
 }
@@ -50,7 +50,7 @@ impl Input {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Error {
+pub enum Error {
     Unavailable,
     SourceLimit,
     Stale,
@@ -75,13 +75,13 @@ impl Ticket {
 }
 
 #[derive(Clone)]
-pub(crate) struct Request(Ticket);
+pub struct Request(Ticket);
 #[derive(Clone)]
-pub(crate) struct Completion(Arc<Inventory>);
+pub struct Completion(Arc<Inventory>);
 
 /// Logical attempt identity; physical worker ownership is managed by the UI.
 #[derive(Clone)]
-pub(crate) struct RequestKey {
+pub struct RequestKey {
     owner: Arc<RequestOwner>,
     sequence: u64,
 }
@@ -128,7 +128,7 @@ impl Request {
 
 /// Only compute constructs this complete immutable value. There is no public
 /// partial constructor/flag and no accessor that claims it is current elsewhere.
-pub(crate) struct Inventory {
+pub struct Inventory {
     ticket: Ticket,
     parsed: Vec<document_links::ParsedLink>,
     legacy: Vec<source_classifier::NoteLink>,
@@ -146,7 +146,7 @@ impl Inventory {
         })
     }
 }
-pub(crate) struct View<'a> {
+pub struct View<'a> {
     parsed: &'a [document_links::ParsedLink],
     legacy: &'a [source_classifier::NoteLink],
 }
@@ -176,7 +176,7 @@ impl State {
 
 /// One real consumer lifetime. Drop/recreate on close/reopen; opaque owner
 /// identity rejects old deliveries even if every visible input and sequence match.
-pub(crate) struct Session {
+pub struct Session {
     owner: Owner,
     request_owner: Arc<RequestOwner>,
     sequence: u64,

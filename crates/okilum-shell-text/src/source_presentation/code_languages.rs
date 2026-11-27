@@ -2,7 +2,7 @@
 use gpui_component::highlighter::{LanguageConfig, LanguageRegistry};
 use std::sync::Once;
 
-pub(crate) fn install() {
+pub fn install() {
     static INSTALL: Once = Once::new();
     INSTALL.call_once(|| {
         let registry = LanguageRegistry::singleton();
@@ -12,7 +12,8 @@ pub(crate) fn install() {
         if let Some(mut config) = registry.language("csharp") {
             if config.highlights.is_empty() {
                 config.highlights =
-                    include_str!("../../assets/highlighting/csharp/highlights.scm").into();
+                    include_str!("../../../okilum-shell/assets/highlighting/csharp/highlights.scm")
+                        .into();
                 registry.register("csharp", &config);
             }
         }

@@ -4,7 +4,7 @@ use super::*;
 use okilum_core::source_projection::revision::{Edit, Text};
 
 #[derive(Clone)]
-pub(super) struct Inline {
+pub struct Inline {
     range: Range<usize>,
     scope: Range<usize>,
     rendered: Arc<tex::Linear>,
@@ -15,7 +15,7 @@ struct Prose {
     inventory: punctuation::Inventory,
     rendered: Vec<Inline>,
 }
-pub(super) struct Metadata {
+pub struct Metadata {
     snapshot: Snapshot,
     inline: Vec<Inline>,
     prose: Vec<Prose>,
@@ -33,7 +33,7 @@ fn moved(range: &Range<usize>, edit: &Edit) -> Option<Range<usize>> {
     }
 }
 impl Metadata {
-    pub(super) fn reusing(mut self, previous: Option<&CachedProvider>) -> Self {
+    pub fn reusing(mut self, previous: Option<&CachedProvider>) -> Self {
         if let Some(overlay) = previous.and_then(|p| {
             p.display_metadata
                 .lock()
@@ -44,7 +44,7 @@ impl Metadata {
         }
         self
     }
-    pub(super) fn ranges_for(&self, source: &SourceSnapshot) -> Vec<Range<usize>> {
+    pub fn ranges_for(&self, source: &SourceSnapshot) -> Vec<Range<usize>> {
         let Some(edit) = source
             .text
             .edit_since(self.snapshot.text().id())
@@ -61,10 +61,10 @@ impl Metadata {
             .filter_map(|(r, _)| moved(r, &edit))
             .collect()
     }
-    pub(super) fn snapshot_id(&self) -> u64 {
+    pub fn snapshot_id(&self) -> u64 {
         self.snapshot.text().id()
     }
-    pub(super) fn new(provider: &CachedProvider, retained: &RetainedPresentation) -> Self {
+    pub fn new(provider: &CachedProvider, retained: &RetainedPresentation) -> Self {
         let snapshot = retained.snapshot().clone();
         let text = snapshot.text();
         let indents = indent_lines(text, 0..text.len());
@@ -102,7 +102,7 @@ impl Metadata {
             overlay: Default::default(),
         }
     }
-    pub(super) fn advance(
+    pub fn advance(
         &mut self,
         provider: &CachedProvider,
         retained: &RetainedPresentation,
@@ -241,7 +241,7 @@ impl Metadata {
             .collect();
         self.snapshot = next.clone();
     }
-    pub(super) fn indents(&self, projection: &Projection) -> Vec<LineIndent> {
+    pub fn indents(&self, projection: &Projection) -> Vec<LineIndent> {
         self.indents
             .iter()
             .map(|&(at, prefix)| LineIndent {
@@ -250,11 +250,7 @@ impl Metadata {
             })
             .collect()
     }
-    pub(super) fn blocks(
-        &self,
-        projection: &Projection,
-        active: &ActiveSource,
-    ) -> Vec<ProjectionBlock> {
+    pub fn blocks(&self, projection: &Projection, active: &ActiveSource) -> Vec<ProjectionBlock> {
         let selection = active.anchor.0.min(active.head.0)..active.anchor.0.max(active.head.0);
         self.tables
             .iter()
@@ -276,7 +272,7 @@ impl Metadata {
             })
             .collect()
     }
-    pub(super) fn overlay(
+    pub fn overlay(
         &mut self,
         projection: &Projection,
         reveal: &source_classifier::RevealSnapshot,

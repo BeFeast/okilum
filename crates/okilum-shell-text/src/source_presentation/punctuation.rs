@@ -5,11 +5,11 @@ use unicode_segmentation::UnicodeSegmentation;
 
 #[cfg(test)]
 thread_local! {
-    pub(super) static INDEXED_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub static INDEXED_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
-pub(super) fn replacements(
+pub fn replacements(
     source: &str,
     eligible: impl Fn(&Range<usize>) -> bool,
 ) -> Vec<(Range<usize>, Cow<'static, str>)> {
@@ -29,7 +29,7 @@ pub(super) fn replacements(
 /// separate from source inspection. An edit re-lexes complete changed logical
 /// lines; pairing the cached events never reads unchanged source bytes.
 #[derive(Clone)]
-pub(super) struct Inventory {
+pub struct Inventory {
     rows: Vec<Row>,
 }
 #[derive(Clone)]
@@ -53,11 +53,7 @@ enum EventKind {
     Close(char),
 }
 impl Inventory {
-    pub(super) fn new(
-        source: &str,
-        origin: usize,
-        boundary: impl Fn(&Range<usize>) -> bool,
-    ) -> Self {
+    pub fn new(source: &str, origin: usize, boundary: impl Fn(&Range<usize>) -> bool) -> Self {
         let mut at = origin;
         let rows = source
             .split_inclusive('\n')
@@ -69,7 +65,7 @@ impl Inventory {
             .collect();
         Self { rows }
     }
-    pub(super) fn remap(
+    pub fn remap(
         &self,
         old_lines: Range<usize>,
         new_lines: &str,
@@ -107,7 +103,7 @@ impl Inventory {
         );
         Self { rows }
     }
-    pub(super) fn shifted(&self, map: impl Fn(usize) -> usize) -> Self {
+    pub fn shifted(&self, map: impl Fn(usize) -> usize) -> Self {
         let range = |r: &Range<usize>| map(r.start)..map(r.end);
         Self {
             rows: self
@@ -130,7 +126,7 @@ impl Inventory {
                 .collect(),
         }
     }
-    pub(super) fn replacements(
+    pub fn replacements(
         &self,
         eligible: impl Fn(&Range<usize>) -> bool,
     ) -> Vec<(Range<usize>, Cow<'static, str>)> {
@@ -178,7 +174,7 @@ impl Inventory {
 
 /// Production supplies the retained canonical source boundary index.
 #[cfg(test)]
-pub(super) fn replacements_indexed(
+pub fn replacements_indexed(
     source: &str,
     eligible: impl Fn(&Range<usize>) -> bool,
     boundary: impl Fn(&Range<usize>) -> bool,

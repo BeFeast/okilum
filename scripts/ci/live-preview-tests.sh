@@ -17,7 +17,7 @@ run_suite() {
 run_suite cargo test --locked -p okilum-core --lib source_projection::
 run_suite cargo test --locked -p okilum-core --lib source_classifier::
 run_suite cargo test --locked -p okilum-core --lib file_editor::
-run_suite cargo test --locked -p okilum-shell --bin okilum source_presentation::
+run_suite cargo test --locked -p okilum-shell-text --lib source_presentation::
 run_suite cargo test --locked -p okilum-shell --bin okilum reader_editor::live_preview:: -- --nocapture
 run_suite cargo test --locked -p okilum-shell --bin okilum input_anchor_tests::
 run_suite cargo test --locked -p okilum-shell --bin okilum reader_editor::tables::grid::

@@ -1,5 +1,5 @@
 //! Isolated native #216 fixture. No BrainView, RPC, persistence or live-note access.
-#[path = "../src/source_presentation.rs"]
+#[path = "../../okilum-shell-text/src/source_presentation.rs"]
 mod adapter;
 #[path = "../../okilum-shell-platform/src/platform/exact_wayland_clipboard.rs"]
 mod exact_wayland_clipboard;

@@ -45,10 +45,17 @@ class Guard(unittest.TestCase):
             self.assertEqual(result.returncode, guard.INVALID)
             self.assertIn('okilum-shell-platform test-support', result.stderr)
 
+    def test_text_test_support_binary_is_an_invalid_run(self):
+        # #3235: the okilum-shell-text test seams leak like GPUI's.
+        with tempfile.TemporaryDirectory() as d:
+            result = self.run_guard(fake(d, 'echo "gpui-test-support: no"; echo "shell-text-test-support: yes"\n'))
+            self.assertEqual(result.returncode, guard.INVALID)
+            self.assertIn('okilum-shell-text test-support', result.stderr)
+
     def test_app_binary_passes(self):
         # Positive control: the same guard lets a normal build through.
         with tempfile.TemporaryDirectory() as d:
-            result = self.run_guard(fake(d, 'echo "gpui-test-support: no"; echo "shell-kit-test-support: no"; echo "shell-platform-test-support: no"\n'))
+            result = self.run_guard(fake(d, 'echo "gpui-test-support: no"; echo "shell-kit-test-support: no"; echo "shell-platform-test-support: no"; echo "shell-text-test-support: no"\n'))
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('ok', result.stdout)
 

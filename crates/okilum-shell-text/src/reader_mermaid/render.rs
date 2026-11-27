@@ -4,19 +4,19 @@ use sha2::{Digest, Sha256};
 use std::sync::{mpsc, Arc, LazyLock, Mutex};
 use std::time::Duration;
 
-pub(super) const DEADLINE: Duration = Duration::from_secs(5);
-pub(super) const MAX_SOURCE: usize = 64 * 1024;
+pub const DEADLINE: Duration = Duration::from_secs(5);
+pub const MAX_SOURCE: usize = 64 * 1024;
 const MAX_SVG: usize = 4 * 1024 * 1024;
 const MAX_PIXELS: u32 = 4 * 1024 * 1024;
 const MAX_SIDE: u32 = 4096;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub(super) struct Key {
+pub struct Key {
     pub hash: [u8; 32],
     pub width: u32,
     pub dark: bool,
 }
-pub(super) fn bucket(width: f32) -> u32 {
+pub fn bucket(width: f32) -> u32 {
     (width.clamp(128., 2048.) as u32 / 128).max(1) * 128
 }
 impl Key {
@@ -28,7 +28,7 @@ impl Key {
         }
     }
 }
-pub(super) struct Diagram {
+pub struct Diagram {
     pub image: Arc<RenderImage>,
     pub width: f32,
     pub height: f32,
@@ -103,7 +103,7 @@ fn bounded(work: impl FnOnce() -> Outcome + Send + 'static, budget: Budget) -> O
             .map_err(|_| "Mermaid worker disconnected".to_string())?,
     }
 }
-pub(super) fn render(source: Arc<str>, key: Key) -> Outcome {
+pub fn render(source: Arc<str>, key: Key) -> Outcome {
     render_with_budget(source, key, Budget::Wall(DEADLINE))
 }
 
@@ -126,10 +126,10 @@ fn fonts() -> Arc<resvg::usvg::fontdb::Database> {
     static FONTS: LazyLock<Arc<resvg::usvg::fontdb::Database>> = LazyLock::new(|| {
         let mut db = resvg::usvg::fontdb::Database::new();
         for bytes in [
-            include_bytes!("../../assets/mermaid/Arimo-Regular.ttf").as_slice(),
-            include_bytes!("../../assets/mermaid/Arimo-Bold.ttf"),
-            include_bytes!("../../assets/mermaid/Arimo-Italic.ttf"),
-            include_bytes!("../../assets/mermaid/Arimo-BoldItalic.ttf"),
+            include_bytes!("../../../okilum-shell/assets/mermaid/Arimo-Regular.ttf").as_slice(),
+            include_bytes!("../../../okilum-shell/assets/mermaid/Arimo-Bold.ttf"),
+            include_bytes!("../../../okilum-shell/assets/mermaid/Arimo-Italic.ttf"),
+            include_bytes!("../../../okilum-shell/assets/mermaid/Arimo-BoldItalic.ttf"),
         ] {
             db.load_font_data(bytes.to_vec());
         }
@@ -151,10 +151,18 @@ fn text_width(text: &str, style: &merman::svg::TextStyle) -> f64 {
         .as_deref()
         .is_some_and(|s| s == "italic" || s == "oblique");
     let bytes = match (bold, italic) {
-        (false, false) => include_bytes!("../../assets/mermaid/Arimo-Regular.ttf").as_slice(),
-        (true, false) => include_bytes!("../../assets/mermaid/Arimo-Bold.ttf").as_slice(),
-        (false, true) => include_bytes!("../../assets/mermaid/Arimo-Italic.ttf").as_slice(),
-        (true, true) => include_bytes!("../../assets/mermaid/Arimo-BoldItalic.ttf").as_slice(),
+        (false, false) => {
+            include_bytes!("../../../okilum-shell/assets/mermaid/Arimo-Regular.ttf").as_slice()
+        }
+        (true, false) => {
+            include_bytes!("../../../okilum-shell/assets/mermaid/Arimo-Bold.ttf").as_slice()
+        }
+        (false, true) => {
+            include_bytes!("../../../okilum-shell/assets/mermaid/Arimo-Italic.ttf").as_slice()
+        }
+        (true, true) => {
+            include_bytes!("../../../okilum-shell/assets/mermaid/Arimo-BoldItalic.ttf").as_slice()
+        }
     };
     let face = rustybuzz::Face::from_slice(bytes, 0).expect("embedded Arimo face");
     let mut buffer = rustybuzz::UnicodeBuffer::new();
@@ -169,11 +177,7 @@ fn text_width(text: &str, style: &merman::svg::TextStyle) -> f64 {
         / face.units_per_em() as f64
         * style.font_size
 }
-pub(super) fn svg(
-    source: &str,
-    key: &Key,
-    control: merman::OperationControl,
-) -> Result<String, String> {
+pub fn svg(source: &str, key: &Key, control: merman::OperationControl) -> Result<String, String> {
     let config = merman::MermaidConfig::from_value(serde_json::json!({
         "theme": if key.dark { "dark" } else { "default" },
         "fontFamily": "Arimo", "securityLevel": "strict",
@@ -254,7 +258,7 @@ fn raster_geometry(width: f32, height: f32, logical: f32) -> Result<(u32, u32, f
 }
 
 /// Logs must not include source-authored labels from parser error messages.
-pub(super) fn fallback_reason(error: &str) -> &'static str {
+pub fn fallback_reason(error: &str) -> &'static str {
     for reason in [
         "source size limit",
         "raster size limit",
