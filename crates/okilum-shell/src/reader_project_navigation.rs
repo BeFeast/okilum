@@ -355,7 +355,6 @@ impl Reader {
     pub(super) fn show_vault_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.leave_vault_project(window, cx);
         self.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
-        self.save_sidebar(cx);
         self.resizing_panel = None;
         self.panels.open(reader_layout::Panel::Notes);
         self.tree_focus.focus(window, cx);

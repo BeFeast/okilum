@@ -293,7 +293,6 @@ impl Reader {
     ) {
         if self.single_file
             || self.project_navigation.active.is_some()
-            || self.sidebar.left_mode == mode
             || (mode == LeftMode::Areas && self.areas_tree().is_none())
         {
             return;
@@ -302,7 +301,9 @@ impl Reader {
             self.set_now_enabled(true, window, cx);
             return;
         }
-        self.sidebar.left_mode = mode;
+        if !self.sidebar.select_left_mode(mode) {
+            return;
+        }
         // Keep the tree object, cursor and scroll handle intact. No reveal or rebuild.
         if mode != LeftMode::Tree && self.tree_focus.contains_focused(window, cx) {
             self.focus_handle.focus(window, cx);
@@ -1410,6 +1411,38 @@ mod tests {
         );
         let restored = reader_sidebar::State::load(&path);
         assert_eq!(restored.left_mode, LeftMode::Tree);
+    }
+
+    #[gpui::test]
+    fn navigation_keeps_saved_now_until_tree_is_explicitly_selected(cx: &mut TestAppContext) {
+        let (reader, visual, temp) = fixture(cx);
+        let note = "Dev/Projects/App/Note 090.md";
+        let path =
+            reader_sidebar::State::path(&temp.path().join("state"), &temp.path().join("vault"));
+        type Navigate = fn(&mut Reader, &mut Window, &mut Context<Reader>);
+        let navigation: [Navigate; 4] = [
+            Reader::focus_sidebar_search,
+            Reader::focus_current_folder,
+            Reader::show_vault_files,
+            |reader, window, cx| reader.reveal_in_tree("Dev/Projects/App", window, cx),
+        ];
+        for navigate in navigation {
+            reader.update_in(visual, |r, window, cx| {
+                r.sidebar.choose_now(true);
+                r.pane.current_rel = note.into();
+                navigate(r, window, cx);
+                assert_eq!(r.sidebar.left_mode, LeftMode::Tree);
+                // An unrelated save while viewing Tree must preserve Now.
+                r.save_sidebar(cx);
+            });
+            visual.run_until_parked();
+            assert_eq!(reader_sidebar::State::load(&path).left_mode, LeftMode::Now);
+        }
+
+        let tab = visual.debug_bounds("left-mode-tree").unwrap();
+        visual.simulate_click(tab.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(reader_sidebar::State::load(&path).left_mode, LeftMode::Tree);
     }
 
     #[gpui::test]

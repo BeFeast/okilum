@@ -371,7 +371,6 @@ impl Reader {
         self.tree.clear_selection();
         self.resizing_panel = None;
         self.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
-        self.save_sidebar(cx);
         self.panels.open(reader_layout::Panel::Notes);
         cx.notify();
         self.sidebar_search_focus.focus(window, cx);
@@ -737,7 +736,6 @@ impl Reader {
         self.tree.clear_selection();
         self.resizing_panel = None;
         self.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
-        self.save_sidebar(cx);
         self.panels.open(reader_layout::Panel::Notes);
         if self
             .sidebar
@@ -898,7 +896,6 @@ impl Reader {
         }
         self.resizing_panel = None;
         self.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
-        self.save_sidebar(cx);
         self.panels.open(reader_layout::Panel::Notes);
         if self
             .sidebar

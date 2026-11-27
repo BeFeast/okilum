@@ -13,12 +13,11 @@ accepted snapshot, never a scan performed by rendering. **Use Now** enables it;
 and a project alone do not trigger the offer. Explicit activation or disabling
 also answers the offer. The shared Settings module switches belong to #2092.
 
-The header's icon tabs switch between Tree and Now, also with
-Cmd+Shift+Backslash on macOS or Ctrl+Shift+Backslash elsewhere. Reveal in Tree
-(Cmd/Ctrl+Shift+L) explicitly selects Tree and reveals the open file. Plain mode
-switching retains the tree object, expanded folders, cursor and scroll handle;
-it never reveals a new row. The mode persists per vault in application state.
-Single-folder viewers and project mode retain their existing tree surface.
+The Tree and Now tabs, the View menu's Now / Tree command, and the Tree shortcut
+in the Now footer save the selected mode per vault. Switching modes retains
+the tree's expanded folders, cursor and scroll position. Search, Files and
+Reveal in Tree (Cmd/Ctrl+Shift+L) show Tree temporarily. Areas is also
+session-local. Reopening the vault restores the saved mode.
 
 Now keeps the In progress, Changes and Pinned section headers visible, with
 counts and collapse controls. In a vault with a lifecycle layout summary in
