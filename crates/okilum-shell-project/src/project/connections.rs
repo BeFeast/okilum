@@ -1,0 +1,352 @@
+use std::collections::BTreeMap;
+use std::io::Write;
+use std::path::Path;
+#[cfg(any(test, feature = "test-support"))]
+use std::path::PathBuf;
+
+use anyhow::{Context, Result};
+#[cfg(any(test, feature = "test-support"))]
+use okilum_t3::manifest::AreaBinding;
+use okilum_t3::Environment;
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn area_for(vault: &Path, note: &Path) -> Result<PathBuf> {
+    let mut directory = note.parent().unwrap_or(vault);
+    while directory.starts_with(vault) {
+        if okilum_t3::area_files::preferred_path(directory, "project")?.is_some() {
+            return Ok(directory.to_owned());
+        }
+        if directory == vault {
+            break;
+        }
+        let Some(parent) = directory.parent() else {
+            break;
+        };
+        directory = parent;
+    }
+    Ok(vault.to_owned())
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn load(state: &Path, binding: &AreaBinding) -> Result<Option<Environment>> {
+    let source = match std::fs::read(state.join("t3-connections.json")) {
+        Ok(source) => source,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("Cannot read saved T3 connections"),
+    };
+    let saved: BTreeMap<String, String> =
+        serde_json::from_slice(&source).context("Saved T3 connections are unreadable")?;
+    saved
+        .get(&binding.environment)
+        .map(|origin| Environment::new(&binding.environment, origin))
+        .transpose()
+}
+
+/// App-wide sign-in also serves aliases which have never opened a panel.
+pub(super) fn for_projects(
+    state: &Path,
+    projects: &[okilum_t3::projects::Project],
+) -> Result<BTreeMap<String, String>> {
+    let mut saved: BTreeMap<String, String> = match std::fs::read(state.join("t3-connections.json"))
+    {
+        Ok(bytes) => serde_json::from_slice(&bytes)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+        Err(e) => return Err(e.into()),
+    };
+    for project in projects {
+        let Some(alias) = &project.environment else {
+            continue;
+        };
+        if let Some(origin) = prefill_origin(&project.folder, alias, Some(state))? {
+            saved.insert(alias.clone(), origin);
+        }
+    }
+    Ok(saved)
+}
+
+pub fn save(state: &Path, env: &Environment) -> Result<()> {
+    std::fs::create_dir_all(state)?;
+    let path = state.join("t3-connections.json");
+    let mut saved: BTreeMap<String, String> = match std::fs::read(&path) {
+        Ok(source) => {
+            serde_json::from_slice(&source).context("Saved T3 connections are unreadable")?
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+        Err(error) => return Err(error).context("Cannot read saved T3 connections"),
+    };
+    saved.insert(env.alias.clone(), env.origin());
+    save_document(state, "t3-connections.json", &serde_json::to_vec(&saved)?)
+}
+
+fn save_document(state: &Path, name: &str, bytes: &[u8]) -> Result<()> {
+    std::fs::create_dir_all(state)?;
+    let path = state.join(name);
+    let temporary = state.join(format!(".t3-origin-{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        std::fs::rename(&temporary, &path)?;
+        #[cfg(unix)]
+        std::fs::File::open(state)?.sync_all()?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(temporary);
+    result
+}
+
+/// Manifest origin, then its named connection registry, then last successful origin.
+pub(super) fn prefill_origin(
+    area: &Path,
+    alias: &str,
+    state: Option<&Path>,
+) -> Result<Option<String>> {
+    match project_origin(area, alias, state)? {
+        Some(origin) => Ok(Some(origin)),
+        None => last_origin(state),
+    }
+}
+
+pub(super) fn project_origin(
+    area: &Path,
+    alias: &str,
+    state: Option<&Path>,
+) -> Result<Option<String>> {
+    let manifest = okilum_t3::area_files::read(area, "project")?
+        .map(|document| document.value)
+        .unwrap_or(serde_yaml::Value::Null);
+    if let Some(origin) = manifest["t3"]["origin"].as_str() {
+        return Ok(Some(Environment::from_input(alias, origin)?.origin()));
+    }
+    let Some(state) = state else {
+        return Ok(None);
+    };
+    let saved = match std::fs::read(state.join("t3-connections.json")) {
+        Ok(bytes) => serde_json::from_slice::<BTreeMap<String, String>>(&bytes)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+        Err(e) => return Err(e.into()),
+    };
+    if let Some(origin) = saved.get(alias) {
+        return Ok(Some(Environment::from_input(alias, origin)?.origin()));
+    }
+    Ok(None)
+}
+
+pub(super) fn last_origin(state: Option<&Path>) -> Result<Option<String>> {
+    let Some(state) = state else {
+        return Ok(None);
+    };
+    let alias = "app";
+    match std::fs::read(state.join("t3-last-origin.json")) {
+        Ok(bytes) => {
+            let origin: String = serde_json::from_slice(&bytes)?;
+            Ok(Some(Environment::from_input(alias, &origin)?.origin()))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub(super) fn save_last_origin(state: &Path, env: &Environment) -> Result<()> {
+    save_document(
+        state,
+        "t3-last-origin.json",
+        &serde_json::to_vec(&env.origin())?,
+    )
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    #[test]
+    fn shared_settings_do_not_create_a_project_override() {
+        let base = tempfile::tempdir().unwrap();
+        let area = base.path().join("area");
+        let state = base.path().join("state");
+        std::fs::create_dir_all(area.join("ops")).unwrap();
+        std::fs::write(area.join("ops/project.yaml"), "t3: {environment: maestro}").unwrap();
+        let app = Environment::from_input("app", "t3.oklabs.uk").unwrap();
+        super::super::save_browser_environment(&state, &app).unwrap();
+        assert!(
+            !state.join("t3-connections.json").exists(),
+            "shared settings do not create registry overrides"
+        );
+        assert_eq!(project_origin(&area, "app", Some(&state)).unwrap(), None);
+        assert_eq!(
+            project_origin(&area, "maestro", Some(&state)).unwrap(),
+            None
+        );
+        assert_eq!(
+            prefill_origin(&area, "maestro", Some(&state)).unwrap(),
+            Some(app.origin())
+        );
+        let other = Environment::from_input("maestro", "10.10.0.23:23110").unwrap();
+        save(&state, &other).unwrap();
+        assert_eq!(
+            project_origin(&area, "maestro", Some(&state)).unwrap(),
+            Some(other.origin())
+        );
+        assert_eq!(
+            last_origin(Some(&state)).unwrap(),
+            Some(app.origin()),
+            "project override must not replace the app default"
+        );
+    }
+
+    #[test]
+    fn one_app_origin_serves_new_project_aliases_and_preserves_overrides() {
+        let base = tempfile::tempdir().unwrap();
+        let state = base.path().join("state");
+        save_last_origin(
+            &state,
+            &Environment::new("app", "https://shared.example").unwrap(),
+        )
+        .unwrap();
+        let mut projects = Vec::new();
+        for (name, extra) in [
+            ("first", ""),
+            ("second", ""),
+            ("override", "  origin: https://override.example\n"),
+        ] {
+            let folder = base.path().join(name);
+            std::fs::create_dir_all(folder.join("ops")).unwrap();
+            std::fs::write(
+                folder.join("ops/project.yaml"),
+                format!("name: {name}\nt3:\n  environment: {name}\n{extra}"),
+            )
+            .unwrap();
+            projects.push(okilum_t3::projects::Project::read(&folder).unwrap());
+        }
+        let connections = for_projects(&state, &projects).unwrap();
+        assert_eq!(connections["first"], "https://shared.example");
+        assert_eq!(connections["second"], connections["first"]);
+        assert_eq!(connections["override"], "https://override.example");
+        assert!(
+            !state.join("t3-connections.json").exists(),
+            "discovery does not persist guessed project overrides"
+        );
+    }
+
+    #[test]
+    fn prefill_prefers_manifest_then_registry_then_last_success() {
+        let base = std::env::temp_dir().join(format!("okilum-origins-{}", uuid::Uuid::new_v4()));
+        let area = base.join("area");
+        let state = base.join("state");
+        std::fs::create_dir_all(area.join("ops")).unwrap();
+        let manifest = area.join("ops/project.yaml");
+        std::fs::write(&manifest, "t3: {environment: maestro}").unwrap();
+        assert_eq!(
+            prefill_origin(&area, "maestro", Some(&state)).unwrap(),
+            None
+        );
+        save_last_origin(
+            &state,
+            &Environment::new("other", "https://last.example").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            prefill_origin(&area, "maestro", Some(&state))
+                .unwrap()
+                .as_deref(),
+            Some("https://last.example")
+        );
+        save(
+            &state,
+            &Environment::new("maestro", "http://10.10.0.23:23110").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            prefill_origin(&area, "maestro", Some(&state))
+                .unwrap()
+                .as_deref(),
+            Some("http://10.10.0.23:23110")
+        );
+        std::fs::write(
+            &manifest,
+            "t3: {environment: maestro, origin: 't3.oklabs.uk/path/'}",
+        )
+        .unwrap();
+        assert_eq!(
+            prefill_origin(&area, "maestro", Some(&state))
+                .unwrap()
+                .as_deref(),
+            Some("https://t3.oklabs.uk")
+        );
+        assert_eq!(
+            prefill_origin(&area, "maestro", None).unwrap().as_deref(),
+            Some("https://t3.oklabs.uk")
+        );
+        std::fs::remove_dir_all(base).unwrap();
+    }
+}
+
+/// UI lifecycle only: changing a connection invalidates outstanding composer
+/// requests before any credential, gateway or stream task may complete. Durable
+/// drafts remain owned by their original writer and are not cleared here.
+#[cfg(native_manager)]
+impl super::ProjectView {
+    pub(super) fn draft_handoff_connection_changing(&mut self) {
+        self.revoke_rotation();
+        self.draft_handoff_visibility(false);
+    }
+
+    /// Called by the native surface lifecycle after installing its connection.
+    /// A webview cannot use this port: it has no supported atomic bridge here.
+    pub(super) fn draft_handoff_connection_ready(&mut self, cx: &gpui::App) {
+        let visible = native_handoff_visible(
+            self.active
+                && !self.executors_open
+                && self.section == super::ProjectSection::Manager
+                && self.draft_handoff_surface_is_visible()
+                && self.draft_handoff_owner_ready(cx),
+            crate::reader_features::enabled(crate::reader_features::Feature::Agents, cx),
+            self.native.model_client().is_some_and(|client| {
+                client.access_allowed()
+                    && !self
+                        .threads
+                        .handoff_revoked
+                        .as_ref()
+                        .is_some_and(|revoked| std::sync::Arc::ptr_eq(revoked, &client))
+            }),
+        );
+        self.draft_handoff_visibility(visible);
+    }
+}
+
+// BEGIN PURE HANDOFF VISIBILITY
+#[cfg(native_manager)]
+fn native_handoff_visible(
+    surface_visible: bool,
+    agents_enabled: bool,
+    access_allowed: bool,
+) -> bool {
+    surface_visible && agents_enabled && access_allowed
+}
+
+#[cfg(all(test, native_manager))]
+mod handoff_visibility_tests {
+    use super::native_handoff_visible;
+    use ::core::prelude::v1::test;
+    #[test]
+    fn visibility_requires_surface_feature_and_current_access() {
+        assert!(native_handoff_visible(true, true, true));
+        for surface in [false, true] {
+            for agents in [false, true] {
+                for access in [false, true] {
+                    assert_eq!(
+                        native_handoff_visible(surface, agents, access),
+                        surface && agents && access
+                    );
+                }
+            }
+        }
+        assert!(!native_handoff_visible(true, true, false));
+        assert!(!native_handoff_visible(false, true, true));
+    }
+}
+// END PURE HANDOFF VISIBILITY

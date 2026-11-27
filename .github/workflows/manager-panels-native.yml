@@ -56,6 +56,9 @@ jobs:
       - name: Retain complete native Manager, gateway and Board controls
         shell: bash
         run: |
+          cargo test --locked -p okilum-shell-project --lib project:: -- --list > "$RUNNER_TEMP/manager-tests.txt"
+          grep -q ': test$' "$RUNNER_TEMP/manager-tests.txt"
+          cargo test --locked -p okilum-shell-project --lib project:: -- --nocapture --test-threads=1
           for filter in project:: reader_project_navigation::; do
             cargo test --locked -p okilum-shell --bin okilum "$filter" -- --list > "$RUNNER_TEMP/manager-tests.txt"
             grep -q ': test$' "$RUNNER_TEMP/manager-tests.txt"

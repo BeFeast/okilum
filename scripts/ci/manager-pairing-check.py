@@ -20,23 +20,23 @@ def run(package, name, *args):
 
 
 def main():
-    path = ROOT / 'crates/okilum-shell/src/reader_t3_settings/pairing_help.rs'
+    path = ROOT / 'crates/okilum-shell-project/src/reader_t3_settings/pairing_help.rs'
     original = path.read_bytes()
     try:
         source = original.decode()
         write = 'cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))'
         assert source.count(write) == 1
         path.write_bytes(source.replace(write, 'let _ = (&copy, cx);').encode())
-        inventory = run('okilum-shell', TEST, '--exact', '--list')
+        inventory = run('okilum-shell-project', TEST, '--exact', '--list')
         assert inventory.returncode == 0 and f'{TEST}: test' in inventory.stdout
-        result = run('okilum-shell', TEST, '--exact', '--nocapture', '--test-threads=1')
+        result = run('okilum-shell-project', TEST, '--exact', '--nocapture', '--test-threads=1')
         assert result.returncode != 0
         assert re.search(r'test result: FAILED\. 0 passed; 1 failed;', result.stdout), 'compiled assertion failure required'
         print('PAIRING_COMMAND_NEGATIVE_PASS', flush=True)
     finally:
         path.write_bytes(original)
         assert path.read_bytes() == original
-    assert run('okilum-shell', 'manager_2523_', '--nocapture', '--test-threads=1').returncode == 0
+    assert run('okilum-shell-project', 'manager_2523_', '--nocapture', '--test-threads=1').returncode == 0
     print('PAIRING_COMMAND_RESTORED_PASS', flush=True)
 
 

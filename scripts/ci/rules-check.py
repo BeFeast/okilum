@@ -22,7 +22,7 @@ def run(package, name, *args):
 
 def main():
     core = ROOT / 'crates/okilum-core/src/agent_rules.rs'
-    project = ROOT / 'crates/okilum-shell/src/project.rs'
+    project = ROOT / 'crates/okilum-shell-project/src/project.rs'
     originals = {path: path.read_bytes() for path in (core, project)}
     try:
         text = originals[core].decode()

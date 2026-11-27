@@ -17,6 +17,11 @@ pub(super) fn focus_drawn_in_reader(window: &Window) -> bool {
         .any(|context| context.contains(READER_CONTEXT))
 }
 
+#[allow(unused_imports)]
+pub(crate) use okilum_shell_kit::actions::{
+    Dismiss, DismissManagerModel, OPEN_IN_TERMINAL_KEY, OPEN_IN_TERMINAL_KEY_WINDOWS,
+};
+
 actions!(
     okilum,
     [
@@ -51,8 +56,6 @@ actions!(
         ReaderPageUp,
         FindNext,
         FindPrev,
-        Dismiss,
-        DismissManagerModel,
         QuickOpen,
         FullTextSearch,
         SwitchWindowMode,
@@ -153,15 +156,6 @@ pub(crate) const REPAIR_CODE_KEY: &str = windows_key("alt-shift-r", "ctrl-shift-
 /// Ctrl+Shift+E is Live Preview. U is free in every Okilum context.
 pub(crate) const REVEAL_FILE_KEY_WINDOWS: &str = "ctrl-shift-u";
 pub(crate) const REVEAL_FILE_KEY: &str = windows_key("alt-cmd-r", REVEAL_FILE_KEY_WINDOWS);
-/// Open in terminal (#2837). Not Win+Alt+T on Windows: the Xbox Game Bar
-/// shows or hides its recording timer there and the key never reaches Okilum
-/// (#3134). Not Ctrl+Shift+U, which is Reveal (#3133), nor Ctrl+Shift+T,
-/// which is Paragraph. A is the last Ctrl+Shift letter free in every Okilum
-/// context (gpui-component binds it only on macOS; B is the Pinyin emoji
-/// panel and I the debug inspector).
-pub(crate) const OPEN_IN_TERMINAL_KEY_WINDOWS: &str = "ctrl-shift-a";
-pub(crate) const OPEN_IN_TERMINAL_KEY: &str =
-    windows_key("alt-cmd-t", OPEN_IN_TERMINAL_KEY_WINDOWS);
 
 /// ⌥⌘W / Ctrl+Alt+W (Ctrl+Shift+W on Windows): normal (reading width) or
 /// full note width. Free in every Reader context; W for width.

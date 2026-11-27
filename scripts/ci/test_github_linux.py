@@ -294,7 +294,7 @@ class LinuxBridgeTests(unittest.TestCase):
         workspace_spec.loader.exec_module(workspace)
         self.assertEqual(workspace.COMMAND, [
             'cargo', 'test', '--locked', '-p', 'okilum-core', '-p', 'okilum-shell', '-p', 'okilum-shell-kit',
-            '-p', 'okilum-shell-platform', '-p', 'okilum-shell-text', '-p', 'okilum-shell-brain', '-p', 'okilum-sync', '-p', 'okilum-t3', '--no-fail-fast', '--'])
+            '-p', 'okilum-shell-platform', '-p', 'okilum-shell-text', '-p', 'okilum-shell-project', '-p', 'okilum-shell-brain', '-p', 'okilum-sync', '-p', 'okilum-t3', '--no-fail-fast', '--'])
         for command in ['cargo fmt --check', 'cargo clippy --workspace --all-targets -- -D warnings',
                         'cargo check -p okilum-shell --no-default-features',
                         'cargo test -p okilum-core --no-default-features --test portable_reader',

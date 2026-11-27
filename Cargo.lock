@@ -6327,6 +6327,7 @@ dependencies = [
  "okilum-shell-brain",
  "okilum-shell-kit",
  "okilum-shell-platform",
+ "okilum-shell-project",
  "okilum-shell-text",
  "okilum-sync-controller",
  "okilum-t3",
@@ -6482,6 +6483,41 @@ dependencies = [
  "windows-sys 0.61.2",
  "x11rb",
  "zbus",
+]
+
+[[package]]
+name = "okilum-shell-project"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-channel",
+ "base64 0.22.1",
+ "chrono",
+ "futures",
+ "gpui-base",
+ "gpui-component",
+ "gpui-pre-wgpu",
+ "image",
+ "okilum-core",
+ "okilum-gpui",
+ "okilum-shell-kit",
+ "okilum-shell-platform",
+ "okilum-shell-text",
+ "okilum-t3",
+ "okilum-write-authority",
+ "percent-encoding",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "shell-words",
+ "tempfile",
+ "time",
+ "tungstenite",
+ "url",
+ "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

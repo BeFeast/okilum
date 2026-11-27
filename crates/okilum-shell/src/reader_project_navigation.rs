@@ -109,12 +109,7 @@ pub(super) fn manager_gateway(
     native: Option<okilum_t3::stream::NativeToken>,
     access: okilum_t3::NetworkAccess,
 ) -> anyhow::Result<Arc<dyn okilum_t3::ManagerGateway>> {
-    anyhow::ensure!(access.allowed(), "Agents is disabled");
-    let _access = access.enter();
-    #[cfg(test)]
-    t3_probe::record_manager_gateway();
-    let session = okilum_t3::SessionGateway::native(env, native)?.with_access(access);
-    Ok(Arc::new(okilum_t3::PairedGateway::new(session, mcp)))
+    project::credentials::manager_gateway(env, mcp, native, access)
 }
 
 /// One gateway per T3 connection saved on this machine (t3-connections.json,
@@ -239,6 +234,7 @@ mod t3_probe {
 
     /// The probe of this test thread, until the returned guard drops.
     pub(super) fn install(probe: Arc<Probe>) -> Installed {
+        okilum_shell_project::hooks::install_manager_gateway_probe(record_manager_gateway);
         CURRENT.with(|current| *current.borrow_mut() = Some(probe));
         Installed
     }

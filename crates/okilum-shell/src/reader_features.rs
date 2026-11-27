@@ -341,6 +341,27 @@ pub(crate) fn test_init(cx: &mut App) {
         crate::reader_fonts::note,
         cx,
     );
+    okilum_shell_project::hooks::install(
+        okilum_shell_project::hooks::ProjectHooks {
+            show_t3: crate::reader_settings::show_t3,
+            agents_enabled: |cx| enabled(Feature::Agents, cx),
+            agents_access: |cx| access(Feature::Agents, cx),
+            set_agents_enabled: |value, cx| set_enabled(Feature::Agents, value, cx),
+            code_font: crate::reader_fonts::code,
+            toast_error: |message, window, cx| crate::reader_toast::error(message, window, cx),
+            toast_transient: |message, window, cx| {
+                crate::reader_toast::transient(message, window, cx)
+            },
+            diagnostics_trace: |cx| {
+                crate::reader_diagnostics::trace(cx).map(|trace| {
+                    Arc::new(move |phase: &'static str, details: serde_json::Value| {
+                        trace.event(phase, details);
+                    }) as okilum_shell_project::hooks::DiagnosticsEventFn
+                })
+            },
+        },
+        cx,
+    );
     #[cfg(all(unix, feature = "brain"))]
     okilum_shell_brain::hooks::install(
         okilum_shell_brain::hooks::BrainHooks {

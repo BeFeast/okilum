@@ -1,5 +1,6 @@
 use super::*;
 use ::core::prelude::v1::test;
+use okilum_t3::{chat::Conversation, Environment, GatewayStatus, ServerIdentity};
 
 // Deliberately outside cfg(native_manager): the old Windows MCP fallback must
 // fail this regression instead of silently excluding its entire test module.

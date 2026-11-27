@@ -2,6 +2,7 @@ use super::*;
 use crate::project::*;
 use ::core::prelude::v1::test;
 use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
+use okilum_core::agent_skills::{Freshness, Provider};
 
 fn init(cx: &mut TestAppContext) {
     cx.executor().allow_parking();
@@ -59,7 +60,8 @@ fn mount<'a>(
         let project = cx.new(|cx| {
             let mut view = ProjectView::empty(Some(state.join("state")), window, cx);
             view.area = Some(root.join("p"));
-            view.bind_resources(
+            crate::project::bind_reader_resources(
+                &mut view,
                 &reader,
                 root.clone(),
                 reader.read(cx).vault.clone(),
@@ -277,7 +279,8 @@ async fn skills_1591_hide_project_switch_and_same_owner_rebind_reject_held_reloa
         project.update_in(visual, |view, _, cx| {
             match action {
                 "hide" => view.select_section(ProjectSection::Manager, cx),
-                "rebind" => view.bind_resources(
+                "rebind" => crate::project::bind_reader_resources(
+                    view,
                     &reader,
                     root.clone(),
                     reader.read(cx).vault.clone(),
@@ -288,7 +291,8 @@ async fn skills_1591_hide_project_switch_and_same_owner_rebind_reject_held_reloa
                     std::fs::create_dir_all(root.join("other")).unwrap();
                     view.area = Some(root.join("other"));
                     view.generation += 1;
-                    view.bind_resources(
+                    crate::project::bind_reader_resources(
+                        view,
                         &reader,
                         root.clone(),
                         reader.read(cx).vault.clone(),
@@ -337,7 +341,8 @@ async fn skills_1591_stale_open_refuses_rebind_and_fresh_reload_opens_exact_sour
     });
     let root = state.path().join("vault");
     project.update_in(visual, |view, _, cx| {
-        view.bind_resources(
+        crate::project::bind_reader_resources(
+            view,
             &reader,
             root.clone(),
             reader.read(cx).vault.clone(),

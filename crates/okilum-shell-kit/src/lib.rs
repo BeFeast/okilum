@@ -10,6 +10,7 @@
 #[path = "../../okilum-core/src/diagnostic_io.rs"]
 mod diagnostic_io;
 
+pub mod actions;
 pub mod appearance;
 pub mod brand;
 pub mod clock;

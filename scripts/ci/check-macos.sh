@@ -49,7 +49,7 @@ run_tests() {
     local package="$1" target="$2" filter="$3"
     shift 3
     local selection=(-p "$package")
-    case "$package" in okilum-core|okilum-shell|okilum-shell-kit|okilum-shell-platform|okilum-shell-text|okilum-shell-brain) selection=("${SHARED[@]}") ;; esac
+    case "$package" in okilum-core|okilum-shell|okilum-shell-kit|okilum-shell-platform|okilum-shell-text|okilum-shell-project|okilum-shell-brain) selection=("${SHARED[@]}") ;; esac
     # Positive control: a renamed/removed filter must not silently run zero tests.
     if ! cargo "${cargo_args[@]}" "${selection[@]}" "$target" "$filter" -- --list "$@" \
         | tee "${RUNNER_TEMP}/macos-test-list.txt"; then
@@ -94,20 +94,21 @@ run_tests okilum-shell --bins reader_settings::tests::owned_settings_center_reus
 
 # #2518: run the real-paint, missing-snapshot and row-measurement controls as
 # an explicit non-empty group, in addition to their feed/native module suites.
-run_tests okilum-shell --bins manager_ttfm_
+run_tests okilum-shell-project --lib manager_ttfm_
 # #2519: native pairing must advertise the actual build target.
 run_tests okilum-t3 --lib stream::tests::pairing_reports_build_target_os --exact
 
 # #2517: compile and execute every native Manager module, including GPUI tests.
 # Each filter has its own positive control and libtest passed/failed counts.
 manager_skip=()
-for module in attachments composer discuss_handoff drafts feed links message_types native rotation threads; do
-    run_tests okilum-shell --bins "project::${module}::"
+for module in attachments composer discuss_handoff drafts feed message_types native rotation threads; do
+    run_tests okilum-shell-project --lib "project::${module}::"
     manager_skip+=(--skip "project::${module}::")
 done
-# Run every remaining project test once: shared ProjectView, picker, Board,
-# connections, resources and launch/setup, with the same non-empty control.
-run_tests okilum-shell --bins 'project::' "${manager_skip[@]}"
+# Run every remaining project test once in both okilum-shell-project (non-Reader)
+# and okilum-shell (Reader-integration, including links), with the same non-empty control.
+run_tests okilum-shell-project --lib 'project::' "${manager_skip[@]}"
+run_tests okilum-shell --bins 'project::'
 
 # #2520: the shell gateway must execute on macOS without a WKWebView;
 # include existing navigation, read-only summaries, session and Board regressions.

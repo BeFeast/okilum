@@ -121,22 +121,6 @@ fn main() {
             "-o",
         ])
         .arg(&quicklook));
-    println!("cargo:rerun-if-changed=src/project/desktop/macos.m");
-    let t3_desktop = out.join("t3_desktop.o");
-    run(Command::new("xcrun")
-        .args([
-            "clang",
-            "-fobjc-arc",
-            "-Wall",
-            "-Werror",
-            "-arch",
-            architecture,
-            "-mmacosx-version-min=11.0",
-            "-c",
-            "src/project/desktop/macos.m",
-            "-o",
-        ])
-        .arg(&t3_desktop));
     println!("cargo:rerun-if-changed=src/folder_service/bridge.m");
     let folder_service = out.join("folder_service.o");
     run(Command::new("xcrun")
@@ -173,7 +157,6 @@ fn main() {
         .arg(object)
         .arg(thumbnail)
         .arg(quicklook)
-        .arg(t3_desktop)
         .arg(folder_service));
     println!("cargo:rustc-link-search=native={}", out.display());
     println!("cargo:rustc-link-lib=static=okilum_updater");

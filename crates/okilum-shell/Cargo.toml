@@ -25,7 +25,7 @@ embed-native-harness = []
 # loop. This exposes GPUI's public present_if_needed, not its test platform.
 data-view-native-harness = ["gpui/bench-support"]
 # Non-publishing Project UI fixture; never registers OAuth clients or threads.
-project-ui-harness = ["gpui/profiler"]
+project-ui-harness = ["gpui/profiler", "okilum-shell-project/project-ui-harness"]
 # Non-publishing Kubernetes Workspace visual harness (#3012): synthetic
 # in-process data, no kubectl; opened only by OKILUM_KUBERNETES_HARNESS.
 kubernetes-ui-harness = []
@@ -40,6 +40,7 @@ okilum-write-authority = { path = "../okilum-write-authority" }
 okilum-shell-kit = { path = "../okilum-shell-kit" }
 okilum-shell-platform = { path = "../okilum-shell-platform" }
 okilum-shell-text = { path = "../okilum-shell-text" }
+okilum-shell-project = { path = "../okilum-shell-project" }
 okilum-shell-brain = { path = "../okilum-shell-brain", optional = true }
 tokio = { version = "1", features = ["rt", "net", "time", "fs", "io-util"] }
 tokio-util = { version = "0.7", features = ["io"] }
@@ -123,6 +124,7 @@ okilum-core = { workspace = true, features = ["test-support"] }
 okilum-shell-kit = { path = "../okilum-shell-kit", features = ["test-support"] }
 okilum-shell-platform = { path = "../okilum-shell-platform", features = ["test-support"] }
 okilum-shell-text = { path = "../okilum-shell-text", features = ["test-support"] }
+okilum-shell-project = { path = "../okilum-shell-project", features = ["test-support"] }
 tungstenite = "0.28"
 # Builds ZIP/TAR fixtures for the archive viewer tests (#1149, #3290); okilum-core already uses them.
 zip = { version = "9.5", default-features = false, features = ["deflate-flate2-zlib-rs"] }

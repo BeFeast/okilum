@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Native Windows control for «Open in terminal» without Windows Terminal (#2837).
 
-The production spawner (crates/okilum-shell/src/project_terminal/windows_console.rs)
+The production spawner (crates/okilum-shell-project/src/project_terminal/windows_console.rs)
 is compiled as is and starts the System32 PowerShell in a new console, from a
 working directory that holds a decoy powershell.exe. A PowerShell profile that
 is active only for this control records whether stdin/stdout are console

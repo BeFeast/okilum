@@ -91,10 +91,10 @@ Trash wording is Move to Trash (Mac/Linux) / Move to Recycle Bin (Windows).
 | HAR detail: [detail commands](../../../crates/okilum-shell/src/reader_har.rs#L1945) | Copy body / Copy all ‹section›; Save body as… for body sections; Copy value; Copy name; Copy name: value for pairs; Copy text for text. |
 | HAR overview: [overview](../../../crates/okilum-shell/src/reader_har/overview.rs#L457) | Overview-supported copy formats, row Copy value/name/name: value, Copy overview. |
 | Project navigation item: [reader_project_navigation](../../../crates/okilum-shell/src/reader_project_navigation.rs#L702) | Change icon…; Connect / reconnect existing local T3 project…. Agents module. |
-| Manager options: [project](../../../crates/okilum-shell/src/project.rs#L1263) | Open in T3 when it overflows; Rotation policy… on native Manager; Details; Open terminal; Executors; Request executor; Renew connection… / Change connection…; Sign out. Availability follows connection state. |
-| Manager narrow section picker: [chat_ui](../../../crates/okilum-shell/src/project/chat_ui.rs#L39) | Chat; Rules; Skills, with current section checked. |
-| Board filters: [filters](../../../crates/okilum-shell/src/project/board/filters/ui.rs) | One entry per project label / executor, with selected checks. |
-| Board related-note picker: [manage](../../../crates/okilum-shell/src/project/board/manage.rs#L524) | None (optional); dynamic note labels. |
+| Manager options: [project](../../../crates/okilum-shell-project/src/project.rs#L1263) | Open in T3 when it overflows; Rotation policy… on native Manager; Details; Open terminal; Executors; Request executor; Renew connection… / Change connection…; Sign out. Availability follows connection state. |
+| Manager narrow section picker: [chat_ui](../../../crates/okilum-shell-project/src/project/chat_ui.rs#L39) | Chat; Rules; Skills, with current section checked. |
+| Board filters: [filters](../../../crates/okilum-shell-project/src/project/board/filters/ui.rs) | One entry per project label / executor, with selected checks. |
+| Board related-note picker: [manage](../../../crates/okilum-shell-project/src/project/board/manage.rs#L524) | None (optional); dynamic note labels. |
 
 ## Log menus
 

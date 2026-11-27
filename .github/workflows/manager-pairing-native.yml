@@ -95,14 +95,14 @@ jobs:
             filters+=(reader_t3_settings::manager::tests::)
           fi
           for filter in "${filters[@]}"; do
-            cargo test --locked -p okilum-shell --bin okilum "$filter" -- --list | tee "$RUNNER_TEMP/updater-tests.txt"
+            cargo test --locked -p okilum-shell-project --lib "$filter" -- --list | tee "$RUNNER_TEMP/updater-tests.txt"
             grep -q ': test$' "$RUNNER_TEMP/updater-tests.txt"
-            cargo test --locked -p okilum-shell --bin okilum "$filter" -- --nocapture --test-threads=1
+            cargo test --locked -p okilum-shell-project --lib "$filter" -- --nocapture --test-threads=1
           done
           if [[ "$RUNNER_OS" = macOS ]]; then
-            cargo test --locked -p okilum-shell --bin okilum project::native::onboarding::tests:: -- --list | tee "$RUNNER_TEMP/manager-tests.txt"
+            cargo test --locked -p okilum-shell-project --lib project::native::onboarding::tests:: -- --list | tee "$RUNNER_TEMP/manager-tests.txt"
             grep -q ': test$' "$RUNNER_TEMP/manager-tests.txt"
-            cargo test --locked -p okilum-shell --bin okilum project::native::onboarding::tests:: -- --nocapture --test-threads=1
+            cargo test --locked -p okilum-shell-project --lib project::native::onboarding::tests:: -- --nocapture --test-threads=1
           else
             python3 scripts/ci/manager-pairing-check.py
           fi

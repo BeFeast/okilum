@@ -53,15 +53,22 @@ def main():
     negative('old-reader-reopen', 'crates/okilum-shell/src/reader_window_view.rs',
              'project.manager_surface_visible(visible, cx)',
              'project.draft_handoff_surface_visible(visible, cx)', WARM)
-    negative('unbounded-details', 'crates/okilum-shell/src/project/native.rs',
+    negative('unbounded-details', 'crates/okilum-shell-project/src/project/native.rs',
              '            .when(self.connection_details, |view| {\n'
              '                view.flex_1()\n                    .min_h_0()\n'
              '                    .max_h(relative(0.4))\n                    .overflow_y_scroll()\n'
              '            })\n', '', DETAILS)
     inventory('restored-inventory', 'project::panel_tests::', 3)
     assert run('restored', 'project::panel_tests::', '--nocapture', '--test-threads=1').returncode == 0
-    inventory('retained-ttfm-inventory', 'manager_ttfm_', 3)
-    assert run('retained-ttfm', 'manager_ttfm_', '--nocapture', '--test-threads=1').returncode == 0
+    ttfm = ['cargo', 'test', '--locked', '-p', 'okilum-shell-project', '--lib']
+    ttfm_list = subprocess.run(ttfm + ['manager_ttfm_', '--', '--list'], cwd=ROOT,
+                               capture_output=True, text=True, timeout=1500)
+    assert ttfm_list.returncode == 0 and len(re.findall(r'^.*: test$', ttfm_list.stdout, re.M)) >= 3
+    ttfm_run = subprocess.run(ttfm + ['manager_ttfm_', '--', '--nocapture', '--test-threads=1'], cwd=ROOT,
+                              capture_output=True, text=True, timeout=1500)
+    print(ttfm_run.stdout, end='', flush=True)
+    print(ttfm_run.stderr, end='', flush=True)
+    assert ttfm_run.returncode == 0
     print('MANAGER_PANELS_RESTORED_PASS', flush=True)
 
 

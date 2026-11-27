@@ -2,26 +2,9 @@
 use super::*;
 use crate::reader_diagnostics;
 use ::core::prelude::v1::test;
+use okilum_t3::ServerIdentity;
 use serde_json::{json, Value};
-use std::{cell::RefCell, path::Path, time::Instant};
-
-thread_local! {
-    static DETAILS_PAINT: RefCell<Vec<Bounds<Pixels>>> = const { RefCell::new(Vec::new()) };
-}
-
-/// Observe the real content mask in paint, not an assumed layout intersection.
-/// This absolute, drawing-free probe does not participate in flex sizing.
-pub(super) fn details_paint_probe() -> impl IntoElement {
-    gpui::canvas(
-        |_, _, _| (),
-        |bounds, _, window, _| {
-            let visible = bounds.intersect(&window.content_mask().bounds);
-            DETAILS_PAINT.with(|rows| rows.borrow_mut().push(visible));
-        },
-    )
-    .absolute()
-    .size_full()
-}
+use std::{path::Path, time::Instant};
 
 struct Fixture {
     reader: Entity<Reader>,
@@ -283,7 +266,7 @@ fn manager_2694_expanded_details_clip_before_history_at_narrow_short_sizes(
         let toggle = visual
             .debug_bounds("manager-details-toggle")
             .expect("real Details control");
-        DETAILS_PAINT.with(|rows| rows.borrow_mut().clear());
+        okilum_shell_project::project::native::onboarding::clear_details_paint();
         visual.simulate_click(toggle.center(), Modifiers::default());
         fixture
             .view
@@ -303,7 +286,7 @@ fn manager_2694_expanded_details_clip_before_history_at_narrow_short_sizes(
             connection.bottom() <= history.top() + px(1.),
             "connection overlaps history: {connection:?} {history:?}"
         );
-        let paints = DETAILS_PAINT.with(|rows| rows.borrow().clone());
+        let paints = okilum_shell_project::project::native::onboarding::take_details_paint();
         assert!(
             !paints.is_empty(),
             "positive control: real Details paint ran"

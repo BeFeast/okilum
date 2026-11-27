@@ -1,7 +1,7 @@
 //! Drives the production Windows console spawner of «Open in terminal» (#2837).
 //! `console` is the shipped fallback; `redirected` and `bare` reproduce the
 //! #2858 head (std handles with a new console; `cmd /c start` from the folder).
-#[path = "../../crates/okilum-shell/src/project_terminal/windows_console.rs"]
+#[path = "../../crates/okilum-shell-project/src/project_terminal/windows_console.rs"]
 mod windows_console;
 
 use std::ffi::OsString;

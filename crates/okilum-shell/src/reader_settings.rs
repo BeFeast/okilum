@@ -2287,10 +2287,15 @@ impl Render for Settings {
                 }));
         }
         if self.section == Section::T3 && self.t3.is_none() {
+            let reader = self.reader.as_ref().and_then(WeakEntity::upgrade);
+            let project = reader
+                .as_ref()
+                .and_then(|r| r.read(cx).project_navigation.active.clone());
+            let state = reader
+                .as_ref()
+                .and_then(|r| r.read(cx).session_directory.clone());
             self.t3 =
-                Some(cx.new(|cx| {
-                    reader_t3_settings::T3Settings::new(self.reader.clone(), window, cx)
-                }));
+                Some(cx.new(|cx| reader_t3_settings::T3Settings::new(project, state, window, cx)));
         }
         if self.section == Section::Vaults && self.vaults.is_none() {
             let directory = self

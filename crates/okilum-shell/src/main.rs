@@ -98,7 +98,7 @@ mod reader_manager_links;
 #[cfg(test)]
 mod reader_manager_occlusion;
 mod reader_manager_panel;
-mod reader_manager_start;
+use okilum_shell_project::reader_t3_settings;
 mod reader_markdown;
 #[cfg(test)]
 mod reader_markdown_conformance_tests;
@@ -163,7 +163,6 @@ mod reader_stignore;
 mod reader_sync_conflicts;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod reader_sync_merge;
-mod reader_t3_settings;
 mod reader_table_copy;
 mod reader_title_nav;
 mod reader_vaults;
@@ -1264,6 +1263,28 @@ fn main() {
             },
             reader_text_zoom::document_style,
             reader_fonts::note,
+            cx,
+        );
+        okilum_shell_project::hooks::install(
+            okilum_shell_project::hooks::ProjectHooks {
+                show_t3: reader_settings::show_t3,
+                agents_enabled: |cx| reader_features::enabled(reader_features::Feature::Agents, cx),
+                agents_access: |cx| reader_features::access(reader_features::Feature::Agents, cx),
+                set_agents_enabled: |enabled, cx| {
+                    reader_features::set_enabled(reader_features::Feature::Agents, enabled, cx)
+                },
+                code_font: reader_fonts::code,
+                toast_error: |message, window, cx| reader_toast::error(message, window, cx),
+                toast_transient: |message, window, cx| reader_toast::transient(message, window, cx),
+                diagnostics_trace: |cx| {
+                    reader_diagnostics::trace(cx).map(|trace| {
+                        Arc::new(move |phase: &'static str, details: serde_json::Value| {
+                            trace.event(phase, details);
+                        })
+                            as okilum_shell_project::hooks::DiagnosticsEventFn
+                    })
+                },
+            },
             cx,
         );
         #[cfg(all(unix, feature = "brain"))]
