@@ -64,8 +64,15 @@ impl Section {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct State {
-    #[serde(default, serialize_with = "write_left_mode")]
+    /// The visible mode can change temporarily during navigation.
+    #[serde(skip)]
     pub left_mode: LeftMode,
+    #[serde(
+        default,
+        rename = "left_mode",
+        deserialize_with = "read_saved_left_mode"
+    )]
+    saved_left_mode: LeftMode,
     /// Second brain is opt-in. Explicit choices are persisted per vault.
     #[serde(default)]
     pub now_enabled: Option<bool>,
@@ -127,16 +134,13 @@ pub mod cutover;
 pub mod identity;
 pub mod moves;
 
-fn write_left_mode<S: serde::Serializer>(
-    mode: &LeftMode,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    // Areas is session-local. Reopening the vault starts in its physical tree.
-    match mode {
+fn read_saved_left_mode<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<LeftMode, D::Error> {
+    Ok(match LeftMode::deserialize(deserializer)? {
         LeftMode::Areas => LeftMode::Tree,
-        mode => *mode,
-    }
-    .serialize(serializer)
+        mode => mode,
+    })
 }
 
 fn write_collapsed<S: serde::Serializer>(
@@ -165,6 +169,7 @@ impl State {
                 let legacy_choice =
                     value.get("left_mode").is_some() && value.get("now_enabled").is_none();
                 let mut state: Self = serde_json::from_value(value).ok()?;
+                state.left_mode = state.saved_left_mode;
                 // Existing persisted mode choices must survive this upgrade.
                 if legacy_choice {
                     state.now_enabled = Some(true);
@@ -178,12 +183,24 @@ impl State {
         self.now_enabled == Some(true)
     }
 
+    /// Apply an explicit mode choice. Areas remains session-local.
+    /// Return whether the visible mode or the saved preference changed.
+    pub fn select_left_mode(&mut self, mode: LeftMode) -> bool {
+        let visible_changed = self.left_mode != mode;
+        let saved_changed = mode != LeftMode::Areas && self.saved_left_mode != mode;
+        self.left_mode = mode;
+        if saved_changed {
+            self.saved_left_mode = mode;
+        }
+        visible_changed || saved_changed
+    }
+
     pub fn initialize_now(&mut self) -> bool {
         if self.now_enabled.is_some() {
             return false;
         }
         self.now_enabled = Some(false);
-        self.left_mode = LeftMode::Tree;
+        self.select_left_mode(LeftMode::Tree);
         self.now_collapsed
             .extend(["changes", "pins"].map(str::to_owned));
         true
@@ -192,11 +209,11 @@ impl State {
     pub fn choose_now(&mut self, enabled: bool) {
         self.now_offer_answered = true;
         self.now_enabled = Some(enabled);
-        self.left_mode = if enabled {
+        self.select_left_mode(if enabled {
             LeftMode::Now
         } else {
             LeftMode::Tree
-        };
+        });
     }
 
     pub fn offer_now(&self, relevant: bool) -> bool {
@@ -398,13 +415,14 @@ mod tests {
         let vault = directory.path().join("vault");
         let state_path = State::path(directory.path(), &vault);
         let mut state = State::default();
-        state.initialize_now();
-        state.left_mode = LeftMode::Areas;
+        state.choose_now(true);
+        state.select_left_mode(LeftMode::Areas);
+        assert_eq!(state.left_mode, LeftMode::Areas);
         state.areas_expanded.insert("health".into());
         state.save(&state_path).unwrap();
 
         let reopened = State::load(&state_path);
-        assert_eq!(reopened.left_mode, LeftMode::Tree);
+        assert_eq!(reopened.left_mode, LeftMode::Now);
         assert_eq!(reopened.areas_expanded, state.areas_expanded);
         let other = State::path(directory.path(), &vault.with_file_name("other"));
         assert!(State::load(&other).areas_expanded.is_empty());
@@ -471,7 +489,7 @@ mod tests {
             );
             assert_eq!(reopened, state);
             reopened.choose_now(true);
-            reopened.left_mode = LeftMode::Tree;
+            reopened.select_left_mode(LeftMode::Tree);
             reopened.save(&path).unwrap();
             let mut manual = State::load(&path);
             assert!(!manual.initialize_now());
@@ -492,6 +510,7 @@ mod tests {
                 !disabled.now_enabled(),
                 "manual disable wins even after discovering projects"
             );
+            assert_eq!(disabled.left_mode, LeftMode::Tree);
         }
     }
 
@@ -499,19 +518,16 @@ mod tests {
     fn legacy_persisted_mode_selection_is_not_overwritten_by_migration() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("legacy.json");
-        for mode in ["tree", "now"] {
+        for (mode, expected) in [
+            ("tree", LeftMode::Tree),
+            ("now", LeftMode::Now),
+            ("areas", LeftMode::Tree),
+        ] {
             std::fs::write(&path, format!("{{\"left_mode\":\"{mode}\"}}")).unwrap();
             let mut state = State::load(&path);
             assert!(!state.initialize_now());
             assert!(state.now_enabled());
-            assert_eq!(
-                state.left_mode,
-                if mode == "tree" {
-                    LeftMode::Tree
-                } else {
-                    LeftMode::Now
-                }
-            );
+            assert_eq!(state.left_mode, expected);
         }
     }
 

@@ -1,0 +1,63 @@
+# Explicitly select Now and confirm it survives a restart. Opening sidebar
+# Search and revealing a note each show Tree for navigation. Opening another
+# note from Search saves sidebar state, and both restarts must restore Now.
+open: Fieldwork/Alpha.md
+generate:
+  - path: Fieldwork/Alpha.md
+    kind: text
+    text: |
+      # First field report
+  - path: Fieldwork/Bravo.md
+    kind: text
+    text: |
+      # Second field report
+appearance: light
+rig:
+  persistent_pointer: true
+preferences:
+  note_open_mode: read
+region: [282, 100, 900, 550]
+ready_text: First field report
+wait_for_vault: 20
+steps:
+  - id: enable-now
+    click: [245, 70]
+    wait: 1
+    region: [0, 45, 279, 690]
+    text: Rescan
+  - id: explicit-now-restored
+    restart: true
+    region: [0, 45, 279, 690]
+    text: Rescan
+  - id: close-notes
+    click: [26, 22]
+    region: [0, 45, 279, 690]
+    text_absent: Rescan
+  - id: reopen-notes-at-search
+    click: [26, 22]
+    region: [0, 45, 279, 690]
+    text: Fieldwork
+    text_absent: Rescan
+  - id: open-focused-search
+    keys: [Return]
+  - id: search-for-second-note
+    type: Bravo
+    region: [282, 45, 900, 550]
+    text: Second field report
+  - id: open-search-result
+    keys: [Return]
+    text: Second field report
+  - id: now-restored-after-search
+    restart: true
+    region: [0, 45, 279, 690]
+    text: Rescan
+  - id: reveal-current-note
+    keys: [l]
+    mods: [ctrl, shift]
+    region: [0, 45, 279, 690]
+    text: Fieldwork
+    text_absent: Rescan
+  - id: now-restored-after-reveal
+    restart: true
+    region: [0, 45, 279, 690]
+    text: Rescan
