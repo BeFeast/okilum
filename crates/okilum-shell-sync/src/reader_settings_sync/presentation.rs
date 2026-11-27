@@ -2,7 +2,7 @@
 use super::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Step {
+pub enum Step {
     Start,
     Paste,
     Link,
@@ -249,7 +249,7 @@ pub(super) fn notify_approval(name: &str) {
 }
 
 /// Shared approval banner, visible even when Settings is on another section.
-pub(crate) fn approval_banner(cx: &mut App) -> AnyElement {
+pub fn approval_banner(cx: &mut App) -> AnyElement {
     let view = cx.try_global::<BackgroundSync>().map(|s| s.0.clone());
     view.map(|view| {
         view.update(cx, |view, cx| {

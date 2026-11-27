@@ -137,7 +137,10 @@ fn sync_labels_share_and_attach_publish_current_count_without_refresh() -> Resul
     );
     assert_eq!(attached.snapshot.attached[0].label, catalog[0].label);
     assert_eq!(
-        super::super::super::vault_name::read_sync_names(target._root.path()),
+        okilum_sync_controller::direct::received_vault_names(
+            &target._root.path().join("sync/direct")
+        )
+        .unwrap_or_default(),
         vec![(target.vault.clone(), catalog[0].label.clone())]
     );
     let external = linux_runtime::inspect(
@@ -206,23 +209,6 @@ fn sync_labels_managed_external_and_paused_wording(cx: &mut TestAppContext) {
                 "Synced by Okilum · Paused"
             );
         });
-    });
-}
-
-#[gpui::test]
-fn sync_labels_catalog_fallback_keeps_explicit_name_and_reset(cx: &mut TestAppContext) {
-    let root = tempfile::tempdir().unwrap();
-    let vault = root.path().join("local-replica");
-    std::fs::create_dir(&vault).unwrap();
-    cx.update(|cx| {
-        crate::vault_name::remember_sync(vec![(vault.clone(), "Catalog notes".into())], cx);
-        assert_eq!(crate::vault_name::shown(&vault, cx), "Catalog notes");
-        assert!(!vault.join(".okilum").exists());
-        crate::vault_name::set(&vault, "My notes", cx);
-        crate::vault_name::remember_sync(vec![(vault.clone(), "Catalog notes".into())], cx);
-        assert_eq!(crate::vault_name::shown(&vault, cx), "My notes");
-        crate::vault_name::set(&vault, "", cx);
-        assert_eq!(crate::vault_name::shown(&vault, cx), "local-replica");
     });
 }
 

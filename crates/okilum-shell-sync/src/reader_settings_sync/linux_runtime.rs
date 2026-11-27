@@ -5,7 +5,7 @@ use okilum_sync_controller::daemon::{self, DaemonIdentity, Discovery};
 
 /// Shared by managed installation and uninstall's live-service refusal. This
 /// directory is shared with other apps and must never be recursively purged.
-pub(crate) fn managed_service_directory() -> anyhow::Result<PathBuf> {
+pub fn managed_service_directory() -> anyhow::Result<PathBuf> {
     let config = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())

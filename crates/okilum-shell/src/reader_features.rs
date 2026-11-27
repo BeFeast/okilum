@@ -387,6 +387,58 @@ pub(crate) fn test_init(cx: &mut App) {
         },
         cx,
     );
+    okilum_shell_sync::hooks::install(
+        okilum_shell_sync::hooks::SyncHooks {
+            is_portable_windows: || cfg!(windows) && crate::updater::channel() == "Portable",
+            sync_enabled: |cx| enabled(Feature::Sync, cx),
+            sync_access: |cx| access(Feature::Sync, cx),
+            diagnostics_trace: |cx| {
+                crate::reader_diagnostics::trace(cx).map(|trace| {
+                    Arc::new(move |phase: &'static str, details: serde_json::Value| {
+                        trace.event(phase, details);
+                    }) as okilum_shell_sync::hooks::DiagnosticsEventFn
+                })
+            },
+            remember_sync_vault_names: crate::vault_name::remember_sync,
+            open_vault_in_new_window: crate::reader_open::open_vault_in_new_window,
+            open_vaults: |cx| {
+                crate::reader_open::readers(cx)
+                    .into_iter()
+                    .map(|reader| {
+                        let reader = reader.read(cx);
+                        okilum_shell_sync::hooks::OpenVault {
+                            vault_root: reader.vault_root.clone(),
+                            session_directory: reader.session_directory.clone(),
+                            single_file: reader.single_file,
+                        }
+                    })
+                    .collect()
+            },
+            any_dirty_reader: |root, cx| {
+                crate::reader_open::readers(cx).iter().any(|reader| {
+                    let reader = reader.read(cx);
+                    reader.vault_root == root && reader.source_is_dirty(cx)
+                })
+            },
+            show_sync_settings: crate::reader_settings::show_sync,
+            code_font: crate::reader_fonts::code,
+            toast_error: |message, window, cx| crate::reader_toast::error(message, window, cx),
+            confirm: |window, cx, title, body, confirm_label| {
+                crate::reader_confirm::confirm(
+                    window,
+                    cx,
+                    title,
+                    crate::reader_confirm::Body {
+                        intro: body.intro,
+                        items: body.items,
+                        outro: body.outro,
+                    },
+                    confirm_label,
+                )
+            },
+        },
+        cx,
+    );
     okilum_shell_project::hooks::install(
         okilum_shell_project::hooks::ProjectHooks {
             show_t3: crate::reader_settings::show_t3,

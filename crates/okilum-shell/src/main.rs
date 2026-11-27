@@ -155,8 +155,6 @@ mod reader_split;
 mod reader_stignore;
 #[cfg(target_os = "linux")]
 mod reader_sync_conflicts;
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
-mod reader_sync_merge;
 mod reader_table_copy;
 mod reader_title_nav;
 mod reader_vaults;
@@ -1291,6 +1289,58 @@ fn main() {
                             trace.event(phase, details);
                         }) as okilum_shell_logs::hooks::DiagnosticsEventFn
                     })
+                },
+            },
+            cx,
+        );
+        okilum_shell_sync::hooks::install(
+            okilum_shell_sync::hooks::SyncHooks {
+                is_portable_windows: || cfg!(windows) && updater::channel() == "Portable",
+                sync_enabled: |cx| reader_features::enabled(reader_features::Feature::Sync, cx),
+                sync_access: |cx| reader_features::access(reader_features::Feature::Sync, cx),
+                diagnostics_trace: |cx| {
+                    reader_diagnostics::trace(cx).map(|trace| {
+                        Arc::new(move |phase: &'static str, details: serde_json::Value| {
+                            trace.event(phase, details);
+                        }) as okilum_shell_sync::hooks::DiagnosticsEventFn
+                    })
+                },
+                remember_sync_vault_names: vault_name::remember_sync,
+                open_vault_in_new_window: reader_open::open_vault_in_new_window,
+                open_vaults: |cx| {
+                    reader_open::readers(cx)
+                        .into_iter()
+                        .map(|reader| {
+                            let reader = reader.read(cx);
+                            okilum_shell_sync::hooks::OpenVault {
+                                vault_root: reader.vault_root.clone(),
+                                session_directory: reader.session_directory.clone(),
+                                single_file: reader.single_file,
+                            }
+                        })
+                        .collect()
+                },
+                any_dirty_reader: |root, cx| {
+                    reader_open::readers(cx).iter().any(|reader| {
+                        let reader = reader.read(cx);
+                        reader.vault_root == root && reader.source_is_dirty(cx)
+                    })
+                },
+                show_sync_settings: reader_settings::show_sync,
+                code_font: reader_fonts::code,
+                toast_error: |message, window, cx| reader_toast::error(message, window, cx),
+                confirm: |window, cx, title, body, confirm_label| {
+                    reader_confirm::confirm(
+                        window,
+                        cx,
+                        title,
+                        reader_confirm::Body {
+                            intro: body.intro,
+                            items: body.items,
+                            outro: body.outro,
+                        },
+                        confirm_label,
+                    )
                 },
             },
             cx,

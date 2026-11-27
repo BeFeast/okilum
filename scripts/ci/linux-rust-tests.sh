@@ -50,15 +50,15 @@ suite attached-replica-identity 120 cargo test --locked -p okilum-sync-controlle
 # #2589: a real app pairing listener, fresh identity and repeated Add computer.
 suite first-computer 180 cargo test --locked -p okilum-sync-controller --test first_computer -- --nocapture
 suite direct-lan 120 cargo test --locked -p okilum-sync-controller --lib direct::lan::tests:: -- --nocapture
-suite reader-settings-sync 300 cargo test --locked -p okilum-shell --bin okilum reader_settings_sync:: -- --nocapture --test-threads=1
+suite reader-settings-sync 300 cargo test --locked -p okilum-shell -p okilum-shell-sync reader_settings_sync:: -- --nocapture --test-threads=1
 suite feedback-fast-report 120 cargo test --locked -p okilum-shell --bin okilum reader_feedback::ui_tests::feedback2749_ -- --nocapture --test-threads=1
 suite direct-tests 180 cargo test --locked -p okilum-sync-controller --lib direct::tests:: -- --nocapture
-suite sync-cli 180 cargo test --locked -p okilum-shell --bin okilum issue2589_ -- --nocapture
+suite sync-cli 180 cargo test --locked -p okilum-shell -p okilum-shell-sync issue2589_ -- --nocapture
 # #2049: explicit non-empty UI and compatibility verdicts before the full shell.
 suite web-sync 60 node --test web/inbox/tests/retired-sync.test.js web/inbox/tests/sync-pairing.test.js
 # #478: the offline drawing editor page's session client (no npm install needed).
 suite web-drawing-editor 60 node --test web/excalidraw-editor/test/session.test.mjs web/excalidraw-editor/test/tracker.test.mjs web/excalidraw-editor/test/controller.test.mjs
-suite issue2049 120 cargo test --locked -p okilum-shell --bin okilum issue2049_ -- --nocapture
+suite issue2049 120 cargo test --locked -p okilum-shell -p okilum-shell-sync issue2049_ -- --nocapture
 # Process fixtures fork with live descriptors. Isolate their lock lifecycle:
 # a sibling test's child can retain another fixture's flock until exec.
 suite appimage 120 cargo test -p okilum-appimage --all-features --no-fail-fast -- --test-threads=1
@@ -113,7 +113,7 @@ suite issue2045 120 cargo test --locked -p okilum-shell --bin okilum issue2045_ 
 suite issue2568 120 cargo test --locked -p okilum-shell --bin okilum issue2568_ -- --nocapture
 # #2044: explicit conflict controller and mounted shell acceptance.
 suite conflicts 120 cargo test --locked -p okilum-sync-controller --lib conflicts:: -- --nocapture
-suite issue2044 120 cargo test --locked -p okilum-shell --bin okilum issue2044_ -- --nocapture --test-threads=1
+suite issue2044 120 cargo test --locked -p okilum-shell -p okilum-shell-sync issue2044_ -- --nocapture --test-threads=1
 # Isolate process-wide Log budget and private reveal-bus cases. Serializing the
 # entire workspace exceeds this existing deadline on some hosted runners.
 # Census every unit/integration/doc case, run the remaining cases at ordinary
@@ -122,7 +122,7 @@ suite issue2044 120 cargo test --locked -p okilum-shell --bin okilum issue2044_ 
 if [[ $part == workspace ]]; then
     # Alone in a cold job: compile the census selection (same packages and
     # features as workspace-rust-tests.py COMMAND) before its deadline starts.
-    cargo test --locked -p okilum-core -p okilum-shell -p okilum-shell-kit -p okilum-shell-platform -p okilum-shell-text -p okilum-shell-viewers -p okilum-shell-logs -p okilum-shell-project -p okilum-shell-brain -p okilum-sync -p okilum-t3 --no-run || failed=1
+    cargo test --locked -p okilum-core -p okilum-shell -p okilum-shell-kit -p okilum-shell-platform -p okilum-shell-text -p okilum-shell-viewers -p okilum-shell-logs -p okilum-shell-sync -p okilum-shell-project -p okilum-shell-brain -p okilum-sync -p okilum-t3 --no-run || failed=1
 fi
 suite workspace-full 1320 python3 scripts/ci/workspace-rust-tests.py
 # #1915: explicit filters make unsupported-flag coverage inspectable in CI.

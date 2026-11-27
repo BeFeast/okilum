@@ -66,6 +66,13 @@ class Guard(unittest.TestCase):
             self.assertEqual(result.returncode, guard.INVALID)
             self.assertIn('okilum-shell-logs test-support', result.stderr)
 
+    def test_sync_test_support_binary_is_an_invalid_run(self):
+        # #3240: the okilum-shell-sync test seams leak like GPUI's.
+        with tempfile.TemporaryDirectory() as d:
+            result = self.run_guard(fake(d, 'echo "gpui-test-support: no"; echo "shell-sync-test-support: yes"\n'))
+            self.assertEqual(result.returncode, guard.INVALID)
+            self.assertIn('okilum-shell-sync test-support', result.stderr)
+
     def test_project_test_support_binary_is_an_invalid_run(self):
         # #3237: the okilum-shell-project test seams leak like GPUI's.
         with tempfile.TemporaryDirectory() as d:
@@ -83,7 +90,7 @@ class Guard(unittest.TestCase):
     def test_app_binary_passes(self):
         # Positive control: the same guard lets a normal build through.
         with tempfile.TemporaryDirectory() as d:
-            result = self.run_guard(fake(d, 'echo "gpui-test-support: no"; echo "shell-kit-test-support: no"; echo "shell-platform-test-support: no"; echo "shell-text-test-support: no"; echo "shell-viewers-test-support: no"; echo "shell-logs-test-support: no"; echo "shell-project-test-support: no"; echo "shell-brain-test-support: no"\n'))
+            result = self.run_guard(fake(d, 'echo "gpui-test-support: no"; echo "shell-kit-test-support: no"; echo "shell-platform-test-support: no"; echo "shell-text-test-support: no"; echo "shell-viewers-test-support: no"; echo "shell-logs-test-support: no"; echo "shell-sync-test-support: no"; echo "shell-project-test-support: no"; echo "shell-brain-test-support: no"\n'))
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('ok', result.stdout)
 

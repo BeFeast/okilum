@@ -100,7 +100,7 @@ impl SyncSettings {
             .into_any_element()
     }
 }
-#[cfg(all(target_os = "macos", not(test)))]
+#[cfg(all(target_os = "macos", not(any(test, feature = "test-support"))))]
 pub(super) fn managed_enabled() -> bool {
     use okilum_sync_controller::sidecar::{
         macos::account_state_directory, store::UnixStore, Intent,
@@ -340,8 +340,8 @@ fn bundle_helper() -> anyhow::Result<PathBuf> {
 /// exactly this bundle's helper file (PID, UID, start time and the path), the
 /// way the Sprint snapshots it before replacing the bundle. Read-only apart
 /// from the snapshot file; a helper of another bundle is never recorded.
-#[cfg(all(target_os = "macos", not(test)))]
-pub(crate) fn capture_helper_before_update() -> anyhow::Result<bool> {
+#[cfg(all(target_os = "macos", not(any(test, feature = "test-support"))))]
+pub fn capture_helper_before_update() -> anyhow::Result<bool> {
     use okilum_sync_controller::sidecar::macos::replaced::{capture, Launchd, Snapshot};
     let path = helper_snapshot_path()?;
     if reader_history::isolated_state_directory().is_some() || !managed_enabled() {
@@ -376,8 +376,8 @@ pub(crate) fn capture_helper_before_update() -> anyhow::Result<bool> {
 /// stopped gracefully and its exit confirmed first; then SIGTERM, the restart
 /// path of `restart_managed`, so launchd starts the helper from this bundle.
 /// A settled outcome removes the snapshot; anything else retries next launch.
-#[cfg(all(target_os = "macos", not(test)))]
-pub(crate) fn restart_replaced_helper(
+#[cfg(all(target_os = "macos", not(any(test, feature = "test-support"))))]
+pub fn restart_replaced_helper(
 ) -> anyhow::Result<Option<okilum_sync_controller::sidecar::macos::replaced::Outcome>> {
     use okilum_sync_controller::sidecar::macos::replaced::{
         restart_captured, Launchd, Outcome, Snapshot, Waits,

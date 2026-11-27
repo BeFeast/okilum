@@ -1,17 +1,19 @@
 use super::*;
-use crate::{brand, reader_open, reader_settings_sync, Reader};
+use crate::{brand, reader_settings_sync};
 use gpui::{prelude::*, *};
 use gpui_component::{button::Button, h_flex, v_flex, Disableable, Sizable, WindowExt};
 
-pub(crate) fn open(
+pub type OwnerDirtyFn = Box<dyn Fn(&std::path::Path, &App) -> bool>;
+
+pub fn open(
     root: PathBuf,
     state: PathBuf,
-    owner: Option<WeakEntity<Reader>>,
+    owner_dirty: Option<OwnerDirtyFn>,
     preferred: Option<PathBuf>,
     window: &mut Window,
     cx: &mut App,
 ) {
-    let view = cx.new(|cx| InventoryView::new(root, state, owner, cx));
+    let view = cx.new(|cx| InventoryView::new(root, state, owner_dirty, cx));
     view.update(cx, |view, _| view.preferred = preferred);
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
@@ -21,10 +23,10 @@ pub(crate) fn open(
     });
 }
 
-pub(crate) struct InventoryView {
+pub struct InventoryView {
     root: PathBuf,
     state: PathBuf,
-    owner: Option<WeakEntity<Reader>>,
+    owner_dirty: Option<OwnerDirtyFn>,
     copies: Vec<PathBuf>,
     preferred: Option<PathBuf>,
     complete: bool,
@@ -36,16 +38,16 @@ pub(crate) struct InventoryView {
     message: String,
 }
 impl InventoryView {
-    pub(crate) fn new(
+    pub fn new(
         root: PathBuf,
         state: PathBuf,
-        owner: Option<WeakEntity<Reader>>,
+        owner_dirty: Option<OwnerDirtyFn>,
         cx: &mut Context<Self>,
     ) -> Self {
         let mut this = Self {
             root,
             state,
-            owner,
+            owner_dirty,
             copies: vec![],
             preferred: None,
             complete: false,
@@ -177,18 +179,43 @@ impl InventoryView {
         cx.notify();
     }
     fn dirty(&self, cx: &App) -> bool {
-        let mut readers = reader_open::readers(cx);
-        if let Some(owner) = self.owner.as_ref().and_then(WeakEntity::upgrade) {
-            if !readers.contains(&owner) {
-                readers.push(owner);
-            }
-        }
-        readers.iter().any(|reader| {
-            let reader = reader.read(cx);
-            // Refresh canonicalizes the inventory root on its worker before
-            // enabling actions; Reader roots use that same identity.
-            reader.vault_root == self.root && reader.source_is_dirty(cx)
-        })
+        // Refresh canonicalizes the inventory root on its worker before
+        // enabling actions; Reader roots use that same identity.
+        crate::hooks::any_dirty_reader(&self.root, cx)
+            || self
+                .owner_dirty
+                .as_ref()
+                .is_some_and(|check| check(&self.root, cx))
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_root(&self) -> &std::path::Path {
+        &self.root
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_copies(&self) -> &[PathBuf] {
+        &self.copies
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_preview(&mut self, copy: PathBuf, cx: &mut Context<Self>) {
+        self.preview(copy, cx);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_dirty(&self, cx: &App) -> bool {
+        self.dirty(cx)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_apply(&mut self, choice: Choice, cx: &mut Context<Self>) {
+        self.apply(choice, cx);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_panel(&self) -> Option<&ConflictPanel> {
+        self.panel.as_ref()
     }
     fn apply(&mut self, choice: Choice, cx: &mut Context<Self>) {
         let dirty = self.dirty(cx);
@@ -566,70 +593,6 @@ mod tests {
                 visual.update(|window, _| window.remove_window());
             }
         }
-    }
-    #[gpui::test]
-    fn issue2044_symlink_inventory_blocks_a_dirty_canonical_reader(cx: &mut TestAppContext) {
-        cx.update(crate::test_init);
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("vault");
-        let alias = directory.path().join("vault-alias");
-        let state = directory.path().join("state");
-        std::fs::create_dir(&root).unwrap();
-        std::os::unix::fs::symlink(&root, &alias).unwrap();
-        let copy = PathBuf::from("note.sync-conflict-20261104-123456-ABC2345.md");
-        std::fs::write(root.join("note.md"), b"this").unwrap();
-        std::fs::write(root.join(&copy), b"that").unwrap();
-        let mut reader = None;
-        let (_, visual) = cx.add_window_view(|window, cx| {
-            let view = cx.new(|cx| {
-                Reader::new(
-                    crate::Opts {
-                        vault: Some(root.clone()),
-                        note: Some("note.md".into()),
-                        session_directory: Some(state.clone()),
-                        index_dir: Some(directory.path().join("index")),
-                        ..Default::default()
-                    },
-                    window,
-                    cx,
-                )
-            });
-            reader = Some(view.clone());
-            Root::new(view, window, cx)
-        });
-        let reader = reader.unwrap();
-        visual.run_until_parked();
-        let inventory = visual.update(|_, cx| {
-            cx.new(|cx| {
-                InventoryView::new(alias.clone(), state.clone(), Some(reader.downgrade()), cx)
-            })
-        });
-        visual.run_until_parked();
-        inventory.read_with(visual, |view, _| {
-            assert_eq!(view.root, root.canonicalize().unwrap());
-            assert_eq!(view.copies.as_slice(), std::slice::from_ref(&copy));
-        });
-        inventory.update(visual, |view, cx| view.preview(copy.clone(), cx));
-        visual.run_until_parked();
-        reader.update_in(visual, |reader, window, cx| {
-            reader.toggle_source(window, cx);
-            reader.source_input().unwrap().update(cx, |input, cx| {
-                input.replace_text_in_range(Some(0..0), "unsaved edit", window, cx);
-            });
-            assert!(reader.source_is_dirty(cx), "positive dirty control");
-        });
-        inventory.update(visual, |view, cx| {
-            assert!(
-                view.dirty(cx),
-                "symlink inventory must see the canonical editor"
-            );
-            view.apply(Choice::KeepThat, cx);
-            let panel = view.panel.as_ref().unwrap();
-            assert!(matches!(panel.state, State::Ready));
-            assert!(panel.message.contains("unsaved draft"));
-        });
-        assert_eq!(std::fs::read(root.join("note.md")).unwrap(), b"this");
-        assert_eq!(std::fs::read(root.join(copy)).unwrap(), b"that");
     }
 
     #[gpui::test]

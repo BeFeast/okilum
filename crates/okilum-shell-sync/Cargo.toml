@@ -1,0 +1,59 @@
+[package]
+name = "okilum-shell-sync"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Desktop Sync settings, CLI, conflict resolution, and first-sync merge preview
+# below the okilum app crate (#3240, epic #3241). Never depends on the app crate
+# or `Reader`.
+
+[features]
+default = []
+# Test seams the app crate's Reader-integration tests rely on. okilum-shell
+# enables it as a dev-dependency only; `okilum --build-info` reports it and
+# native_binary_guard.py refuses it.
+test-support = []
+
+[dependencies]
+anyhow = "1"
+async-channel = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+gpui = { package = "okilum-gpui", path = "../okilum-gpui" }
+gpui-base = { path = "../../vendor/gpui-component/crates/base" }
+gpui-component = { workspace = true, features = ["tree-sitter-languages"] }
+okilum-core = { workspace = true, default-features = false }
+okilum-shell-kit = { path = "../okilum-shell-kit" }
+okilum-t3 = { path = "../okilum-t3" }
+regex = "1"
+serde.workspace = true
+serde_json = "1"
+similar = { version = "=2.7.0", default-features = false }
+sysinfo = { version = "=0.31.4", default-features = false, features = ["system"] }
+tempfile = "3"
+url = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+okilum-sync-controller = { path = "../okilum-sync-controller" }
+rustix = { version = "=1.1.6", features = ["fs", "net", "process"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+okilum-sync-controller = { path = "../okilum-sync-controller" }
+rustix = { version = "=1.1.6", features = ["fs", "process"] }
+
+[target.'cfg(windows)'.dependencies]
+okilum-sync-controller = { path = "../okilum-sync-controller" }
+
+[dev-dependencies]
+# Private writer state and temp directory per test process (#3271).
+okilum-write-authority = { path = "../okilum-write-authority", features = ["test-isolation"] }
+okilum-core = { workspace = true, features = ["test-support"] }
+okilum-shell-kit = { path = "../okilum-shell-kit", features = ["test-support"] }
+gpui = { package = "okilum-gpui", path = "../okilum-gpui", features = ["test-support"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+gpui_wgpu = { package = "gpui-pre-wgpu", version = "0.3.3" }

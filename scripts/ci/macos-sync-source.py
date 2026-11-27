@@ -8,8 +8,8 @@ from pathlib import Path
 
 def health_negative_controls():
     """Idle/controller/inspection regressions must fail under former predicates."""
-    health = Path("crates/okilum-shell/src/reader_settings_sync/health.rs")
-    settings = Path("crates/okilum-shell/src/reader_settings_sync.rs")
+    health = Path("crates/okilum-shell-sync/src/reader_settings_sync/health.rs")
+    settings = Path("crates/okilum-shell-sync/src/reader_settings_sync.rs")
     originals = {health: health.read_text(), settings: settings.read_text()}
     idle = "vault.connected || vault.needed_items == 0 || vault.shared_with.is_empty()"
     publish = ".observe(&output.overview, output.runtime_health, Instant::now());"
@@ -34,7 +34,7 @@ def health_negative_controls():
             ("lifecycle_inspection_failure_with_healthy_rest_never_starts_an_outage_timer",
              "inspection failure is not a REST outage"),
         ):
-            command = ["cargo", "test", "--locked", "-p", "okilum-shell", "--bin=okilum",
+            command = ["cargo", "test", "--locked", "-p", "okilum-shell-sync", "--lib",
                        selected, "--", "--nocapture", "--test-threads=1"]
             result = subprocess.run(command, text=True, capture_output=True)
             output = result.stdout + result.stderr
@@ -76,7 +76,7 @@ def main():
         ("okilum-shell", "--bin=okilum", "app_footprint::tests::an_unreadable_config_root_is_reported_not_silently_kept"),
         ("okilum-shell", "--bin=okilum", "app_footprint::tests::a_kept_symlink_into_another_root_keeps_that_root"),
         ("okilum-shell", "--bin=okilum", "app_footprint::tests::a_dangling_symlink_on_a_root_or_kept_path_refuses_the_plan"),
-        ("okilum-shell", "--bin=okilum", "reader_settings_sync::admission_tests::"),
+        ("okilum-shell-sync", "--lib", "reader_settings_sync::admission_tests::"),
         ("okilum-sync", "--lib", "tests::issue2752_"),
         ("okilum-write-authority", "--lib", "identity_macos_tests::"),
         ("okilum-sync-controller", "--lib", "direct::overview::tests::"),
@@ -87,9 +87,10 @@ def main():
         ("okilum-sync-controller", "--lib", "sidecar::macos::connection::native::tests::"),
         ("okilum-sync-controller", "--lib", "sidecar::supervisor::lease::tests::"),
         ("okilum-sync-controller", "--lib", "sidecar::store::tests::launch_authority::"),
-        ("okilum-shell", "--bin=okilum", "reader_settings_sync::health::tests::"),
+        ("okilum-shell-sync", "--lib", "reader_settings_sync::health::tests::"),
+        ("okilum-shell-sync", "--lib", "reader_settings_sync::tests::"),
         ("okilum-shell", "--bin=okilum", "reader_settings_sync::tests::"),
-        ("okilum-shell", "--bin=okilum", "reader_settings_sync::first_sync::tests::"),
+        ("okilum-shell-sync", "--lib", "reader_settings_sync::first_sync::tests::"),
         # #2708: compile AppKit bindings and execute normal/zoom/fullscreen controls.
         ("okilum-shell-kit", "--lib", "window_state::"),
     ):

@@ -45,7 +45,7 @@ pub(crate) fn report() -> String {
     #[cfg(not(all(unix, feature = "brain")))]
     let shell_brain_test_support = false;
     format!(
-        "version: {}\n{}build: {}\nsource: {}\ngpui-test-support: {}\nshell-kit-test-support: {}\nshell-platform-test-support: {}\nshell-text-test-support: {}\nshell-viewers-test-support: {}\nshell-logs-test-support: {}\nshell-project-test-support: {}\nshell-brain-test-support: {}\nappimage-gui-acceptance: {}\ninstall: {}\nchannel: {}\n",
+        "version: {}\n{}build: {}\nsource: {}\ngpui-test-support: {}\nshell-kit-test-support: {}\nshell-platform-test-support: {}\nshell-text-test-support: {}\nshell-viewers-test-support: {}\nshell-logs-test-support: {}\nshell-sync-test-support: {}\nshell-project-test-support: {}\nshell-brain-test-support: {}\nappimage-gui-acceptance: {}\ninstall: {}\nchannel: {}\n",
         env!("OKILUM_RELEASE_VERSION"),
         crate::version_info::package()
             .map(|package| format!("package: {package}\n"))
@@ -58,6 +58,7 @@ pub(crate) fn report() -> String {
         if okilum_shell_text::TEST_SUPPORT { "yes" } else { "no" },
         if okilum_shell_viewers::TEST_SUPPORT { "yes" } else { "no" },
         if okilum_shell_logs::TEST_SUPPORT { "yes" } else { "no" },
+        if okilum_shell_sync::TEST_SUPPORT { "yes" } else { "no" },
         if okilum_shell_project::TEST_SUPPORT { "yes" } else { "no" },
         if shell_brain_test_support { "yes" } else { "no" },
         if cfg!(all(target_os = "linux", feature = "appimage-acceptance-harness")) { "yes" } else { "no" },
@@ -82,6 +83,7 @@ mod tests {
         assert!(super::report().contains("shell-text-test-support: yes"));
         assert!(super::report().contains("shell-viewers-test-support: yes"));
         assert!(super::report().contains("shell-logs-test-support: yes"));
+        assert!(super::report().contains("shell-sync-test-support: yes"));
         assert!(super::report().contains("shell-project-test-support: yes"));
         #[cfg(all(unix, feature = "brain"))]
         assert!(super::report().contains("shell-brain-test-support: yes"));

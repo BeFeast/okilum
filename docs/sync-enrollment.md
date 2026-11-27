@@ -219,8 +219,8 @@ All references below were checked in the `origin/main` revision named above.
 Credentials, paired identities, address hints and operation journals stay in
 private application state outside the vault and disposable index.
 
-- [Linux Settings actions and runtime selection](../crates/okilum-shell/src/reader_settings_sync.rs),
-  [visible labels and catalog](../crates/okilum-shell/src/reader_settings_sync/view.rs),
+- [Linux Settings actions and runtime selection](../crates/okilum-shell-sync/src/reader_settings_sync.rs),
+  [visible labels and catalog](../crates/okilum-shell-sync/src/reader_settings_sync/view.rs),
   [welcome entry](../crates/okilum-shell/src/reader_startup.rs), and
   [implicit bootstrap policy](../crates/okilum-sync-controller/src/linux_bootstrap.rs).
 - [Invitation lifetime, approval and durable pairing](../crates/okilum-sync-controller/src/direct/mod.rs)

@@ -113,11 +113,11 @@ impl SyncSettings {
                 .as_ref()
                 .map(|s| s.attached.iter().map(|v| v.path.clone()).collect())
                 .unwrap_or_default();
-            let readers = reader_open::readers(cx);
+            let readers = crate::hooks::open_vaults(cx);
             roots.extend(
                 readers
                     .iter()
-                    .map(|r| r.read(cx).vault_root.clone())
+                    .map(|r| r.vault_root.clone())
                     .filter(|r| !r.as_os_str().is_empty()),
             );
             roots.sort();
@@ -125,18 +125,17 @@ impl SyncSettings {
             content = content.child(div().text_base().child("Conflicts"));
             for root in roots {
                 if !self.conflicts.contains_key(&root) {
-                    let owner = readers.iter().find(|r| r.read(cx).vault_root == root);
+                    let owner = readers.iter().find(|r| r.vault_root == root);
                     let state = owner
-                        .and_then(|r| r.read(cx).session_directory.clone())
+                        .and_then(|r| r.session_directory.clone())
                         .map(Ok)
                         .unwrap_or_else(|| reader_ui_state::state_directory(cx));
                     if let Ok(state) = state {
-                        let owner = owner.map(Entity::downgrade);
                         let view = cx.new(|cx| {
                             crate::reader_sync_conflicts::InventoryView::new(
                                 root.clone(),
                                 state,
-                                owner,
+                                None,
                                 cx,
                             )
                         });
@@ -182,10 +181,9 @@ impl SyncSettings {
         let mut content = v_flex().gap_2();
         {
             let mut vaults = self.vaults.clone();
-            for reader in reader_open::readers(cx) {
-                let reader = reader.read(cx);
+            for reader in crate::hooks::open_vaults(cx) {
                 if !reader.single_file && !vaults.contains(&reader.vault_root) {
-                    vaults.push(reader.vault_root.clone());
+                    vaults.push(reader.vault_root);
                 }
             }
             if vaults.is_empty() {

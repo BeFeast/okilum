@@ -6329,6 +6329,7 @@ dependencies = [
  "okilum-shell-logs",
  "okilum-shell-platform",
  "okilum-shell-project",
+ "okilum-shell-sync",
  "okilum-shell-text",
  "okilum-shell-viewers",
  "okilum-sync-controller",
@@ -6551,6 +6552,34 @@ dependencies = [
  "url",
  "uuid",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "okilum-shell-sync"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-channel",
+ "chrono",
+ "gpui-base",
+ "gpui-component",
+ "gpui-pre-wgpu",
+ "libc",
+ "okilum-core",
+ "okilum-gpui",
+ "okilum-shell-kit",
+ "okilum-sync-controller",
+ "okilum-t3",
+ "okilum-write-authority",
+ "regex",
+ "rustix",
+ "serde",
+ "serde_json",
+ "similar",
+ "sysinfo",
+ "tempfile",
+ "url",
+ "uuid",
 ]
 
 [[package]]

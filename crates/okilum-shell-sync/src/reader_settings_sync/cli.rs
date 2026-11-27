@@ -85,7 +85,7 @@ struct Request {
 
 /// `Some(exit code)` when argv is `okilum sync …`; `None` leaves every other
 /// command line to the ordinary launcher.
-pub(crate) fn entry() -> Option<i32> {
+pub fn entry(enable_saved_sync: fn(&Path) -> anyhow::Result<()>) -> Option<i32> {
     let mut arguments = std::env::args_os().skip(1);
     if arguments.next().as_deref() != Some(std::ffi::OsStr::new("sync")) {
         return None;
@@ -97,10 +97,10 @@ pub(crate) fn entry() -> Option<i32> {
         diagnostic_error!("okilum sync: arguments must be UTF-8");
         return Some(2);
     };
-    Some(run(&arguments))
+    Some(run(&arguments, enable_saved_sync))
 }
 
-fn run(arguments: &[String]) -> i32 {
+fn run(arguments: &[String], enable_saved_sync: fn(&Path) -> anyhow::Result<()>) -> i32 {
     #[cfg(target_os = "macos")]
     if arguments == ["qa-stop"] {
         return match native_signing_policy()
@@ -152,8 +152,7 @@ fn run(arguments: &[String]) -> i32 {
         }
         if !matches!(request.verb, Verb::Status | Verb::Cancel) {
             // Like an opened pairing link: the next app start keeps serving.
-            reader_features::enable_saved(&directory, reader_features::Feature::Sync)
-                .context("turn on Sync in Settings → Features")?;
+            enable_saved_sync(&directory).context("turn on Sync in Settings → Features")?;
         }
         execute(request.verb, Session::default())
     })();

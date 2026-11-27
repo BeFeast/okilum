@@ -61,6 +61,11 @@ def require_app_binary(binary):
               '(app and a test or example in one cargo invocation). Rebuild it alone: '
               'cargo build -p okilum-shell --bin okilum', file=sys.stderr)
         sys.exit(INVALID)
+    if info.get('shell-sync-test-support', 'no') != 'no':
+        print(f'INVALID run: {binary} was built with okilum-shell-sync test-support '
+              '(app and a test or example in one cargo invocation). Rebuild it alone: '
+              'cargo build -p okilum-shell --bin okilum', file=sys.stderr)
+        sys.exit(INVALID)
     if info.get('shell-project-test-support', 'no') != 'no':
         print(f'INVALID run: {binary} was built with okilum-shell-project test-support '
               '(app and a test or example in one cargo invocation). Rebuild it alone: '

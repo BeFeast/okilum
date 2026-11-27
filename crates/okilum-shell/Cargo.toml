@@ -42,6 +42,7 @@ okilum-shell-platform = { path = "../okilum-shell-platform" }
 okilum-shell-text = { path = "../okilum-shell-text" }
 okilum-shell-viewers = { path = "../okilum-shell-viewers" }
 okilum-shell-logs = { path = "../okilum-shell-logs" }
+okilum-shell-sync = { path = "../okilum-shell-sync" }
 okilum-shell-project = { path = "../okilum-shell-project" }
 okilum-shell-brain = { path = "../okilum-shell-brain", optional = true }
 tokio = { version = "1", features = ["rt", "net", "time", "fs", "io-util"] }
@@ -128,6 +129,7 @@ okilum-shell-platform = { path = "../okilum-shell-platform", features = ["test-s
 okilum-shell-text = { path = "../okilum-shell-text", features = ["test-support"] }
 okilum-shell-viewers = { path = "../okilum-shell-viewers", features = ["test-support"] }
 okilum-shell-logs = { path = "../okilum-shell-logs", features = ["test-support"] }
+okilum-shell-sync = { path = "../okilum-shell-sync", features = ["test-support"] }
 okilum-shell-project = { path = "../okilum-shell-project", features = ["test-support"] }
 tungstenite = "0.28"
 # Builds ZIP/TAR fixtures for the archive viewer tests (#1149, #3290); okilum-core already uses them.

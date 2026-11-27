@@ -2166,7 +2166,7 @@ mod tests {
         // Managed Sync units share a systemd base. Uninstall checks the same
         // producer path and refuses until the controller has removed its unit.
         (
-            "crates/okilum-shell/src/reader_settings_sync/linux_runtime.rs",
+            "crates/okilum-shell-sync/src/reader_settings_sync/linux_runtime.rs",
             2,
         ),
         // Records the managed AppImage build beside
