@@ -201,6 +201,7 @@ pub(crate) struct CodePreview {
     json_routed: bool,
     schema_report: Option<Arc<okilum_core::json_schema::Report>>,
     schema_rows: Arc<Vec<String>>,
+    schema_pointers: Arc<Vec<String>>,
     schema_generation: u64,
     schema_loading: bool,
     #[cfg(test)]
@@ -457,6 +458,7 @@ impl CodePreview {
                 .is_some_and(|a| a.json),
             schema_report: None,
             schema_rows: Arc::default(),
+            schema_pointers: Arc::default(),
             schema_generation: 0,
             schema_loading: false,
             #[cfg(test)]
@@ -802,6 +804,7 @@ impl Render for CodePreview {
         });
         #[cfg(feature = "data-view-native-harness")]
         native_trace("chrome.end");
+        let schema_bar = self.schema_bar(cx);
         let content = self.render_content(cx);
         let footer = self.bottom_line(cx);
         let view = v_flex()
@@ -852,6 +855,7 @@ impl Render for CodePreview {
             .flex_1()
             .min_h_0()
             .children(header)
+            .children(schema_bar)
             .child(content)
             .child(footer);
         #[cfg(feature = "data-view-native-harness")]

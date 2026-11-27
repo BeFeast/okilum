@@ -25,6 +25,7 @@ pub struct Association {
     pub config: Option<PathBuf>,
     pub json: bool,
     pub schema: Option<PathBuf>,
+    pub document: Option<PathBuf>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -74,6 +75,16 @@ fn relative(path: &str) -> bool {
             .components()
             .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
 }
+fn relative_local_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.contains(['\\', ':'])
+        && Path::new(path).components().all(|c| {
+            matches!(
+                c,
+                Component::Normal(_) | Component::CurDir | Component::ParentDir
+            )
+        })
+}
 fn matches(pattern: &str, rel: &str) -> Result<bool, String> {
     if pattern.len() > 512 || !relative(pattern) {
         return Err(format!("Invalid project pattern: {pattern}"));
@@ -118,6 +129,7 @@ pub fn associate(root: &Path, path: &Path) -> Result<Association, String> {
                 let mut association = Association {
                     project: directory.to_path_buf(),
                     config: Some(config),
+                    document: Some(path.clone()),
                     ..Default::default()
                 };
                 for rule in config_data.json {
@@ -139,7 +151,11 @@ pub fn associate(root: &Path, path: &Path) -> Result<Association, String> {
             Err(e) => return Err(format!("{}: {e}", config.display())),
         }
         if directory == root {
-            return Ok(Association::default());
+            return Ok(Association {
+                project: root,
+                document: Some(path),
+                ..Default::default()
+            });
         }
         directory = directory
             .parent()
@@ -376,6 +392,9 @@ struct Node {
     boolean: Option<bool>,
     field: Field,
     reference: Option<Box<Node>>,
+    all_of: Vec<Node>,
+    any_of: Vec<Node>,
+    one_of: Vec<Node>,
     properties: BTreeMap<String, Node>,
     required: BTreeSet<String>,
     items: Option<Box<Node>>,
@@ -429,7 +448,7 @@ impl Loader {
     }
     fn reference(&mut self, base: &Path, reference: &str, depth: usize) -> Result<Node, String> {
         let (file, fragment) = reference.split_once('#').unwrap_or((reference, ""));
-        if !file.is_empty() && !relative(file) {
+        if !file.is_empty() && !relative_local_path(file) {
             return Err(format!("Unsupported nonlocal reference: {reference}"));
         }
         // Only literal JSON Pointers; URI encoding/anchors are explicitly unsupported.
@@ -474,6 +493,10 @@ impl Loader {
             "$schema",
             "$ref",
             "$defs",
+            "definitions",
+            "allOf",
+            "anyOf",
+            "oneOf",
             "title",
             "description",
             "type",
@@ -617,10 +640,31 @@ impl Loader {
                 depth,
             )?));
         }
+        for (key, dest) in [
+            ("allOf", &mut node.all_of),
+            ("anyOf", &mut node.any_of),
+            ("oneOf", &mut node.one_of),
+        ] {
+            if let Some(v) = map.get(key) {
+                let items = v
+                    .as_array()
+                    .filter(|a| !a.is_empty())
+                    .ok_or_else(|| format!("{key} must be a nonempty array"))?;
+                for item in items {
+                    dest.push(self.compile(item, base, depth + 1)?);
+                }
+            }
+        }
         // Preflight even unused definitions: unsupported constraints never become a valid verdict.
-        if let Some(v) = map.get("$defs") {
-            for value in v.as_object().ok_or("$defs must be an object")?.values() {
-                self.compile(value, base, depth + 1)?;
+        for key in ["$defs", "definitions"] {
+            if let Some(v) = map.get(key) {
+                for value in v
+                    .as_object()
+                    .ok_or_else(|| format!("{key} must be an object"))?
+                    .values()
+                {
+                    self.compile(value, base, depth + 1)?;
+                }
             }
         }
         if let Some(v) = map.get("$comment") {
@@ -666,6 +710,9 @@ impl Validation {
         if let Some(reference) = &node.reference {
             self.field(reference, path, required, missing, property)?;
         }
+        for branch in &node.all_of {
+            self.field(branch, path, required, missing, property)?;
+        }
         let mut field = self.report.fields.get(path).cloned().unwrap_or_default();
         field.required |= required || self.required_paths.contains(path);
         field.property |= property;
@@ -689,6 +736,73 @@ impl Validation {
         self.report.fields.insert(path.into(), field);
         Ok(())
     }
+    fn merge_fields(&mut self, fields: BTreeMap<String, Field>) -> Result<(), String> {
+        for (path, incoming) in fields {
+            let mut field = match self.report.fields.get(&path) {
+                Some(existing) => {
+                    let mut merged = existing.clone();
+                    merged.missing &= incoming.missing;
+                    merged
+                }
+                None => Field {
+                    missing: incoming.missing,
+                    ..Default::default()
+                },
+            };
+            field.required |= incoming.required || self.required_paths.contains(&path);
+            field.property |= incoming.property;
+            if incoming.title.is_some() {
+                field.title = incoming.title;
+            }
+            if incoming.description.is_some() {
+                field.description = incoming.description;
+            }
+            if !incoming.types.is_empty() {
+                field.types = incoming.types;
+            }
+            if incoming.enumeration.is_some() {
+                field.enumeration = incoming.enumeration;
+            }
+            self.field_bytes += path.len() + field.explain().len();
+            if self.field_bytes > DOCUMENT_BYTES || self.report.fields.len() >= MAX_FIELDS {
+                return Err("Schema field projection limit reached".into());
+            }
+            self.report.fields.insert(path, field);
+        }
+        Ok(())
+    }
+    fn evaluate_branch(
+        &mut self,
+        branch: &Node,
+        value: &Value,
+        path: &str,
+        depth: usize,
+    ) -> Result<Option<BTreeMap<String, Field>>, String> {
+        let mut probe = Validation {
+            report: Report {
+                schema: None,
+                verdict: Verdict::Valid,
+                summary: String::new(),
+                fields: BTreeMap::new(),
+                violations: Vec::new(),
+                array_kinds: Vec::new(),
+            },
+            steps: self.steps,
+            field_bytes: self.field_bytes,
+            required_paths: self.required_paths.clone(),
+            started: self.started,
+        };
+        let result = probe
+            .field(branch, path, false, false, false)
+            .and_then(|()| probe.visit(branch, value, path, depth + 1));
+        self.steps = probe.steps;
+        result?;
+        if probe.report.violations.is_empty() {
+            Ok(Some(probe.report.fields))
+        } else {
+            Ok(None)
+        }
+    }
     fn visit(
         &mut self,
         node: &Node,
@@ -705,6 +819,38 @@ impl Validation {
         }
         if let Some(reference) = &node.reference {
             self.visit(reference, value, path, depth + 1)?;
+        }
+        for branch in &node.all_of {
+            self.field(branch, path, false, false, false)?;
+            self.visit(branch, value, path, depth + 1)?;
+        }
+        if !node.any_of.is_empty() {
+            let mut matched = Vec::new();
+            for branch in &node.any_of {
+                if let Some(fields) = self.evaluate_branch(branch, value, path, depth)? {
+                    matched.push(fields);
+                }
+            }
+            if matched.is_empty() {
+                self.issue(path, "Value does not match any schema in anyOf".into())?;
+            } else {
+                for fields in matched {
+                    self.merge_fields(fields)?;
+                }
+            }
+        }
+        if !node.one_of.is_empty() {
+            let mut matched = Vec::new();
+            for branch in &node.one_of {
+                if let Some(fields) = self.evaluate_branch(branch, value, path, depth)? {
+                    matched.push(fields);
+                }
+            }
+            match matched.len() {
+                0 => self.issue(path, "Value does not match any schema in oneOf".into())?,
+                1 => self.merge_fields(matched.pop().unwrap())?,
+                _ => self.issue(path, "Value matches more than one schema in oneOf".into())?,
+            }
         }
         if node.boolean == Some(false) {
             self.issue(path, "Schema disallows this value".into())?;
@@ -831,10 +977,59 @@ impl Validation {
         Ok(())
     }
 }
+fn infile_schema(association: &Association, text: &str) -> Result<Option<PathBuf>, String> {
+    let Some(document) = association.document.as_deref() else {
+        return Ok(None);
+    };
+    if text.len() > DOCUMENT_BYTES {
+        return Ok(None);
+    }
+    let trimmed = text.trim_start_matches('\u{feff}').trim_start();
+    if !trimmed.starts_with('{') {
+        return Ok(None);
+    }
+    let Ok(Value::Object(map)) = serde_json::from_str::<Value>(trimmed) else {
+        return Ok(None);
+    };
+    let Some(raw) = map.get("$schema").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    if raw.starts_with("https://json-schema.org/") || raw.starts_with("http://json-schema.org/") {
+        // The document itself declares a JSON Schema meta-schema, not a local instance schema.
+        return Ok(None);
+    }
+    if raw.contains("://") {
+        return Err(format!(
+            "Remote or URI $schema is not supported (no remote fetches): {raw}"
+        ));
+    }
+    if !relative_local_path(raw) {
+        return Err(format!(
+            "In-file $schema must be a local relative path inside the project: {raw}"
+        ));
+    }
+    let parent = document
+        .parent()
+        .ok_or_else(|| "Document has no parent directory".to_owned())?;
+    Ok(Some(parent.join(raw)))
+}
+
 /// Validates a snapshot only. Any unsupported draft/keyword/ref makes the whole
 /// schema unavailable; resource limits are Incomplete, never Valid.
+///
+/// Schema association precedence (deterministic):
+/// 1. Explicit `.okilum/viewers.json` `schemas` rule (last match wins).
+/// 2. Standard in-file `"$schema": "./path/to/schema.json"` local relative path,
+///    resolved relative to the document and bounded inside the project/vault root.
 pub fn inspect(association: &Association, text: &str) -> Option<Report> {
-    let schema = association.schema.clone()?;
+    let schema = match association.schema.clone() {
+        Some(schema) => schema,
+        None => match infile_schema(association, text) {
+            Ok(Some(schema)) => schema,
+            Ok(None) => return None,
+            Err(error) => return Some(Report::unavailable(None, error)),
+        },
+    };
     let result = (|| {
         let root = association
             .project

@@ -277,3 +277,70 @@ fn schema2994_json_pointer_projection_preserves_escaped_keys_and_array_indices()
         ["", "/a~1b~0c", "/a~1b~0c/0", "/a~1b~0c/0/x\"y"]
     );
 }
+
+#[gpui::test]
+fn schema2994_tree_inline_help_and_infile_schema_resolution(cx: &mut TestAppContext) {
+    let (reader, visual, temp) = reader_viewer_chrome::tests::fixture(cx, "source.rs");
+    let root = temp.path().join("vault");
+    project(&root);
+
+    // 1. Custom extension file in Tree view exposes inline schema hints and never invents descriptions.
+    let code = open(&reader, "jobs/demo.samplejob", visual);
+    code.update_in(visual, |code, window, cx| {
+        code.set_view(View::Tree, window, cx);
+        code.structure.all(false, code.document.as_ref().unwrap());
+        let name_idx = code
+            .schema_pointers
+            .iter()
+            .position(|p| p == "/name")
+            .expect("/name row exists");
+        let (name_hint, name_violation) = code
+            .tree_row_schema_hint(name_idx)
+            .expect("declared field has inline hint");
+        assert!(!name_violation);
+        assert!(name_hint.contains("Job name"));
+        assert!(name_hint.contains("required"));
+
+        let bad_state_idx = code
+            .schema_pointers
+            .iter()
+            .position(|p| p == "/steps/1/state")
+            .expect("/steps/1/state row exists");
+        let (bad_hint, bad_violation) = code
+            .tree_row_schema_hint(bad_state_idx)
+            .expect("violating field has inline violation hint");
+        assert!(bad_violation);
+        assert!(bad_hint.contains("enum"));
+
+        let custom_idx = code
+            .schema_pointers
+            .iter()
+            .position(|p| p == "/custom")
+            .expect("/custom row exists");
+        assert!(
+            code.tree_row_schema_hint(custom_idx).is_none(),
+            "undocumented field must not get an invented inline description"
+        );
+    });
+
+    // 2. Standard .json file with in-file local relative "$schema" resolves without .okilum/viewers.json.
+    std::fs::remove_file(root.join(".okilum/viewers.json")).unwrap();
+    std::fs::write(
+        root.join("jobs/inline.json"),
+        r#"{"$schema":"../schemas/general.schema.json","generalOnly":true}"#,
+    )
+    .unwrap();
+    let inline = open(&reader, "jobs/inline.json", visual);
+    inline.read_with(visual, |code, _| {
+        let report = code
+            .schema_report
+            .as_ref()
+            .expect("in-file relative $schema resolved");
+        assert_eq!(report.verdict, Verdict::Valid);
+        assert!(report
+            .schema
+            .as_ref()
+            .unwrap()
+            .ends_with("schemas/general.schema.json"));
+    });
+}

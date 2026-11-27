@@ -319,3 +319,213 @@ fn referenced_required_is_not_lost_by_sibling_property_metadata() {
     assert!(report.fields["/name"].required);
     assert!(report.fields["/name"].property);
 }
+
+#[test]
+fn infile_schema_local_relative_path_and_project_config_precedence() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    write(
+        root,
+        "schemas/local.schema.json",
+        schema(json!({
+            "type": "object",
+            "required": ["id"],
+            "properties": {
+                "$schema": { "type": "string" },
+                "id": { "type": "string", "title": "Record ID", "description": "Declared in local schema" }
+            }
+        })),
+    );
+    write(
+        root,
+        "schemas/override.schema.json",
+        schema(json!({
+            "type": "object",
+            "properties": {
+                "$schema": { "type": "string" },
+                "id": { "type": "integer", "title": "Numeric ID" }
+            }
+        })),
+    );
+    let doc_text = r#"{"$schema":"../schemas/local.schema.json","id":"abc"}"#;
+    write(
+        root,
+        "items/one.json",
+        serde_json::from_str(doc_text).unwrap(),
+    );
+
+    // Without .okilum/viewers.json, in-file relative "$schema" resolves safely inside root.
+    let association = associate(root, &root.join("items/one.json")).unwrap();
+    assert!(association.schema.is_none());
+    let report = inspect(&association, doc_text).unwrap();
+    assert_eq!(report.verdict, Verdict::Valid);
+    assert_eq!(report.fields["/id"].title.as_deref(), Some("Record ID"));
+    assert_eq!(
+        report.fields["/id"].description.as_deref(),
+        Some("Declared in local schema")
+    );
+
+    // Explicit .okilum/viewers.json schema rule takes precedence over in-file "$schema".
+    write(
+        root,
+        ".okilum/viewers.json",
+        json!({
+            "version": 1,
+            "schemas": [
+                { "pattern": "items/*.json", "schema": "schemas/override.schema.json" }
+            ]
+        }),
+    );
+    let association = associate(root, &root.join("items/one.json")).unwrap();
+    let report = inspect(&association, doc_text).unwrap();
+    assert_eq!(report.verdict, Verdict::Invalid);
+    assert_eq!(report.fields["/id"].title.as_deref(), Some("Numeric ID"));
+
+    // Escaping, remote, absolute, and missing in-file "$schema" fall back honestly.
+    std::fs::remove_file(root.join(".okilum/viewers.json")).unwrap();
+    let association = associate(root, &root.join("items/one.json")).unwrap();
+    for bad in [
+        r#"{"$schema":"../../outside.schema.json"}"#,
+        r#"{"$schema":"/etc/passwd"}"#,
+        r#"{"$schema":"https://example.invalid/schema.json"}"#,
+        r#"{"$schema":"./missing.schema.json"}"#,
+    ] {
+        let report = inspect(&association, bad).unwrap();
+        assert_eq!(report.verdict, Verdict::Unavailable, "{bad}");
+    }
+    // Meta-schema URI on a schema file itself is not treated as an unavailable instance schema.
+    assert!(inspect(
+        &association,
+        r#"{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object"}"#
+    )
+    .is_none());
+}
+
+#[test]
+fn definitions_and_relative_parent_refs_resolve_safely() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    write(
+        root,
+        "shared/types.schema.json",
+        schema(json!({
+            "definitions": {
+                "status": {
+                    "type": "string",
+                    "title": "Job status",
+                    "description": "Shared status definition",
+                    "enum": ["open", "closed"]
+                }
+            }
+        })),
+    );
+    write(
+        root,
+        "nested/main.schema.json",
+        schema(json!({
+            "type": "object",
+            "required": ["status"],
+            "properties": {
+                "status": { "$ref": "../shared/types.schema.json#/definitions/status" }
+            }
+        })),
+    );
+    let association = Association {
+        project: root.to_path_buf(),
+        schema: Some(root.join("nested/main.schema.json")),
+        ..Default::default()
+    };
+    let report = inspect(&association, r#"{"status":"open"}"#).unwrap();
+    assert_eq!(report.verdict, Verdict::Valid);
+    assert_eq!(
+        report.fields["/status"].title.as_deref(),
+        Some("Job status")
+    );
+    assert_eq!(
+        report.fields["/status"].description.as_deref(),
+        Some("Shared status definition")
+    );
+    assert!(report.fields["/status"].required);
+
+    // Parent ref escaping the project root is refused.
+    let outside = tempfile::tempdir().unwrap();
+    write(outside.path(), "escape.schema.json", schema(json!({})));
+    write(
+        root,
+        "nested/escape.schema.json",
+        schema(json!({
+            "$ref": "../../escape.schema.json"
+        })),
+    );
+    let escaped = Association {
+        project: root.to_path_buf(),
+        schema: Some(root.join("nested/escape.schema.json")),
+        ..Default::default()
+    };
+    assert_eq!(
+        inspect(&escaped, "{}").unwrap().verdict,
+        Verdict::Unavailable
+    );
+}
+
+#[test]
+fn composition_all_of_any_of_one_of_basic_handling() {
+    // allOf merges constraints and field metadata from every branch.
+    let (_dir, all_of) = fixture(json!({
+        "allOf": [
+            {
+                "type": "object",
+                "required": ["a"],
+                "properties": { "a": { "type": "string", "description": "First field" } }
+            },
+            {
+                "type": "object",
+                "required": ["b"],
+                "properties": { "b": { "type": "integer", "description": "Second field" } }
+            }
+        ]
+    }));
+    let valid = inspect(&all_of, r#"{"a":"hi","b":3}"#).unwrap();
+    assert_eq!(valid.verdict, Verdict::Valid);
+    assert_eq!(
+        valid.fields["/a"].description.as_deref(),
+        Some("First field")
+    );
+    assert_eq!(
+        valid.fields["/b"].description.as_deref(),
+        Some("Second field")
+    );
+    let invalid = inspect(&all_of, r#"{"a":"hi"}"#).unwrap();
+    assert_eq!(invalid.verdict, Verdict::Invalid);
+    assert!(invalid.violations.iter().any(|v| v.path == "/b"));
+
+    // anyOf passes when at least one branch matches and fails when none match.
+    let (_dir, any_of) = fixture(json!({
+        "anyOf": [
+            { "type": "string", "description": "Text form" },
+            { "type": "integer", "description": "Numeric form" }
+        ]
+    }));
+    let ok = inspect(&any_of, "42").unwrap();
+    assert_eq!(ok.verdict, Verdict::Valid);
+    assert_eq!(ok.fields[""].description.as_deref(), Some("Numeric form"));
+    let bad = inspect(&any_of, "true").unwrap();
+    assert_eq!(bad.verdict, Verdict::Invalid);
+    assert!(bad.violations[0].message.contains("anyOf"));
+
+    // oneOf passes only when exactly one branch matches.
+    let (_dir, one_of) = fixture(json!({
+        "oneOf": [
+            { "type": "integer", "minimum": 0, "description": "Non-negative" },
+            { "type": "integer", "maximum": 10, "description": "At most ten" }
+        ]
+    }));
+    assert_eq!(inspect(&one_of, "-2").unwrap().verdict, Verdict::Valid);
+    assert_eq!(inspect(&one_of, "20").unwrap().verdict, Verdict::Valid);
+    let both = inspect(&one_of, "5").unwrap();
+    assert_eq!(both.verdict, Verdict::Invalid);
+    assert!(both.violations[0].message.contains("more than one"));
+    let neither = inspect(&one_of, "\"text\"").unwrap();
+    assert_eq!(neither.verdict, Verdict::Invalid);
+    assert!(neither.violations[0].message.contains("oneOf"));
+}

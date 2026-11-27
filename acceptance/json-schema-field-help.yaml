@@ -1,0 +1,36 @@
+# #2994: Associate project JSON files with a local JSON Schema and explain
+# declared fields in the JSON viewer.
+# State: synthetic project fixture with .okilum/viewers.json routing jobs/*.samplejob
+# to the JSON viewer and associating jobs/demo.samplejob with schemas/job.schema.json.
+# Action: open jobs/demo.samplejob, focus the JSON viewer, switch to Tree (Alt+2),
+# and move selection onto the declared `name` field.
+# Visible: active schema badge (`job.schema.json`), declared field title and
+# description (`Job name`, `The declared display name of this synthetic job`),
+# and schema violation display (`Required property is missing`).
+vault: docs/fixtures/json-schema-project
+open: jobs/demo.samplejob
+appearance: light
+region: [0, 0, 1366, 768]
+ready_text: Synthetic export
+steps:
+  - id: active-schema-badge
+    text: job.schema.json
+  - id: focus-viewer
+    click: [700, 220]
+    wait: 0.5
+    text: Synthetic export
+  - id: switch-to-tree
+    keys: ["2"]
+    mods: [alt]
+    wait: 1
+    text: Job name
+  - id: select-steps-field
+    keys: [Down]
+    wait: 0.5
+    text: Ordered synthetic processing steps.
+  - id: select-name-field
+    keys: [Up]
+    wait: 0.5
+    text: The declared display name of this synthetic job
+  - id: schema-violation-display
+    text: Required property is missing

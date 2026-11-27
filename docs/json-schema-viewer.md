@@ -32,6 +32,15 @@ wins. The two arrays are independent: a schema rule alone never selects JSON.
 Empty arrays opt out of inherited associations. Config errors are reported
 rather than silently taking an earlier rule.
 
+Schema association precedence is deterministic:
+
+1. An explicit matching rule in the nearest ancestor `.okilum/viewers.json`
+   `schemas` array (last matching rule wins).
+2. Otherwise, a standard in-file top-level `"$schema": "./path/to/schema.json"`
+   local relative path in the JSON document, resolved relative to the document's
+   directory and strictly bounded inside the project/vault root. Remote URIs are
+   never fetched.
+
 Source previews honor `json` routing, as do otherwise generic attachment
 cards and text previews. Dedicated CSV/TSV, media, PDF, Canvas, drawing, HAR,
 archive and Log viewers retain their existing priority. JSONC keeps its tolerant viewer
@@ -62,17 +71,20 @@ The supported Draft 2020-12 subset is:
   (string lengths count Unicode scalar values);
 - `title`, `description`, `$comment`, `default`, `examples` as annotations;
   defaults/examples are never applied;
-- `$defs` and local `$ref`: same-file or project-contained relative file paths,
-  with a literal RFC 6901 JSON Pointer fragment. Ref siblings also apply.
+- `$defs` / `definitions` and local `$ref`: same-file or project-contained
+  relative file paths (including `../` segments whose canonical target stays
+  inside the project/vault root), with a literal RFC 6901 JSON Pointer fragment.
+  Ref siblings also apply;
+- basic composition via `allOf`, `anyOf`, and `oneOf` (bounded by the same
+  step, depth, and time limits).
 
 Remote references/catalogs, `$id`, anchors, percent-encoded reference fragments,
-parent-directory refs, recursion, composition (`allOf`/`anyOf`/`oneOf`), `format`,
-`pattern`, conditional keywords and all other keywords are unsupported. They
-make the schema unavailable, including when found in an unused definition.
-A schema-valued `additionalProperties` is also unsupported. Files and symlinks
-must resolve inside the project. Missing/malformed schema files, invalid keyword
-shapes, unsupported drafts and unresolved refs explain the fallback. There is
-no remote download or automatic `$schema` discovery in user documents.
+recursion, `format`, `pattern`, conditional keywords and all other keywords are
+unsupported. They make the schema unavailable, including when found in an unused
+definition. A schema-valued `additionalProperties` is also unsupported. Files
+and symlinks must resolve inside the project. Missing/malformed schema files,
+invalid keyword shapes, unsupported drafts and unresolved refs explain the
+fallback. There is no remote schema download.
 
 Schema validation reports exact JSON Pointers (`~0` for `~`, `~1` for `/`),
 including array indices. Missing required properties name their absent path;

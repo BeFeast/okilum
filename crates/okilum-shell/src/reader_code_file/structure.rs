@@ -417,7 +417,16 @@ impl CodePreview {
             .into_any_element();
         #[cfg(feature = "data-view-native-harness")]
         let tree = toolbar_native::trace::Trace::new(tree, 1).into_any_element();
-        tree
+        if let Some(inspector) = self.schema_field_inspector(cx) {
+            v_flex()
+                .size_full()
+                .min_h_0()
+                .child(tree)
+                .child(inspector)
+                .into_any_element()
+        } else {
+            tree
+        }
     }
 
     fn row_highlights(
@@ -610,6 +619,26 @@ impl CodePreview {
                 let label = toolbar_native::trace::Trace::new(label, 3).into_any_element();
                 label
             })
+            .when_some(
+                self.tree_row_schema_hint(index),
+                |row, (hint, is_violation)| {
+                    row.child(
+                        div()
+                            .id(("data-node-schema-hint", index))
+                            .flex_shrink(1.)
+                            .min_w_0()
+                            .max_w(px(340.))
+                            .truncate()
+                            .text_xs()
+                            .text_color(if is_violation {
+                                brand::palette(cx).warning
+                            } else {
+                                brand::reader_palette(cx).text_faint
+                            })
+                            .child(hint),
+                    )
+                },
+            )
             .child(
                 h_flex()
                     .w(px(60.))

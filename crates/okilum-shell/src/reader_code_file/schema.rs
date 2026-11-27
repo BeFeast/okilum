@@ -27,6 +27,7 @@ impl CodePreview {
         self.schema_loading = true;
         self.schema_report = None;
         self.schema_rows = Arc::default();
+        self.schema_pointers = Arc::default();
         if let Some(table) = &self.table {
             table.update(cx, |table, _| table.set_schema(None));
         }
@@ -60,10 +61,10 @@ impl CodePreview {
                     rows.push(text);
                 }
             }
-            (association, report.map(Arc::new), Arc::new(rows))
+            (association, report.map(Arc::new), Arc::new(rows), Arc::new(paths))
         });
         cx.spawn_in(window, async move |this, cx| {
-            let (association, report, rows) = task.await;
+            let (association, report, rows, paths) = task.await;
             let _ = this.update_in(cx, |this, _, cx| {
                 // A superseded refresh or source snapshot cannot restore a stale verdict.
                 if this.schema_generation != generation
@@ -78,6 +79,7 @@ impl CodePreview {
                 this.schema_loading = false;
                 this.schema_report = report;
                 this.schema_rows = rows;
+                this.schema_pointers = paths;
                 if let Some(table) = &this.table {
                     table.update(cx, |table, cx| {
                         table.set_schema(this.schema_report.clone());
@@ -145,6 +147,253 @@ impl CodePreview {
             action.disabled_reason = Some("Checking local schema…".into());
         }
         Some(action)
+    }
+
+    pub(super) fn schema_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let report = self.schema_report.as_ref();
+        if report.is_none() && !self.schema_loading {
+            return None;
+        }
+        let palette = brand::palette(cx);
+        let faint = brand::reader_palette(cx).text_faint;
+        let (schema_label, verdict_label, verdict_color, detail_hint) = match report {
+            None => (
+                "Schema: checking…".to_owned(),
+                String::new(),
+                faint,
+                String::new(),
+            ),
+            Some(report) => {
+                let name = report
+                    .schema
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "local schema".to_owned());
+                let (badge, color) = match report.verdict {
+                    Verdict::Valid => ("Valid".to_owned(), cx.theme().foreground),
+                    Verdict::Invalid => (
+                        if report.violations.len() == 1 {
+                            "1 schema violation".to_owned()
+                        } else {
+                            format!("{} schema violations", report.violations.len())
+                        },
+                        palette.warning,
+                    ),
+                    Verdict::Incomplete => ("Incomplete".to_owned(), palette.warning),
+                    Verdict::Unavailable => ("Unavailable".to_owned(), palette.warning),
+                    Verdict::SyntaxInvalid => (
+                        "Syntax error (schema check skipped)".to_owned(),
+                        palette.warning,
+                    ),
+                };
+                let hint = if let Some(first) = report.violations.first() {
+                    let loc = if first.path.is_empty() {
+                        "/ (root)"
+                    } else {
+                        &first.path
+                    };
+                    format!("{loc}: {}", first.message)
+                } else {
+                    report.summary.clone()
+                };
+                (format!("Schema: {name}"), badge, color, hint)
+            }
+        };
+        let entity = cx.entity();
+        let enabled = !self.schema_loading && self.schema_report.is_some();
+        Some(
+            h_flex()
+                .id("code-schema-bar")
+                .debug_selector(|| "code-schema-bar".into())
+                .w_full()
+                .flex_none()
+                .px(px(READER_SIDE_PADDING))
+                .py_1()
+                .gap_2()
+                .items_center()
+                .border_b_1()
+                .border_color(palette.border_subtle)
+                .text_xs()
+                .child(
+                    div()
+                        .flex_none()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(cx.theme().foreground)
+                        .child(schema_label),
+                )
+                .when(!verdict_label.is_empty(), |bar| {
+                    bar.child(
+                        div()
+                            .flex_none()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(verdict_color)
+                            .child(format!("· {verdict_label}")),
+                    )
+                })
+                .when(!detail_hint.is_empty(), |bar| {
+                    bar.child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(faint)
+                            .child(detail_hint),
+                    )
+                })
+                .when(enabled, |bar| {
+                    bar.child(
+                        Button::new("code-schema-bar-details")
+                            .small()
+                            .ghost()
+                            .label("Details")
+                            .on_click(move |_, window, cx| {
+                                entity.update(cx, |this, cx| this.show_schema(window, cx));
+                            }),
+                    )
+                })
+                .into_any_element(),
+        )
+    }
+
+    pub(super) fn tree_row_schema_hint(&self, index: usize) -> Option<(String, bool)> {
+        let report = self.schema_report.as_ref()?;
+        let pointer = self.schema_pointers.get(index)?;
+        if let Some(issue) = report.violations.iter().find(|v| v.path == *pointer) {
+            return Some((format!("Schema violation: {}", issue.message), true));
+        }
+        let field = report.fields.get(pointer)?;
+        let mut parts = Vec::new();
+        if let Some(title) = &field.title {
+            parts.push(title.clone());
+        } else if let Some(description) = &field.description {
+            parts.push(description.clone());
+        }
+        if !field.types.is_empty() {
+            parts.push(field.types.join(" | "));
+        }
+        if field.property {
+            parts.push(if field.required {
+                "required".into()
+            } else {
+                "optional".into()
+            });
+        }
+        if let Some(enumeration) = &field.enumeration {
+            parts.push(format!("enum {enumeration}"));
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some((parts.join(" · "), false))
+        }
+    }
+
+    pub(super) fn schema_field_inspector(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let report = self.schema_report.as_ref()?;
+        let palette = brand::palette(cx);
+        let faint = brand::reader_palette(cx).text_faint;
+        let selected_pointer = self
+            .structure
+            .selected
+            .and_then(|index| self.schema_pointers.get(index))
+            .map(String::as_str);
+
+        let mut lines: Vec<(String, Hsla, FontWeight)> = Vec::new();
+        if let Some(pointer) = selected_pointer {
+            let display_path = if pointer.is_empty() {
+                "/ (root)"
+            } else {
+                pointer
+            };
+            if let Some(field) = report.fields.get(pointer) {
+                let mut header = display_path.to_owned();
+                if let Some(title) = &field.title {
+                    header.push_str(&format!(" — {title}"));
+                }
+                let mut meta = Vec::new();
+                if !field.types.is_empty() {
+                    meta.push(format!("type: {}", field.types.join(" | ")));
+                }
+                if field.property {
+                    meta.push(if field.required {
+                        "required".into()
+                    } else {
+                        "optional".into()
+                    });
+                }
+                if let Some(enumeration) = &field.enumeration {
+                    meta.push(format!("enum: {enumeration}"));
+                }
+                if !meta.is_empty() {
+                    header.push_str(&format!(" ({})", meta.join(", ")));
+                }
+                lines.push((header, cx.theme().foreground, FontWeight::MEDIUM));
+                if let Some(description) = &field.description {
+                    lines.push((description.clone(), faint, FontWeight::NORMAL));
+                }
+            } else {
+                lines.push((
+                    format!("{display_path} — No schema field declaration available"),
+                    faint,
+                    FontWeight::NORMAL,
+                ));
+            }
+            for issue in report.violations.iter().filter(|v| v.path == pointer) {
+                lines.push((
+                    format!("Schema violation: {}", issue.message),
+                    palette.warning,
+                    FontWeight::MEDIUM,
+                ));
+            }
+        } else {
+            let root_title = report
+                .fields
+                .get("")
+                .and_then(|f| f.title.as_deref())
+                .unwrap_or("Local JSON Schema");
+            let root_desc = report.fields.get("").and_then(|f| f.description.as_deref());
+            let mut heading = root_title.to_owned();
+            if let Some(desc) = root_desc {
+                heading.push_str(&format!(" — {desc}"));
+            }
+            lines.push((heading, cx.theme().foreground, FontWeight::MEDIUM));
+            if let Some(first) = report.violations.first() {
+                let loc = if first.path.is_empty() {
+                    "/ (root)"
+                } else {
+                    &first.path
+                };
+                lines.push((
+                    format!("Schema violation at {loc}: {}", first.message),
+                    palette.warning,
+                    FontWeight::MEDIUM,
+                ));
+            }
+        }
+
+        Some(
+            v_flex()
+                .id("code-schema-field-inspector")
+                .debug_selector(|| "code-schema-field-inspector".into())
+                .w_full()
+                .flex_none()
+                .px_3()
+                .py_2()
+                .gap_1()
+                .border_t_1()
+                .border_color(palette.border_subtle)
+                .text_xs()
+                .children(lines.into_iter().map(|(text, color, weight)| {
+                    div()
+                        .w_full()
+                        .truncate()
+                        .text_color(color)
+                        .font_weight(weight)
+                        .child(text)
+                }))
+                .into_any_element(),
+        )
     }
 
     pub(super) fn show_schema(&self, window: &mut Window, cx: &mut Context<Self>) {
