@@ -744,9 +744,20 @@ impl Reader {
                         .item(
                             PopupMenuItem::new("Collapse sections").on_click(move |_, _, cx| {
                                 let _ = collapse_reader.update(cx, |this, cx| {
-                                    this.sidebar.now_collapsed.extend(
-                                        ["waiting", "active", "changes", "pins"].map(str::to_owned),
-                                    );
+                                    let keys: &[&str] = if this.now_feed_ready() {
+                                        &[
+                                            "feed-urgent",
+                                            "feed-answer",
+                                            "feed-hands",
+                                            "feed-available",
+                                            "feed-waiting",
+                                        ]
+                                    } else {
+                                        &["waiting", "active", "changes", "pins"]
+                                    };
+                                    this.sidebar
+                                        .now_collapsed
+                                        .extend(keys.iter().map(|key| (*key).to_owned()));
                                     this.save_sidebar(cx);
                                     cx.notify();
                                 });

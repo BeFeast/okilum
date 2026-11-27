@@ -16,12 +16,20 @@ generate:
       # Ship patch
 
       A note the urgent row can open.
+  - path: "@Schema/people.yaml"
+    kind: text
+    text: |
+      roles:
+        coordinator:
+          display_name: Coordinator
+        external: {}
   - path: "@views/out/now.json"
     kind: text
     text: |
       {
-        "version": 1,
+        "version": 2,
         "generated_at": "2026-11-27T18:05:00Z",
+        "warnings": [],
         "groups": [
           {
             "id": "urgent",
@@ -37,7 +45,8 @@ generate:
                 "due": null,
                 "next_check": null,
                 "overdue": true,
-                "waiting_on": null,
+                "waiting_on": {"who": "external", "what": "release window"},
+                "decider": "owner",
                 "response": "act"
               }
             ]
@@ -57,6 +66,7 @@ generate:
                 "next_check": null,
                 "overdue": false,
                 "waiting_on": null,
+                "decider": "owner",
                 "response": "answer"
               }
             ]

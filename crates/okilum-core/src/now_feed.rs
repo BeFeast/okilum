@@ -10,6 +10,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 pub const SNAPSHOT_PATH: &str = "@views/out/now.json";
+pub const PEOPLE_PATH: &str = "@Schema/people.yaml";
 pub const MAX_BYTES: usize = 2 * 1024 * 1024;
 
 const GROUPS: [&str; 5] = ["urgent", "answer", "hands", "available", "waiting"];
@@ -39,6 +40,20 @@ pub struct NowFeed {
     pub version: u32,
     pub generated_at: String,
     pub groups: Vec<FeedGroup>,
+    pub warnings: Vec<FeedWarning>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct FeedWarning {
+    pub path: String,
+    pub message: String,
+}
+
+/// v2 object, or a v1 string stored as `what` with no role.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WaitingOn {
+    pub who: Option<String>,
+    pub what: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -68,8 +83,10 @@ pub struct FeedItem {
     #[serde(default)]
     pub next_check: Option<String>,
     pub overdue: bool,
+    #[serde(default, deserialize_with = "waiting_on")]
+    pub waiting_on: Option<WaitingOn>,
     #[serde(default)]
-    pub waiting_on: Option<String>,
+    pub decider: Option<String>,
     #[serde(default)]
     pub decision_options: Vec<String>,
     #[serde(default, deserialize_with = "answer_target")]
@@ -112,6 +129,9 @@ pub struct LiveProblem {
 pub struct LoadedSnapshot {
     pub outcome: LoadOutcome,
     pub areas: BTreeMap<String, String>,
+    /// Role id to display name from `@Schema/people.yaml`. Empty when that
+    /// file is absent, a symlink, too large, or not valid YAML.
+    pub role_names: BTreeMap<String, String>,
     pub stamp: String,
 }
 
@@ -124,6 +144,7 @@ pub struct T3Banner {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PresentedFeed {
     pub banner: Option<T3Banner>,
+    pub warnings: Option<T3Banner>,
     pub groups: Vec<PresentedGroup>,
 }
 
@@ -182,6 +203,42 @@ where
     ))
 }
 
+fn waiting_on<'de, D>(deserializer: D) -> Result<Option<WaitingOn>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let Some(value) = value.filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    match value {
+        serde_json::Value::String(text) => Ok(waiting_on_text(None, text)),
+        serde_json::Value::Object(map) => {
+            let who = match map.get("who") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(serde_json::Value::String(who)) => Some(who.clone()),
+                Some(_) => return Err(serde::de::Error::custom("waiting_on.who must be a string")),
+            };
+            let what = match map.get("what") {
+                Some(serde_json::Value::String(what)) => what.clone(),
+                _ => return Err(serde::de::Error::custom("waiting_on.what must be a string")),
+            };
+            Ok(waiting_on_text(who, what))
+        }
+        _ => Err(serde::de::Error::custom(
+            "waiting_on must be a string or object",
+        )),
+    }
+}
+
+fn waiting_on_text(who: Option<String>, what: String) -> Option<WaitingOn> {
+    let who = who.filter(|who| !who.trim().is_empty());
+    if who.is_none() && what.trim().is_empty() {
+        return None;
+    }
+    Some(WaitingOn { who, what })
+}
+
 impl NowFeed {
     pub fn load(vault_root: &Path) -> LoadOutcome {
         match read_snapshot(vault_root) {
@@ -212,6 +269,7 @@ pub fn load_presentation(vault_root: &Path) -> LoadedSnapshot {
     LoadedSnapshot {
         outcome,
         areas,
+        role_names: load_role_names(vault_root),
         stamp,
     }
 }
@@ -231,13 +289,15 @@ pub fn snapshot_changed(changes: &crate::watch::Changes) -> bool {
     if changes.rescan {
         return true;
     }
-    let parent = |path: &str| path == "@views" || path == "@views/out" || path == SNAPSHOT_PATH;
+    let parent = |path: &str| {
+        path == "@views" || path == "@views/out" || path == SNAPSHOT_PATH || path == PEOPLE_PATH
+    };
     changes.directories.iter().any(|path| parent(path))
         || changes
             .changed
             .iter()
             .chain(changes.removed.iter())
-            .any(|path| path == SNAPSHOT_PATH)
+            .any(|path| path == SNAPSHOT_PATH || path == PEOPLE_PATH)
 }
 
 pub fn area_label(area: &str, names: &BTreeMap<String, String>) -> String {
@@ -261,14 +321,34 @@ pub fn build_feed(
     questions: &[LiveQuestion],
     problems: &[LiveProblem],
     areas: &BTreeMap<String, String>,
+    roles: &BTreeMap<String, String>,
 ) -> PresentedFeed {
     let banner = t3_banner(problems);
+    let warnings = warning_banner(&feed.warnings);
     let groups = GROUPS
         .iter()
         .enumerate()
-        .map(|(index, id)| present_group(feed, id, GROUP_TITLES[index], questions, areas))
+        .map(|(index, id)| present_group(feed, id, GROUP_TITLES[index], questions, areas, roles))
         .collect();
-    PresentedFeed { banner, groups }
+    PresentedFeed {
+        banner,
+        warnings,
+        groups,
+    }
+}
+
+fn warning_banner(warnings: &[FeedWarning]) -> Option<T3Banner> {
+    if warnings.is_empty() {
+        return None;
+    }
+    Some(T3Banner {
+        summary: format!("Feed warnings ({})", warnings.len()),
+        tooltip: warnings
+            .iter()
+            .map(|warning| format!("{}: {}", warning.path, warning.message))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    })
 }
 
 fn t3_banner(problems: &[LiveProblem]) -> Option<T3Banner> {
@@ -291,11 +371,12 @@ fn present_group(
     title: &'static str,
     questions: &[LiveQuestion],
     areas: &BTreeMap<String, String>,
+    roles: &BTreeMap<String, String>,
 ) -> PresentedGroup {
     let source = feed.group(id);
     let items = source.map(|group| group.items.as_slice()).unwrap_or(&[]);
     let (sections, count, hidden, hidden_count) = if id == "answer" {
-        let rows = fold_answers(items, questions, areas);
+        let rows = fold_answers(items, questions, areas, roles);
         let count = items.len() + questions.len();
         (
             vec![PresentedSection { title: None, rows }],
@@ -304,7 +385,7 @@ fn present_group(
             0,
         )
     } else if id == "available" {
-        let sections = available_sections(items, areas);
+        let sections = available_sections(items, areas, roles);
         (sections, items.len(), Vec::new(), 0)
     } else if id == "waiting" {
         let hidden_count = source.map(|group| group.hidden_count).unwrap_or(0);
@@ -313,13 +394,13 @@ fn present_group(
                 group
                     .hidden_items
                     .iter()
-                    .map(|item| present_item(item, areas))
+                    .map(|item| present_item(item, areas, roles))
                     .collect()
             })
             .unwrap_or_default();
         let rows = items
             .iter()
-            .map(|item| PresentedRow::Item(present_item(item, areas)))
+            .map(|item| PresentedRow::Item(present_item(item, areas, roles)))
             .collect();
         (
             vec![PresentedSection { title: None, rows }],
@@ -330,7 +411,7 @@ fn present_group(
     } else {
         let rows = items
             .iter()
-            .map(|item| PresentedRow::Item(present_item(item, areas)))
+            .map(|item| PresentedRow::Item(present_item(item, areas, roles)))
             .collect();
         (
             vec![PresentedSection { title: None, rows }],
@@ -358,12 +439,13 @@ fn present_group(
 fn available_sections(
     items: &[FeedItem],
     areas: &BTreeMap<String, String>,
+    roles: &BTreeMap<String, String>,
 ) -> Vec<PresentedSection> {
     let mut sections = Vec::new();
     let loose: Vec<PresentedRow> = items
         .iter()
         .filter(|item| item.subgroup.is_none())
-        .map(|item| PresentedRow::Item(present_item(item, areas)))
+        .map(|item| PresentedRow::Item(present_item(item, areas, roles)))
         .collect();
     if !loose.is_empty() {
         sections.push(PresentedSection {
@@ -375,7 +457,7 @@ fn available_sections(
         let rows: Vec<PresentedRow> = items
             .iter()
             .filter(|item| item.subgroup.as_deref() == Some(id))
-            .map(|item| PresentedRow::Item(present_item(item, areas)))
+            .map(|item| PresentedRow::Item(present_item(item, areas, roles)))
             .collect();
         if !rows.is_empty() {
             sections.push(PresentedSection {
@@ -395,7 +477,7 @@ fn available_sections(
         let rows = items
             .iter()
             .filter(|item| item.subgroup.as_deref() == Some(name))
-            .map(|item| PresentedRow::Item(present_item(item, areas)))
+            .map(|item| PresentedRow::Item(present_item(item, areas, roles)))
             .collect();
         sections.push(PresentedSection { title: None, rows });
     }
@@ -411,6 +493,7 @@ fn fold_answers(
     items: &[FeedItem],
     questions: &[LiveQuestion],
     areas: &BTreeMap<String, String>,
+    roles: &BTreeMap<String, String>,
 ) -> Vec<PresentedRow> {
     let mut pieces = Vec::new();
     for index in 0..items.len() {
@@ -427,7 +510,7 @@ fn fold_answers(
     };
     let render = |piece: &Piece| -> PresentedItem {
         match piece {
-            Piece::Vault(index) => present_item(&items[*index], areas),
+            Piece::Vault(index) => present_item(&items[*index], areas, roles),
             Piece::Live(index) => present_live(&questions[*index]),
         }
     };
@@ -479,7 +562,11 @@ fn present_live(question: &LiveQuestion) -> PresentedItem {
     }
 }
 
-fn present_item(item: &FeedItem, areas: &BTreeMap<String, String>) -> PresentedItem {
+fn present_item(
+    item: &FeedItem,
+    areas: &BTreeMap<String, String>,
+    roles: &BTreeMap<String, String>,
+) -> PresentedItem {
     let mut secondary = Vec::new();
     if !item.area.is_empty() {
         secondary.push(area_label(&item.area, areas));
@@ -495,8 +582,12 @@ fn present_item(item: &FeedItem, areas: &BTreeMap<String, String>) -> PresentedI
     if let Some(due) = &item.due {
         secondary.push(format!("due {due}"));
     }
-    if let Some(waiting) = &item.waiting_on {
-        secondary.push(format!("waiting on {waiting}"));
+    let waiting = item
+        .waiting_on
+        .as_ref()
+        .and_then(|waiting| waiting_label(waiting, roles));
+    if let Some(waiting) = &waiting {
+        secondary.push(waiting.clone());
     }
     let mut tooltip = vec![
         item.title.clone(),
@@ -506,6 +597,18 @@ fn present_item(item: &FeedItem, areas: &BTreeMap<String, String>) -> PresentedI
     if let Some(response) = &item.response {
         tooltip.push(format!("response: {response}"));
     }
+    if let Some(decider) = &item.decider {
+        if !decider.is_empty() {
+            tooltip.push(format!("decider: {decider}"));
+        }
+    }
+    if let Some(waiting) = item
+        .waiting_on
+        .as_ref()
+        .and_then(|waiting| waiting_phrase(waiting, roles))
+    {
+        tooltip.push(waiting);
+    }
     PresentedItem {
         id: item.id.clone(),
         title: item.title.clone(),
@@ -513,6 +616,41 @@ fn present_item(item: &FeedItem, areas: &BTreeMap<String, String>) -> PresentedI
         tooltip: tooltip.join("\n"),
         open: FeedOpen::Note(item.source_path.clone()),
         response: item.response.clone(),
+    }
+}
+
+/// Compact row text. A known display name is `Name: what`; otherwise only `what`.
+fn waiting_label(waiting: &WaitingOn, roles: &BTreeMap<String, String>) -> Option<String> {
+    let what = waiting.what.trim();
+    match (display_name(waiting, roles), what.is_empty()) {
+        (Some(name), false) => Some(format!("{name}: {what}")),
+        (Some(name), true) => Some(name.to_owned()),
+        (None, false) => Some(what.to_owned()),
+        (None, true) => None,
+    }
+}
+
+/// Tooltip phrase. Unknown roles never appear as `waiting on <role id>`.
+fn waiting_phrase(waiting: &WaitingOn, roles: &BTreeMap<String, String>) -> Option<String> {
+    let what = waiting.what.trim();
+    match (display_name(waiting, roles), what.is_empty()) {
+        (Some(name), false) => Some(format!("waiting on {name}: {what}")),
+        (Some(name), true) => Some(format!("waiting on {name}")),
+        (None, false) => Some(what.to_owned()),
+        (None, true) => None,
+    }
+}
+
+fn display_name<'a>(waiting: &WaitingOn, roles: &'a BTreeMap<String, String>) -> Option<&'a str> {
+    let who = waiting.who.as_deref()?.trim();
+    if who.is_empty() {
+        return None;
+    }
+    let name = roles.get(who)?.trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
     }
 }
 
@@ -569,7 +707,7 @@ fn exists_dir(path: &Path, label: &str) -> Result<bool, String> {
 
 fn parse_snapshot(bytes: &[u8]) -> Result<LoadOutcome, String> {
     let raw: RawFeed = serde_json::from_slice(bytes).map_err(|error| one_line(&error))?;
-    if raw.version != 1 {
+    if raw.version != 1 && raw.version != 2 {
         return Err(format!("unsupported feed version {}", raw.version));
     }
     if chrono::DateTime::parse_from_rfc3339(&raw.generated_at).is_err() {
@@ -603,7 +741,61 @@ fn parse_snapshot(bytes: &[u8]) -> Result<LoadOutcome, String> {
         version: raw.version,
         generated_at: raw.generated_at,
         groups,
+        warnings: raw.warnings,
     }))
+}
+
+fn load_role_names(vault_root: &Path) -> BTreeMap<String, String> {
+    let schema = vault_root.join("@Schema");
+    let file = schema.join("people.yaml");
+    let Some(bytes) = read_optional(&schema, &file) else {
+        return BTreeMap::new();
+    };
+    parse_role_names(&bytes)
+}
+
+fn read_optional(parent: &Path, file: &Path) -> Option<Vec<u8>> {
+    if exists_dir(parent, "@Schema").ok() != Some(true) {
+        return None;
+    }
+    let meta = std::fs::symlink_metadata(file).ok()?;
+    if meta.file_type().is_symlink() || !meta.is_file() || meta.len() > MAX_BYTES as u64 {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    File::open(file)
+        .and_then(|handle| handle.take((MAX_BYTES as u64) + 1).read_to_end(&mut bytes))
+        .ok()?;
+    if bytes.len() > MAX_BYTES {
+        return None;
+    }
+    Some(bytes)
+}
+
+fn parse_role_names(bytes: &[u8]) -> BTreeMap<String, String> {
+    #[derive(Deserialize)]
+    struct PeopleFile {
+        #[serde(default)]
+        roles: BTreeMap<String, RoleName>,
+    }
+    #[derive(Deserialize)]
+    struct RoleName {
+        #[serde(default)]
+        display_name: Option<String>,
+    }
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return BTreeMap::new();
+    };
+    let Ok(file) = serde_yaml::from_str::<PeopleFile>(text) else {
+        return BTreeMap::new();
+    };
+    file.roles
+        .into_iter()
+        .filter_map(|(id, role)| {
+            let name = role.display_name.filter(|name| !name.trim().is_empty())?;
+            Some((id, name))
+        })
+        .collect()
 }
 
 fn check_items(group_id: &str, items: &[FeedItem]) -> Result<(), String> {
@@ -649,6 +841,8 @@ struct RawFeed {
     version: u32,
     generated_at: String,
     groups: Vec<FeedGroup>,
+    #[serde(default)]
+    warnings: Vec<FeedWarning>,
 }
 
 #[cfg(test)]
@@ -787,8 +981,15 @@ mod tests {
         assert_eq!(waiting.hidden_count, 1);
         assert_eq!(waiting.hidden_items.len(), waiting.hidden_count);
         assert_eq!(waiting.hidden_items[0].id, "h1");
+        assert_eq!(
+            waiting.items[0].waiting_on,
+            Some(WaitingOn {
+                who: None,
+                what: "vendor".into(),
+            })
+        );
         let names = BTreeMap::from([("lab".into(), "Laboratory".into())]);
-        let presented = build_feed(&feed, &[], &[], &names);
+        let presented = build_feed(&feed, &[], &[], &names, &BTreeMap::new());
         let urgent_rows = &presented.groups[0];
         assert_eq!(urgent_rows.title, "Urgent");
         let PresentedRow::Item(row) = &urgent_rows.sections[0].rows[0] else {
@@ -822,6 +1023,14 @@ mod tests {
     fn rejects_version_date_symlink_size_and_traversal() {
         assert!(matches!(
             parse_snapshot(br#"{"version":2,"generated_at":"2026-11-27T18:05:00Z","groups":[]}"#),
+            Ok(LoadOutcome::Ready(feed)) if feed.version == 2 && feed.warnings.is_empty()
+        ));
+        assert!(matches!(
+            parse_snapshot(br#"{"version":0,"generated_at":"2026-11-27T18:05:00Z","groups":[]}"#),
+            Err(message) if message.contains("version")
+        ));
+        assert!(matches!(
+            parse_snapshot(br#"{"version":3,"generated_at":"2026-11-27T18:05:00Z","groups":[]}"#),
             Err(message) if message.contains("version")
         ));
         assert!(matches!(
@@ -927,7 +1136,7 @@ mod tests {
                 detail: "open the manager thread".into(),
             },
         ];
-        let presented = build_feed(&feed, &questions, &[], &BTreeMap::new());
+        let presented = build_feed(&feed, &questions, &[], &BTreeMap::new(), &BTreeMap::new());
         let rows = &presented
             .groups
             .iter()
@@ -975,7 +1184,7 @@ mod tests {
                 detail: "auth".into(),
             },
         ];
-        let presented = build_feed(&feed, &[], &problems, &BTreeMap::new());
+        let presented = build_feed(&feed, &[], &problems, &BTreeMap::new(), &BTreeMap::new());
         let banner = presented.banner.unwrap();
         assert_eq!(banner.summary, "T3 unavailable (2 sources)");
         assert!(banner.tooltip.contains("alpha: unreachable"));
@@ -987,5 +1196,138 @@ mod tests {
             panic!("row");
         };
         assert_eq!(row.response.as_deref(), Some("act"));
+    }
+
+    #[test]
+    fn parses_v2_waiting_on_decider_warnings_and_role_names() {
+        let json = r#"{
+            "version": 2,
+            "generated_at": "2026-11-27T18:05:00Z",
+            "warnings": [{"path": "notes/stale.md", "message": "stale stamp"}],
+            "groups": [{
+                "id": "waiting",
+                "items": [
+                    {
+                        "id": "known",
+                        "group": "waiting",
+                        "kind": "note",
+                        "title": "Known role",
+                        "area": "lab",
+                        "source_path": "notes/known.md",
+                        "overdue": false,
+                        "decider": "owner",
+                        "waiting_on": {"who": "coordinator", "what": "packet"}
+                    },
+                    {
+                        "id": "outside",
+                        "group": "waiting",
+                        "kind": "note",
+                        "title": "Outside role",
+                        "area": "lab",
+                        "source_path": "notes/outside.md",
+                        "overdue": false,
+                        "waiting_on": {"who": "external", "what": "outside reply"}
+                    },
+                    {
+                        "id": "plain",
+                        "group": "waiting",
+                        "kind": "note",
+                        "title": "No who",
+                        "area": "lab",
+                        "source_path": "notes/plain.md",
+                        "overdue": false,
+                        "waiting_on": {"who": null, "what": "open question"}
+                    }
+                ]
+            }]
+        }"#;
+        let feed = ready(json);
+        assert_eq!(feed.version, 2);
+        assert_eq!(feed.warnings.len(), 1);
+        assert_eq!(feed.warnings[0].path, "notes/stale.md");
+        let known = &feed.group("waiting").unwrap().items[0];
+        assert_eq!(known.decider.as_deref(), Some("owner"));
+        assert_eq!(
+            known.waiting_on,
+            Some(WaitingOn {
+                who: Some("coordinator".into()),
+                what: "packet".into(),
+            })
+        );
+        let roles = BTreeMap::from([("coordinator".into(), "Coordinator".into())]);
+        let presented = build_feed(&feed, &[], &[], &BTreeMap::new(), &roles);
+        let warning = presented.warnings.unwrap();
+        assert_eq!(warning.summary, "Feed warnings (1)");
+        assert_eq!(warning.tooltip, "notes/stale.md: stale stamp");
+        assert_eq!(presented.groups.len(), 5);
+        let rows = &presented
+            .groups
+            .iter()
+            .find(|group| group.id == "waiting")
+            .unwrap()
+            .sections[0]
+            .rows;
+        let PresentedRow::Item(known_row) = &rows[0] else {
+            panic!("known");
+        };
+        assert!(known_row.secondary.contains("Coordinator: packet"));
+        assert!(!known_row.secondary.contains("waiting on coordinator"));
+        assert!(known_row.tooltip.contains("waiting on Coordinator: packet"));
+        assert!(known_row.tooltip.contains("decider: owner"));
+        let PresentedRow::Item(outside_row) = &rows[1] else {
+            panic!("outside");
+        };
+        assert!(outside_row.secondary.contains("outside reply"));
+        assert!(!outside_row.secondary.contains("external"));
+        assert!(!outside_row.tooltip.contains("waiting on external"));
+        let PresentedRow::Item(plain_row) = &rows[2] else {
+            panic!("plain");
+        };
+        assert!(plain_row.secondary.contains("open question"));
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("@views/out")).unwrap();
+        std::fs::create_dir_all(root.path().join("@Schema")).unwrap();
+        std::fs::write(root.path().join("@views/out/now.json"), json).unwrap();
+        std::fs::write(
+            root.path().join("@Schema/people.yaml"),
+            "roles:\n  coordinator:\n    display_name: Coordinator\n  external:\n    aliases: []\n",
+        )
+        .unwrap();
+        let loaded = load_presentation(root.path());
+        assert_eq!(
+            loaded.role_names.get("coordinator").map(String::as_str),
+            Some("Coordinator")
+        );
+        assert!(!loaded.role_names.contains_key("external"));
+        assert!(matches!(loaded.outcome, LoadOutcome::Ready(_)));
+
+        let mut changes = crate::watch::Changes::default();
+        changes.directories.insert(PEOPLE_PATH.into());
+        assert!(snapshot_changed(&changes));
+    }
+
+    #[test]
+    fn requested_vault_snapshot_loads() {
+        let Ok(root) = std::env::var("OKILUM_NOW_FEED_VAULT") else {
+            return;
+        };
+        match NowFeed::load(Path::new(&root)) {
+            LoadOutcome::Ready(feed) => {
+                assert!(
+                    feed.version == 1 || feed.version == 2,
+                    "version {}",
+                    feed.version
+                );
+                eprintln!(
+                    "ready version={} groups={} warnings={}",
+                    feed.version,
+                    feed.groups.len(),
+                    feed.warnings.len()
+                );
+            }
+            LoadOutcome::Absent => panic!("snapshot absent"),
+            LoadOutcome::Invalid(error) => panic!("parse error: {error}"),
+        }
     }
 }

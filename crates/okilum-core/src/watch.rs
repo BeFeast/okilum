@@ -411,11 +411,18 @@ impl VaultWatcher {
                         .contains(&crate::vault::note_path(relative).as_str()))
                     || relative.extension().is_some_and(|ext| ext == "jsonl")
                     || crate::vault::note_path(relative) == crate::now_feed::SNAPSHOT_PATH
+                    || crate::vault::note_path(relative) == crate::now_feed::PEOPLE_PATH
                 {
                     let parent = relative.parent().unwrap_or(Path::new(""));
                     self.pending
                         .directories
                         .insert(crate::vault::note_path(parent));
+                    let noted = crate::vault::note_path(relative);
+                    if noted == crate::now_feed::SNAPSHOT_PATH
+                        || noted == crate::now_feed::PEOPLE_PATH
+                    {
+                        self.pending.directories.insert(noted);
+                    }
                     relevant = true;
                 }
                 // Newly created/moved trees may arrive as a directory event only,

@@ -14,6 +14,7 @@ pub(super) struct Cache {
     inflight: bool,
     phase: Phase,
     areas: BTreeMap<String, String>,
+    role_names: BTreeMap<String, String>,
     stamp: String,
 }
 
@@ -35,6 +36,7 @@ impl Cache {
         if self.root != root {
             self.phase = Phase::Idle;
             self.areas.clear();
+            self.role_names.clear();
             self.stamp.clear();
             self.root = root.to_owned();
         }
@@ -49,6 +51,7 @@ impl Cache {
         }
         self.inflight = false;
         self.areas = loaded.areas;
+        self.role_names = loaded.role_names;
         self.stamp = loaded.stamp;
         self.phase = match loaded.outcome {
             LoadOutcome::Absent => Phase::Absent,
@@ -114,7 +117,13 @@ impl Reader {
             return div().into_any_element();
         };
         let (questions, problems) = self.feed_live();
-        let presented = now_feed::build_feed(feed, &questions, &problems, &self.now_feed.areas);
+        let presented = now_feed::build_feed(
+            feed,
+            &questions,
+            &problems,
+            &self.now_feed.areas,
+            &self.now_feed.role_names,
+        );
         let tokens = brand::palette(cx);
         let stamp = if self.now_feed.stamp.is_empty() {
             "—".to_owned()
@@ -122,6 +131,15 @@ impl Reader {
             self.now_feed.stamp.clone()
         };
         let mut body = v_flex().w_full().min_w_0().pb_2();
+        if let Some(banner) = &presented.warnings {
+            body = body.child(self.feed_banner(
+                "now-feed-warnings",
+                banner.summary.clone(),
+                banner.tooltip.clone(),
+                true,
+                cx,
+            ));
+        }
         if let Some(banner) = &presented.banner {
             body = body.child(self.feed_banner(
                 "now-feed-t3",
@@ -233,10 +251,27 @@ impl Reader {
         let key = "feed-waiting-hidden";
         let expanded = self.sidebar.now_expanded.contains(key);
         if expanded && !group.hidden.is_empty() {
+            let reader = cx.entity().downgrade();
             let mut list = v_flex().w_full().min_w_0();
             for item in &group.hidden {
                 list = list.child(self.feed_item(item, "now-feed-hidden", cx));
             }
+            list = list.child(
+                div()
+                    .id("now-feed-show-less")
+                    .debug_selector(|| "now-feed-show-less".into())
+                    .px_3()
+                    .py_1()
+                    .cursor_pointer()
+                    .text_size(px(11.))
+                    .text_color(brand::palette(cx).text_muted)
+                    .on_click(move |_, _, cx| {
+                        let _ = reader.update(cx, |this, cx| {
+                            this.toggle_now_section(key, true, cx);
+                        });
+                    })
+                    .child("Show less"),
+            );
             return list.into_any_element();
         }
         let count = group.hidden_count;
