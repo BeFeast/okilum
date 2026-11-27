@@ -30,6 +30,8 @@ import zipfile
 # The old product name, in two parts so this file never contains it.
 OLD_NAME = "tes" + "sera"
 OLD_TITLE = OLD_NAME.capitalize()
+# The OCR executable has a longer, unrelated name.
+OCR_EXECUTABLE = re.compile(rb"\b" + OLD_NAME.encode() + rb"ct\b")
 
 OKILUM = {
     "crates/okilum-shell/assets/brand/symbol-primary.svg": "445f7d4907f5df3763fc2d9ac774ddf764852d7004b4244aa7e24dd37cfaccfe",
@@ -128,8 +130,9 @@ def main():
         except (FileNotFoundError, IsADirectoryError):
             continue
         named += 1
-        if OLD_NAME.encode() in data.lower():
-            line = next((n for n, text in enumerate(data.split(b"\n"), 1) if OLD_NAME.encode() in text.lower()), 0)
+        searchable = OCR_EXECUTABLE.sub(b" ", data.lower())
+        if (offset := searchable.find(OLD_NAME.encode())) >= 0:
+            line = searchable.count(b"\n", 0, offset) + 1
             problems.append(f"{path}:{line}: names {OLD_TITLE}")
         elif path not in ENCODED_ALLOWED:
             hidden = encoded_name(data)
