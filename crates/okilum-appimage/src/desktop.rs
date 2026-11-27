@@ -248,7 +248,8 @@ pub fn install(home: &Path, image: &Path) -> Result<()> {
     // percent in the image path is encoded as %% and fails that early lookup.
     // env is the fixed executable; the image stays one quoted argument and is
     // exec'd directly after field expansion, without a shell or PATH lookup.
-    let entry = format!("[Desktop Entry]\nType=Application\nName=Okilum\nComment=Read and search your Markdown vault\nExec=/usr/bin/env -- {} %u\nIcon={icon_value}\nTerminal=false\nCategories=Office;Utility;\nMimeType=text/markdown;x-scheme-handler/okilum;inode/directory;\nActions=OpenVault;\nStartupNotify=true\nStartupWMClass=okilum\n{MARKER}\n[Desktop Action OpenVault]\nName=Open in Okilum as Vault\nExec=/usr/bin/env -- {} --vault %f\n", exec_path(image)?, exec_path(image)?);
+    let exec = exec_path(image)?;
+    let entry = format!("[Desktop Entry]\nType=Application\nName=Okilum\nComment=Read and search your Markdown vault\nExec=/usr/bin/env -- {exec} %u\nIcon={icon_value}\nTerminal=false\nCategories=Office;Utility;\nMimeType=text/markdown;x-scheme-handler/okilum;inode/directory;\nActions=OpenVault;OpenSingleFile;\nStartupNotify=true\nStartupWMClass=okilum\n{MARKER}\n[Desktop Action OpenVault]\nName=Open in Okilum as Vault\nExec=/usr/bin/env -- {exec} --vault %f\n\n[Desktop Action OpenSingleFile]\nName=Open in Okilum as Single File\nExec=/usr/bin/env -- {exec} --single-file %f\n");
     // Install the icon first so a published launcher always has its payload.
     atomic_write(&icon, ICON)?;
     atomic_write(&desktop, entry.as_bytes())
@@ -469,6 +470,8 @@ assert receipt.read_text().splitlines() == [sys.argv[3], '0'], 'Executable path 
         let image = home.path().join("Okilum $ percent%.AppImage");
         let folder = home.path().join("Vault space Заметки % #");
         fs::create_dir(&folder).unwrap();
+        let note = folder.join("note space %.md");
+        fs::write(&note, "# Note\n").unwrap();
         fs::write(
             &image,
             b"#!/bin/sh\nprintf '%s\\n' \"$#\" \"$@\" > \"$OKILUM_DESKTOP_PROBE\"\n",
@@ -482,7 +485,7 @@ assert receipt.read_text().splitlines() == [sys.argv[3], '0'], 'Executable path 
             .args(["-c", r#"import configparser, ctypes, sys, time
 from pathlib import Path
 from urllib.parse import unquote, urlparse
-entry, receipt, folder = map(Path, sys.argv[1:])
+entry, receipt, folder, note = map(Path, sys.argv[1:])
 gio = ctypes.CDLL('libgio-2.0.so.0')
 glib = ctypes.CDLL('libglib-2.0.so.0')
 gio.g_desktop_app_info_new_from_filename.argtypes = [ctypes.c_char_p]
@@ -497,32 +500,42 @@ config = configparser.ConfigParser(interpolation=None)
 config.optionxform = str
 config.read(entry)
 assert 'inode/directory;' in config['Desktop Entry']['MimeType']
-assert config['Desktop Entry']['Actions'] == 'OpenVault;'
+assert config['Desktop Entry']['Actions'] == 'OpenVault;OpenSingleFile;'
 assert config['Desktop Action OpenVault']['Name'] == 'Open in Okilum as Vault'
-selected = glib.g_list_append(None, gio.g_file_new_for_path(str(folder).encode()))
-for action in (False, True):
+assert config['Desktop Action OpenSingleFile']['Name'] == 'Open in Okilum as Single File'
+cases = [
+    (None, folder, None),
+    ('Desktop Action OpenVault', folder, ['2', '--vault', str(folder)]),
+    ('Desktop Action OpenSingleFile', note, ['2', '--single-file', str(note)]),
+]
+for section, target, expected in cases:
+    selected = glib.g_list_append(None, gio.g_file_new_for_path(str(target).encode()))
     launcher = entry
-    if action:
-        config['Desktop Entry']['Exec'] = config['Desktop Action OpenVault']['Exec']
+    if section:
+        copy = configparser.ConfigParser(interpolation=None)
+        copy.optionxform = str
+        copy.read(entry)
+        copy['Desktop Entry']['Exec'] = copy[section]['Exec']
         launcher = entry.with_name('action-test.desktop')
-        with launcher.open('w') as stream: config.write(stream, space_around_delimiters=False)
+        with launcher.open('w') as stream: copy.write(stream, space_around_delimiters=False)
     app = gio.g_desktop_app_info_new_from_filename(str(launcher).encode())
     assert app, 'GLib rejected desktop entry'
     error = ctypes.c_void_p()
     assert gio.g_app_info_launch(app, selected, None, ctypes.byref(error)), 'GLib launch failed'
     deadline = time.monotonic() + 5
-    while (not receipt.exists() or len(receipt.read_text().splitlines()) < (3 if action else 2)) and time.monotonic() < deadline:
+    need = 3 if expected else 2
+    while (not receipt.exists() or len(receipt.read_text().splitlines()) < need) and time.monotonic() < deadline:
         time.sleep(.02)
     args = receipt.read_text().splitlines()
-    if action:
-        assert args == ['2', '--vault', str(folder)], args
+    if expected:
+        assert args == expected, args
     else:
         assert args[0] == '1', args
         path = unquote(urlparse(args[1]).path) if args[1].startswith('file:') else args[1]
-        assert path == str(folder), args
+        assert path == str(target), args
     receipt.unlink()
 "#])
-            .arg(&desktop).arg(&receipt).arg(&folder)
+            .arg(&desktop).arg(&receipt).arg(&folder).arg(&note)
             .env("OKILUM_DESKTOP_PROBE", &receipt).output().unwrap();
         assert!(
             result.status.success(),

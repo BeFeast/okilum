@@ -6,6 +6,15 @@ Exec=okilum %u
 Icon=okilum
 Terminal=false
 Categories=Office;Utility;
-MimeType=text/markdown;x-scheme-handler/okilum;
+MimeType=text/markdown;x-scheme-handler/okilum;inode/directory;
+Actions=OpenVault;OpenSingleFile;
 StartupNotify=true
 StartupWMClass=okilum
+
+[Desktop Action OpenVault]
+Name=Open in Okilum as Vault
+Exec=okilum --vault %f
+
+[Desktop Action OpenSingleFile]
+Name=Open in Okilum as Single File
+Exec=okilum --single-file %f

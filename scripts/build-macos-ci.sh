@@ -119,6 +119,12 @@ cat >"$APP/Contents/Info.plist" <<PLIST
   <key>NSPortName</key><string>Okilum</string>
   <key>NSSendTypes</key><array><string>NSFilenamesPboardType</string><string>public.file-url</string></array>
   <key>NSSendFileTypes</key><array><string>public.folder</string></array>
+</dict><dict>
+  <key>NSMenuItem</key><dict><key>default</key><string>Open in Okilum as Single File</string></dict>
+  <key>NSMessage</key><string>openFileAsSingleFile</string>
+  <key>NSPortName</key><string>Okilum</string>
+  <key>NSSendTypes</key><array><string>NSFilenamesPboardType</string><string>public.file-url</string></array>
+  <key>NSSendFileTypes</key><array><string>public.markdown</string><string>net.daringfireball.markdown</string></array>
 </dict></array>
 <key>CFBundleDocumentTypes</key>
 <array><dict>

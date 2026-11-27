@@ -961,12 +961,14 @@ okilum — a reader for a plain-Markdown vault
 
 USAGE:
     okilum [FILE.md | FOLDER] [--vault <PATH>] [OPTIONS]
+    okilum --single-file <FILE.md> [OPTIONS]
     okilum sync <COMMAND>   Pair computers without a window (Linux, macOS; see okilum sync --help)
 
 OPTIONS:
     --managed-workspace       Open the saved Brain/workspace chooser explicitly.
     --brain-endpoint <IP:PORT>  Open the AI Brain POC using a loopback backend.
     --vault <PATH>       Read-only vault root (or set OKILUM_VAULT).
+    --single-file        Open the file in standalone single-file mode without a vault index.
     --index-dir <PATH>   Search index location [default: application cache]
     --note <REL>         Note to open, relative to the vault root
     --query <TEXT>       Open full-text search with this query

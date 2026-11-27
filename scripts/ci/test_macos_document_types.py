@@ -29,12 +29,21 @@ class DocumentTypesTests(unittest.TestCase):
         self.assertEqual(declaration['UTTypeTagSpecification']['public.filename-extension'], ['md'])
 
     def assert_folder_service(self, info, port):
-        service, = info['NSServices']
-        self.assertEqual(service['NSMenuItem']['default'], 'Open in Okilum as Vault')
-        self.assertEqual(service['NSMessage'], 'openFolderAsVault')
-        self.assertEqual(service['NSPortName'], port)
-        self.assertEqual(service['NSSendFileTypes'], ['public.folder'])
-        self.assertEqual(set(service['NSSendTypes']), {'NSFilenamesPboardType', 'public.file-url'})
+        services = {service['NSMessage']: service for service in info['NSServices']}
+        self.assertEqual(set(services), {'openFolderAsVault', 'openFileAsSingleFile'})
+        vault = services['openFolderAsVault']
+        self.assertEqual(vault['NSMenuItem']['default'], 'Open in Okilum as Vault')
+        self.assertEqual(vault['NSPortName'], port)
+        self.assertEqual(vault['NSSendFileTypes'], ['public.folder'])
+        self.assertEqual(set(vault['NSSendTypes']), {'NSFilenamesPboardType', 'public.file-url'})
+        single = services['openFileAsSingleFile']
+        self.assertEqual(single['NSMenuItem']['default'], 'Open in Okilum as Single File')
+        self.assertEqual(single['NSPortName'], port)
+        self.assertEqual(
+            set(single['NSSendFileTypes']),
+            {'public.markdown', 'net.daringfireball.markdown'},
+        )
+        self.assertEqual(set(single['NSSendTypes']), {'NSFilenamesPboardType', 'public.file-url'})
 
     def test_shipping_accepts_folders_and_markdown(self):
         info = plistlib.loads(self.template().encode())

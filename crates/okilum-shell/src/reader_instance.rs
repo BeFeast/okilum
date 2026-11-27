@@ -27,6 +27,9 @@ pub(crate) struct Request {
     /// An external `okilum:` link (#1049); older senders omit it.
     #[serde(default)]
     link: Option<String>,
+    /// Open `path` as a standalone single-file window even inside an open vault (#3264).
+    #[serde(default)]
+    single_file: bool,
 }
 
 pub(crate) enum Instance {
@@ -222,6 +225,7 @@ pub(crate) fn connect_reserved(
                         copy_source: opts.copy_source,
                         jump: opts.jump,
                         link: opts.link.clone(),
+                        single_file: opts.single_file,
                     };
                     serde_json::to_writer(&mut stream, &request)?;
                     stream.write_all(b"\n")?;
@@ -260,6 +264,8 @@ pub(crate) fn receive(receiver: async_channel::Receiver<Request>, cx: &mut App) 
                             use_html: request.use_html,
                             copy_source: request.copy_source,
                             jump: request.jump,
+                            single_file: request.single_file,
+                            prefer_quick_viewer: request.single_file,
                             ..Default::default()
                         },
                         cx,
@@ -388,5 +394,32 @@ mod tests {
             matches!(connect(&different).unwrap(), Instance::Primary(_, _)),
             "isolated profiles remain independent"
         );
+    }
+
+    #[test]
+    fn second_launch_preserves_single_file_intent() {
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let primary = Opts {
+            session_directory: Some(state.clone()),
+            ..Default::default()
+        };
+        let Instance::Primary(_lock, requests) = connect(&primary).unwrap() else {
+            panic!("first launch must own endpoint");
+        };
+        let single = Opts {
+            session_directory: Some(state),
+            open_path: Some(PathBuf::from("vault/Beta.md")),
+            single_file: true,
+            ..Default::default()
+        };
+        assert!(matches!(connect(&single).unwrap(), Instance::Forwarded));
+        let request = requests.try_recv().unwrap();
+        assert!(request.single_file);
+        assert_eq!(
+            request.path,
+            Some(std::env::current_dir().unwrap().join("vault/Beta.md"))
+        );
+        assert!(request.vault.is_none());
     }
 }

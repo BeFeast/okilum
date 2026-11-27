@@ -6,35 +6,47 @@ const KEYS: [&str; 2] = [
     "HKCU\\Software\\Classes\\Directory\\Background\\shell\\BeFeast.Okilum.OpenVault",
 ];
 
+const SINGLE_FILE_KEY: &str =
+    "HKCU\\Software\\Classes\\SystemFileAssociations\\.md\\shell\\BeFeast.Okilum.OpenSingleFile";
+
 fn install_commands(executable: &std::path::Path) -> Vec<Vec<String>> {
     let mut commands = Vec::new();
-    for (key, selection) in KEYS.into_iter().zip(["%1", "%V"]) {
+    let mut push_verb = |key: &str, label: &str, command_line: String| {
         let mut add = |path: String, value: &[&str], data: String| {
             let mut args = vec!["add".into(), path];
             args.extend(value.iter().map(|s| (*s).to_owned()));
             args.extend(["/t".into(), "REG_SZ".into(), "/d".into(), data, "/f".into()]);
             commands.push(args);
         };
-        add(key.into(), &["/ve"], "Open in Okilum as Vault".into());
+        add(key.into(), &["/ve"], label.into());
         add(
             key.into(),
             &["/v", "Icon"],
             format!("\"{}\",0", executable.display()),
         );
         add(key.into(), &["/v", "MultiSelectModel"], "Single".into());
+        add(format!("{key}\\command"), &["/ve"], command_line);
+    };
+    for (key, selection) in KEYS.into_iter().zip(["%1", "%V"]) {
         // Append a path component, not a trailing backslash. This also quotes
         // drive/UNC roots correctly under Windows command-line parsing.
-        add(
-            format!("{key}\\command"),
-            &["/ve"],
+        push_verb(
+            key,
+            "Open in Okilum as Vault",
             format!("\"{}\" --vault \"{selection}\\.\"", executable.display()),
         );
     }
+    push_verb(
+        SINGLE_FILE_KEY,
+        "Open in Okilum as Single File",
+        format!("\"{}\" --single-file \"%1\"", executable.display()),
+    );
     commands
 }
 
 fn uninstall_commands() -> Vec<Vec<String>> {
     KEYS.into_iter()
+        .chain([SINGLE_FILE_KEY])
         .map(|key| vec!["delete".into(), key.into(), "/f".into()])
         .collect()
 }
@@ -85,8 +97,9 @@ mod tests {
     fn commands_quote_the_executable_and_both_folder_placeholders() {
         let exe = std::path::Path::new("C:\\Users\\QA User\\Okilum\\current\\okilum.exe");
         let commands = install_commands(exe);
-        assert_eq!(commands.len(), 8);
-        for (group, placeholder) in commands.as_chunks::<4>().0.iter().zip(["%1", "%V"]) {
+        assert_eq!(commands.len(), 12);
+        let chunks = commands.as_chunks::<4>().0;
+        for (group, placeholder) in chunks[..2].iter().zip(["%1", "%V"]) {
             assert_eq!(group[0][group[0].len() - 2], "Open in Okilum as Vault");
             assert_eq!(group[2][group[2].len() - 2], "Single");
             assert_eq!(
@@ -94,16 +107,41 @@ mod tests {
                 format!("\"{}\" --vault \"{placeholder}\\.\"", exe.display())
             );
         }
+        let single_file = &chunks[2];
+        assert_eq!(
+            single_file[0][1],
+            "HKCU\\Software\\Classes\\SystemFileAssociations\\.md\\shell\\BeFeast.Okilum.OpenSingleFile"
+        );
+        assert_eq!(
+            single_file[0][single_file[0].len() - 2],
+            "Open in Okilum as Single File"
+        );
+        assert_eq!(single_file[2][single_file[2].len() - 2], "Single");
+        assert_eq!(
+            single_file[3][single_file[3].len() - 2],
+            format!("\"{}\" --single-file \"%1\"", exe.display())
+        );
     }
 
     #[test]
     fn uninstall_removes_exactly_owned_subtrees_not_shared_roots() {
         let commands = install_commands(std::path::Path::new("okilum.exe"));
-        for (key, removal) in KEYS.into_iter().zip(uninstall_commands()) {
-            assert!(commands.iter().any(|command| command[1] == key));
-            assert_eq!(removal, ["delete", key, "/f"]);
-            assert!(key.ends_with("\\BeFeast.Okilum.OpenVault"));
-            assert!(key.starts_with("HKCU\\Software\\Classes\\Directory\\"));
+        let removals = uninstall_commands();
+        assert_eq!(removals.len(), 3);
+        for removal in &removals {
+            let key = &removal[1];
+            assert!(commands.iter().any(|command| &command[1] == key));
+            assert_eq!(removal.as_slice(), ["delete", key.as_str(), "/f"]);
+            assert!(
+                key.ends_with("\\BeFeast.Okilum.OpenVault")
+                    || key.ends_with("\\BeFeast.Okilum.OpenSingleFile")
+            );
+            assert!(
+                key.starts_with("HKCU\\Software\\Classes\\Directory\\")
+                    || key.starts_with(
+                        "HKCU\\Software\\Classes\\SystemFileAssociations\\.md\\shell\\"
+                    )
+            );
         }
     }
 

@@ -1,0 +1,36 @@
+# #3264: Open a .md file as a single file even when it sits inside an open vault.
+# State: an open unmarked vault showing Alpha.md (with Beta.md also in the vault).
+# Action: a second invocation runs `okilum --single-file {vault}/Beta.md`.
+# Visible: Beta.md opens in a separate single-file window (right half, no vault
+# sidebar showing Alpha), while the open vault window (left half) stays on Alpha.md.
+appearance: light
+preferences:
+  note_open_mode: read
+  vault_open: new
+open: Alpha.md
+region: [0, 0, 1366, 768]
+ready_text: The open vault window stays on Alpha
+generate:
+  - path: Alpha.md
+    kind: text
+    text: |
+      # Vault Anchor Note
+
+      The open vault window stays on Alpha.
+  - path: Beta.md
+    kind: text
+    text: |
+      # Standalone Beta Note
+
+      Opened as a single file while the vault stays open.
+steps:
+  - id: open-single-file-window
+    open_args: ["--single-file", "{vault}/Beta.md"]
+    wait: 2
+    region: [683, 0, 683, 768]
+    text: Opened as a single file while the vault stays open
+    text_absent: Vault Anchor Note
+  - id: vault-window-untouched
+    region: [0, 0, 683, 768]
+    text: The open vault window stays on Alpha
+    text_absent: Standalone Beta Note

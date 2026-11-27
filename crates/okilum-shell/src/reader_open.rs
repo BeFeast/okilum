@@ -374,6 +374,7 @@ pub(crate) fn parse_args(
     let mut positional = None;
     let mut literal = false;
     let mut explicit_reader = false;
+    let mut explicit_vault = false;
     while let Some(arg) = args.next() {
         if !literal && arg == "--" {
             literal = true;
@@ -441,7 +442,13 @@ pub(crate) fn parse_args(
                 }
                 Some("--vault") => {
                     explicit_reader = true;
+                    explicit_vault = true;
                     opts.vault = Some(value()?.into());
+                    continue;
+                }
+                Some("--single-file") => {
+                    explicit_reader = true;
+                    opts.single_file = true;
                     continue;
                 }
                 Some("--index-dir") => {
@@ -548,6 +555,19 @@ pub(crate) fn parse_args(
             bail!("A Reader path cannot be combined with a managed launch");
         }
         // An explicit managed launch takes precedence over inherited Reader defaults.
+        opts.vault = None;
+    }
+    if opts.single_file {
+        if explicit_vault {
+            bail!("--single-file cannot be combined with --vault");
+        }
+        if opts.link.is_some() {
+            bail!("--single-file cannot be combined with a link");
+        }
+        if positional.is_none() {
+            bail!("--single-file requires a file path");
+        }
+        // An explicit single-file launch takes precedence over inherited OKILUM_VAULT.
         opts.vault = None;
     }
     if let Some(path) = positional {
@@ -949,6 +969,13 @@ pub(crate) fn dispatch_urls(urls: Vec<String>, cx: &mut App) {
             }
             continue;
         }
+        if let Some(url) = url.strip_prefix(SINGLE_FILE_URL_PREFIX) {
+            match file_url_path(url) {
+                Ok(path) => dispatch_single_file(&path, cx),
+                Err(error) => show_error(error, cx),
+            }
+            continue;
+        }
         match file_url_path(&url) {
             Ok(path) => dispatch_path(&path, cx),
             Err(error) => show_error(error, cx),
@@ -1202,11 +1229,30 @@ pub(crate) fn dispatch_vault(root: &Path, cx: &mut App) {
     }
 }
 
+/// An explicit request to open `path` as a standalone single file without
+/// indexing or focusing an enclosing open vault (#3264).
+pub(crate) fn dispatch_single_file(path: &Path, cx: &mut App) {
+    super::reader_startup::supersede(cx);
+    let opts = super::Opts {
+        open_path: Some(path.to_path_buf()),
+        single_file: true,
+        prefer_quick_viewer: true,
+        ..Default::default()
+    };
+    if let Err(error) = open_window(opts, cx) {
+        show_error(error, cx);
+    }
+}
+
 /// Prefix the Finder Service puts on its folder URL so the shared open queue
 /// can tell «Open in Okilum as Vault» from an ordinary folder open (#3098).
 /// No OS route delivers this scheme; at most it opens a folder as a vault,
 /// which the user can always do.
 pub(crate) const VAULT_URL_PREFIX: &str = "okilum-open-as-vault+";
+
+/// Prefix the Finder Service puts on its file URL so the shared open queue
+/// can tell «Open in Okilum as Single File» from an ordinary file open (#3264).
+pub(crate) const SINGLE_FILE_URL_PREFIX: &str = "okilum-open-as-single-file+";
 
 /// Vaults the user already has: open vault windows and full vaults in the
 /// reading history (quick-viewer folders are not vaults). Opening one of these
@@ -1267,6 +1313,10 @@ pub(crate) fn resolve(mut opts: super::Opts, cx: &mut App) -> gpui::Task<Result<
             okilum_core::vault::canonical_root(&path)
                 .context("This file or folder couldn’t be opened.")?
         };
+        let explicit_single_file = opts.single_file;
+        if explicit_single_file && opts.open_path.is_some() && path.is_dir() {
+            bail!("--single-file requires a file, not a folder");
+        }
         // #3098: a folder opened like a file is a folder view, with
         // «Open folder as vault» to convert it, unless it already is a vault.
         // A folder view restored after a restart arrives as a single-file
@@ -1291,7 +1341,7 @@ pub(crate) fn resolve(mut opts: super::Opts, cx: &mut App) -> gpui::Task<Result<
             } else {
                 opts.vault.as_deref()
             },
-            if marked_quick_viewer {
+            if explicit_single_file || marked_quick_viewer {
                 None
             } else {
                 opts.reusable_roots
@@ -1302,7 +1352,7 @@ pub(crate) fn resolve(mut opts: super::Opts, cx: &mut App) -> gpui::Task<Result<
         )?;
         opts.vault = Some(intent.root.clone());
         opts.single_file |= intent.single_file || folder_view;
-        opts.prefer_quick_viewer |= marked_quick_viewer;
+        opts.prefer_quick_viewer |= marked_quick_viewer || explicit_single_file;
         if folder_view {
             opts.note = None;
         } else if intent.note.is_some() {
@@ -2816,7 +2866,9 @@ mod entry_tests {
         cx.update(|cx| {
             crate::test_init(cx);
             install(cx);
-            cx.set_global(TestSessionDirectory(state.clone()));
+            cx.set_global(super::super::reader_history::TestSessionDirectory(
+                state.clone(),
+            ));
             reader_startup::launch(
                 Opts {
                     session_directory: Some(state.clone()),
@@ -2893,7 +2945,9 @@ mod entry_tests {
         cx.update(|cx| {
             crate::test_init(cx);
             install(cx);
-            cx.set_global(TestSessionDirectory(state.clone()));
+            cx.set_global(super::super::reader_history::TestSessionDirectory(
+                state.clone(),
+            ));
             cx.set_global(reader_startup::ReopenBase(base.clone()));
             // macOS keeps the app running without windows (#1137).
             cx.set_quit_mode(gpui::QuitMode::Explicit);
@@ -2978,7 +3032,9 @@ mod entry_tests {
         cx.update(|cx| {
             crate::test_init(cx);
             install(cx);
-            cx.set_global(TestSessionDirectory(state.clone()));
+            cx.set_global(super::super::reader_history::TestSessionDirectory(
+                state.clone(),
+            ));
             reader_open_windows::install(state.clone(), cx);
             cx.set_global(reader_startup::ReopenBase(base.clone()));
             cx.set_quit_mode(gpui::QuitMode::Explicit);
@@ -3361,7 +3417,9 @@ mod entry_tests {
         cx.update(|cx| {
             crate::test_init(cx);
             install(cx);
-            cx.set_global(TestSessionDirectory(state.clone()));
+            cx.set_global(super::super::reader_history::TestSessionDirectory(
+                state.clone(),
+            ));
             super::super::reader_ui_state::install(&state, cx);
         });
         for root in &roots {
@@ -3446,7 +3504,9 @@ mod entry_tests {
         cx.update(|cx| {
             crate::test_init(cx);
             install(cx);
-            cx.set_global(TestSessionDirectory(state.clone()));
+            cx.set_global(super::super::reader_history::TestSessionDirectory(
+                state.clone(),
+            ));
             super::super::reader_ui_state::install(&state, cx);
             super::super::reader_ui_state::trust_for_links(&roots[1], cx);
         });
@@ -3556,7 +3616,9 @@ mod entry_tests {
         cx.update(|cx| {
             crate::test_init(cx);
             install(cx);
-            cx.set_global(TestSessionDirectory(state.clone()));
+            cx.set_global(super::super::reader_history::TestSessionDirectory(
+                state.clone(),
+            ));
             open_window(
                 Opts {
                     vault: Some(root.clone()),
@@ -3643,7 +3705,9 @@ mod entry_tests {
         cx.update(|cx| {
             crate::test_init(cx);
             install(cx);
-            cx.set_global(TestSessionDirectory(state.clone()));
+            cx.set_global(super::super::reader_history::TestSessionDirectory(
+                state.clone(),
+            ));
             reader_open_windows::install(state.clone(), cx);
             cx.set_global(reader_startup::ReopenBase(base.clone()));
             cx.set_quit_mode(gpui::QuitMode::Explicit);
@@ -3719,7 +3783,9 @@ mod entry_tests {
         cx.update(|cx| {
             crate::test_init(cx);
             install(cx);
-            cx.set_global(TestSessionDirectory(state.clone()));
+            cx.set_global(super::super::reader_history::TestSessionDirectory(
+                state.clone(),
+            ));
             open_window(
                 Opts {
                     vault: Some(root.clone()),
@@ -3798,7 +3864,9 @@ mod entry_tests {
         cx.update(|cx| {
             crate::test_init(cx);
             install(cx);
-            cx.set_global(TestSessionDirectory(state.clone()));
+            cx.set_global(super::super::reader_history::TestSessionDirectory(
+                state.clone(),
+            ));
             cx.set_quit_mode(gpui::QuitMode::Explicit);
             reader_startup::launch(base.clone(), cx);
         });
@@ -3838,7 +3906,9 @@ mod entry_tests {
         cx.update(|cx| {
             crate::test_init(cx);
             install(cx);
-            cx.set_global(TestSessionDirectory(state.clone()));
+            cx.set_global(super::super::reader_history::TestSessionDirectory(
+                state.clone(),
+            ));
             reader_open_windows::install(state.clone(), cx);
             // This fixture explicitly opens several independent vault windows.
             super::super::reader_ui_state::install(&state, cx);
@@ -4026,7 +4096,9 @@ mod entry_tests {
         cx.update(|cx| {
             crate::test_init(cx);
             install(cx);
-            cx.set_global(TestSessionDirectory(state.clone()));
+            cx.set_global(super::super::reader_history::TestSessionDirectory(
+                state.clone(),
+            ));
             super::super::reader_ui_state::install(&state, cx);
             super::super::reader_ui_state::set_vault_open("new", cx);
             plain(cx);
@@ -4178,7 +4250,9 @@ mod entry_tests {
         cx.update(|cx| {
             crate::test_init(cx);
             install(cx);
-            cx.set_global(TestSessionDirectory(state.clone()));
+            cx.set_global(super::super::reader_history::TestSessionDirectory(
+                state.clone(),
+            ));
             super::super::reader_ui_state::install(&state, cx);
             super::super::reader_ui_state::set_vault_open("new", cx);
             dispatch_urls(vec![format!("{VAULT_URL_PREFIX}{}", url(&service))], cx);
@@ -4253,6 +4327,148 @@ mod entry_tests {
         assert!(!vault.await.unwrap().single_file);
     }
 
+    /// #3264: `--single-file <path>` parses a single-file open intent and
+    /// rejects contradictory or missing targets.
+    #[test]
+    fn single_file_cli_flag_parses_and_validates() {
+        let opts = parse(&["--single-file", "/notes/alpha.md"]).unwrap();
+        assert!(opts.single_file);
+        assert_eq!(
+            opts.open_path.as_deref(),
+            Some(Path::new("/notes/alpha.md"))
+        );
+        assert!(opts.vault.is_none());
+
+        let trailing = parse(&["/notes/alpha.md", "--single-file"]).unwrap();
+        assert!(trailing.single_file);
+        assert_eq!(
+            trailing.open_path.as_deref(),
+            Some(Path::new("/notes/alpha.md"))
+        );
+
+        // Inherited OKILUM_VAULT is cleared so `--single-file` stays standalone.
+        let inherited = parse_args(
+            ["--single-file", "/notes/alpha.md"].map(std::ffi::OsString::from),
+            super::super::Opts {
+                vault: Some(PathBuf::from("/notes")),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let Command::Launch(inherited) = inherited else {
+            panic!("expected launch");
+        };
+        assert!(inherited.single_file);
+        assert!(inherited.vault.is_none());
+
+        for bad in [
+            vec!["--single-file"],
+            vec!["--single-file", "/notes/alpha.md", "--vault", "/notes"],
+            vec!["--vault", "/notes", "--single-file", "/notes/alpha.md"],
+            vec!["--single-file", "/notes/alpha.md", "--note", "alpha.md"],
+            vec!["--single-file", "okilum://open?vault=Notes&file=alpha.md"],
+        ] {
+            assert!(parse(&bad).is_err(), "{bad:?}");
+        }
+    }
+
+    /// #3264: opening a `.md` inside an already-open unmarked vault with
+    /// `single_file: true` opens an isolated single-file window with no index
+    /// and leaves the open vault window untouched.
+    #[gpui::test]
+    fn single_file_inside_open_vault_stays_isolated_without_index(cx: &mut TestAppContext) {
+        use super::super::Opts;
+        let fixture = tempfile::tempdir().unwrap();
+        let state = fixture.path().join("state");
+        let root = fixture.path().join("Vault");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("Alpha.md"), "# Alpha\n").unwrap();
+        std::fs::write(root.join("Beta.md"), "# Beta\n").unwrap();
+        let root = root.canonicalize().unwrap();
+        let beta = root.join("Beta.md");
+        cx.update(|cx| {
+            crate::test_init(cx);
+            install(cx);
+            cx.set_global(super::super::reader_history::TestSessionDirectory(
+                state.clone(),
+            ));
+            super::super::reader_ui_state::install(&state, cx);
+            super::super::reader_ui_state::set_vault_open("new", cx);
+            open_window(
+                Opts {
+                    vault: Some(root.clone()),
+                    note: Some("Alpha.md".into()),
+                    session_directory: Some(state.clone()),
+                    cache_base_override: Some(state.join("cache")),
+                    ..Default::default()
+                },
+                cx,
+            )
+            .unwrap();
+        });
+        cx.run_until_parked();
+        let vault_reader = cx.update(|cx| {
+            let all = readers(cx);
+            assert_eq!(all.len(), 1);
+            let reader = all[0].read(cx);
+            assert!(!reader.single_file);
+            assert_eq!(reader.pane.current_rel, "Alpha.md");
+            all[0].clone()
+        });
+        cx.update(|cx| {
+            open_window(
+                Opts {
+                    open_path: Some(beta.clone()),
+                    single_file: true,
+                    session_directory: Some(state.clone()),
+                    cache_base_override: Some(state.join("cache")),
+                    ..Default::default()
+                },
+                cx,
+            )
+            .unwrap();
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let all = readers(cx);
+            assert_eq!(
+                all.len(),
+                2,
+                "must open a second window, not hijack the vault"
+            );
+            let vault_state = vault_reader.read(cx);
+            assert!(!vault_state.single_file);
+            assert_eq!(
+                vault_state.pane.current_rel, "Alpha.md",
+                "open vault window must stay on Alpha.md"
+            );
+            let single = all
+                .iter()
+                .find(|r| r.entity_id() != vault_reader.entity_id())
+                .unwrap()
+                .read(cx);
+            assert!(single.single_file, "new window must be single-file mode");
+            assert!(single.vault.single_file);
+            assert!(single.searcher.is_none(), "single-file window has no index");
+            assert!(
+                single.index_dir.is_none(),
+                "single-file window has no index_dir"
+            );
+            assert_eq!(single.pane.current_rel, "Beta.md");
+        });
+        // macOS Finder Service route (`SINGLE_FILE_URL_PREFIX`) also opens
+        // isolated without hijacking the open vault window.
+        let beta_url = String::from(url::Url::from_file_path(&beta).unwrap());
+        cx.update(|cx| {
+            dispatch_urls(vec![format!("{SINGLE_FILE_URL_PREFIX}{beta_url}")], cx);
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(readers(cx).len(), 3);
+            assert_eq!(vault_reader.read(cx).pane.current_rel, "Alpha.md");
+        });
+    }
+
     /// #1357: «Create a new vault…» names a folder in the save dialog,
     /// creates it and opens it as a vault.
     #[gpui::test]
@@ -4323,7 +4539,9 @@ mod entry_tests {
         cx.update(|cx| {
             crate::test_init(cx);
             install(cx);
-            cx.set_global(TestSessionDirectory(state.clone()));
+            cx.set_global(super::super::reader_history::TestSessionDirectory(
+                state.clone(),
+            ));
             reader_open_windows::install(state.clone(), cx);
             // As in the app: a vault opened without a note takes the one its
             // UI state names (the muninn run of #1375 failed on this).
@@ -4479,7 +4697,9 @@ mod entry_tests {
         cx.update(|cx| {
             crate::test_init(cx);
             install(cx);
-            cx.set_global(TestSessionDirectory(state.clone()));
+            cx.set_global(super::super::reader_history::TestSessionDirectory(
+                state.clone(),
+            ));
             cx.set_quit_mode(gpui::QuitMode::Explicit);
         });
         let settle = |cx: &mut TestAppContext| {
@@ -5219,7 +5439,9 @@ mod entry_tests {
         cx.update(|cx| {
             crate::test_init(cx);
             install(cx);
-            cx.set_global(TestSessionDirectory(state.clone()));
+            cx.set_global(super::super::reader_history::TestSessionDirectory(
+                state.clone(),
+            ));
             reader_startup::launch(
                 Opts {
                     session_directory: Some(state.clone()),
