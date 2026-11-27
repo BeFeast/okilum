@@ -24,7 +24,7 @@ struct Coordinator {
 }
 impl Global for Coordinator {}
 
-pub(crate) fn install(cx: &mut App) {
+pub fn install(cx: &mut App) {
     cx.default_global::<Coordinator>();
     cx.on_action(|_: &Quit, cx| cx.defer(request));
     cx.bind_keys([KeyBinding::new("secondary-q", Quit, None)]);
@@ -32,19 +32,9 @@ pub(crate) fn install(cx: &mut App) {
 }
 
 /// Also called again when an updater menu item changes its checked state.
-pub(crate) fn set_menus(cx: &mut App) {
-    cx.set_menus(vec![
-        Menu {
-            name: "Okilum".into(),
-            items: crate::updater::menu_items(MenuItem::action("Quit Okilum", Quit)),
-            disabled: false,
-        },
-        crate::reader_open::file_menu(),
-        crate::note_paste::edit_menu(),
-        crate::reader_editor::format::format_menu(),
-        crate::view_menu(cx),
-        crate::version_info::help_menu(),
-    ]);
+pub fn set_menus(cx: &mut App) {
+    let menus = crate::hooks::build_menus(cx);
+    cx.set_menus(menus);
 }
 
 pub(super) fn register(view: WeakEntity<BrainView>, window: AnyWindowHandle, cx: &mut App) {
@@ -58,10 +48,10 @@ pub(super) fn register(view: WeakEntity<BrainView>, window: AnyWindowHandle, cx:
 }
 
 fn request(cx: &mut App) {
-    if !crate::reader_editor::confirm_deleted_for_quit(request, cx) {
+    if !crate::hooks::confirm_deleted_for_quit(request, cx) {
         return;
     }
-    if !crate::reader_editor::save_all_for_quit(cx) {
+    if !crate::hooks::save_all_for_quit(cx) {
         return;
     }
     let state = cx.default_global::<Coordinator>();

@@ -406,11 +406,9 @@ fn tar_method_name(format: Format) -> &'static str {
     }
 }
 
-fn open_tar_stream(
-    path: &Path,
-    format: Format,
-    limits: Limits,
-) -> Result<(tar::Archive<BoundedStream<Box<dyn Read>>>, u64)> {
+type TarStream = tar::Archive<BoundedStream<Box<dyn Read>>>;
+
+fn open_tar_stream(path: &Path, format: Format, limits: Limits) -> Result<(TarStream, u64)> {
     let file = File::open(path).with_context(|| format!("Cannot open {}", path.display()))?;
     let file_size = file
         .metadata()

@@ -256,3 +256,28 @@ impl PreparedDocument {
         })
     }
 }
+
+pub fn managed_states(preview: &serde_json::Value, current: bool) -> States {
+    let mut states = BTreeMap::new();
+    if !current || preview["prepared_links_version"] != 1 {
+        return Arc::new(states);
+    }
+    if let Some(links) = preview["links"].as_array() {
+        for link in links {
+            if let (Some(url), Ok(state)) = (
+                link["url"].as_str(),
+                serde_json::from_value::<LinkState>(link["prepared"].clone()),
+            ) {
+                states
+                    .entry(url.to_owned())
+                    .and_modify(|old| {
+                        if old != &state {
+                            *old = LinkState::unknown();
+                        }
+                    })
+                    .or_insert(state);
+            }
+        }
+    }
+    Arc::new(states)
+}

@@ -13,7 +13,7 @@ path = "src/main.rs"
 # Dedicated Linux development distribution; guarded by build.rs, never a release feature.
 linux-sprint = ["okilum-shell-platform/linux-sprint"]
 default = ["brain"]
-brain = ["okilum-core/brain", "okilum-shell-kit/brain"]
+brain = ["okilum-core/brain", "okilum-shell-kit/brain", "dep:okilum-shell-brain"]
 # Non-publishing Linux visual QA harness; excluded from shipping builds.
 settings-ui-harness = []
 appimage-acceptance-harness = ["okilum-appimage/acceptance-harness"]
@@ -40,6 +40,7 @@ okilum-write-authority = { path = "../okilum-write-authority" }
 okilum-shell-kit = { path = "../okilum-shell-kit" }
 okilum-shell-platform = { path = "../okilum-shell-platform" }
 okilum-shell-text = { path = "../okilum-shell-text" }
+okilum-shell-brain = { path = "../okilum-shell-brain", optional = true }
 tokio = { version = "1", features = ["rt", "net", "time", "fs", "io-util"] }
 tokio-util = { version = "0.7", features = ["io"] }
 futures-util = "0.3"
@@ -135,6 +136,9 @@ gpui = { package = "okilum-gpui", path = "../okilum-gpui", features = ["test-sup
 # #1502: the own-window capture control renders through the same D3D11 +
 # DirectComposition path as GPUI; already in the graph through gpui-pre-windows.
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_DirectComposition", "Win32_Graphics_Dwm", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+okilum-shell-brain = { path = "../okilum-shell-brain", features = ["test-support"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 gpui_wgpu = { package = "gpui-pre-wgpu", version = "0.3.3" }

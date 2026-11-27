@@ -9,7 +9,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 
 COMMAND = ["cargo", "test", "--locked", "-p", "okilum-core", "-p", "okilum-shell", "-p", "okilum-shell-kit",
-           "-p", "okilum-shell-platform", "-p", "okilum-shell-text", "-p", "okilum-sync", "-p", "okilum-t3", "--no-fail-fast", "--"]
+           "-p", "okilum-shell-platform", "-p", "okilum-shell-text", "-p", "okilum-shell-brain", "-p", "okilum-sync", "-p", "okilum-t3", "--no-fail-fast", "--"]
 LOG = "reader_log"
 REVEAL = "platform::reveal::tests::"
 NATIVE_FRAME = "reader_editor::code_operations::tests::edit2803_unwrapped_popup_frames_reuse_shapes_and_invalidate_on_edit"

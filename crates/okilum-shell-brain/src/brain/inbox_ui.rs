@@ -72,7 +72,7 @@ impl BrainView {
             Err(error) => self.inbox_ui.error = Some(error),
         }
     }
-    pub(crate) fn begin_thought(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn begin_thought(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.note_guard_navigation(PendingNavigation::Thought, cx) {
             return;
         }

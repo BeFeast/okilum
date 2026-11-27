@@ -7,7 +7,7 @@ The menu bar has one definition, and every platform and build flavor gets it. On
 ## Builders and gates
 
 - **Two `set_menus` functions, same content.**
-  - `crates/okilum-shell/src/brain/app_quit.rs:35` is used when `all(unix, feature = "brain")` is true, which means the default macOS and Linux builds (`brain` is in `default`).
+  - `crates/okilum-shell-brain/src/brain/app_quit.rs:35` is used when `all(unix, feature = "brain")` is true, which means the default macOS and Linux builds (`brain` is in `default`).
   - `crates/okilum-shell/src/reader_app_menu.rs:25` is used otherwise: every Windows build (the `brain` module is unix-only, `main.rs:28`) and unix builds without `brain`.
   - Both produce `[Okilum, File, Edit, Format, View, Help]`. Each defines its own `okilum::Quit` action.
 - **When the menus are rebuilt:**

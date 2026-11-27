@@ -6324,6 +6324,7 @@ dependencies = [
  "okilum-gpui",
  "okilum-http",
  "okilum-paste",
+ "okilum-shell-brain",
  "okilum-shell-kit",
  "okilum-shell-platform",
  "okilum-shell-text",
@@ -6372,6 +6373,33 @@ dependencies = [
  "x11rb",
  "zbus",
  "zip 9.5.1",
+]
+
+[[package]]
+name = "okilum-shell-brain"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "gpui-base",
+ "gpui-component",
+ "gpui-pre-wgpu",
+ "okilum-core",
+ "okilum-gpui",
+ "okilum-shell-kit",
+ "okilum-shell-platform",
+ "okilum-shell-text",
+ "okilum-t3",
+ "okilum-write-authority",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "similar",
+ "tempfile",
+ "time",
+ "url",
+ "uuid",
 ]
 
 [[package]]

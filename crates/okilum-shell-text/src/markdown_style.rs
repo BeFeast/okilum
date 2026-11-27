@@ -431,26 +431,27 @@ pub fn text_markdown_plugins(
 }
 
 #[derive(Clone)]
-struct UnavailableImages {
-    count: usize,
+struct StandaloneImages {
+    urls: Vec<String>,
     caption: String,
 }
 
-/// Standalone Markdown plugins for callers in `okilum-shell-text` (remote
-/// Markdown and tests) where images are unavailable or disabled.
+/// Standalone Markdown plugins for callers in `okilum-shell-text` and
+/// `okilum-shell-brain` (remote Markdown, Brain preview, and tests) that
+/// resolve `MarkdownImage::Source` or `MarkdownImage::Unavailable`.
 pub fn markdown_plugins(
     view: TextView,
     link_handler: MarkdownLinkHandler,
     image_resolver: MarkdownImageResolver,
     sel_format: SelectionFormat,
 ) -> TextView {
-    let parse_image = image_resolver;
+    let parse_image = image_resolver.clone();
+    let render_image = image_resolver;
     text_markdown_plugins(0, view, link_handler, sel_format, false)
         .markdown_block_parser(move |node, cx| {
             let markdown_ast::Node::Paragraph(p) = node else {
                 return None;
             };
-            let mut count = 0usize;
             let mut urls = Vec::new();
             let mut caption = String::new();
             for child in &p.children {
@@ -460,18 +461,17 @@ pub fn markdown_plugins(
                             && parse_image(&image.url).is_some() =>
                     {
                         urls.push(image.url.clone());
-                        count += 1;
                     }
                     other => caption.push_str(cx.node_source(other)?),
                 }
             }
-            if count == 0 {
+            if urls.is_empty() {
                 return None;
             }
             let mut node = MarkdownNode::new(
                 "local-image",
-                UnavailableImages {
-                    count,
+                StandaloneImages {
+                    urls: urls.clone(),
                     caption: caption.trim().to_owned(),
                 },
             )
@@ -488,21 +488,25 @@ pub fn markdown_plugins(
             Some(node)
         })
         .markdown_block_renderer("local-image", move |node, window, cx| {
-            let Some(data) = node.data::<UnavailableImages>() else {
+            let Some(data) = node.data::<StandaloneImages>() else {
                 return div().into_any_element();
             };
             let mut column = v_flex().py_2().gap_1();
-            for index in 0..data.count {
-                column = column.child(
-                    div()
-                        .debug_selector(|| "live-image-unavailable".into())
-                        .child(node.render_part(
-                            &format!("status-{index}"),
-                            |style| style,
-                            window,
-                            cx,
-                        )),
-                );
+            for (index, url) in data.urls.iter().enumerate() {
+                if let Some(MarkdownImage::Source(source)) = render_image(url) {
+                    column = column.child(img(source).max_w_full());
+                } else {
+                    column = column.child(
+                        div()
+                            .debug_selector(|| "live-image-unavailable".into())
+                            .child(node.render_part(
+                                &format!("status-{index}"),
+                                |style| style,
+                                window,
+                                cx,
+                            )),
+                    );
+                }
             }
             if !data.caption.is_empty() {
                 column = column.child(node.render_part("caption", |style| style, window, cx));

@@ -26,13 +26,11 @@ mod app_footprint;
 #[cfg(all(target_os = "linux", feature = "appimage-acceptance-harness"))]
 mod appimage_acceptance;
 #[cfg(all(unix, feature = "brain"))]
-mod brain;
+use okilum_shell_brain::{brain, connectors, export};
+#[cfg(all(test, unix, feature = "brain"))]
+mod brain_reader_tests;
 mod build_info;
-#[cfg(all(unix, feature = "brain"))]
-mod connectors;
 mod desktop_app_menu;
-#[cfg(all(unix, feature = "brain"))]
-mod export;
 #[cfg(target_os = "macos")]
 mod folder_service;
 mod kubernetes_workspace;
@@ -1266,6 +1264,41 @@ fn main() {
             },
             reader_text_zoom::document_style,
             reader_fonts::note,
+            cx,
+        );
+        #[cfg(all(unix, feature = "brain"))]
+        okilum_shell_brain::hooks::install(
+            okilum_shell_brain::hooks::BrainHooks {
+                build_menus: |cx| {
+                    vec![
+                        Menu {
+                            name: "Okilum".into(),
+                            items: updater::menu_items(MenuItem::action(
+                                "Quit Okilum",
+                                brain::app_quit::Quit,
+                            )),
+                            disabled: false,
+                        },
+                        reader_open::file_menu(),
+                        note_paste::edit_menu(),
+                        reader_editor::format::format_menu(),
+                        view_menu(cx),
+                        version_info::help_menu(),
+                    ]
+                },
+                confirm_deleted_for_quit: reader_editor::confirm_deleted_for_quit,
+                save_all_for_quit: reader_editor::save_all_for_quit,
+                save_window: reader_editor::save_window,
+                window_close_requested: reader_diagnostics::window_close_requested,
+                show_features: reader_settings::show_features,
+                text_menu: reader_code_file::text_menu,
+                second_brain_enabled: |cx| {
+                    reader_features::enabled(reader_features::Feature::SecondBrain, cx)
+                },
+                second_brain_access: |cx| {
+                    reader_features::access(reader_features::Feature::SecondBrain, cx)
+                },
+            },
             cx,
         );
         source_presentation::code_languages::install();

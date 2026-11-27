@@ -1,6 +1,6 @@
 //! Opt-in AI Brain POC client. The backend owns work and persistence; closing
 //! this view drops only its local TCP connection, never an engine operation.
-pub(crate) mod app_quit;
+pub mod app_quit;
 mod attention_ui;
 mod context_ui;
 mod discussion_context;
@@ -10,7 +10,7 @@ mod discussion_note;
 mod discussion_note_ui;
 mod discussion_send_outbox;
 mod discussion_send_ui;
-pub(crate) use discussion_send_ui::OpenDiscussionOwner;
+pub use discussion_send_ui::OpenDiscussionOwner;
 mod editor_recovery;
 mod editor_ui;
 mod goal_criteria_ui;
@@ -36,7 +36,7 @@ mod source_input;
 mod source_navigation;
 use crate::source_presentation as source_projection;
 mod source_projection_ui;
-pub(crate) mod source_trace;
+pub mod source_trace;
 pub(crate) mod suggestions_outbox;
 pub(crate) mod t3_route_outbox;
 mod todoist_picker;
@@ -67,11 +67,11 @@ const MAX_PREVIEW_REPLY: u64 = 128 * 1024 * 1024;
 
 /// One request, one connection, no retry. Mutations have backend-persisted IDs;
 /// a lost reply is recovered through reads/reconciliation, never re-created.
-pub(crate) fn rpc(endpoint: SocketAddr, body: Value) -> Result<Value, String> {
+pub fn rpc(endpoint: SocketAddr, body: Value) -> Result<Value, String> {
     rpc_guarded(endpoint, body, None)
 }
 
-pub(crate) fn rpc_guarded(
+pub fn rpc_guarded(
     endpoint: SocketAddr,
     mut body: Value,
     workspace: Option<&Value>,
@@ -348,7 +348,7 @@ enum Surface {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Collection {
+pub enum Collection {
     Inbox,
     Attention,
     Goals,
@@ -382,7 +382,7 @@ actions!(
         FindSource
     ]
 );
-pub(crate) fn bind_keys(cx: &mut App) {
+pub fn bind_keys(cx: &mut App) {
     #[cfg(target_os = "macos")]
     cx.bind_keys([KeyBinding::new(
         "cmd-f",
@@ -633,12 +633,8 @@ pub struct BrainView {
 impl BrainView {
     /// The workspace window's close, from the platform or the title bar's
     /// own close button (#2805): save open editors, then ask about this one.
-    pub(crate) fn request_window_close(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if !crate::reader_editor::save_window(window.window_handle(), cx) {
+    pub fn request_window_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !crate::hooks::save_window(window.window_handle(), cx) {
             return false;
         }
         self.editor_request_close(window, cx)
@@ -657,11 +653,7 @@ impl BrainView {
             app_quit::register(cx.weak_entity(), window.window_handle(), cx);
             let weak = cx.weak_entity();
             window.on_window_should_close(cx, move |window, cx| {
-                crate::reader_diagnostics::window_close_requested(
-                    window,
-                    cx,
-                    "native platform request",
-                );
+                crate::hooks::window_close_requested(window, cx, "native platform request");
                 weak.update(cx, |this, cx| this.request_window_close(window, cx))
                     .unwrap_or(true)
             });
@@ -846,7 +838,7 @@ impl BrainView {
     fn goal_id(&self) -> String {
         text(&self.snapshot["goal"]["id"])
     }
-    pub(crate) fn dirty(&self, cx: &App) -> bool {
+    pub fn dirty(&self, cx: &App) -> bool {
         self.decision_reuse.active
             || self.discussion_decision.active
             || self.discussion_note.active()
@@ -1581,10 +1573,10 @@ impl BrainView {
         self.resume_proposal_context(window, cx);
         visible_changed
     }
-    pub(crate) fn busy(&self) -> bool {
+    pub fn busy(&self) -> bool {
         self.busy
     }
-    pub(crate) fn refresh_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn refresh_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.source_snapshot.is_some() {
             self.schedule_preview(window, cx);
         }
@@ -1610,7 +1602,7 @@ impl BrainView {
             cx,
         );
     }
-    pub(crate) fn refresh_connections(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn refresh_connections(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.reset_todoist_picker();
         self.batch(
             vec![json!({"op":"capabilities"}), json!({"op":"snapshot"})],
@@ -2380,13 +2372,13 @@ impl BrainView {
         // does not mean a reopened goal is still complete.
         self.snapshot["goal"]["status"] == "completed"
     }
-    pub(crate) fn search_input(&self) -> Entity<InputState> {
+    pub fn search_input(&self) -> Entity<InputState> {
         self.filter.clone()
     }
-    pub(crate) fn collection(&self) -> Collection {
+    pub fn collection(&self) -> Collection {
         self.collection
     }
-    pub(crate) fn select_collection(
+    pub fn select_collection(
         &mut self,
         collection: Collection,
         window: &mut Window,
@@ -2440,7 +2432,7 @@ impl BrainView {
         });
         cx.notify();
     }
-    pub(crate) fn begin_capture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn begin_capture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.note_guard_navigation(PendingNavigation::Capture, cx) {
             return;
         }
@@ -2461,7 +2453,7 @@ impl BrainView {
         self.title.read(cx).focus_handle(cx).focus(window, cx);
         cx.notify();
     }
-    pub(crate) fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.filter.read(cx).focus_handle(cx).focus(window, cx);
     }
     fn continue_navigation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -4201,6 +4193,47 @@ impl BrainView {
         }
         panel.into_any_element()
     }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_assert_dirty_recovery_preserved_across(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        action: impl FnOnce(&mut Context<Self>),
+    ) {
+        self.snapshot = json!({"goal":{"id":"one","title":"One","status":"active"}});
+        self.selected_goal_id = Some("one".into());
+        self.load_source(
+            json!({
+                "schema": SCHEMA,
+                "brain_id": "01000000-0000-4000-8000-000000000001",
+                "path": "notes/source.md",
+                "revision": "sha256:fixture",
+                "content_base64": STANDARD.encode(b"Original\r\n"),
+                "media_type": "text/markdown",
+            }),
+            window,
+            cx,
+        );
+        self.source.reset("Unsaved draft\r\n", window, cx);
+        self.pending_navigation = Some(PendingNavigation::Capture);
+        self.pending_source_read_draft = Some("Recovery draft\r\n".into());
+        let generation = self.request_generation;
+        let source_entity = self.source.entity_id();
+        action(cx);
+        assert!(self.dirty(cx));
+        assert_eq!(self.source.value(cx).as_ref(), "Unsaved draft\r\n");
+        assert!(matches!(
+            self.pending_navigation,
+            Some(PendingNavigation::Capture)
+        ));
+        assert_eq!(
+            self.pending_source_read_draft.as_deref(),
+            Some("Recovery draft\r\n")
+        );
+        assert_eq!(self.request_generation, generation);
+        assert_eq!(self.source.entity_id(), source_entity);
+        assert_eq!(self.goal_id(), "one");
+    }
 }
 impl Render for BrainView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -4211,7 +4244,7 @@ impl Render for BrainView {
                 .child(
                     gpui_component::button::Button::new("brain-features")
                         .label("Settings → Features")
-                        .on_click(|_, _, cx| crate::reader_settings::show_features(cx)),
+                        .on_click(|_, _, cx| crate::hooks::show_features(cx)),
                 )
                 .into_any_element();
         }
@@ -4886,47 +4919,6 @@ mod tests {
         });
     }
 
-    #[gpui::test]
-    fn reader_file_delivery_preserves_managed_dirty_recovery(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            crate::test_init(cx);
-            crate::reader_open::install(cx);
-        });
-        let root = std::env::temp_dir().join(format!("okilum-managed-open327-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        let file = root.join("read.md");
-        std::fs::write(&file, "# Read only\n").unwrap();
-        cx.add_window_view(|window, cx| {
-            let mut view = BrainView::new("127.0.0.1:1".parse().unwrap(), window, cx);
-            view.snapshot = json!({"goal":{"id":"one","title":"One","status":"active"}});
-            view.selected_goal_id = Some("one".into());
-            view.load_source(source_snapshot(b"Original\r\n"), window, cx);
-            view.source.reset("Unsaved draft\r\n", window, cx);
-            view.pending_navigation = Some(PendingNavigation::Capture);
-            view.pending_source_read_draft = Some("Recovery draft\r\n".into());
-            let generation = view.request_generation;
-            let source_entity = view.source.entity_id();
-            crate::reader_open::dispatch_urls(
-                vec![url::Url::from_file_path(&file).unwrap().into()],
-                cx,
-            );
-            assert!(view.dirty(cx));
-            assert_eq!(view.source.value(cx).as_ref(), "Unsaved draft\r\n");
-            assert!(matches!(
-                view.pending_navigation,
-                Some(PendingNavigation::Capture)
-            ));
-            assert_eq!(
-                view.pending_source_read_draft.as_deref(),
-                Some("Recovery draft\r\n")
-            );
-            assert_eq!(view.request_generation, generation);
-            assert_eq!(view.source.entity_id(), source_entity);
-            assert_eq!(view.goal_id(), "one");
-            view
-        });
-        std::fs::remove_dir_all(root).unwrap();
-    }
     #[gpui::test]
     fn dirty_navigation_keeps_destination_and_late_draft_until_acknowledged(
         cx: &mut TestAppContext,

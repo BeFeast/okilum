@@ -341,6 +341,37 @@ pub(crate) fn test_init(cx: &mut App) {
         crate::reader_fonts::note,
         cx,
     );
+    #[cfg(all(unix, feature = "brain"))]
+    okilum_shell_brain::hooks::install(
+        okilum_shell_brain::hooks::BrainHooks {
+            build_menus: |cx| {
+                vec![
+                    Menu {
+                        name: "Okilum".into(),
+                        items: crate::updater::menu_items(MenuItem::action(
+                            "Quit Okilum",
+                            crate::brain::app_quit::Quit,
+                        )),
+                        disabled: false,
+                    },
+                    crate::reader_open::file_menu(),
+                    crate::note_paste::edit_menu(),
+                    crate::reader_editor::format::format_menu(),
+                    crate::view_menu(cx),
+                    crate::version_info::help_menu(),
+                ]
+            },
+            confirm_deleted_for_quit: crate::reader_editor::confirm_deleted_for_quit,
+            save_all_for_quit: crate::reader_editor::save_all_for_quit,
+            save_window: crate::reader_editor::save_window,
+            window_close_requested: crate::reader_diagnostics::window_close_requested,
+            show_features: crate::reader_settings::show_features,
+            text_menu: crate::reader_code_file::text_menu,
+            second_brain_enabled: |cx| enabled(Feature::SecondBrain, cx),
+            second_brain_access: |cx| access(Feature::SecondBrain, cx),
+        },
+        cx,
+    );
     enable_test_modules(cx);
 }
 

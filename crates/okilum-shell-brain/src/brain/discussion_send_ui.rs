@@ -20,7 +20,7 @@ pub(super) struct DiscussionSendUi {
     journal: Option<Journal>,
 }
 #[derive(Clone)]
-pub(crate) struct OpenDiscussionOwner {
+pub struct OpenDiscussionOwner {
     pub workspace: Value,
     pub endpoint: SocketAddr,
     pub operation_id: String,
@@ -30,7 +30,7 @@ fn owner_key(p: &Pending) -> String {
     serde_json::to_string(&(&p.workspace, &p.request.goal_id)).unwrap()
 }
 impl BrainView {
-    pub(crate) fn set_discussion_workspace_label(&mut self, label: String) {
+    pub fn set_discussion_workspace_label(&mut self, label: String) {
         self.discussion_send.workspace_label = Some(label);
     }
     fn discussion_journal(&self) -> Journal {
@@ -261,7 +261,7 @@ impl BrainView {
     }
     /// Queue an explicit owner choice before a fresh view's startup task runs.
     /// The initial batch still loads capabilities and sources exactly once.
-    pub(crate) fn queue_retained_discussion(&mut self, operation: String) {
+    pub fn queue_retained_discussion(&mut self, operation: String) {
         self.ensure_discussion_send();
         if self.discussion_send.entries.iter().any(|e| {
             e.pending.request.operation_id == operation

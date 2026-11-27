@@ -11,7 +11,7 @@ struct TraceSettings {
 }
 impl Global for TraceSettings {}
 
-pub(crate) fn install(cx: &mut App) {
+pub fn install(cx: &mut App) {
     let requested = std::env::var("OKILUM_MANAGED220_TRACE").as_deref() == Ok("1");
     install_requested(requested, cx);
 }

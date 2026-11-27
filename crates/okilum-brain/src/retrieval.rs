@@ -1901,7 +1901,7 @@ mod inbox_ownership_tests {
 // Compile the same production shell helper only in tests. Serialize its real
 // output into the backend wire type; no shell -> backend production dependency.
 #[cfg(test)]
-#[path = "../../okilum-shell/src/brain/source_context.rs"]
+#[path = "../../okilum-shell-brain/src/brain/source_context.rs"]
 mod source_context_shell;
 #[cfg(test)]
 mod source_context_oracle {

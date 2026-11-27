@@ -40,8 +40,12 @@ pub(crate) fn gpui_test_support() -> bool {
 /// One line per fact, `key: value`, for `okilum --build-info`. `package:`
 /// appears only when the installed package differs from the build (#1319).
 pub(crate) fn report() -> String {
+    #[cfg(all(unix, feature = "brain"))]
+    let shell_brain_test_support = okilum_shell_brain::TEST_SUPPORT;
+    #[cfg(not(all(unix, feature = "brain")))]
+    let shell_brain_test_support = false;
     format!(
-        "version: {}\n{}build: {}\nsource: {}\ngpui-test-support: {}\nshell-kit-test-support: {}\nshell-platform-test-support: {}\nshell-text-test-support: {}\nappimage-gui-acceptance: {}\ninstall: {}\nchannel: {}\n",
+        "version: {}\n{}build: {}\nsource: {}\ngpui-test-support: {}\nshell-kit-test-support: {}\nshell-platform-test-support: {}\nshell-text-test-support: {}\nshell-brain-test-support: {}\nappimage-gui-acceptance: {}\ninstall: {}\nchannel: {}\n",
         env!("OKILUM_RELEASE_VERSION"),
         crate::version_info::package()
             .map(|package| format!("package: {package}\n"))
@@ -52,6 +56,7 @@ pub(crate) fn report() -> String {
         if okilum_shell_kit::TEST_SUPPORT { "yes" } else { "no" },
         if okilum_shell_platform::TEST_SUPPORT { "yes" } else { "no" },
         if okilum_shell_text::TEST_SUPPORT { "yes" } else { "no" },
+        if shell_brain_test_support { "yes" } else { "no" },
         if cfg!(all(target_os = "linux", feature = "appimage-acceptance-harness")) { "yes" } else { "no" },
         crate::version_info::install_kind(),
         crate::updater::channel()
@@ -68,9 +73,11 @@ mod tests {
     fn tests_see_gpui_test_support() {
         assert!(super::gpui_test_support());
         assert!(super::report().contains("gpui-test-support: yes"));
-        // Same for the kit, platform and text crates' test seams (#3233, #3234, #3235).
+        // Same for the kit, platform, text and brain crates' test seams (#3233, #3234, #3235, #3236).
         assert!(super::report().contains("shell-kit-test-support: yes"));
         assert!(super::report().contains("shell-platform-test-support: yes"));
         assert!(super::report().contains("shell-text-test-support: yes"));
+        #[cfg(all(unix, feature = "brain"))]
+        assert!(super::report().contains("shell-brain-test-support: yes"));
     }
 }

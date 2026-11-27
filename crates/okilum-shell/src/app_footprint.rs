@@ -2138,13 +2138,16 @@ mod tests {
         // The macOS terminal command is removed separately as an owned file.
         ("crates/okilum-shell-kit/src/macos_cli/mod.rs", 1),
         // Suggests ~/Downloads in the export dialog: the user picks the target.
-        ("crates/okilum-shell/src/brain/context_ui.rs", 1),
+        ("crates/okilum-shell-brain/src/brain/context_ui.rs", 1),
         // Brain outboxes and profile: all under the `~/.config/okilum` root.
-        ("crates/okilum-shell/src/brain/discussion_send_outbox.rs", 2),
-        ("crates/okilum-shell/src/brain/editor_recovery.rs", 2),
-        ("crates/okilum-shell/src/brain/native_outbox.rs", 2),
-        ("crates/okilum-shell/src/brain/t3_route_outbox.rs", 2),
-        ("crates/okilum-shell/src/brain.rs", 2),
+        (
+            "crates/okilum-shell-brain/src/brain/discussion_send_outbox.rs",
+            2,
+        ),
+        ("crates/okilum-shell-brain/src/brain/editor_recovery.rs", 2),
+        ("crates/okilum-shell-brain/src/brain/native_outbox.rs", 2),
+        ("crates/okilum-shell-brain/src/brain/t3_route_outbox.rs", 2),
+        ("crates/okilum-shell-brain/src/brain.rs", 2),
         // Looks for installed editors in ~/Applications; reads only.
         ("crates/okilum-shell-platform/src/open_in.rs", 1),
         // Linux editor icons (#1400): reads desktop entries, icon themes and

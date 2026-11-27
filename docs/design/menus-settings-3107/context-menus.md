@@ -77,7 +77,7 @@ Trash wording is Move to Trash (Mac/Linux) / Move to Recycle Bin (Windows).
 | Image/attachment, Read and editor: [reader_image_actions](../../../crates/okilum-shell/src/reader_image_actions.rs#L123) | Open image in default app / Open in default app; Show in sidebar; Copy path (vault-relative here); Copy absolute path for local/unavailable targets; images add Copy image; Copy image address; Save image as… on the accepted Read image surface. iCloud placeholder adds Download from iCloud, with disabled unavailable actions and explanatory notice. Remote images lack local-path actions. Source/Live Preview append their image actions to the editor menu. |
 | Code text: [reader_code_file](../../../crates/okilum-shell/src/reader_code_file.rs#L732) | Editable: Cut, Copy, Paste; read-only: Copy; `|` Select All. Structured node source adds Copy node. |
 | Structured file tree: [structure](../../../crates/okilum-shell/src/reader_code_file/structure.rs#L669) | Copy node; Show in raw text; Fold all; Unfold all. |
-| Managed Brain source: [source_input](../../../crates/okilum-shell/src/brain/source_input.rs) | Uses the toolkit text menu / read-only editor capabilities, not another custom product command list. Unix brain builds only. |
+| Managed Brain source: [source_input](../../../crates/okilum-shell-brain/src/brain/source_input.rs) | Uses the toolkit text menu / read-only editor capabilities, not another custom product command list. Unix brain builds only. |
 
 ## File viewers and specialized menus
 
