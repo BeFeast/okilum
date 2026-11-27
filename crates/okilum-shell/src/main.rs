@@ -37,15 +37,7 @@ mod export;
 mod folder_service;
 mod kubernetes_workspace;
 mod linux_sprint;
-#[cfg(windows)]
-mod markdown_handler;
-#[cfg(test)]
-mod network_write_qa;
-mod note_paste;
-mod note_upload;
 mod open_in;
-mod pdf_engine;
-mod platform;
 mod prepared_links;
 mod project;
 mod project_terminal;
@@ -86,13 +78,6 @@ mod reader_encoding;
 #[cfg(any(unix, windows))]
 mod reader_external_changes;
 mod reader_feedback;
-mod reader_sidebar_view;
-mod reader_window_state;
-mod reader_window_view;
-// #1502: Windows own-window capture; its pixel checks also run in tests elsewhere.
-#[cfg(any(windows, test))]
-#[cfg_attr(not(windows), allow(dead_code))]
-mod own_window_capture;
 mod reader_file_copy;
 mod reader_files;
 mod reader_find_field;
@@ -156,6 +141,7 @@ mod reader_right_panel;
 mod reader_service_storage;
 mod reader_session;
 mod reader_settings;
+mod reader_sidebar_view;
 mod reader_status_line;
 mod reader_url;
 mod reader_viewer_chrome;
@@ -163,6 +149,8 @@ mod reader_viewer_chrome;
 mod reader_viewer_native;
 #[cfg(test)]
 mod reader_viewer_tests;
+mod reader_window_state;
+mod reader_window_view;
 // One module for Linux and macOS: an `include!` wrapper made every name in
 // it macro-expanded on macOS only, so `use super::*` plus an explicit
 // `use ::core::prelude::v1::test` was E0659-ambiguous there (#2589).
@@ -186,8 +174,6 @@ mod reader_title_nav;
 mod reader_vaults;
 mod reader_workbench;
 mod t3_sign_in_cli;
-#[cfg(windows)]
-mod url_protocol;
 mod vault_name;
 mod version_info;
 use reader_link_navigation::handle_link;
@@ -232,7 +218,6 @@ mod reader_remote_markdown;
 mod reader_scroll_geometry_tests;
 #[cfg(any(unix, windows))]
 mod reader_source_history;
-mod reader_ssh_askpass;
 mod reader_startup;
 #[cfg(test)]
 mod reader_table_tests;
@@ -248,11 +233,6 @@ mod reader_timeline;
 mod reader_toast;
 #[cfg(any(unix, windows))]
 mod reader_trash;
-#[cfg(unix)]
-mod reader_trash_fs;
-#[cfg(windows)]
-#[path = "reader_trash_fs_windows.rs"]
-mod reader_trash_fs;
 mod reader_tree;
 mod reader_tree_breadcrumbs;
 mod reader_tree_follow;
@@ -290,6 +270,8 @@ mod vendor_document_newlines;
 #[path = "../../../vendor/gpui-component/crates/base/src/text_boundary.rs"]
 mod vendor_text_boundary;
 mod window_state;
+#[cfg(test)]
+mod windows_note_clipboard_reader_tests;
 #[cfg(all(unix, feature = "brain"))]
 mod workspace;
 
@@ -352,6 +334,16 @@ use okilum_shell_kit::reader_layout::READER_MAX_WIDTH;
 use okilum_shell_kit::{
     brand, contextual_help, count_label, reader_history, reader_projects_help,
     reader_recent_vaults, reader_sidebar, reader_sync_help,
+};
+// Former app modules, now in okilum-shell-platform (#3234).
+#[cfg(test)]
+use okilum_shell_platform::network_write_qa;
+#[cfg(any(windows, test))]
+use okilum_shell_platform::own_window_capture;
+#[cfg(windows)]
+use okilum_shell_platform::{markdown_handler, url_protocol};
+use okilum_shell_platform::{
+    note_paste, note_upload, pdf_engine, platform, reader_ssh_askpass, reader_trash_fs,
 };
 
 /// Body size for the reader; the heading scale and the sidebar derive from it.
@@ -1259,6 +1251,15 @@ fn main() {
         let components_phase = diagnostics.phase("components_init");
         gpui_component::init(cx);
         reader_toast::init(cx);
+        okilum_shell_platform::hooks::install(
+            env!("OKILUM_RELEASE_VERSION"),
+            reader_toast::error,
+            reader_files::checked_path,
+            open_in::prepare_open_note,
+            reader_shortcuts::shortcut,
+            reader_shortcuts::hint,
+            cx,
+        );
         source_presentation::code_languages::install();
         reader_mermaid::register();
         drop(components_phase);

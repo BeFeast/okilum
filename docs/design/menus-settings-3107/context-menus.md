@@ -32,8 +32,8 @@ menu. It is not generated from the native app menu.
 ## Shared file actions
 
 Source: [reader_files](../../../crates/okilum-shell/src/reader_files.rs#L197),
-[Open in](../../../crates/okilum-shell/src/open_in.rs#L313),
-[OS labels](../../../crates/okilum-shell/src/platform/labels.rs).
+[Open in](../../../crates/okilum-shell-platform/src/open_in.rs#L313),
+[OS labels](../../../crates/okilum-shell-platform/src/platform/labels.rs).
 
 **F:** Open in → one entry per installed supported editor (absent when none),
 Reveal in Finder / Show in Explorer / Show in File Manager;

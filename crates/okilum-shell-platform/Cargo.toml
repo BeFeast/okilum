@@ -1,0 +1,90 @@
+[package]
+name = "okilum-shell-platform"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# OS-specific platform adapters, clipboard/smart-paste, note upload, capture
+# namespace, trash transport, SSH askpass, PDF engine, iCloud hydration,
+# Open-in editor detection and Windows handlers (#3234, epic #3241).
+# Never depends on the app crate or `Reader`.
+
+[features]
+default = []
+# Mirrors okilum-shell's `linux-sprint` (credential key isolation in text_platform).
+linux-sprint = []
+# Test seams the app crate's tests rely on (open_in test editors, pdf_engine
+# fixture, rich_clipboard test_sink, own_window_capture, network_write_qa).
+# okilum-shell enables it as a dev-dependency only; `okilum --build-info`
+# reports it and native_binary_guard.py refuses it.
+test-support = []
+
+[dependencies]
+anyhow = "1"
+arboard = { version = "=3.7.0", default-features = false, features = ["wayland-data-control"] }
+async-channel = "2"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+futures = "0.3"
+gpui = { package = "okilum-gpui", path = "../okilum-gpui" }
+gpui-component = { workspace = true, features = ["tree-sitter-languages"] }
+gpui_platform.workspace = true
+hayro = "=0.8.0"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "tiff", "webp"] }
+log = "0.4"
+okilum-core = { workspace = true, default-features = false }
+okilum-http = { path = "../okilum-http" }
+okilum-paste = { path = "../okilum-paste" }
+okilum-shell-kit = { path = "../okilum-shell-kit" }
+okilum-write-authority = { path = "../okilum-write-authority" }
+percent-encoding = "2"
+raw-window-handle = { version = "0.6", features = ["std"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "multipart", "stream"] }
+serde.workspace = true
+serde_json = "1"
+sha2 = "0.10"
+smallvec = "1"
+sysinfo = { version = "=0.31.4", default-features = false, features = ["system"] }
+tempfile = "3"
+time = { version = "0.3", features = ["formatting", "parsing", "local-offset"] }
+unicode-bidi = "0.3.18"
+unicode-linebreak = "0.1.5"
+url = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+webp = { version = "=0.3.1", default-features = false }
+
+[dev-dependencies]
+okilum-write-authority = { path = "../okilum-write-authority", features = ["test-isolation"] }
+okilum-core = { workspace = true, features = ["test-support"] }
+okilum-shell-kit = { path = "../okilum-shell-kit", features = ["test-support"] }
+gpui = { package = "okilum-gpui", path = "../okilum-gpui", features = ["test-support"] }
+unicode-segmentation = "1.12.0"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+gpui_wgpu = { package = "gpui-pre-wgpu", version = "0.3.3" }
+
+[target.'cfg(windows)'.dev-dependencies]
+# #1502: the own-window capture control renders through the same D3D11 +
+# DirectComposition path as GPUI; already in the graph through gpui-pre-windows.
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_DirectComposition", "Win32_Graphics_Dwm", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+async-io = "2"
+libc = "0.2"
+rustix = { version = "=1.1.6", features = ["event", "net", "pipe", "fs", "process"] }
+wayland-client = "=0.31.15"
+wayland-protocols-wlr = { version = "=0.3.12", features = ["client"] }
+x11rb = { version = "0.13.2", features = ["res"] }
+zbus = { version = "5.19", default-features = false, features = ["async-io"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+objc2 = "=0.6.4"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem", "NSAttributedString", "NSFont", "NSFontDescriptor", "NSParagraphStyle", "NSTextList"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSAttributedString", "NSData", "NSDictionary", "NSString", "NSFileManager", "NSURL", "NSError", "NSProcessInfo", "NSBundle", "NSRange", "NSValue", "NSGeometry", "objc2-core-foundation"] }
+rustix = { version = "=1.1.6", features = ["fs", "process"] }
+
+[target.'cfg(windows)'.dependencies]
+dirs = "6"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_Xps", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Com", "Win32_UI_Input_KeyboardAndMouse", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects"] }

@@ -159,7 +159,7 @@ jobs:
           export CARGO_TARGET_DIR="$HOME/.cache/okilum-macos/reader-arm64"
           export CARGO_INCREMENTAL=0
           # The test binary runs outside Okilum.app; use the verified source framework.
-          env DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle" cargo test --release --locked --target aarch64-apple-darwin -p okilum-shell platform::exact_macos_clipboard::native_tests -- --test-threads=1
+          env DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle" cargo test --release --locked --target aarch64-apple-darwin -p okilum-shell-platform --lib platform::exact_macos_clipboard::native_tests -- --test-threads=1
           # #471: real-vault sidecars/invalid UTF-8 cannot abort rename or enter search.
           cargo test --release --locked --target aarch64-apple-darwin -p okilum-core --lib link_rewrite::tests::sidecars_and_invalid_utf8_do_not_abort_move_or_enter_search -- --exact
           # #453: synchronous lock release, pending-writer exclusion and 128 reopen iterations.

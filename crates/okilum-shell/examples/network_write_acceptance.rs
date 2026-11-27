@@ -1,10 +1,10 @@
 //! #1915: run only against a dedicated, explicitly supplied QA mount directory.
 //! No GUI or installed app. Creates/removes only its own tempfile child.
 #[cfg(unix)]
-#[path = "../src/network_write_qa.rs"]
+#[path = "../../okilum-shell-platform/src/network_write_qa.rs"]
 mod network_write_qa;
 #[cfg(unix)]
-#[path = "../src/reader_trash_fs.rs"]
+#[path = "../../okilum-shell-platform/src/reader_trash_fs.rs"]
 mod trash;
 
 #[cfg(unix)]

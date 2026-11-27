@@ -1,0 +1,454 @@
+//! Raw macOS pasteboard access, read in the paste command itself (#1602),
+//! plus a helper-process reader bounded by its parent for asynchronous callers.
+//!
+//! Which representation a paste takes is decided in `note_paste::offer`; this
+//! file only exposes the general pasteboard to it: type names, bytes, AppKit's
+//! own string decoding and NSAttributedString's RTF/RTFD to plain text.
+use super::clipboard_process::{self, TIMEOUT};
+use crate::note_paste::offer::{self, OfferError, PasteOffer, Pasteboard};
+use crate::note_paste::rich::{self, ListLevel, Run};
+use crate::note_paste::router::{self, RouteContext, Routed};
+use crate::note_paste::{clipboard_error, NoteClipboard};
+use gpui::{App, Task};
+use gpui_component::input::clipboard::{
+    ClipboardReadError as Error, ClipboardReadRequest, ExactClipboardProvider,
+};
+use objc2::rc::{autoreleasepool, Retained};
+use objc2::runtime::AnyObject;
+use objc2::AllocAnyThread;
+use objc2_app_kit::{
+    NSAttributedStringAppKitDocumentFormats, NSFont, NSFontAttributeName,
+    NSFontDescriptorSymbolicTraits, NSLinkAttributeName, NSParagraphStyle,
+    NSParagraphStyleAttributeName, NSPasteboard, NSStrikethroughStyleAttributeName,
+};
+use objc2_foundation::{NSAttributedString, NSData, NSNumber, NSRange, NSString, NSURL};
+use std::{io::Write, process::Command, time::Instant};
+
+const HELPER_ARG: &str = "--internal-macos-exact-clipboard-read";
+pub struct MacClipboard;
+impl ExactClipboardProvider for MacClipboard {
+    fn read_text(
+        &self,
+        request: ClipboardReadRequest,
+        cx: &App,
+    ) -> Task<Result<Option<String>, Error>> {
+        let deadline = Instant::now() + TIMEOUT;
+        cx.background_executor().spawn(async move {
+            let executable = std::env::current_exe().map_err(|_| Error::Io)?;
+            clipboard_process::read(Command::new(executable).arg(HELPER_ARG), deadline, || {
+                request.is_cancelled()
+            })
+        })
+    }
+
+    /// The editor's paste reads here, on the UI thread, while it handles the
+    /// user's Cmd+V or Paste command (#1602). A helper process never received
+    /// that command, and its result arrived turns later, after an activation,
+    /// layout or focus change could cancel it: pastes into notes were dropped
+    /// without a word. The read is the same one AppKit text views make.
+    fn read_text_now(&self, _: &App) -> Option<Result<Option<String>, Error>> {
+        Some(read_general_text().map_err(clipboard_error))
+    }
+}
+
+impl NoteClipboard for MacClipboard {
+    fn read_offer(&self) -> Result<PasteOffer, OfferError> {
+        autoreleasepool(|_| offer::read_offer(&MacBoard(&NSPasteboard::generalPasteboard())))
+    }
+    fn read_chat_offer(&self) -> Result<PasteOffer, OfferError> {
+        autoreleasepool(|_| read_chat_board(&NSPasteboard::generalPasteboard()))
+    }
+    fn has_content(&self) -> bool {
+        autoreleasepool(|_| {
+            !MacBoard(&NSPasteboard::generalPasteboard())
+                .types()
+                .is_empty()
+        })
+    }
+    fn types(&self) -> Vec<String> {
+        autoreleasepool(|_| MacBoard(&NSPasteboard::generalPasteboard()).types())
+    }
+    fn route(&self, context: &RouteContext) -> Result<Routed, OfferError> {
+        autoreleasepool(|_| router::route(&MacBoard(&NSPasteboard::generalPasteboard()), context))
+    }
+    fn read_attachment(&self) -> Option<offer::ClipAttachment> {
+        autoreleasepool(|_| offer::read_attachment(&MacBoard(&NSPasteboard::generalPasteboard())))
+    }
+}
+
+fn read_chat_board(board: &NSPasteboard) -> Result<PasteOffer, OfferError> {
+    offer::read_chat_offer(&MacBoard(board))
+}
+
+/// The general pasteboard's text in any text representation, in this process.
+fn read_general_text() -> Result<Option<String>, OfferError> {
+    autoreleasepool(|_| read_text(&MacBoard(&NSPasteboard::generalPasteboard())))
+}
+
+fn read_text(board: &impl Pasteboard) -> Result<Option<String>, OfferError> {
+    match offer::read_offer_with(board, false)? {
+        PasteOffer::Text(text) => Ok(Some(text)),
+        PasteOffer::Image(_) => {
+            diagnostic_error!("Paste: the clipboard holds an image; this field takes text only");
+            Ok(None)
+        }
+        PasteOffer::Files(_) => {
+            diagnostic_error!("Paste: the clipboard holds files; this field takes text only");
+            Ok(None)
+        }
+        PasteOffer::Nothing { types } => {
+            diagnostic_error!("Paste: no text on the clipboard; types: {types:?}");
+            Ok(None)
+        }
+    }
+}
+
+struct MacBoard<'a>(&'a NSPasteboard);
+impl Pasteboard for MacBoard<'_> {
+    fn change_count(&self) -> i64 {
+        self.0.changeCount() as i64
+    }
+    fn types(&self) -> Vec<String> {
+        self.0
+            .types()
+            .map(|types| {
+                (0..types.count())
+                    .map(|index| types.objectAtIndex(index).to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+    fn data(&self, kind: &str) -> Option<Vec<u8>> {
+        self.0
+            .dataForType(&NSString::from_str(kind))
+            .map(|data| data.to_vec())
+    }
+    /// Each item's file URL: several copied files are several items, and
+    /// `dataForType` on the board reads the first one only.
+    fn file_urls(&self) -> Vec<String> {
+        let kind = NSString::from_str(offer::FILE_URL);
+        let Some(items) = self.0.pasteboardItems() else {
+            return Vec::new();
+        };
+        (0..items.count())
+            .filter_map(|index| {
+                let item = items.objectAtIndex(index);
+                item.stringForType(&kind)
+                    .map(|url| url.to_string())
+                    .or_else(|| {
+                        item.dataForType(&kind)
+                            .map(|data| String::from_utf8_lossy(&data.to_vec()).into_owned())
+                    })
+            })
+            .collect()
+    }
+    fn string(&self, kind: &str) -> Option<String> {
+        self.0
+            .stringForType(&NSString::from_str(kind))
+            .map(|text| text.to_string())
+    }
+    /// NSAttributedString's own RTF reader; attachments (U+FFFC) are dropped.
+    fn rich_text(&self, data: &[u8], rtfd: bool) -> Option<String> {
+        rich_text_of(data, rtfd)
+    }
+    /// RTF / RTFD as simple HTML, from NSAttributedString's attribute runs.
+    fn rich_html(&self) -> Option<String> {
+        let types = self.types();
+        let (kind, rtfd) = rich_kind(&types)?;
+        let data = self.0.dataForType(&NSString::from_str(kind))?;
+        attributed_html(&types, &data, rtfd)
+    }
+}
+
+/// RTF or RTFD bytes as plain text, by NSAttributedString's reader;
+/// attachments (U+FFFC) are dropped. Also for dropped rich text (#1615).
+pub fn rich_text_of(data: &[u8], rtfd: bool) -> Option<String> {
+    let text = attributed(&NSData::with_bytes(data), rtfd)?;
+    Some(text.string().to_string().replace('\u{fffc}', ""))
+}
+
+/// The RTF or RTFD flavor among `types` as simple HTML, its bytes read by
+/// `contents` (dropped rich text, #1615).
+pub fn rich_html_of<'a>(
+    types: &[String],
+    contents: impl Fn(&str) -> Option<&'a [u8]>,
+) -> Option<String> {
+    let (kind, rtfd) = rich_kind(types)?;
+    attributed_html(types, &NSData::with_bytes(contents(kind)?), rtfd)
+}
+
+/// The board's RTF flavor, else its RTFD flavor, and whether it is RTFD.
+fn rich_kind(types: &[String]) -> Option<(&'static str, bool)> {
+    offer::RTF
+        .iter()
+        .map(|kind| (*kind, false))
+        .chain(offer::RTFD.iter().map(|kind| (*kind, true)))
+        .find(|(kind, _)| types.iter().any(|t| t == kind))
+}
+
+/// NSAttributedString's RTF / RTFD reader.
+fn attributed(data: &NSData, rtfd: bool) -> Option<Retained<NSAttributedString>> {
+    // SAFETY: no document-attributes dictionary is requested.
+    unsafe {
+        if rtfd {
+            NSAttributedString::initWithRTFD_documentAttributes(
+                NSAttributedString::alloc(),
+                data,
+                None,
+            )
+        } else {
+            NSAttributedString::initWithRTF_documentAttributes(
+                NSAttributedString::alloc(),
+                data,
+                None,
+            )
+        }
+    }
+}
+
+/// Rich text as simple HTML (`b`, `i`, `s`, `code`, `a`, `p`, `br`, lists).
+fn attributed_html(types: &[String], data: &NSData, rtfd: bool) -> Option<String> {
+    if data.length() > offer::MAX_TEXT_BYTES * 4 {
+        return None;
+    }
+    // Parsing large RTF and walking its runs costs the UI thread tens to
+    // hundreds of ms (Terminal output, long documents): the plain flavor
+    // pastes instead when there is one.
+    if data.length() > offer::UI_RTF_BYTES && offer::has_plain_text(types) {
+        return None;
+    }
+    let text = attributed(data, rtfd)?;
+    Some(rich::runs_to_html(&attributed_runs(&text)))
+}
+
+/// The attribute runs of an attributed string: font traits (bold, italic,
+/// fixed pitch), links, strikethrough and list paragraphs.
+fn attributed_runs(text: &NSAttributedString) -> Vec<Run> {
+    let units: Vec<u16> = text.string().to_string().encode_utf16().collect();
+    let length = text.length().min(units.len());
+    let mut runs = Vec::new();
+    let mut index = 0;
+    while index < length {
+        let mut range = NSRange::new(index, 0);
+        // SAFETY: `range` is a valid, writable NSRange for the call.
+        let attributes = unsafe { text.attributesAtIndex_effectiveRange(index, &mut range) };
+        let end = (range.location + range.length).clamp(index + 1, length);
+        let value =
+            |key: &NSString| -> Option<Retained<AnyObject>> { attributes.objectForKey(key) };
+        // SAFETY: AppKit's attribute name constants are immutable statics.
+        let (font_key, link_key, strike_key, paragraph_key) = unsafe {
+            (
+                NSFontAttributeName,
+                NSLinkAttributeName,
+                NSStrikethroughStyleAttributeName,
+                NSParagraphStyleAttributeName,
+            )
+        };
+        let traits = value(font_key)
+            .and_then(|font| font.downcast::<NSFont>().ok())
+            .map(|font| (font.fontDescriptor().symbolicTraits(), font.isFixedPitch()));
+        let has = |flag: NSFontDescriptorSymbolicTraits| {
+            traits.as_ref().is_some_and(|(t, _)| t.contains(flag))
+        };
+        let mono = traits.as_ref().is_some_and(|(t, fixed)| {
+            *fixed || t.contains(NSFontDescriptorSymbolicTraits::TraitMonoSpace)
+        });
+        let link = value(link_key).and_then(|link| match link.downcast::<NSURL>() {
+            Ok(url) => url.absoluteString().map(|s| s.to_string()),
+            Err(other) => other.downcast::<NSString>().ok().map(|s| s.to_string()),
+        });
+        let strike = value(strike_key)
+            .and_then(|n| n.downcast::<NSNumber>().ok())
+            .is_some_and(|n| n.integerValue() != 0);
+        let list = value(paragraph_key)
+            .and_then(|p| p.downcast::<NSParagraphStyle>().ok())
+            .and_then(|style| {
+                let lists = style.textLists();
+                let depth = lists.count();
+                let last = lists.lastObject()?;
+                let format = last.markerFormat().to_string();
+                let ordered = ["decimal", "alpha", "roman", "latin", "octal", "hexadecimal"]
+                    .iter()
+                    .any(|kind| format.contains(kind));
+                Some(ListLevel { ordered, depth })
+            });
+        runs.push(Run {
+            // U+FFFC stands for an RTFD attachment, which is not pasted.
+            text: String::from_utf16_lossy(&units[index..end]).replace('\u{fffc}', ""),
+            bold: has(NSFontDescriptorSymbolicTraits::TraitBold),
+            italic: has(NSFontDescriptorSymbolicTraits::TraitItalic),
+            mono,
+            strike,
+            link,
+            list,
+        });
+        index = end;
+    }
+    runs
+}
+
+/// Runs before application, configuration, backend or GPUI startup.
+pub fn helper_entry() -> Option<i32> {
+    let mut args = std::env::args_os().skip(1);
+    if args.next().as_deref() != Some(std::ffi::OsStr::new(HELPER_ARG)) {
+        return None;
+    }
+    if args.next().is_some() {
+        return Some(2);
+    }
+    let result = read_general_text();
+    let (status, bytes) = match result {
+        Ok(Some(text)) => (0, text.into_bytes()),
+        Ok(None) => (1, Vec::new()),
+        Err(OfferError::TooLarge) => (2, Vec::new()),
+        Err(OfferError::InvalidUtf8) => (3, Vec::new()),
+        Err(OfferError::Changed) => (4, Vec::new()),
+        Err(OfferError::Io) => (5, Vec::new()),
+    };
+    let mut stdout = std::io::stdout().lock();
+    Some(
+        if stdout
+            .write_all(&[status])
+            .and_then(|_| stdout.write_all(&bytes))
+            .is_ok()
+        {
+            0
+        } else {
+            1
+        },
+    )
+}
+
+#[cfg(test)]
+mod native_tests {
+    use super::*;
+    use crate::note_paste::offer::{ImageKind, MAX_TEXT_BYTES};
+    use objc2::rc::Retained;
+    struct OwnedBoard(Retained<NSPasteboard>);
+    impl Drop for OwnedBoard {
+        fn drop(&mut self) {
+            self.0.clearContents();
+        }
+    }
+    fn board() -> OwnedBoard {
+        let board = OwnedBoard(NSPasteboard::pasteboardWithUniqueName());
+        board.0.clearContents();
+        board
+    }
+    fn put(board: &NSPasteboard, kind: &str, bytes: &[u8]) {
+        board.clearContents();
+        assert!(board.setData_forType(Some(&NSData::with_bytes(bytes)), &NSString::from_str(kind)));
+    }
+    #[test]
+    fn named_pasteboard_preserves_raw_bytes_and_distinguishes_empty_from_absent() {
+        autoreleasepool(|_| {
+            let board = board();
+            assert_eq!(read_text(&MacBoard(&board.0)), Ok(None));
+            for bytes in [
+                b"one\r\ntwo\r\n".as_slice(),
+                "Привет 🧠 e\u{301}\n".as_bytes(),
+                b"no final newline",
+                b"",
+            ] {
+                put(&board.0, offer::UTF8_TEXT, bytes);
+                assert_eq!(
+                    read_text(&MacBoard(&board.0)).unwrap().as_deref(),
+                    Some(std::str::from_utf8(bytes).unwrap())
+                );
+            }
+        });
+    }
+    #[test]
+    fn named_pasteboard_rejects_invalid_and_oversize() {
+        autoreleasepool(|_| {
+            let board = board();
+            put(&board.0, offer::UTF8_TEXT, &[255]);
+            assert_eq!(read_text(&MacBoard(&board.0)), Err(OfferError::InvalidUtf8));
+            put(&board.0, offer::UTF8_TEXT, &vec![b'x'; MAX_TEXT_BYTES + 1]);
+            assert_eq!(read_text(&MacBoard(&board.0)), Err(OfferError::TooLarge));
+        });
+    }
+    /// #1602: rich text alone pastes as its plain text.
+    #[test]
+    fn named_pasteboard_rtf_only_is_plain_text() {
+        autoreleasepool(|_| {
+            let board = board();
+            put(
+                &board.0,
+                "public.rtf",
+                br"{\rtf1\ansi\deff0{\fonttbl{\f0 Helvetica;}}\f0 Hello {\b bold} world}",
+            );
+            assert_eq!(
+                read_text(&MacBoard(&board.0))
+                    .unwrap()
+                    .as_deref()
+                    .map(str::trim),
+                Some("Hello bold world")
+            );
+        });
+    }
+    /// #1602: an image is offered to a note, not reported as "no text".
+    #[test]
+    fn named_pasteboard_offers_images() {
+        autoreleasepool(|_| {
+            let board = board();
+            for (kind, format, expected) in [
+                ("public.png", image::ImageFormat::Png, ImageKind::Png),
+                ("public.tiff", image::ImageFormat::Tiff, ImageKind::Tiff),
+            ] {
+                let mut encoded = std::io::Cursor::new(Vec::new());
+                image::DynamicImage::new_rgb8(8, 6)
+                    .write_to(&mut encoded, format)
+                    .unwrap();
+                let bytes = encoded.into_inner();
+                put(&board.0, kind, &bytes);
+                for offer in [
+                    offer::read_offer(&MacBoard(&board.0)),
+                    read_chat_board(&board.0),
+                ] {
+                    match offer {
+                        Ok(PasteOffer::Image(image)) => {
+                            assert_eq!(image.kind, expected);
+                            assert_eq!(image.bytes, bytes);
+                            assert_eq!(image::load_from_memory(&image.bytes).unwrap().width(), 8);
+                        }
+                        other => panic!("{other:?}"),
+                    }
+                }
+            }
+        });
+    }
+    #[test]
+    fn issue2521_chat_file_flavors_preserve_missing_paths_without_ui_filesystem_probes() {
+        autoreleasepool(|_| {
+            let board = board();
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("missing image 🧠.png");
+            let url = url::Url::from_file_path(&path).unwrap().to_string();
+            put(&board.0, offer::FILE_URL, url.as_bytes());
+            assert_eq!(read_chat_board(&board.0), Ok(PasteOffer::Files(vec![path])));
+            let paths = vec![
+                temp.path().join("first.pdf"),
+                temp.path().join("second.png"),
+            ];
+            let plist = format!("<?xml version=\"1.0\"?><plist version=\"1.0\"><array><string>{}</string><string>{}</string><string>{}</string></array></plist>", paths[0].display(), paths[1].display(), paths[0].display());
+            put(&board.0, offer::FILENAMES, plist.as_bytes());
+            assert_eq!(read_chat_board(&board.0), Ok(PasteOffer::Files(paths)));
+        });
+    }
+
+    #[test]
+    fn issue2521_chat_plain_cached_path_stays_text() {
+        autoreleasepool(|_| {
+            let board = board();
+            let temp = tempfile::tempdir().unwrap();
+            let cache = temp.path().join("com.raycast.macos/clipboard");
+            std::fs::create_dir_all(&cache).unwrap();
+            let path = cache.join("cached.png");
+            std::fs::write(&path, b"clipboard cache").unwrap();
+            let text = path.to_str().unwrap().to_owned();
+            put(&board.0, offer::UTF8_TEXT, text.as_bytes());
+            assert_eq!(read_chat_board(&board.0), Ok(PasteOffer::Text(text)));
+        });
+    }
+}

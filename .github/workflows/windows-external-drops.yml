@@ -6,9 +6,9 @@ on:
       - 'scripts/patches/gpui-pre*/**'
       - 'scripts/gpui-pre*/**'
       - 'scripts/*setup*'
-      - 'crates/okilum-shell/src/note_paste*'
-      - 'crates/okilum-shell/src/note_paste/**'
-      - 'crates/okilum-shell/src/platform/windows_note_clipboard*'
+      - 'crates/okilum-shell-platform/src/note_paste*'
+      - 'crates/okilum-shell-platform/src/note_paste/**'
+      - 'crates/okilum-shell-platform/src/platform/windows_note_clipboard*'
       - 'scripts/ci/windows-external-drops.ps1'
       - '.github/workflows/windows-external-drops.yml'
   workflow_dispatch:

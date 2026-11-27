@@ -166,15 +166,18 @@ jobs:
         # #1502: PrintWindow on our own HWND, GDI and the GPUI-style
         # DirectComposition swap chain, plus the Feedback button route.
         $env:OKILUM_WINDOWS_ICON = Join-Path $env:GITHUB_WORKSPACE 'target/windows-dist/okilum.ico'
-        foreach ($filter in @('own_window_capture', 'feedback1502_')) {
-          $list = & cargo test --locked -p okilum-shell --bin okilum $filter -- --list
+        foreach ($pair in @(@('okilum-shell-platform', '--lib', 'own_window_capture'), @('okilum-shell', '--bin', 'okilum', 'feedback1502_'))) {
+          $pkg = $pair[0]
+          $target = $pair[1..($pair.Length - 2)]
+          $filter = $pair[$pair.Length - 1]
+          $list = & cargo test --locked -p $pkg @target $filter -- --list
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $list
           if (-not ($list | Select-String ': test$')) { Write-Error "No test matches $filter"; exit 1 }
-          cargo test --locked -p okilum-shell --bin okilum $filter -- --nocapture --test-threads=1
+          cargo test --locked -p $pkg @target $filter -- --nocapture --test-threads=1
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
         }
-        $list = & cargo test --locked -p okilum-shell --bin okilum own_window_capture_reads_direct_composition_swap_chain -- --list
+        $list = & cargo test --locked -p okilum-shell-platform --lib own_window_capture_reads_direct_composition_swap_chain -- --list
         if (-not ($list | Select-String ': test$')) { Write-Error 'DirectComposition control did not match'; exit 1 }
 
     - name: Run exact update window restoration and dirty single-file regressions

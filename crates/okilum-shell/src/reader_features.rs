@@ -321,6 +321,15 @@ pub(crate) fn open_second_brain(cx: &mut App) {
 pub(crate) fn test_init(cx: &mut App) {
     gpui_component::init(cx);
     crate::reader_toast::init(cx);
+    okilum_shell_platform::hooks::install(
+        env!("OKILUM_RELEASE_VERSION"),
+        crate::reader_toast::error,
+        crate::reader_files::checked_path,
+        crate::open_in::prepare_open_note,
+        crate::reader_shortcuts::shortcut,
+        crate::reader_shortcuts::hint,
+        cx,
+    );
     enable_test_modules(cx);
 }
 

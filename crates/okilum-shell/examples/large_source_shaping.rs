@@ -3,9 +3,9 @@
 mod brand {
     pub const SANS_FONT: &str = "Noto Sans";
 }
-#[path = "../src/platform/linux_emoji.rs"]
+#[path = "../../okilum-shell-platform/src/platform/linux_emoji.rs"]
 mod linux_emoji;
-#[path = "../src/platform/text_diagnostics.rs"]
+#[path = "../../okilum-shell-platform/src/platform/text_diagnostics.rs"]
 mod text_diagnostics;
 mod text_platform {
     pub fn shaper(
@@ -21,7 +21,7 @@ mod text_platform {
         }
     }
 }
-#[path = "../src/platform/shaped_line_cache.rs"]
+#[path = "../../okilum-shell-platform/src/platform/shaped_line_cache.rs"]
 mod shaped_line_cache;
 #[cfg(test)]
 #[path = "../../../vendor/gpui-component/crates/base/src/input/bidi_geometry.rs"]

@@ -122,13 +122,13 @@ suite issue2044 120 cargo test --locked -p okilum-shell --bin okilum issue2044_ 
 if [[ $part == workspace ]]; then
     # Alone in a cold job: compile the census selection (same packages and
     # features as workspace-rust-tests.py COMMAND) before its deadline starts.
-    cargo test --locked -p okilum-core -p okilum-shell -p okilum-shell-kit -p okilum-sync -p okilum-t3 --no-run || failed=1
+    cargo test --locked -p okilum-core -p okilum-shell -p okilum-shell-kit -p okilum-shell-platform -p okilum-sync -p okilum-t3 --no-run || failed=1
 fi
 suite workspace-full 1320 python3 scripts/ci/workspace-rust-tests.py
 # #1915: explicit filters make unsupported-flag coverage inspectable in CI.
 suite unix-publish 120 cargo test --locked -p okilum-core --lib unix_publish:: --no-fail-fast
 suite file-editor-network-save-tests 120 cargo test --locked -p okilum-core --lib file_editor::network_save_tests:: --no-fail-fast
-suite reader-trash-fs-tests-unsupported-flags-trash-and-restore-files-and-folders-without-clobber 120 cargo test --locked -p okilum-shell --bins reader_trash_fs::tests::unsupported_flags_trash_and_restore_files_and_folders_without_clobber --no-fail-fast -- --exact
+suite reader-trash-fs-tests-unsupported-flags-trash-and-restore-files-and-folders-without-clobber 120 cargo test --locked -p okilum-shell-platform --lib reader_trash_fs::tests::unsupported_flags_trash_and_restore_files_and_folders_without_clobber --no-fail-fast -- --exact
 # #2442: retain process-group generation checks across live -> zombie -> reaped.
 suite sidecar-supervisor-process-group 120 cargo test --locked -p okilum-sync-controller --lib sidecar::supervisor::process_group:: --no-fail-fast -- --test-threads=1
 # #588: keep shared durable pairing recovery covered on both Unix platforms.
@@ -156,8 +156,8 @@ suite portable-reader 300 cargo test -p okilum-core --no-default-features --test
 # Vendored gpui-kit tests when the patch stack changes (otherwise a skip line).
 suite vendor-tests 900 bash scripts/ci/vendor-tests.sh
 # #1924: injected no-system-Trash fallback is shared across Unix.
-suite reader-trash-fs-vault-fallback-tests 120 cargo test --locked -p okilum-shell --bins reader_trash_fs::vault_fallback_tests:: --no-fail-fast
-suite reader-trash-fs-vault-trash-inventory-tests 120 cargo test --locked -p okilum-shell --bins reader_trash_fs::vault_trash_inventory_tests:: --no-fail-fast
+suite reader-trash-fs-vault-fallback-tests 120 cargo test --locked -p okilum-shell-platform --lib reader_trash_fs::vault_fallback_tests:: --no-fail-fast
+suite reader-trash-fs-vault-trash-inventory-tests 120 cargo test --locked -p okilum-shell-platform --lib reader_trash_fs::vault_trash_inventory_tests:: --no-fail-fast
 
 # #588: one-use fresh preparation never regenerates partial state.
 suite sidecar-macos-preparation 120 cargo test --locked -p okilum-sync-controller --lib sidecar::macos::preparation:: --no-fail-fast

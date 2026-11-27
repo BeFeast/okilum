@@ -24,7 +24,7 @@ another application:
   the buffer unpainted or entirely black (a failed composition read) — the
   message points to Win+Shift+S and paste.
 
-`crates/okilum-shell/src/own_window_capture.rs`.
+`crates/okilum-shell-platform/src/own_window_capture.rs`.
 
 ## Evidence
 

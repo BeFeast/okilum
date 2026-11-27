@@ -13,8 +13,7 @@ use std::{
 };
 #[cfg(test)]
 mod mounted_tests;
-mod namespace;
-use namespace::{Binding, PreparedNamespace, Snapshot};
+use okilum_shell_platform::reader_capture::namespace::{Binding, PreparedNamespace, Snapshot};
 
 type EntryKey = (WindowId, PathBuf);
 // A non-owning singleton index, not a second owner/controller. The sole composer

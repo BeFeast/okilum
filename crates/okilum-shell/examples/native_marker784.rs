@@ -1,7 +1,7 @@
 //! Isolated native #216 fixture. No BrainView, RPC, persistence or live-note access.
 #[path = "../src/source_presentation.rs"]
 mod adapter;
-#[path = "../src/platform/exact_wayland_clipboard.rs"]
+#[path = "../../okilum-shell-platform/src/platform/exact_wayland_clipboard.rs"]
 mod exact_wayland_clipboard;
 
 use std::{borrow::Cow, sync::Arc, time::Duration};

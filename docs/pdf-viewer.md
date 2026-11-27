@@ -7,7 +7,7 @@ decisions slice 1 made.
 
 ## Shape
 
-- `crates/okilum-shell/src/pdf_engine.rs` is the only module that knows hayro.
+- `crates/okilum-shell-platform/src/pdf_engine.rs` is the only module that knows hayro.
   It opens a document, reports page sizes and renders one page to a BGRA bitmap.
   A panic inside the engine becomes "unreadable" or a failed page, never a crash.
 - `crates/okilum-shell/src/reader_pdf.rs` is the GPUI viewer:

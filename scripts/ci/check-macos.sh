@@ -49,7 +49,7 @@ run_tests() {
     local package="$1" target="$2" filter="$3"
     shift 3
     local selection=(-p "$package")
-    case "$package" in okilum-core|okilum-shell|okilum-shell-kit) selection=("${SHARED[@]}") ;; esac
+    case "$package" in okilum-core|okilum-shell|okilum-shell-kit|okilum-shell-platform) selection=("${SHARED[@]}") ;; esac
     # Positive control: a renamed/removed filter must not silently run zero tests.
     if ! cargo "${cargo_args[@]}" "${selection[@]}" "$target" "$filter" -- --list "$@" \
         | tee "${RUNNER_TEMP}/macos-test-list.txt"; then
@@ -146,14 +146,14 @@ run_tests okilum-shell --bins reader_settings::tests::settings_files_shows_the_s
 # The shell has a single binary target; avoid example/test harnesses with zero matches.
 # #1510: dispatch unit tests run on hosted macOS; the real-NSApp fixture is
 # ignored because hosted runners cannot establish an active/key application.
-run_tests okilum-shell --bins platform::exact_macos_clipboard::native_tests
+run_tests okilum-shell-platform --lib platform::exact_macos_clipboard::native_tests
 run_tests okilum-shell --bins reader_replay::
 # #1462: use the platform NewNote shortcut after an external folder deletion.
 run_tests okilum-shell --bins reader_create::tests::deleted_folder_keyboard_creation_preserves_draft --exact
 # #1731: real case-insensitive APFS note/folder rename, link rewriting and Undo.
 run_tests okilum-core --lib note_move::case_rename_native_tests::
 # #1729: exercise the native NSFileManager Trash and Undo path for a real folder.
-run_tests okilum-shell --bins reader_trash_fs::tests::
+run_tests okilum-shell-platform --lib reader_trash_fs::tests::
 run_tests okilum-shell --bins reader_trash::tests::unlinked_folder_moves_without_dialog_and_undo_restores_contents --exact
 # #1110 (AGENTS 9a): first run → choose a vault → a window always exists; this
 # replaces the manual first-launch check on every PR. #1137: a reopen with no
@@ -219,10 +219,10 @@ run_tests okilum-core --lib file_editor::network_save_tests::
 run_tests okilum-core --lib file_editor::raw_transaction::
 run_tests okilum-core --lib source_history::
 run_tests okilum-core --lib vault::preimage_visibility_tests::appledouble_is_excluded_before_lossy_utf8_inventory_and_display --exact
-run_tests okilum-shell --bins network_write_qa::
+run_tests okilum-shell-platform --lib network_write_qa::
 run_tests okilum-shell --bins reader_encoding::tests::repair_button_unlocks_edit_and_history_restores_the_original_bytes --exact
 run_tests okilum-shell --bins reader_encoding::tests::appledouble_does_not_enter_tree_or_offer_encoding_repair --exact
-run_tests okilum-shell --bins reader_trash_fs::tests::unsupported_flags_trash_and_restore_files_and_folders_without_clobber --exact
+run_tests okilum-shell-platform --lib reader_trash_fs::tests::unsupported_flags_trash_and_restore_files_and_folders_without_clobber --exact
 # Manager-authorized native mount gate only on the local M4 runner. Hosted Macs
 # have no corporate mount; never substitute local APFS for this acceptance.
 if [[ "${OKILUM_NETWORK_WRITE_QA:-0}" == 1 ]]; then
@@ -238,8 +238,8 @@ if [[ "${OKILUM_ENCODING_REPAIR_QA:-0}" == 1 ]]; then
         --example network_write_acceptance -- /Volumes/Maestro/okilum-nfs-qa --encoding-repair
 fi
 # #1924: no-Trash fallback, collision-safe Undo/Redo, and hidden tree/search.
-run_tests okilum-shell --bins reader_trash_fs::vault_fallback_tests::
-run_tests okilum-shell --bins reader_trash_fs::vault_trash_inventory_tests::
+run_tests okilum-shell-platform --lib reader_trash_fs::vault_fallback_tests::
+run_tests okilum-shell-platform --lib reader_trash_fs::vault_trash_inventory_tests::
 
 # #588: one-use fresh preparation never regenerates partial state.
 run_tests okilum-sync-controller --lib sidecar::macos::preparation::
