@@ -410,6 +410,7 @@ impl VaultWatcher {
                     && crate::records::FieldSchema::FILES
                         .contains(&crate::vault::note_path(relative).as_str()))
                     || relative.extension().is_some_and(|ext| ext == "jsonl")
+                    || crate::vault::note_path(relative) == crate::now_feed::SNAPSHOT_PATH
                 {
                     let parent = relative.parent().unwrap_or(Path::new(""));
                     self.pending

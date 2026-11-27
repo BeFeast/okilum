@@ -456,4 +456,49 @@ impl Reader {
                 .into_any_element(),
         )
     }
+
+    /// Live manager questions and unreadable sources for the unified feed.
+    /// Vault rows stay in the snapshot; this only overlays T3.
+    pub(super) fn feed_live(
+        &self,
+    ) -> (
+        Vec<okilum_core::now_feed::LiveQuestion>,
+        Vec<okilum_core::now_feed::LiveProblem>,
+    ) {
+        use okilum_core::now_feed::{LiveProblem, LiveQuestion};
+        if self.waiting.root != self.vault_root {
+            return (Vec::new(), Vec::new());
+        }
+        let view = self.ordered_waiting();
+        let questions = view
+            .rows
+            .iter()
+            .map(|row| {
+                let project = self.waiting_title(&row.source.folder);
+                LiveQuestion {
+                    id: format!("{}|{}", row.source.folder.display(), row.request_id),
+                    project: if project.is_empty() {
+                        None
+                    } else {
+                        Some(project)
+                    },
+                    title: row.text.clone().unwrap_or_else(|| "Question".to_owned()),
+                    detail: if row.stale {
+                        format!("stale {}", self.waiting.time(row.observed_at))
+                    } else {
+                        "open the manager thread".into()
+                    },
+                }
+            })
+            .collect();
+        let problems = view
+            .unavailable
+            .iter()
+            .map(|item| LiveProblem {
+                source: self.waiting_title(&item.folder),
+                detail: item.problem.clone(),
+            })
+            .collect();
+        (questions, problems)
+    }
 }

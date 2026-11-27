@@ -1137,6 +1137,7 @@ impl Render for Reader {
         self.sync_tree();
         self.schedule_tree_follow(cx);
         self.sync_sidebar(cx);
+        self.ensure_now_feed(cx);
         self.sync_agent_document(cx);
         self.restore_ui_tree();
         self.restore_ui_source(window, cx);
