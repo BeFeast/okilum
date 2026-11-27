@@ -1,0 +1,88 @@
+# #3291: Two-way Jira Server/DC wiki markup converter (Copy as Jira + Paste from Jira).
+# 1. Open Command Palette in Read mode, run "Copy as Jira" on the whole note.
+# 2. Switch to Edit mode, clear, and Paste as Plain Text (Ctrl+Shift+V) to verify
+#    the clipboard holds Jira wiki markup (`h1. Sprint Plan`, `{code:rust}`).
+# 3. Clear and normal Paste (Ctrl+V) to verify smart-paste auto-detects Jira
+#    wiki markup and converts it back to Markdown.
+# 4. Clear, open Command Palette, run "Paste as Markdown from Jira" to verify
+#    the explicit command converts Jira wiki markup to Markdown.
+note: |
+  # Sprint Plan
+
+  Summary with **urgent** item and [tracker](https://example.invalid/item).
+
+  ```rust
+  fn demo() {}
+  ```
+region: [300, 100, 720, 560]
+ready_text: Summary with urgent item and tracker
+steps:
+  - id: palette-copy-jira
+    keys: [k]
+    mods: [ctrl]
+    wait: 0.6
+  - id: type-copy-jira
+    type: Copy as Jira
+    wait: 0.6
+    region: [300, 80, 760, 500]
+    text: Copy as Jira
+    text_absent: No matching files
+  - id: run-copy-jira
+    keys: [Return]
+    wait: 0.6
+  - id: enter-editor
+    keys: [e]
+    mods: [ctrl, shift]
+    wait: 1.0
+  - id: select-all-1
+    keys: [a]
+    mods: [ctrl]
+    wait: 0.3
+  - id: clear-1
+    keys: [BackSpace]
+    wait: 0.3
+  - id: paste-plain-jira
+    keys: [v]
+    mods: [ctrl, shift]
+    wait: 0.8
+    text: h1. Sprint Plan
+  - id: paste-plain-code
+    text: '{code:rust}'
+  - id: select-all-2
+    keys: [a]
+    mods: [ctrl]
+    wait: 0.3
+  - id: clear-2
+    keys: [BackSpace]
+    wait: 0.3
+  - id: smart-paste-jira
+    keys: [v]
+    mods: [ctrl]
+    wait: 0.8
+    text: Summary with urgent item and tracker
+    text_absent: 'h1.'
+  - id: smart-paste-no-code-macro
+    text: fn demo
+    text_absent: '{code:rust}'
+  - id: select-all-3
+    keys: [a]
+    mods: [ctrl]
+    wait: 0.3
+  - id: clear-3
+    keys: [BackSpace]
+    wait: 0.3
+  - id: palette-paste-jira
+    keys: [k]
+    mods: [ctrl]
+    wait: 0.6
+  - id: type-paste-jira
+    type: Paste as Markdown from Jira
+    wait: 0.6
+    region: [300, 80, 760, 500]
+    text: Paste as Markdown from Jira
+    text_absent: No matching files
+  - id: run-paste-jira
+    keys: [Return]
+    wait: 0.8
+    text: Summary with urgent item and tracker
+    text_absent: 'h1.'

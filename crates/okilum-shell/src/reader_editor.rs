@@ -511,6 +511,10 @@ impl Editing {
         &self.input
     }
 
+    pub(crate) fn is_markdown(&self) -> bool {
+        self.markdown
+    }
+
     pub(super) fn selected_markdown(&self, window: &Window, cx: &App) -> Option<String> {
         (self.markdown && self.input.focus_handle(cx).is_focused(window))
             .then(|| self.input.read(cx).selected_text().to_string())
@@ -3342,6 +3346,11 @@ impl Reader {
                     this.paste_with_mode(PasteMode::TitledLink, window, cx)
                 },
             ))
+            .on_action(
+                cx.listener(|this, _: &crate::note_paste::PasteFromJira, window, cx| {
+                    this.paste_from_jira(window, cx)
+                }),
+            )
             .drag_over::<ExternalPaths>(|style, _, _, cx| {
                 style.bg(brand::palette(cx).selected.opacity(0.12))
             })

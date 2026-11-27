@@ -2,7 +2,10 @@
 use super::*;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 
-gpui::actions!(reader_read_menu, [CopyAsMarkdown, CopyWithFormatting]);
+gpui::actions!(
+    reader_read_menu,
+    [CopyAsMarkdown, CopyWithFormatting, CopyAsJira]
+);
 
 pub(super) const COPY_MARKDOWN_KEY: &str = "secondary-shift-c";
 
@@ -44,6 +47,31 @@ impl Reader {
         }
         if let Some(snapshot) = snapshot(self, cx) {
             snapshot.copy_format(true, window, cx);
+        }
+    }
+
+    /// Copy the current selection (or whole document when nothing is selected)
+    /// converted from Markdown to Jira Server/DC wiki markup (#3291).
+    pub(super) fn copy_as_jira(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editing) = self.pane.editing.as_ref().filter(|e| e.is_markdown()) {
+            let input = editing.input().read(cx);
+            let selected = input.selected_text().to_string();
+            let source = if selected.is_empty() {
+                input.value().to_string()
+            } else {
+                selected
+            };
+            if !source.is_empty() {
+                let jira = okilum_paste::markdown_to_jira(&source);
+                cx.write_to_clipboard(ClipboardItem::new_string(jira));
+            }
+            return;
+        }
+        if !self.read_copy_available() {
+            return;
+        }
+        if let Some(snapshot) = snapshot(self, cx) {
+            snapshot.copy_jira(window, cx);
         }
     }
 }
@@ -88,6 +116,10 @@ impl Snapshot {
         }
     }
 
+    pub(super) fn copy_jira(&self, window: &mut Window, cx: &mut App) {
+        self.copy(Command::Jira, window, cx);
+    }
+
     fn has_selection(&self) -> bool {
         !self.plain.is_empty() || !self.markdown.is_empty()
     }
@@ -95,13 +127,18 @@ impl Snapshot {
     fn copy(&self, command: Command, window: &mut Window, cx: &mut App) {
         let text = match command {
             Command::Plain | Command::Rich => Some(self.plain.as_str()),
-            Command::Markdown if self.has_selection() => Some(self.markdown.as_str()),
-            Command::Markdown | Command::Document => self.document.as_deref(),
+            Command::Markdown | Command::Jira if self.has_selection() => {
+                Some(self.markdown.as_str())
+            }
+            Command::Markdown | Command::Document | Command::Jira => self.document.as_deref(),
             Command::SelectAll => None,
         };
         if let Some(text) = text {
             if command == Command::Rich {
                 platform::rich_clipboard::copy(text.to_owned(), self.markdown.clone(), window, cx);
+            } else if command == Command::Jira {
+                let jira = okilum_paste::markdown_to_jira(text);
+                cx.write_to_clipboard(ClipboardItem::new_string(jira));
             } else {
                 cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
             }
@@ -167,11 +204,13 @@ fn build(
                         Command::Plain => hints(&gpui_component::input::Copy),
                         Command::Markdown | Command::Document => hints(&CopyAsMarkdown),
                         Command::Rich => hints(&CopyWithFormatting),
+                        Command::Jira => hints(&CopyAsJira),
                         Command::SelectAll => hints(&gpui_component::input::SelectAll),
                     })
             })
             .disabled(
-                (command == Command::Document && snapshot.document.is_none())
+                ((command == Command::Document || (command == Command::Jira && !has_selection))
+                    && snapshot.document.is_none())
                     || (command == Command::Rich && !snapshot.rich_markdown),
             )
             .on_click(move |_, window, cx| {

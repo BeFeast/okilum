@@ -94,6 +94,7 @@ enum Command {
     Paste,
     PastePlain,
     PasteTitledLink,
+    PasteFromJira,
     SelectAll,
     CopyLinkToLine,
     Remind,
@@ -160,6 +161,11 @@ fn editor_entries(
         "Paste as Titled Link",
         !(editable && clipboard),
         Command::PasteTitledLink,
+    ));
+    entries.push(item(
+        "Paste as Markdown from Jira",
+        !(editable && clipboard),
+        Command::PasteFromJira,
     ));
     entries.push(Entry::Separator);
     entries.push(item("Select All", false, Command::SelectAll));
@@ -366,6 +372,7 @@ pub(super) fn editor_menu(menu: NativeMenu, facts: &MenuFacts, cx: &App) -> Nati
                     Command::Paste => Box::new(Paste),
                     Command::PastePlain => Box::new(crate::note_paste::PasteAsPlainText),
                     Command::PasteTitledLink => Box::new(crate::note_paste::PasteAsTitledLink),
+                    Command::PasteFromJira => Box::new(crate::note_paste::PasteFromJira),
                     Command::SelectAll => Box::new(SelectAll),
                     Command::CopyLinkToLine => Box::new(CopyLinkToLine),
                     Command::Remind => Box::new(RemindOnSelection {
@@ -385,6 +392,11 @@ pub(super) fn editor_menu(menu: NativeMenu, facts: &MenuFacts, cx: &App) -> Nati
                         "Copy as Markdown",
                         disabled,
                         Box::new(crate::reader_read_menu::CopyAsMarkdown),
+                    )
+                    .menu_with_disabled(
+                        "Copy as Jira",
+                        false,
+                        Box::new(crate::reader_read_menu::CopyAsJira),
                     )
                 } else {
                     menu
@@ -1045,6 +1057,7 @@ mod menu_tests {
                 "Paste",
                 "Paste as Plain Text",
                 "Paste as Titled Link",
+                "Paste as Markdown from Jira",
                 "Select All",
                 "Copy link to line"
             ]
@@ -1068,6 +1081,7 @@ mod menu_tests {
                 "Paste",
                 "Paste as Plain Text",
                 "Paste as Titled Link",
+                "Paste as Markdown from Jira",
                 "Select All",
                 "Copy link to line"
             ]

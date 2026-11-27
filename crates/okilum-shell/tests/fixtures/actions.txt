@@ -191,6 +191,7 @@ okilum_feedback::SendFeedback
 okilum_feedback::SendSprintReport
 okilum_paste::PasteAsPlainText
 okilum_paste::PasteAsTitledLink
+okilum_paste::PasteFromJira
 okilum_settings::CloseSettings
 okilum_settings::OpenSettings
 project_terminal::OpenInTerminal
@@ -262,6 +263,7 @@ reader_open::NewVault
 reader_open::NewWindow
 reader_open::OpenFile
 reader_open::OpenFolder
+reader_read_menu::CopyAsJira
 reader_read_menu::CopyAsMarkdown
 reader_read_menu::CopyWithFormatting
 reader_reminder::CopyLinkToLine

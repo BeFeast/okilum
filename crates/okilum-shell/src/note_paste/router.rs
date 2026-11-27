@@ -90,6 +90,8 @@ pub enum Route {
     SelectionLink,
     RichText,
     Table,
+    /// Jira Server/DC wiki markup auto-converted to Markdown (#3291).
+    Jira,
     Text,
     /// Paste as Plain Text.
     PlainText,
@@ -509,6 +511,17 @@ fn route_once(board: &impl Pasteboard, cx: &RouteContext) -> Result<Routed, Offe
         if let Some(table) = okilum_paste::tsv_to_table(&text) {
             let table = fit_markdown(&table, true, cx.source, sel.clone());
             return Ok(Routed::text(Route::Table, &types, table));
+        }
+        // 6.5. Jira Server/DC wiki markup: auto-convert to Markdown (#3291).
+        if okilum_paste::looks_like_jira_wiki(&text) {
+            let md = okilum_paste::jira_to_markdown(&text);
+            let block = md.contains('\n')
+                || md.starts_with('#')
+                || md.starts_with('>')
+                || md.starts_with("---")
+                || md.starts_with('|');
+            let md = fit_markdown(&md, block, cx.source, sel.clone());
+            return Ok(Routed::text(Route::Jira, &types, md));
         }
         // 7. Plain text.
         if !text.is_empty() {
@@ -2363,5 +2376,42 @@ mod tests {
         let routed = route(&board, &cx).unwrap();
         assert_eq!(routed.route, Route::Text);
         assert_eq!(routed.insert.as_deref(), Some("read text"));
+    }
+
+    /// #3291: Smart paste auto-detects unmistakable Jira Server/DC wiki markup,
+    /// leaves plain Markdown and code blocks untouched, and Paste as Plain Text
+    /// keeps the raw Jira wiki markup.
+    #[test]
+    fn smart_paste_auto_detects_jira_wiki_markup() {
+        let note = Note::new();
+        let jira = "h1. Sprint Plan\n\nSee [Spec|https://example.invalid/spec] and *bold*.\n\n{code:rust}\nfn main() {}\n{code}";
+        let board = Board::with(&[(offer::UTF8_TEXT, jira.as_bytes())]);
+
+        let routed = route(&board, &note.cx(Mode::Smart, "", 0..0)).unwrap();
+        assert_eq!(routed.route, Route::Jira);
+        let inserted = routed.insert.as_deref().unwrap();
+        assert!(inserted.contains("# Sprint Plan"), "got: {inserted}");
+        assert!(inserted.contains("[Spec](https://example.invalid/spec)"));
+        assert!(inserted.contains("**bold**"));
+        assert!(inserted.contains("```rust\nfn main() {}\n```"));
+
+        // Inside a fenced code block: stays raw.
+        let fenced = "```\n\n```";
+        let in_code = route(&board, &note.cx(Mode::Smart, fenced, 4..4)).unwrap();
+        assert_eq!(in_code.route, Route::CodeBlockText);
+        assert_eq!(in_code.insert.as_deref(), Some(jira));
+
+        // Paste as Plain Text: stays raw.
+        let plain = route(&board, &note.cx(Mode::Plain, "", 0..0)).unwrap();
+        assert_eq!(plain.route, Route::PlainText);
+        assert_eq!(plain.insert.as_deref(), Some(jira));
+
+        // Normal Markdown: not mis-converted.
+        let md_board = Board::with(&[(
+            offer::UTF8_TEXT,
+            b"# Normal Heading\n\n**bold** and *italic*",
+        )]);
+        let md_routed = route(&md_board, &note.cx(Mode::Smart, "", 0..0)).unwrap();
+        assert_eq!(md_routed.route, Route::Text);
     }
 }

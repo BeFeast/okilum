@@ -92,6 +92,8 @@ pub(super) enum PaletteItem {
     SwitchWindowMode,
     CopyAsMarkdown,
     CopyWithFormatting,
+    CopyAsJira,
+    PasteFromJira,
     OpenTerminal,
     /// «Open in terminal» for the open file's folder (#2837).
     OpenInTerminal,
@@ -783,6 +785,8 @@ impl Reader {
             PaletteItem::Project(row) => row.project.folder.to_string_lossy().into_owned(),
             PaletteItem::CopyAsMarkdown => "copy-as-markdown".into(),
             PaletteItem::CopyWithFormatting => "copy-with-formatting".into(),
+            PaletteItem::CopyAsJira => "copy-as-jira".into(),
+            PaletteItem::PasteFromJira => "paste-from-jira".into(),
             PaletteItem::SwitchWindowMode => "switch-window-mode".into(),
             PaletteItem::OpenTerminal => "open-terminal".into(),
             PaletteItem::OpenInTerminal => "open-in-terminal".into(),
@@ -871,19 +875,26 @@ impl Reader {
         }
         let sections = &palette.sections;
         let mut items = Vec::new();
-        if self.read_copy_available() {
-            let query = palette.query.trim().to_lowercase();
-            if !query.is_empty() {
-                for (label, item) in [
-                    ("copy as markdown", PaletteItem::CopyAsMarkdown),
-                    ("copy as rich text", PaletteItem::CopyWithFormatting),
-                ] {
-                    if label.contains(&query)
-                        && (!matches!(item, PaletteItem::CopyWithFormatting) || !self.pane.use_html)
-                    {
-                        items.push((PaletteSection::Files, item));
-                    }
+        let query = palette.query.trim().to_lowercase();
+        if self.read_copy_available() && !query.is_empty() {
+            for (label, item) in [
+                ("copy as markdown", PaletteItem::CopyAsMarkdown),
+                ("copy as rich text", PaletteItem::CopyWithFormatting),
+            ] {
+                if label.contains(&query)
+                    && (!matches!(item, PaletteItem::CopyWithFormatting) || !self.pane.use_html)
+                {
+                    items.push((PaletteSection::Files, item));
                 }
+            }
+        }
+        if !query.is_empty() {
+            let markdown_editing = self.pane.editing.as_ref().is_some_and(|e| e.is_markdown());
+            if (self.read_copy_available() || markdown_editing) && "copy as jira".contains(&query) {
+                items.push((PaletteSection::Files, PaletteItem::CopyAsJira));
+            }
+            if markdown_editing && "paste as markdown from jira".contains(&query) {
+                items.push((PaletteSection::Files, PaletteItem::PasteFromJira));
             }
         }
         // A folder view has no file yet and still converts to a vault (#3098).
@@ -1280,6 +1291,19 @@ impl Reader {
                 if let Some(snapshot) = snapshot {
                     snapshot.copy_format(formatted, window, cx);
                 }
+            }
+            PaletteItem::CopyAsJira => {
+                let snapshot = self.quick_open.read_copy.take();
+                self.close_quick_open(window, cx);
+                if let Some(snapshot) = snapshot {
+                    snapshot.copy_jira(window, cx);
+                } else {
+                    self.copy_as_jira(window, cx);
+                }
+            }
+            PaletteItem::PasteFromJira => {
+                self.close_quick_open(window, cx);
+                self.paste_from_jira(window, cx);
             }
             PaletteItem::SwitchWindowMode => {
                 self.close_quick_open(window, cx);
@@ -1732,6 +1756,26 @@ impl Reader {
                             })
                             .into_any_element()
                     }
+                    PaletteItem::CopyAsJira => section_row(*ix)
+                        .debug_selector(|| "palette-copy-jira".into())
+                        .h(px(30.))
+                        .text_sm()
+                        .child(div().flex_1().child("Copy as Jira"))
+                        .child(reader_shortcuts::all_shortcuts(
+                            &reader_read_menu::CopyAsJira,
+                            cx,
+                        ))
+                        .into_any_element(),
+                    PaletteItem::PasteFromJira => section_row(*ix)
+                        .debug_selector(|| "palette-paste-jira".into())
+                        .h(px(30.))
+                        .text_sm()
+                        .child(div().flex_1().child("Paste as Markdown from Jira"))
+                        .child(reader_shortcuts::all_shortcuts(
+                            &note_paste::PasteFromJira,
+                            cx,
+                        ))
+                        .into_any_element(),
                     PaletteItem::SwitchWindowMode => section_row(*ix)
                         .h(px(30.))
                         .text_sm()
@@ -3252,6 +3296,8 @@ canaryhidden [[Target]]",
                     PaletteItem::Project(row) => row.project.name.clone(),
                     PaletteItem::CopyAsMarkdown => "Copy as Markdown".into(),
                     PaletteItem::CopyWithFormatting => "Copy as Rich Text".into(),
+                    PaletteItem::CopyAsJira => "Copy as Jira".into(),
+                    PaletteItem::PasteFromJira => "Paste as Markdown from Jira".into(),
                     PaletteItem::SwitchWindowMode => v.window_mode_label().into(),
                     PaletteItem::OpenTerminal => "Open terminal".into(),
                     PaletteItem::OpenInTerminal => reader_files::TERMINAL_LABEL.into(),

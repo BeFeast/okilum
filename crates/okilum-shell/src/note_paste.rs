@@ -34,7 +34,9 @@ gpui::actions!(
         /// Option+Shift+Cmd+V on macOS, Ctrl+Shift+V elsewhere (#1611).
         PasteAsPlainText,
         /// Cmd+Alt+V / Ctrl+Alt+V (#1611).
-        PasteAsTitledLink
+        PasteAsTitledLink,
+        /// Convert Jira Server/DC wiki markup from the clipboard to Markdown (#3291).
+        PasteFromJira
     ]
 );
 
@@ -139,6 +141,7 @@ pub fn edit_menu() -> gpui::Menu {
             gpui::MenuItem::action("Paste", PasteFromMenu),
             gpui::MenuItem::action("Paste as Plain Text", PasteAsPlainText),
             gpui::MenuItem::action("Paste as Titled Link", PasteAsTitledLink),
+            gpui::MenuItem::action("Paste as Markdown from Jira", PasteFromJira),
             gpui::MenuItem::separator(),
             gpui::MenuItem::action("Select All", gpui_component::input::SelectAll),
         ],

@@ -13,11 +13,13 @@
 
 mod css;
 mod html;
+mod jira;
 mod links;
 mod render;
 mod text;
 
 pub use html::html_to_markdown;
+pub use jira::{jira_to_markdown, looks_like_jira_wiki, markdown_to_jira};
 pub use links::{
     extract_page_metadata, extract_title, link_over_selection, single_url, titled_link,
     PageMetadata,

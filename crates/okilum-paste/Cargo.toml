@@ -16,4 +16,5 @@ url = "2"
 percent-encoding = "2"
 encoding_rs = "0.8"
 aho-corasick = "1"
+comrak = { version = "0.47", default-features = false }
 serde_json.workspace = true

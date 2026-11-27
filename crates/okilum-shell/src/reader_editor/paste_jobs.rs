@@ -278,6 +278,49 @@ impl Reader {
         input.update(cx, |state, cx| state.paste_with_mode(mode, window, cx));
     }
 
+    /// Explicit "Paste as Markdown from Jira" (#3291): always converts
+    /// clipboard text from Jira Server/DC wiki markup to Markdown.
+    pub(crate) fn paste_from_jira(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(input) = self.source_input() else {
+            cx.propagate();
+            return;
+        };
+        if !self.pane.editing.as_ref().is_some_and(|e| e.markdown) {
+            return;
+        }
+        let raw = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .or_else(|| {
+                cx.try_global::<crate::note_paste::ManagedNoteClipboard>()
+                    .and_then(
+                        |clipboard| match clipboard.0.read_chat_offer_in_command(cx) {
+                            Ok(crate::note_paste::offer::PasteOffer::Text(text)) => Some(text),
+                            _ => None,
+                        },
+                    )
+            });
+        let Some(raw) = raw.filter(|text| !text.is_empty()) else {
+            reader_toast::error("Nothing to paste: the clipboard has no text.", window, cx);
+            return;
+        };
+        let converted = okilum_paste::jira_to_markdown(&raw);
+        let block = converted.contains('\n')
+            || converted.starts_with('#')
+            || converted.starts_with('>')
+            || converted.starts_with("---")
+            || converted.starts_with('|');
+        let (source, sel) = {
+            let state = input.read(cx);
+            (state.value().to_string(), state.selected_range())
+        };
+        let fitted =
+            crate::note_paste::context::fit_markdown(&converted, block, &source, sel.clone());
+        input.update(cx, |state, cx| {
+            state.replace_source_range(sel, &fitted, window, cx);
+        });
+    }
+
     /// Files dropped onto the note: the same router as a paste of their
     /// URLs, at the drop point (the caret when the point has no offset).
     /// Dropped text, rich text, URLs and image data (#1615): the same router

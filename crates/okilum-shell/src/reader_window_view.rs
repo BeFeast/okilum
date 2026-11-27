@@ -1495,6 +1495,11 @@ impl Reader {
                     this.copy_read_formatted(window, cx)
                 },
             ))
+            .on_action(
+                cx.listener(|this, _: &reader_read_menu::CopyAsJira, window, cx| {
+                    this.copy_as_jira(window, cx)
+                }),
+            )
             .map(|view| reader_text_zoom::reader(view, cx))
             .on_action(cx.listener(
                 |reader, action: &reader_image_actions::ImageCommand, window, cx| {

@@ -4,6 +4,7 @@ pub(super) enum Command {
     Plain,
     Markdown,
     Rich,
+    Jira,
     SelectAll,
     Document,
 }
@@ -14,6 +15,7 @@ impl Command {
             Self::Plain => "Copy",
             Self::Markdown => "Copy as Markdown",
             Self::Rich => "Copy as Rich Text",
+            Self::Jira => "Copy as Jira",
             Self::SelectAll => "Select all",
             Self::Document => "Copy entire document as Markdown",
         }
@@ -22,9 +24,14 @@ impl Command {
 
 pub(super) fn commands(selected: bool) -> &'static [Command] {
     if selected {
-        &[Command::Plain, Command::Markdown, Command::Rich]
+        &[
+            Command::Plain,
+            Command::Markdown,
+            Command::Rich,
+            Command::Jira,
+        ]
     } else {
-        &[Command::SelectAll, Command::Document]
+        &[Command::SelectAll, Command::Document, Command::Jira]
     }
 }
 
@@ -36,10 +43,19 @@ mod tests {
     fn selection_and_background_offer_their_own_actions() {
         assert_eq!(
             commands(true),
-            &[Command::Plain, Command::Markdown, Command::Rich]
+            &[
+                Command::Plain,
+                Command::Markdown,
+                Command::Rich,
+                Command::Jira
+            ]
         );
-        assert_eq!(commands(false), &[Command::SelectAll, Command::Document]);
+        assert_eq!(
+            commands(false),
+            &[Command::SelectAll, Command::Document, Command::Jira]
+        );
         assert_eq!(Command::Markdown.label(), "Copy as Markdown");
+        assert_eq!(Command::Jira.label(), "Copy as Jira");
         assert_eq!(
             Command::Document.label(),
             "Copy entire document as Markdown"
