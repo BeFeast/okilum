@@ -1101,11 +1101,7 @@ pub fn looks_like_jira_wiki(text: &str) -> bool {
     }
 
     // Check inline unmistakable Jira signals: `[text|http(s)://...]` or `[~user]`.
-    if has_jira_external_link(&normalized) || has_jira_mention(&normalized) {
-        return true;
-    }
-
-    false
+    has_jira_external_link(&normalized) || has_jira_mention(&normalized)
 }
 
 fn has_jira_external_link(s: &str) -> bool {

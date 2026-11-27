@@ -212,11 +212,11 @@ pub fn extract_page_metadata(
                             || href.to_ascii_lowercase().ends_with(".png")
                             || href.to_ascii_lowercase().ends_with(".svg")
                             || href.to_ascii_lowercase().ends_with(".webp");
-                        if tokens.iter().any(|t| *t == "apple-touch-icon") {
+                        if tokens.contains(&"apple-touch-icon") {
                             if apple_icon.is_none() {
                                 apple_icon = Some(href);
                             }
-                        } else if tokens.iter().any(|t| *t == "icon") {
+                        } else if tokens.contains(&"icon") {
                             if is_raster_or_svg && preferred_icon.is_none() {
                                 preferred_icon = Some(href);
                             } else if fallback_icon.is_none() {
