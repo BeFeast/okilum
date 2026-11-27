@@ -6275,6 +6275,7 @@ name = "okilum-paste"
 version = "0.1.0"
 dependencies = [
  "aho-corasick",
+ "comrak",
  "encoding_rs",
  "html5ever",
  "markup5ever_rcdom",
