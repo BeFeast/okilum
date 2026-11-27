@@ -815,6 +815,7 @@ impl SectionDoc {
                                 && schema.fields.get(field).is_some_and(|f| {
                                     f.writable_by_actions
                                         && !matches!(f.field_type, FieldType::List(_))
+                                        && !f.field_type.is_opaque()
                                 }),
                             "actions",
                             "set requires a writable scalar note field (status, owner or due)",

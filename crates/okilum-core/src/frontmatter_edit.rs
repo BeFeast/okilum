@@ -196,7 +196,10 @@ fn validate_writable_field<'a>(schema: &'a FieldSchema, field: &str) -> Result<&
     let Some(def) = schema.fields.get(field) else {
         return Err(format!("Field '{field}' is not defined in fields.yaml"));
     };
-    if !def.writable_by_actions || matches!(def.field_type, FieldType::List(_)) {
+    if !def.writable_by_actions
+        || matches!(def.field_type, FieldType::List(_))
+        || def.field_type.is_opaque()
+    {
         return Err(format!("Field '{field}' is not a writable scalar field"));
     }
     Ok(def)
@@ -1775,5 +1778,84 @@ mod tests {
 
         // Second undo refuses because revision changed back.
         assert!(receipt.undo(&root, &drafts).is_err());
+    }
+
+    #[test]
+    fn refuses_opaque_writable_field_and_preserves_opaque_frontmatter_lines() {
+        let original_owner = concat!(
+            "  owner:\n",
+            "    type: string\n",
+            "    format: slug\n",
+            "    origin: stored\n",
+            "    rule: identifies the person or assistant expected to act\n",
+            "    writeback: none\n",
+            "    writers: [people, agents]\n",
+            "    required: {}\n",
+            "    index: {indexed: true, facet: true, sort: true}\n",
+            "    writable_by_actions: true",
+        );
+
+        let schema_with_waits = Arc::new(
+            FieldSchema::from_documents(|name| {
+                let mut text =
+                    std::fs::read_to_string(Path::new(FIXTURE_VIEWS).join("@Schema").join(name))?;
+                if name == "fields.yaml" {
+                    text = text.replace(
+                        "\nbuiltin_defaults:\n",
+                        "\n  waits:\n    type: list<object>\n    index: {indexed: false}\n    writable_by_actions: true\n\nbuiltin_defaults:\n",
+                    );
+                }
+                Ok(text)
+            })
+            .unwrap(),
+        );
+
+        let source = concat!(
+            "---\n",
+            "type: project\n",
+            "kind: project\n",
+            "area: Dev\n",
+            "status: active\n",
+            "waits:\n",
+            "  - on: \"vendor\"\n",
+            "    since: 2026-11-27\n",
+            "    next_check: 2026-11-27\n",
+            "---\n",
+            "# Okilum\n",
+        );
+        let target = Target::capture("state/dev/okilum/index.md", source).unwrap();
+        let plan = target
+            .plan(source, &schema_with_waits, "status", "parked")
+            .unwrap();
+        assert_eq!(
+            plan.after,
+            source.replacen("status: active\n", "status: parked\n", 1)
+        );
+
+        for owner_def in [
+            "  owner:\n    type: custom_blob\n    index: {indexed: false}\n    writable_by_actions: true",
+            "  owner:\n    type: object\n    writable_by_actions: true",
+        ] {
+            let opaque_schema = Arc::new(
+                FieldSchema::from_documents(|name| {
+                    let mut text = std::fs::read_to_string(
+                        Path::new(FIXTURE_VIEWS).join("@Schema").join(name),
+                    )?;
+                    if name == "fields.yaml" {
+                        assert!(text.contains(original_owner));
+                        text = text.replace(original_owner, owner_def);
+                    }
+                    Ok(text)
+                })
+                .unwrap(),
+            );
+            let err = target
+                .plan(source, &opaque_schema, "owner", "alice")
+                .unwrap_err();
+            assert!(
+                err.contains("not a writable scalar field"),
+                "unexpected error: {err}"
+            );
+        }
     }
 }

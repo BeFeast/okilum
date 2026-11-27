@@ -1,5 +1,5 @@
 use okilum_core::{
-    records::{FieldSchema, Projection, Source, Value},
+    records::{FieldSchema, FieldType, Projection, Source, Value},
     tasks, Vault,
 };
 use serde_json::json;
@@ -183,6 +183,244 @@ fn schema_rejects_missing_references_and_domain_drift() {
     })
     .unwrap_err();
     assert!(format!("{error:#}").contains("Area and domain lists disagree"));
+}
+
+#[test]
+fn opaque_and_object_fields_load_and_project_cleanly() {
+    let extra_fields = concat!(
+        "\n  waits:\n",
+        "    type: list<object>\n",
+        "    index: {indexed: false}\n",
+        "    writable_by_actions: true\n",
+        "  payload_obj:\n",
+        "    type: object\n",
+        "  custom_blob_field:\n",
+        "    type: custom_blob\n",
+        "    index: {indexed: false}\n",
+        "    writable_by_actions: true\n",
+        "  custom_blob_list:\n",
+        "    type: list<custom_blob>\n",
+        "    index: {indexed: false}\n",
+        "  req_opaque:\n",
+        "    type: list<object>\n",
+        "    index: {indexed: false}\n",
+        "    legacy_keys: [old_req_opaque]\n",
+        "    required: {layers: [state]}\n\n",
+    );
+    let schema_from_docs = FieldSchema::from_documents(|name| {
+        let mut text = std::fs::read_to_string(fixture().join("@Schema").join(name))?;
+        if name == "fields.yaml" {
+            assert!(text.contains("\nbuiltin_defaults:\n"));
+            text = text.replace(
+                "\nbuiltin_defaults:\n",
+                &format!("{extra_fields}builtin_defaults:\n"),
+            );
+        }
+        Ok(text)
+    })
+    .unwrap();
+
+    // Also exercise FieldSchema::load against a temporary @Schema copy on disk.
+    let temp = tempfile::tempdir().unwrap();
+    let schema_dir = temp.path().join("@Schema");
+    std::fs::create_dir_all(&schema_dir).unwrap();
+    for file in [
+        "fields.yaml",
+        "layout.yaml",
+        "frontmatter-schema.yaml",
+        "tags.yaml",
+    ] {
+        let mut content = std::fs::read_to_string(fixture().join("@Schema").join(file)).unwrap();
+        if file == "fields.yaml" {
+            content = content.replace(
+                "\nbuiltin_defaults:\n",
+                &format!("{extra_fields}builtin_defaults:\n"),
+            );
+        }
+        std::fs::write(schema_dir.join(file), content).unwrap();
+    }
+    let schema = Arc::new(FieldSchema::load(temp.path()).unwrap());
+
+    for loaded in [&schema_from_docs, schema.as_ref()] {
+        assert_eq!(
+            loaded.fields["waits"].field_type,
+            FieldType::List(Box::new(FieldType::Object))
+        );
+        assert!(loaded.fields["waits"].field_type.is_opaque());
+        assert_eq!(loaded.fields["payload_obj"].field_type, FieldType::Object);
+        assert!(loaded.fields["payload_obj"].field_type.is_opaque());
+        assert_eq!(
+            loaded.fields["custom_blob_field"].field_type,
+            FieldType::Opaque("custom_blob".into())
+        );
+        assert!(loaded.fields["custom_blob_field"].field_type.is_opaque());
+        assert_eq!(
+            loaded.fields["custom_blob_list"].field_type,
+            FieldType::List(Box::new(FieldType::Opaque("custom_blob".into())))
+        );
+        assert!(loaded.fields["custom_blob_list"].field_type.is_opaque());
+        assert!(!loaded.fields["title"].field_type.is_opaque());
+    }
+
+    let path = "state/dev/okilum/wait-note.md";
+    let note_src = concat!(
+        "---\n",
+        "type: note\n",
+        "area: Dev\n",
+        "waits:\n",
+        "  - on: \"vendor\"\n",
+        "    since: 2026-11-27\n",
+        "    next_check: 2026-11-27\n",
+        "custom_blob_field:\n",
+        "  a: 1\n",
+        "req_opaque:\n",
+        "  - k: v\n",
+        "---\n",
+        "# Wait note\n",
+    );
+    let legacy_path = "state/dev/okilum/wait-legacy.md";
+    let legacy_src = "---\ntype: note\narea: Dev\nold_req_opaque:\n  - k: v\n---\n# Legacy\n";
+    let missing_path = "state/dev/okilum/wait-missing.md";
+    let missing_src = "---\ntype: note\narea: Dev\n---\n# Missing\n";
+    let empty_path = "state/dev/okilum/wait-empty.md";
+    let empty_src = "---\ntype: note\narea: Dev\nreq_opaque: []\n---\n# Empty\n";
+
+    let projection = Projection::build(
+        schema,
+        [
+            Source {
+                path,
+                bytes: note_src.as_bytes(),
+                mtime: None,
+            },
+            Source {
+                path: legacy_path,
+                bytes: legacy_src.as_bytes(),
+                mtime: None,
+            },
+            Source {
+                path: missing_path,
+                bytes: missing_src.as_bytes(),
+                mtime: None,
+            },
+            Source {
+                path: empty_path,
+                bytes: empty_src.as_bytes(),
+                mtime: None,
+            },
+        ],
+    );
+
+    let note = projection.note(path).unwrap();
+    assert!(
+        !note
+            .findings
+            .iter()
+            .any(|f| matches!(f.code, "fields/invalid" | "fields/missing")
+                && matches!(
+                    f.field.as_str(),
+                    "waits" | "custom_blob_field" | "req_opaque"
+                )),
+        "unexpected findings: {:?}",
+        note.findings
+    );
+    assert!(!note.fields.contains_key("waits"));
+    assert!(!note.fields.contains_key("custom_blob_field"));
+    assert!(!note.fields.contains_key("req_opaque"));
+
+    let legacy_note = projection.note(legacy_path).unwrap();
+    assert!(
+        !legacy_note
+            .findings
+            .iter()
+            .any(|f| f.code == "fields/missing" && f.field == "req_opaque"),
+        "legacy opaque key should satisfy required check: {:?}",
+        legacy_note.findings
+    );
+
+    for absent in [missing_path, empty_path] {
+        let record = projection.note(absent).unwrap();
+        assert!(
+            record
+                .findings
+                .iter()
+                .any(|f| f.code == "fields/missing" && f.field == "req_opaque"),
+            "absent required opaque field on {absent} must be flagged: {:?}",
+            record.findings
+        );
+    }
+}
+
+#[test]
+fn schema_rejects_unknown_indexed_and_empty_field_types() {
+    let base_fields = std::fs::read_to_string(fixture().join("@Schema/fields.yaml")).unwrap();
+    let load_with_extra = |snippet: &str| {
+        FieldSchema::from_documents(|name| {
+            if name == "fields.yaml" {
+                Ok(base_fields.replace(
+                    "\nbuiltin_defaults:\n",
+                    &format!("\n{snippet}\n\nbuiltin_defaults:\n"),
+                ))
+            } else {
+                Ok(std::fs::read_to_string(
+                    fixture().join("@Schema").join(name),
+                )?)
+            }
+        })
+    };
+
+    for (label, snippet) in [
+        ("omitted index", "  bad_field:\n    type: custom_blob"),
+        (
+            "explicit indexed true",
+            "  bad_field:\n    type: custom_blob\n    index: {indexed: true}",
+        ),
+        (
+            "empty index mapping",
+            "  bad_field:\n    type: custom_blob\n    index: {}",
+        ),
+        (
+            "list of unknown indexed",
+            "  bad_field:\n    type: list<custom_blob>",
+        ),
+        (
+            "empty type even unindexed",
+            "  bad_field:\n    type: \"\"\n    index: {indexed: false}",
+        ),
+        (
+            "empty list inner even unindexed",
+            "  bad_field:\n    type: \"list<>\"\n    index: {indexed: false}",
+        ),
+    ] {
+        let err = load_with_extra(snippet)
+            .expect_err(&format!("{label} should fail FieldSchema::from_documents"));
+        assert!(
+            format!("{err:#}").contains("Unknown field type"),
+            "{label}: unexpected error {err:#}"
+        );
+    }
+
+    // Negative control via FieldSchema::load on disk.
+    let temp = tempfile::tempdir().unwrap();
+    let schema_dir = temp.path().join("@Schema");
+    std::fs::create_dir_all(&schema_dir).unwrap();
+    for file in [
+        "fields.yaml",
+        "layout.yaml",
+        "frontmatter-schema.yaml",
+        "tags.yaml",
+    ] {
+        let mut content = std::fs::read_to_string(fixture().join("@Schema").join(file)).unwrap();
+        if file == "fields.yaml" {
+            content = content.replace(
+                "\nbuiltin_defaults:\n",
+                "\n  bad_indexed:\n    type: custom_blob\n\nbuiltin_defaults:\n",
+            );
+        }
+        std::fs::write(schema_dir.join(file), content).unwrap();
+    }
+    let err = FieldSchema::load(temp.path()).unwrap_err();
+    assert!(format!("{err:#}").contains("Unknown field type"));
 }
 
 #[test]

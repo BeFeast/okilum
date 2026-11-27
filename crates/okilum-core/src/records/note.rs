@@ -71,6 +71,7 @@ pub(crate) fn project(schema: &FieldSchema, source: Source<'_>) -> NoteRecord {
     }
 
     let mut invalid = BTreeSet::new();
+    let mut opaque_present = BTreeSet::new();
     let authored_type = raw.get("type").and_then(value::string);
     let is_decision = path.kind == Some("decisions")
         || authored_type.is_some_and(|kind| {
@@ -100,6 +101,10 @@ pub(crate) fn project(schema: &FieldSchema, source: Source<'_>) -> NoteRecord {
                 .find_map(|key| raw.get(key).filter(|raw| !absent(raw)))
         });
         let Some(input) = input else { continue };
+        if field.field_type.is_opaque() {
+            opaque_present.insert(name.clone());
+            continue;
+        }
         let normalized = normalize(name, field, input, &raw, raw_value.is_none());
         let enum_layer = if path.layer.is_none() {
             Some("legacy")
@@ -213,6 +218,7 @@ pub(crate) fn project(schema: &FieldSchema, source: Source<'_>) -> NoteRecord {
         &path,
         kind.as_deref(),
         &invalid,
+        &opaque_present,
         is_decision,
     );
     row
@@ -416,6 +422,7 @@ fn required(
     path: &PathFields<'_>,
     kind: Option<&str>,
     invalid: &BTreeSet<String>,
+    opaque_present: &BTreeSet<String>,
     is_decision: bool,
 ) {
     let note_type = match row.fields.get("type") {
@@ -425,6 +432,7 @@ fn required(
     for (name, field) in &schema.fields {
         if row.fields.contains_key(name)
             || invalid.contains(name)
+            || opaque_present.contains(name)
             || name == "status" && (is_decision || !matches!(path.layer, None | Some("state")))
         {
             continue;
