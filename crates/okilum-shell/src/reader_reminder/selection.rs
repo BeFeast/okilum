@@ -206,6 +206,7 @@ impl Request {
             return Self::read(reader, cx);
         }
         if reader.single_file
+            || reader.archive_state.is_archive()
             || reader.pane.file_preview.is_some()
             || reader.pane.current_rel.is_empty()
             || reader.pointer_on_link()
@@ -227,6 +228,9 @@ impl Request {
         input: &Entity<EditorState>,
         state: &EditorState,
     ) -> Option<Self> {
+        if reader.archive_state.is_archive() {
+            return None;
+        }
         let source = state.source_snapshot();
         let (selection, date) = if state.selected_range().is_empty() {
             date_at_caret(&source.text, state.cursor(), today())?
@@ -284,6 +288,73 @@ impl Request {
         self.date
     }
 
+    pub(super) fn document(&self) -> &str {
+        &self.owner.document
+    }
+
+    pub(super) fn destination(&self) -> &str {
+        &self.owner.destination
+    }
+
+    pub(super) fn default_sentence_and_heading(&self, reader: &Reader) -> (String, Option<String>) {
+        let found = reminder_context::locate(&self.source, &self.selection);
+        let sentence = found.sentence.unwrap_or_else(|| {
+            if reader.pane.current_title.is_empty() {
+                reader_move::display_name(&self.owner.document)
+            } else {
+                reader.pane.current_title.clone()
+            }
+        });
+        (sentence, found.heading)
+    }
+
+    pub(super) fn preflight(
+        &self,
+        reader: &mut Reader,
+        window: &mut Window,
+        cx: &mut Context<Reader>,
+    ) -> bool {
+        let current = self.current(reader, cx);
+        #[cfg(test)]
+        {
+            if cx.try_global::<test_hooks::Harness>().is_none() {
+                cx.set_global(test_hooks::Harness::default());
+            }
+            cx.global_mut::<test_hooks::Harness>()
+                .attempts
+                .push(current);
+        }
+        if !current {
+            reader_toast::error(
+                "Reminder selection changed. Reopen its context menu.",
+                window,
+                cx,
+            );
+            return false;
+        }
+        if reader.archive_state.is_archive() {
+            reader_toast::error(
+                "This vault is a read-only archive; reminders cannot be added.",
+                window,
+                cx,
+            );
+            return false;
+        }
+        if self.owner.state.is_none() {
+            reader_toast::error("Reminders need Okilum's app storage.", window, cx);
+            return false;
+        }
+        if self.owner.document == self.owner.destination {
+            reader_toast::error(
+                "Choose another reminders note in Settings to keep this source note unchanged.",
+                window,
+                cx,
+            );
+            return false;
+        }
+        true
+    }
+
     fn current(&self, reader: &Reader, cx: &App) -> bool {
         self.owner.current(reader)
             && match &self.evidence {
@@ -326,49 +397,16 @@ impl Request {
             }
     }
 
+    #[cfg(test)]
     pub(super) fn apply(&self, reader: &mut Reader, window: &mut Window, cx: &mut Context<Reader>) {
-        let current = self.current(reader, cx);
-        #[cfg(test)]
-        {
-            if cx.try_global::<test_hooks::Harness>().is_none() {
-                cx.set_global(test_hooks::Harness::default());
-            }
-            cx.global_mut::<test_hooks::Harness>()
-                .attempts
-                .push(current);
-        }
-        if !current {
-            reader_toast::error(
-                "Reminder selection changed. Reopen its context menu.",
-                window,
-                cx,
-            );
+        if !self.preflight(reader, window, cx) {
             return;
         }
-        let Some(state) = self.owner.state.as_ref() else {
-            reader_toast::error("Reminders need Okilum's app storage.", window, cx);
-            return;
-        };
-        if self.owner.document == self.owner.destination {
-            reader_toast::error(
-                "Choose another reminders note in Settings to keep this source note unchanged.",
-                window,
-                cx,
-            );
-            return;
-        }
-        let found = reminder_context::locate(&self.source, &self.selection);
-        let sentence = found.sentence.unwrap_or_else(|| {
-            if reader.pane.current_title.is_empty() {
-                reader_move::display_name(&self.owner.document)
-            } else {
-                reader.pane.current_title.clone()
-            }
-        });
+        let (sentence, heading) = self.default_sentence_and_heading(reader);
         let line = match reminder_task::format(
             &sentence,
             &self.owner.document,
-            found.heading.as_deref(),
+            heading.as_deref(),
             self.date,
         ) {
             Ok(line) => line,
@@ -376,6 +414,35 @@ impl Request {
                 reader_toast::error(error, window, cx);
                 return;
             }
+        };
+        self.apply_line_unchecked(reader, line, self.date, window, cx);
+    }
+
+    pub(super) fn apply_line(
+        &self,
+        reader: &mut Reader,
+        line: String,
+        date: time::Date,
+        window: &mut Window,
+        cx: &mut Context<Reader>,
+    ) {
+        if !self.preflight(reader, window, cx) {
+            return;
+        }
+        self.apply_line_unchecked(reader, line, date, window, cx);
+    }
+
+    fn apply_line_unchecked(
+        &self,
+        reader: &mut Reader,
+        line: String,
+        date: time::Date,
+        window: &mut Window,
+        cx: &mut Context<Reader>,
+    ) {
+        let Some(state) = self.owner.state.as_ref() else {
+            reader_toast::error("Reminders need Okilum's app storage.", window, cx);
+            return;
         };
         let drafts = state.join("editor-drafts");
         let request = self.clone();
@@ -447,14 +514,7 @@ impl Request {
                 match result {
                     Ok(receipt) => {
                         reader.refresh_reminder_source(receipt.path(), cx);
-                        reader.announce_reminder(
-                            receipt,
-                            request.owner,
-                            drafts,
-                            request.date,
-                            window,
-                            cx,
-                        );
+                        reader.announce_reminder(receipt, request.owner, drafts, date, window, cx);
                     }
                     Err(error) => {
                         reader_toast::error(format!("Reminder not added: {error:#}"), window, cx)

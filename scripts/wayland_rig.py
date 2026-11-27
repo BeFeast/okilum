@@ -162,6 +162,13 @@ class Rig:
             holder.wait(timeout=10)
         time.sleep(.6)
 
+    def right_click(self, x, y):
+        """A right click at output pixel (x, y)."""
+        self.move_pointer(x, y)
+        time.sleep(.3)
+        subprocess.run(['wlrctl', 'pointer', 'click', 'right'], env=self.env, check=True)
+        time.sleep(.6)
+
     def window(self):
         """The focused (else first) application window as sway sees it, in
         logical output coordinates: `rect` (placement), `window_rect` and

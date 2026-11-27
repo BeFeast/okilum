@@ -1901,6 +1901,7 @@ impl Reader {
         let root_changed = self.vault_root != pending.intent.root;
         if root_changed {
             self.tree_preview.close();
+            self.reminder_notifier.reset_banner();
         }
         self.vault_root = pending.intent.root.clone();
         let opts = &self.loading.as_ref().unwrap().opts;

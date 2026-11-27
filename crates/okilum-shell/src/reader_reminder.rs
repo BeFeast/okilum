@@ -11,6 +11,8 @@ use okilum_core::{reminder_context, reminder_dates, reminder_task};
 
 gpui::actions!(reader_reminder, [CopyLinkToLine]);
 
+#[cfg(any(unix, windows))]
+mod confirm;
 #[cfg(all(test, unix))]
 mod selected_tests;
 #[cfg(any(unix, windows))]
@@ -76,7 +78,9 @@ pub(super) fn menu_at(
                 .child(label.clone())
         })
         .on_click(move |_, window, cx| {
-            let _ = reader.update(cx, |this, cx| request.apply(this, window, cx));
+            let _ = reader.update(cx, |this, cx| {
+                confirm::open(request.clone(), this, window, cx)
+            });
         }),
     )
 }
@@ -433,6 +437,7 @@ impl Reader {
     pub(super) fn reminder_for_selection(&self, cx: &App) -> Option<(String, time::Date)> {
         // A right-click on a link belongs to the link's own menu (#943).
         if self.single_file
+            || self.archive_state.is_archive()
             || self.pane.file_preview.is_some()
             || self.pane.current_rel.is_empty()
             || self.pointer_on_link()
@@ -452,7 +457,7 @@ impl Reader {
         cx: &mut Context<Self>,
     ) {
         if let Some(request) = &action.request {
-            request.apply(self, window, cx);
+            confirm::open(request.clone(), self, window, cx);
         }
     }
 
@@ -644,6 +649,7 @@ mod visual_tests {
         state: &Path,
     ) -> (Entity<Reader>, &'a mut VisualTestContext) {
         cx.update(|cx| {
+            cx.set_reduce_motion(true);
             crate::test_init(cx);
             bind_keys(cx);
         });
@@ -968,6 +974,14 @@ mod visual_tests {
                 .clone()
         });
         visual.dispatch_action(RemindOnSelection { request });
+        visual.run_until_parked();
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        let submit = visual
+            .debug_bounds("remind-confirm-submit")
+            .expect("confirm dialog submit button");
+        visual.simulate_mouse_move(submit.center(), None, Modifiers::default());
+        visual.simulate_click(submit.center(), Modifiers::default());
         visual.run_until_parked();
         assert_eq!(
             std::fs::read_to_string(root.join(NOTE)).unwrap(),

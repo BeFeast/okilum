@@ -1,0 +1,64 @@
+# Issue #724: Remind me on a date selected in note text (context menu -> Tasks reminder in Reminders.md)
+# State: a vault with an overdue unchecked reminder in Reminders.md and a note
+# containing a short English month date ("1 Nov 2027").
+# Visible:
+# 1. On launch, a non-modal "Missed reminders" banner surfaces the overdue item.
+# 2. Right-clicking "1 Nov 2027" in Reader offers "Remind me on Mon, 1 Nov 2027".
+# 3. Clicking it opens the lightweight "Add reminder" confirmation dialog with
+#    editable text and date; pressing Enter confirms and writes to Reminders.md.
+# 4. Opening Reminders.md shows the persisted Tasks line and overdue reminder.
+appearance: light
+preferences:
+  note_open_mode: read
+open: Travel.md
+region: [0, 0, 1366, 768]
+ready_text: Autumn plans
+wait_for_vault: 15
+rig:
+  persistent_pointer: true
+generate:
+  - path: Reminders.md
+    kind: text
+    text: |
+      # Reminders
+
+      - [ ] Renew passport [[Passport.md]] 📅 2025-01-15
+  - path: Passport.md
+    kind: text
+    text: |
+      # Passport
+
+      Check expiration before travel.
+  - path: Travel.md
+    kind: text
+    text: |
+      # Autumn plans
+
+      Switch clocks on 1 Nov 2027 in Jerusalem.
+steps:
+  - id: missed-banner
+    wait: 0.8
+    text: Missed reminders
+  - id: context-menu
+    right_click: [520, 242]
+    wait: 0.5
+    text: Remind me on Mon, 1 Nov 2027
+  - id: confirm-dialog
+    click: [580, 315]
+    wait: 0.5
+    text: Add reminder
+  - id: confirm-enter
+    keys: [Return]
+    wait: 0.8
+    text: Reminder added for Mon, 1 Nov 2027
+    text_absent: Reminder not added
+  - id: open-reminders-note
+    click: [70, 165]
+    wait: 0.8
+    region: [280, 140, 1080, 600]
+    text: Switch clocks on 1 Nov 2027
+  - id: show-missed-reminders
+    click: [1022, 110]
+    wait: 0.8
+    text: Overdue
+    text_absent: Missed reminders (1)

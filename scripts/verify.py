@@ -782,6 +782,8 @@ def run(args, scenario, output, result):
                                 rig.keys(*step['keys'], mods=step.get('mods', ()))
                             if 'click' in step:
                                 rig.click(*step['click'])
+                            if 'right_click' in step:
+                                rig.right_click(*step['right_click'])
                             if 'hover' in step:
                                 rig.move_pointer(*step['hover'])
                             if 'type' in step:

@@ -29,12 +29,19 @@ pub(super) struct Notifier {
     /// The watched note changed: re-import silently on the next evaluation.
     rebaseline: bool,
     generation: u64,
+    /// Sorted overdue reminder IDs dismissed in the non-modal banner for this vault.
+    dismissed_missed: Option<Vec<String>>,
 }
 
 impl Notifier {
     /// The watched note changed: the next evaluation re-imports silently.
     pub(super) fn note_changed(&mut self) {
         self.rebaseline = true;
+        self.dismissed_missed = None;
+    }
+
+    pub(super) fn reset_banner(&mut self) {
+        self.dismissed_missed = None;
     }
 }
 
@@ -269,6 +276,91 @@ impl Reader {
         }
         schedule::reminders_dashboard(&self.reminder_prefs.note)
             .map(|source| Arc::from(source.as_str()))
+    }
+
+    /// Overdue unchecked reminders in the configured reminders note, sorted by due date.
+    pub(super) fn overdue_reminders(&self) -> Vec<schedule::Reminder> {
+        if self.single_file {
+            return Vec::new();
+        }
+        let Some(index) = self.tasks_index.as_ref() else {
+            return Vec::new();
+        };
+        let today = local_now().date();
+        let mut overdue: Vec<_> = schedule::reminders(&index.note_tasks(&self.reminder_prefs.note))
+            .into_iter()
+            .filter(|reminder| reminder.due < today)
+            .collect();
+        overdue.sort_by(|a, b| a.due.cmp(&b.due).then_with(|| a.id.cmp(&b.id)));
+        overdue
+    }
+
+    /// Non-modal "Missed reminders" banner surfaced on launch / vault open when
+    /// overdue unchecked reminders exist in `Reminders.md` (#724).
+    #[inline(never)]
+    pub(super) fn render_missed_reminders_banner(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if self.reminders_view {
+            return None;
+        }
+        let overdue = self.overdue_reminders();
+        if overdue.is_empty() {
+            return None;
+        }
+        let ids: Vec<String> = overdue.iter().map(|r| r.id.clone()).collect();
+        if self.reminder_notifier.dismissed_missed.as_ref() == Some(&ids) {
+            return None;
+        }
+        let count = overdue.len();
+        let first = &overdue[0];
+        let summary = if count == 1 {
+            format!("Missed reminders (1): {} ({})", first.text, first.due)
+        } else {
+            format!(
+                "Missed reminders ({count}): {} ({}) and {} more",
+                first.text,
+                first.due,
+                count - 1
+            )
+        };
+        Some(
+            h_flex()
+                .debug_selector(|| "missed-reminders-banner".into())
+                .px_4()
+                .py_1p5()
+                .gap_2()
+                .items_center()
+                .border_b_1()
+                .border_color(brand::palette(cx).border_subtle)
+                .bg(cx.theme().secondary)
+                .text_sm()
+                .text_color(cx.theme().foreground)
+                .child(div().flex_1().min_w_0().child(summary))
+                .child(
+                    Button::new("missed-reminders-banner-show")
+                        .debug_selector(|| "missed-reminders-banner-show".into())
+                        .small()
+                        .label("Show")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.show_reminders_view(window, cx);
+                        })),
+                )
+                .child(
+                    Button::new("missed-reminders-banner-dismiss")
+                        .debug_selector(|| "missed-reminders-banner-dismiss".into())
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Close)
+                        .tooltip("Dismiss")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.reminder_notifier.dismissed_missed = Some(ids.clone());
+                            cx.notify();
+                        })),
+                )
+                .into_any_element(),
+        )
     }
 
     fn announce_missed_reminders(&mut self, missed: usize, cx: &mut Context<Self>) {
@@ -803,6 +895,60 @@ mod tests {
         assert_eq!(shown.len(), 1, "the owner delivers once");
         assert_eq!(shown[0].title.as_ref(), "1 task overdue");
         assert_eq!(shown[0].body.as_ref(), "Night owl");
+        TEST_NOW.with(|cell| cell.set(None));
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[gpui::test]
+    fn missed_reminders_banner_shows_on_launch_and_opens_or_dismisses(cx: &mut TestAppContext) {
+        let temp = std::env::temp_dir().join(format!("okilum-banner-{}", uuid::Uuid::new_v4()));
+        let (root, state) = (temp.join("vault"), temp.join("state"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(root.join("start.md"), "# Start\n\nBody.\n").unwrap();
+        std::fs::write(
+            root.join(reader_reminder::NOTE),
+            "- [ ] Renew passport [[start.md]] 📅 2025-01-15\n",
+        )
+        .unwrap();
+        at(datetime!(2026-10-08 02:00));
+        let (reader, visual) = mount(cx, &root, &state);
+        reindex(&reader, visual);
+
+        assert!(
+            visual.debug_bounds("missed-reminders-banner").is_some(),
+            "overdue unchecked reminder surfaces the non-modal banner on launch even during quiet hours"
+        );
+
+        let dismiss = visual
+            .debug_bounds("missed-reminders-banner-dismiss")
+            .expect("banner has a dismiss button");
+        visual.simulate_click(dismiss.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("missed-reminders-banner").is_none(),
+            "dismiss hides the banner for the current overdue set"
+        );
+
+        // Resetting (as on vault reopen) brings the banner back, and Show opens the reminders view.
+        reader.update(visual, |r, cx| {
+            r.reminder_notifier.reset_banner();
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let show = visual
+            .debug_bounds("missed-reminders-banner-show")
+            .expect("banner has a Show button");
+        visual.simulate_click(show.center(), Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(r.reminders_view);
+            assert_eq!(r.pane.current_rel, reader_reminder::NOTE);
+        });
+        assert!(
+            visual.debug_bounds("missed-reminders-banner").is_none(),
+            "banner hides while the reminders view itself is open"
+        );
         TEST_NOW.with(|cell| cell.set(None));
         std::fs::remove_dir_all(temp).unwrap();
     }

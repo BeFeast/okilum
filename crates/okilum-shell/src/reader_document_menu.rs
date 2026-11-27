@@ -66,13 +66,13 @@ impl Reader {
             .map(|status| reader_status_line::render(status, "file-status", None, cx))
     }
 
-    /// Header, sync-conflict banner, encoding notice and archive notice, in display order.
+    /// Header, sync-conflict banner, encoding notice, archive notice and missed reminders banner.
     #[inline(never)]
     fn note_surface_header(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> [Option<AnyElement>; 4] {
+    ) -> [Option<AnyElement>; 5] {
         let header = div()
             .debug_selector(|| "document-header-viewport".into())
             .flex_none()
@@ -88,7 +88,17 @@ impl Reader {
             .note_encoding_damaged
             .then(|| self.note_encoding_notice(cx));
         let archive_notice = self.render_archive_lookup_banner(cx);
-        [Some(header), banner, notice, archive_notice]
+        #[cfg(any(unix, windows))]
+        let missed_reminders = self.render_missed_reminders_banner(cx);
+        #[cfg(not(any(unix, windows)))]
+        let missed_reminders = None;
+        [
+            Some(header),
+            banner,
+            notice,
+            archive_notice,
+            missed_reminders,
+        ]
     }
 
     #[inline(never)]
@@ -1369,7 +1379,7 @@ fn pinned_surface(pins: AnyElement, surface: AnyElement) -> AnyElement {
 }
 
 #[inline(never)]
-fn note_surface(header: [Option<AnyElement>; 4], main: AnyElement) -> AnyElement {
+fn note_surface(header: [Option<AnyElement>; 5], main: AnyElement) -> AnyElement {
     v_flex()
         .size_full()
         .min_h_0()

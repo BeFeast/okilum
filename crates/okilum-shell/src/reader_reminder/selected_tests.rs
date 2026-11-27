@@ -37,6 +37,7 @@ fn mount<'a>(
 ) -> (Entity<Reader>, &'a mut VisualTestContext) {
     cx.executor().allow_parking();
     cx.update(|cx| {
+        cx.set_reduce_motion(true);
         crate::test_init(cx);
         bind_keys(cx);
         cx.set_global(Harness::default());
@@ -115,6 +116,16 @@ fn open_menu(reader: &Entity<Reader>, visual: &mut VisualTestContext) {
         assert_eq!(date_label(date()), "Mon, 1 Nov 2027");
     });
 }
+fn confirm_dialog_if_open(visual: &mut VisualTestContext) {
+    visual.run_until_parked();
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
+    if let Some(submit) = visual.debug_bounds("remind-confirm-submit") {
+        visual.simulate_mouse_move(submit.center(), None, Modifiers::default());
+        visual.simulate_click(submit.center(), Modifiers::default());
+        visual.run_until_parked();
+    }
+}
 fn click_item(visual: &mut VisualTestContext) {
     let bounds = visual.debug_bounds("remind-me-item").unwrap();
     visual.simulate_click(bounds.center(), Modifiers::default());
@@ -123,6 +134,7 @@ fn click_item(visual: &mut VisualTestContext) {
         visual.debug_bounds("remind-me-item").is_none(),
         "the actual menu dismisses after its action"
     );
+    confirm_dialog_if_open(visual);
 }
 fn completed(cx: &App, root: &Path, count: usize) -> bool {
     cx.global::<Harness>()
@@ -346,6 +358,7 @@ async fn reminder_724_editor_menu_captures_original_selection_and_unsaved_source
     visual.run_until_parked();
     let action = editor_action(&reader, visual);
     visual.dispatch_action(action);
+    confirm_dialog_if_open(visual);
     added(&reader, visual, &root, NOTE, 1, 1).await;
     assert_eq!(
         std::fs::read_to_string(root.join(NOTE)).unwrap(),
@@ -411,6 +424,7 @@ async fn reminder_724_stale_reader_and_editor_menu_refuse_without_retarget(
     visual.run_until_parked();
     let fresh = editor_action(&reader, visual);
     visual.dispatch_action(fresh);
+    confirm_dialog_if_open(visual);
     added(&reader, visual, &root, NOTE, 2, 2).await;
     assert_eq!(
         std::fs::read_to_string(root.join("Source.md")).unwrap(),
@@ -746,6 +760,7 @@ async fn reminder_724_editor_cursor_right_press_retains_revision_and_writes_once
     visual.dispatch_action(RemindOnSelection {
         request: Some(request.clone()),
     });
+    confirm_dialog_if_open(visual);
     added(&reader, visual, &root, NOTE, 1, 1).await;
     assert_eq!(std::fs::read_to_string(root.join(NOTE)).unwrap(), LINE);
     assert_eq!(
@@ -898,4 +913,87 @@ async fn reminder_724_read_cursor_rejects_changed_displayed_revision(cx: &mut Te
         std::fs::read_to_string(root.join("Source.md")).unwrap(),
         SOURCE
     );
+}
+
+#[gpui::test]
+async fn reminder_724_confirm_dialog_escape_cancels_and_enter_confirms(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap();
+    let (reader, visual) = mount(cx, &temp);
+    let root = temp.path().join("vault");
+    ready(&reader, visual).await;
+
+    // Open menu -> click item -> dialog opens -> Escape cancels without writing.
+    open_menu(&reader, visual);
+    let bounds = visual.debug_bounds("remind-me-item").unwrap();
+    visual.simulate_click(bounds.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("remind-confirm-dialog").is_some(),
+        "clicking Remind me opens the lightweight confirmation dialog"
+    );
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("remind-confirm-dialog").is_none(),
+        "Escape closes the confirmation dialog"
+    );
+    assert!(
+        !root.join(NOTE).exists(),
+        "cancelling the confirmation dialog writes nothing"
+    );
+
+    // Reopen -> press Enter -> confirms and writes the Tasks reminder line.
+    open_menu(&reader, visual);
+    let bounds = visual.debug_bounds("remind-me-item").unwrap();
+    visual.simulate_click(bounds.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("remind-confirm-dialog").is_some());
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("remind-confirm-dialog").is_none(),
+        "Enter closes the confirmation dialog"
+    );
+    added(&reader, visual, &root, NOTE, 1, 1).await;
+    assert_eq!(std::fs::read_to_string(root.join(NOTE)).unwrap(), LINE);
+}
+
+#[gpui::test]
+async fn reminder_724_read_only_archive_hides_menu_and_refuses_direct_apply(
+    cx: &mut TestAppContext,
+) {
+    let temp = tempfile::tempdir().unwrap();
+    let (reader, visual) = mount(cx, &temp);
+    let root = temp.path().join("vault");
+    ready(&reader, visual).await;
+
+    reader.update(visual, |reader, cx| {
+        reader.archive_state = okilum_core::vault_descriptor::ArchiveState::Archive {
+            successor: None,
+            path_map: None,
+        };
+        cx.notify();
+    });
+    visual.run_until_parked();
+
+    let at = select_date(&reader, visual);
+    visual.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("remind-me-item").is_none(),
+        "read-only archive vault hides the Remind me context menu item"
+    );
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+
+    reader.update_in(visual, |reader, window, cx| {
+        reader.add_reminder("1 November 2027".into(), date(), None, window, cx);
+    });
+    visual.run_until_parked();
+    assert!(
+        !root.join(NOTE).exists(),
+        "read-only archive vault refuses direct reminder writes"
+    );
+    assert!(visual.debug_bounds("reader-error-toast").is_some());
 }

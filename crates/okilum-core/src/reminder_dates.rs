@@ -5,11 +5,12 @@
 //! choose a notification time, write Tasks, or interpret locale-dependent slashes.
 use time::{Date, Month};
 
-/// Parse ISO YYYY-MM-DD, day-first D.M[.YYYY], or a day with a full English,
-/// Russian or Hebrew Gregorian month name (and optional four-digit year).
-/// English also accepts month-first order and a comma after the day.
-/// Without a year, today is eligible; otherwise choose the next valid occurrence.
-/// Explicit dates, including past dates, are preserved rather than rolled forward.
+/// Parse ISO YYYY-MM-DD, day-first D.M[.YYYY], or a day with an English (full
+/// or standard abbreviated), Russian or Hebrew Gregorian month name (and optional
+/// four-digit year). English also accepts month-first order and a comma after
+/// the day. Without a year, today is eligible; otherwise choose the next valid
+/// occurrence. Explicit dates, including past dates, are preserved rather than
+/// rolled forward.
 pub fn parse(selection: &str, today: Date) -> Option<Date> {
     let text = selection.trim().to_lowercase();
     if text.is_empty() || text.len() > 128 {
@@ -21,7 +22,7 @@ pub fn parse(selection: &str, today: Date) -> Option<Date> {
             return None;
         }
         (number(parts[2])?, number(parts[1])?, Some(year(parts[0])?))
-    } else if text.contains('.') {
+    } else if text.contains('.') && !text.contains(char::is_whitespace) {
         let parts: Vec<_> = text.split('.').collect();
         match parts.as_slice() {
             [day, month] => (number(day)?, number(month)?, None),
@@ -78,24 +79,22 @@ fn year(s: &str) -> Option<i32> {
 }
 
 fn english_month(s: &str) -> Option<u8> {
-    const NAMES: [&str; 12] = [
-        "january",
-        "february",
-        "march",
-        "april",
-        "may",
-        "june",
-        "july",
-        "august",
-        "september",
-        "october",
-        "november",
-        "december",
-    ];
-    NAMES
-        .iter()
-        .position(|&name| name == s)
-        .map(|i| i as u8 + 1)
+    let s = s.strip_suffix('.').unwrap_or(s);
+    match s {
+        "january" | "jan" => Some(1),
+        "february" | "feb" => Some(2),
+        "march" | "mar" => Some(3),
+        "april" | "apr" => Some(4),
+        "may" => Some(5),
+        "june" | "jun" => Some(6),
+        "july" | "jul" => Some(7),
+        "august" | "aug" => Some(8),
+        "september" | "sep" | "sept" => Some(9),
+        "october" | "oct" => Some(10),
+        "november" | "nov" => Some(11),
+        "december" | "dec" => Some(12),
+        _ => None,
+    }
 }
 
 fn month_number(s: &str) -> Option<u8> {
@@ -151,6 +150,10 @@ mod tests {
             "1 ноября",
             "1 ноябрь",
             "1 November",
+            "1 Nov",
+            "1 Nov.",
+            "Nov 1",
+            "Nov 1, 2026",
             "November 1, 2026",
             "1 נובמבר",
             "1 בנובמבר",
