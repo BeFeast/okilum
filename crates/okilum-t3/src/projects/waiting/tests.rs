@@ -70,6 +70,8 @@ impl crate::ManagerGateway for Fake {
         Ok(vec![PendingQuestion {
             header: "Header".into(),
             question: format!("Ship  {request}\n now?"),
+            id: Some("choice".into()),
+            ..PendingQuestion::default()
         }])
     }
     fn read_thread(&self, _: &ThreadQuery) -> GatewayResult<ThreadPage> {
@@ -167,6 +169,12 @@ fn rows_carry_the_exact_project_thread_and_request_identity() {
             source: source("/v/Dev/App", "mcp:app"),
             request_id: id.into(),
             text: Some(format!("Ship {id} now?")),
+            questions: vec![PendingQuestion {
+                header: "Header".into(),
+                question: format!("Ship  {id}\n now?"),
+                id: Some("choice".into()),
+                ..PendingQuestion::default()
+            }],
             stale: false,
             observed_at: 100,
         })
@@ -361,6 +369,7 @@ fn a_text_read_failure_keeps_the_known_text_and_a_withdrawn_question_drops_it() 
             source: Some(source("/v/Dev/App", "mcp:app")),
             ids: Ok(vec!["q1".into()]),
             texts: BTreeMap::new(),
+            questions: BTreeMap::new(),
         },
     )]);
     ledger.apply(reads.clone(), 200);
@@ -398,6 +407,7 @@ fn summary_is_one_line_and_counts_further_questions() {
     let question = |header: &str, question: &str| PendingQuestion {
         header: header.into(),
         question: question.into(),
+        ..PendingQuestion::default()
     };
     assert_eq!(summary(&[]), None);
     assert_eq!(summary(&[question("", " \n ")]), None);
@@ -426,4 +436,29 @@ fn disabling_now_during_a_read_stops_the_remaining_text_reads() {
         [("mcp:app".to_owned(), "q1".to_owned())],
         "no text read starts after the permit is revoked"
     );
+}
+
+#[test]
+fn inline_questions_require_live_distinct_answer_keys() {
+    let mut row = Row {
+        source: Source {
+            folder: PathBuf::from("lab"),
+            environment: "example".into(),
+            project_id: "project".into(),
+            thread_id: "manager".into(),
+        },
+        request_id: "request".into(),
+        text: Some("Which option?".into()),
+        questions: vec![PendingQuestion::default()],
+        stale: false,
+        observed_at: 1,
+    };
+    assert!(row.inline_questions().is_none());
+    row.questions[0].id = Some("option-id".into());
+    assert_eq!(row.inline_questions().unwrap()[0].0, "option-id");
+    row.questions.push(row.questions[0].clone());
+    assert!(row.inline_questions().is_none());
+    row.questions.pop();
+    row.stale = true;
+    assert!(row.inline_questions().is_none());
 }

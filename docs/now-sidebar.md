@@ -53,8 +53,7 @@ A vault without a layout summary keeps its original domain and place groups.
 The projection uses accepted source snapshots on background workers. Incremental
 batches update its input rows; publication is debounced for 500 ms and guarded
 by root, watcher generation and request sequence. Render and mode switching
-perform no filesystem IO. All state is derived or application-local; Now never
-writes vault files. Network roots explicitly show their snapshot time and
+perform no filesystem IO. Projection and navigation state is derived or application-local. Network roots explicitly show their snapshot time and
 Rescan instead of claiming live updates.
 
 Acceptance includes preserved Tree behavior, real-corpus counts and projection
@@ -93,3 +92,22 @@ writes nothing to the vault.
 P0 badges are not part of this slice and are not inferred from activity. Unread
 state, origin filters, review queues, project Now mode, right-panel changes and
 Collections belong to later slices.
+
+## Inline actions (#3297)
+
+When a vault publishes `@views/out/now.json`, Now shows the unified feed.
+Reply includes live T3 questions from the exact project manager binding.
+A single keyed question can offer quick options and a custom reply when the
+server permits it. A request with several keyed questions can accept a reply
+for each. The row also opens the manager for legacy requests and answer modes
+that require the full T3 composer. An accepted response refreshes the pending
+list. Failed responses leave the form and its text available.
+
+A case response with a case answer target offers an inline decision. It sets
+`case_status: active` and `updated`, then puts the decision at the top of History.
+`+ Intention` in Available appends a dated bullet to the Intentions section of a
+selected `state/<area>/@index.md`. Both use the Asia/Jerusalem date, and decisions
+read the owner label from `@Schema/people.yaml`. Each write checks the target
+revision captured when Now loaded, uses the same write admission and source
+editor as explicit saves, and offers Undo while the saved revision matches.
+Now reflects confirmed edits immediately. Its snapshot remains generator-owned.

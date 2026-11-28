@@ -1327,7 +1327,7 @@ impl Reader {
     }
 
     /// `![alt](relative path)` → `![alt](file:///abs%20path)` via resolve_asset.
-    pub(super) fn render_sidebar(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_sidebar(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         if self.project_navigation.active.is_some() {
             return div().into_any_element();
         }

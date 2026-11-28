@@ -115,7 +115,7 @@ impl Target {
         // 5. Inspect frontmatter structure strictly (plain top-level block mapping only).
         let before_props = crate::properties::parse_for_records(envelope.yaml)
             .map_err(|err| format!("Frontmatter could not be parsed: {err}"))?;
-        let analysis = analyze_block_mapping(source, &envelope, field)?;
+        let analysis = analyze_block_mapping(source, &envelope, field, false)?;
 
         // 6. Compute the single-line edit (or single-line append if key absent).
         let (after, edit_span, replacement_len, added_lines) = match analysis.target {
@@ -160,7 +160,40 @@ impl Plan {
     }
 }
 
-fn validate_relative_path(path: &str) -> Result<(), String> {
+/// Set the two case fields using the same scalar spans as declarative edits.
+pub(crate) fn activate_case(source: &str, today: &str) -> Result<String, String> {
+    let parse = |yaml: &str| {
+        serde_yaml::from_str::<serde_yaml::Mapping>(yaml)
+            .map_err(|error| format!("Invalid case frontmatter: {error}"))
+    };
+    let before = parse_frontmatter_envelope(source)?;
+    let mut expected = parse(before.yaml)?;
+    if expected.get("type").and_then(serde_yaml::Value::as_str) != Some("case") {
+        return Err("The note is not a case".into());
+    }
+    let mut after = source.to_owned();
+    for (field, value) in [("case_status", "active"), ("updated", today)] {
+        let envelope = parse_frontmatter_envelope(&after)?;
+        let entry = analyze_block_mapping(&after, &envelope, field, true)?.target;
+        let (edited, span, inserted_len, _) = match entry {
+            Some(entry) => plan_update_line(&after, &entry, field, value)?,
+            None => plan_append_line(&after, &envelope, field, value),
+        };
+        if edited[..span.start] != after[..span.start]
+            || edited[span.start + inserted_len..] != after[span.end..]
+        {
+            return Err("Case edit did not preserve unrelated source bytes".into());
+        }
+        expected.insert(field.into(), value.into());
+        after = edited;
+    }
+    if parse(parse_frontmatter_envelope(&after)?.yaml)? != expected {
+        return Err("Could not verify the edited case frontmatter".into());
+    }
+    Ok(after)
+}
+
+pub(crate) fn validate_relative_path(path: &str) -> Result<(), String> {
     if path.is_empty()
         || path.contains(['\\', ':', '\0'])
         || path
@@ -179,7 +212,7 @@ fn is_valid_revision(rev: &str) -> bool {
     hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-fn has_lone_cr(text: &str) -> bool {
+pub(crate) fn has_lone_cr(text: &str) -> bool {
     let bytes = text.as_bytes();
     bytes
         .iter()
@@ -349,6 +382,7 @@ fn analyze_block_mapping(
     source: &str,
     envelope: &FrontmatterEnvelope<'_>,
     target_field: &str,
+    reject_flow_mapping: bool,
 ) -> Result<FrontmatterAnalysis, String> {
     let yaml = envelope.yaml;
     if yaml.trim().is_empty() {
@@ -405,7 +439,13 @@ fn analyze_block_mapping(
                 return Err("Frontmatter is not a plain block mapping".into());
             };
             entries[cur].has_continuation_lines = true;
-            scan_yaml_fragment(raw, &mut open_quote, &mut flow_depth, false)?;
+            scan_yaml_fragment(
+                raw,
+                &mut open_quote,
+                &mut flow_depth,
+                false,
+                reject_flow_mapping,
+            )?;
             if flow_depth > 0 {
                 return Err("Multi-line flow collections in frontmatter are not supported".into());
             }
@@ -429,8 +469,13 @@ fn analyze_block_mapping(
                 return Err("Frontmatter keys are indented; edit the note directly".into());
             };
             entries[cur].has_continuation_lines = true;
-            let starts_block =
-                scan_indented_line(trimmed_start, indent, &mut open_quote, &mut flow_depth)?;
+            let starts_block = scan_indented_line(
+                trimmed_start,
+                indent,
+                &mut open_quote,
+                &mut flow_depth,
+                reject_flow_mapping,
+            )?;
             if flow_depth > 0 {
                 return Err("Multi-line flow collections in frontmatter are not supported".into());
             }
@@ -474,8 +519,12 @@ fn analyze_block_mapping(
             return Err(format!("Duplicate frontmatter key '{key}'"));
         }
         let after_colon = &raw[colon_rel + 1..];
-        let is_block_scalar_header =
-            scan_value_after_colon(after_colon, &mut open_quote, &mut flow_depth)?;
+        let is_block_scalar_header = scan_value_after_colon(
+            after_colon,
+            &mut open_quote,
+            &mut flow_depth,
+            reject_flow_mapping,
+        )?;
         if flow_depth > 0 {
             return Err("Multi-line flow collections in frontmatter are not supported".into());
         }
@@ -698,6 +747,7 @@ fn scan_value_after_colon(
     after_colon: &str,
     open_quote: &mut Option<char>,
     flow_depth: &mut usize,
+    reject_flow_mapping: bool,
 ) -> Result<bool, String> {
     let trimmed = after_colon.trim_start_matches([' ', '\t']);
     if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -709,7 +759,7 @@ fn scan_value_after_colon(
     if is_block_scalar_indicator(trimmed) {
         return Ok(true);
     }
-    scan_yaml_fragment(trimmed, open_quote, flow_depth, true)?;
+    scan_yaml_fragment(trimmed, open_quote, flow_depth, true, reject_flow_mapping)?;
     Ok(false)
 }
 
@@ -718,6 +768,7 @@ fn scan_indented_line(
     _indent: usize,
     open_quote: &mut Option<char>,
     flow_depth: &mut usize,
+    reject_flow_mapping: bool,
 ) -> Result<bool, String> {
     let mut rest = trimmed;
     loop {
@@ -746,9 +797,9 @@ fn scan_indented_line(
     // Nested mapping entry `subkey: ...`
     if let Some(colon) = find_unquoted_mapping_colon(rest) {
         let val = &rest[colon + 1..];
-        return scan_value_after_colon(val, open_quote, flow_depth);
+        return scan_value_after_colon(val, open_quote, flow_depth, reject_flow_mapping);
     }
-    scan_yaml_fragment(rest, open_quote, flow_depth, true)?;
+    scan_yaml_fragment(rest, open_quote, flow_depth, true, reject_flow_mapping)?;
     Ok(false)
 }
 
@@ -794,6 +845,7 @@ fn scan_yaml_fragment(
     open_quote: &mut Option<char>,
     flow_depth: &mut usize,
     mut at_node_start: bool,
+    reject_flow_mapping: bool,
 ) -> Result<(), String> {
     let bytes = text.as_bytes();
     let mut i = 0;
@@ -831,6 +883,9 @@ fn scan_yaml_fragment(
                 *open_quote = Some(b as char);
                 at_node_start = false;
             }
+            b'{' if reject_flow_mapping && (at_node_start || *flow_depth > 0) => {
+                return Err("Flow-style frontmatter mapping is not supported".into());
+            }
             b'[' | b'{' => {
                 *flow_depth += 1;
                 at_node_start = true;
@@ -848,6 +903,9 @@ fn scan_yaml_fragment(
                     None | Some(b' ' | b'\t' | b',' | b']' | b'}' | b'&' | b'*' | b'!')
                 ) =>
             {
+                if reject_flow_mapping {
+                    return Err("Flow-style frontmatter mapping is not supported".into());
+                }
                 at_node_start = true;
             }
             _ => {

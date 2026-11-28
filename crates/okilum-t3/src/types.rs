@@ -27,7 +27,7 @@ impl ServerIdentity {
 }
 
 /// One question of a pending user-input request, as `t3_pending_request`
-/// `read` returns it. Options and answer rules are not read here.
+/// `read` returns it. Older servers may omit answer metadata.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingQuestion {
@@ -35,6 +35,48 @@ pub struct PendingQuestion {
     pub header: String,
     #[serde(default)]
     pub question: String,
+    #[serde(default, deserialize_with = "optional_string")]
+    pub id: Option<String>,
+    #[serde(default, deserialize_with = "pending_options")]
+    pub options: Vec<PendingOption>,
+    #[serde(default)]
+    pub allow_custom_answer: Option<bool>,
+    #[serde(default, deserialize_with = "bool_or_false")]
+    pub multi_select: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct PendingOption {
+    pub label: String,
+    #[serde(default, deserialize_with = "optional_string")]
+    pub value: Option<String>,
+    #[serde(default, deserialize_with = "optional_string")]
+    pub description: Option<String>,
+}
+
+fn optional_string<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    Ok(Value::deserialize(deserializer)?
+        .as_str()
+        .map(str::to_owned))
+}
+
+fn bool_or_false<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    Ok(Value::deserialize(deserializer)?.as_bool().unwrap_or(false))
+}
+
+fn pending_options<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<PendingOption>, D::Error> {
+    let raw = Value::deserialize(deserializer)?;
+    Ok(raw
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|value| serde_json::from_value::<PendingOption>(value.clone()).ok())
+        .filter(|option| !option.label.trim().is_empty())
+        .collect())
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]

@@ -1,0 +1,146 @@
+# Snapshot → submit a decision and add an intention → see both updates and Undo.
+note: |
+  # Inline actions fixture
+
+  The note pane starts here.
+sidebar_state:
+  left_mode: now
+  now_enabled: true
+generate:
+  - path: "@Schema/people.yaml"
+    kind: text
+    text: |
+      roles:
+        owner:
+          display_name: Coordinator
+  - path: state/lab/case-alpha.md
+    kind: text
+    text: |
+      ---
+      type: case
+      case_status: needs-decision
+      ---
+      # Case Alpha
+
+      ## История
+
+      - Earlier decision
+  - path: state/lab/case-beta.md
+    kind: text
+    text: |
+      ---
+      type: case
+      case_status: active
+      ---
+      # Case Beta
+
+      ## History
+  - path: state/lab/@index.md
+    kind: text
+    text: |
+      # Lab
+
+      ## Намерения
+
+      - Existing intention
+
+      ## Next section
+  - path: "@views/out/now.json"
+    kind: text
+    text: |
+      {
+        "version": 2,
+        "generated_at": "2026-11-27T18:05:00Z",
+        "groups": [
+          {"id":"urgent","items":[
+            {"id":"beta","group":"urgent","kind":"case","title":"Action only","area":"lab","source_path":"state/lab/case-beta.md","overdue":false,"response":"act","answer_target":{"kind":"case","path":"state/lab/case-beta.md"}}
+          ]},
+          {"id":"answer","items":[
+            {"id":"alpha","group":"answer","kind":"case","title":"Decide Alpha","area":"lab","source_path":"state/lab/case-alpha.md","overdue":false,"response":"answer","answer_target":{"kind":"case","path":"state/lab/case-alpha.md"}}
+          ]},
+          {"id":"hands","items":[]},
+          {"id":"available","items":[]},
+          {"id":"waiting","items":[],"hidden_count":0}
+        ]
+      }
+appearance: light
+rig:
+  persistent_pointer: true
+preferences:
+  note_open_mode: read
+region: [300, 90, 800, 540]
+ready_text: Inline actions fixture
+steps:
+  - id: feed-present
+    wait: 2.5
+    region: [0, 45, 279, 700]
+    text: Decide Alpha
+  - id: decision-control
+    region: [0, 45, 279, 700]
+    text: Submit
+  - id: act-opens-without-reply
+    region: [0, 147, 279, 72]
+    text: Action only
+    text_absent: Submit
+  - id: open-case
+    click: [53, 233]
+    wait: 0.8
+    text: Earlier decision
+  - id: type-decision
+    click: [80, 273]
+    type: Proceed with launch
+  - id: submit-decision
+    click: [240, 273]
+    wait: 1.5
+    region: [0, 45, 279, 700]
+    text: Action only
+    text_absent: Decide Alpha
+  - id: decision-in-note
+    text_order: ["Coordinator: Proceed with launch", Earlier decision]
+  - id: decision-undo-toast
+    region: [960, 590, 406, 157]
+    text: Undo
+  - id: undo-decision-restores-row
+    click: [1158, 705]
+    wait: 1.0
+    region: [0, 45, 279, 700]
+    text: Decide Alpha
+  - id: undo-decision-restores-note
+    text: Earlier decision
+    text_absent: Proceed with launch
+  - id: open-overview
+    open_args: ["--vault", "{vault}", "--note", "state/lab/@index.md"]
+    wait: 0.9
+    text: Existing intention
+  - id: choose-area
+    click: [54, 352]
+    wait: 0.6
+    region: [0, 356, 279, 94]
+    text: Lab
+  - id: open-intention-form
+    click: [50, 381]
+    wait: 0.6
+    region: [0, 315, 279, 156]
+    text_order: [Intention, Lab, Add]
+  - id: type-intention
+    click: [81, 376]
+    type: Review drawings
+  - id: add-intention
+    click: [248, 376]
+    wait: 1.2
+    region: [0, 385, 279, 22]
+    text: Review drawings
+  - id: intention-written-under-heading
+    text_order: [Existing intention, Review drawings, Next section]
+  - id: intention-undo-toast
+    region: [960, 590, 406, 157]
+    text: Intention added
+  - id: undo-intention-restores-note
+    click: [1158, 705]
+    wait: 1.0
+    text: Existing intention
+    text_absent: Review drawings
+  - id: undo-intention-clears-feed
+    region: [0, 314, 279, 160]
+    text: Available
+    text_absent: Review drawings

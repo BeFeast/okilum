@@ -165,6 +165,19 @@ pub trait ManagerGateway: Send + Sync {
         ))
     }
 
+    /// Answer a pending user question. This operation cannot grant permissions.
+    fn respond_pending_request(
+        &self,
+        thread_id: &str,
+        request_id: &str,
+        answers: &serde_json::Value,
+    ) -> GatewayResult<()> {
+        let _ = (thread_id, request_id, answers);
+        Err(GatewayError::Protocol(
+            "This T3 connection cannot answer pending questions".into(),
+        ))
+    }
+
     /// The live provider and model catalog, and this client's runtime ceiling.
     fn capabilities(&self) -> GatewayResult<Capabilities>;
 

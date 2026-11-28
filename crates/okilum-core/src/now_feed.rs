@@ -98,6 +98,15 @@ pub struct FeedItem {
     pub response: Option<String>,
 }
 
+impl FeedItem {
+    pub fn case_reply_path(&self) -> Option<&str> {
+        match (&self.answer_target, self.response.as_deref()) {
+            (Some(AnswerTarget::Case { path }), None | Some("answer")) => Some(path),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AnswerTarget {
@@ -182,6 +191,7 @@ pub struct PresentedItem {
     pub tooltip: String,
     pub open: FeedOpen,
     pub response: Option<String>,
+    pub case_reply_path: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -249,6 +259,31 @@ impl NowFeed {
 
     pub fn group(&self, id: &str) -> Option<&FeedGroup> {
         self.groups.iter().find(|group| group.id == id)
+    }
+
+    /// Presentation-only overlay until the generator publishes its next snapshot.
+    pub fn without_answered_cases(
+        &self,
+        answered: &BTreeSet<String>,
+    ) -> std::borrow::Cow<'_, Self> {
+        if answered.is_empty() {
+            return std::borrow::Cow::Borrowed(self);
+        }
+        let mut feed = self.clone();
+        let keep = |item: &FeedItem| {
+            !item
+                .case_reply_path()
+                .is_some_and(|path| answered.contains(path))
+        };
+        for group in &mut feed.groups {
+            group.items.retain(keep);
+            let previous_len = group.hidden_items.len();
+            group.hidden_items.retain(keep);
+            group.hidden_count = group
+                .hidden_count
+                .saturating_sub(previous_len - group.hidden_items.len());
+        }
+        std::borrow::Cow::Owned(feed)
     }
 }
 
@@ -559,6 +594,7 @@ fn present_live(question: &LiveQuestion) -> PresentedItem {
         },
         open: FeedOpen::Live(question.id.clone()),
         response: None,
+        case_reply_path: None,
     }
 }
 
@@ -616,6 +652,7 @@ fn present_item(
         tooltip: tooltip.join("\n"),
         open: FeedOpen::Note(item.source_path.clone()),
         response: item.response.clone(),
+        case_reply_path: item.case_reply_path().map(str::to_owned),
     }
 }
 
@@ -745,7 +782,7 @@ fn parse_snapshot(bytes: &[u8]) -> Result<LoadOutcome, String> {
     }))
 }
 
-fn load_role_names(vault_root: &Path) -> BTreeMap<String, String> {
+pub(crate) fn load_role_names(vault_root: &Path) -> BTreeMap<String, String> {
     let schema = vault_root.join("@Schema");
     let file = schema.join("people.yaml");
     let Some(bytes) = read_optional(&schema, &file) else {

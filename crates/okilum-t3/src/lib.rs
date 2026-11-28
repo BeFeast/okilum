@@ -54,7 +54,7 @@ pub use session::{
 pub use token::{StoredToken, TokenFreshness, EXPIRES_SOON_SECS};
 pub use types::{
     is_http_link, Capabilities, ModelCapabilities, ModelInfo, ModelOption, ModelOptionDescriptor,
-    ModelOptionValue, ModelSelection, OutgoingMessage, PendingQuestion, Project,
+    ModelOptionValue, ModelSelection, OutgoingMessage, PendingOption, PendingQuestion, Project,
     ProviderCapability, RepositoryIdentity, SendMode, SendReceipt, ServerIdentity,
     ThreadConfiguration, ThreadDetail, ThreadPage, ThreadQuery, ThreadSummary, TimelineItem,
 };

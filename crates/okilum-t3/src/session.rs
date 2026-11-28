@@ -663,6 +663,16 @@ impl ManagerGateway for PairedGateway {
         self.mcp.pending_request_questions(thread_id, request_id)
     }
 
+    fn respond_pending_request(
+        &self,
+        thread_id: &str,
+        request_id: &str,
+        answers: &Value,
+    ) -> GatewayResult<()> {
+        self.mcp
+            .respond_pending_request(thread_id, request_id, answers)
+    }
+
     fn capabilities(&self) -> GatewayResult<Capabilities> {
         self.mcp.capabilities()
     }
