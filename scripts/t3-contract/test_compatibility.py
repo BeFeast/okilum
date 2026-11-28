@@ -357,6 +357,45 @@ class Compatibility(unittest.TestCase):
         self.assertEqual(packed[4:8], bytes(4))
         self.assertEqual(set(json.loads(gzip.decompress(packed))), {c.STREAM, c.BOUNDED})
 
+    def test_model_selection_options_union_accepts_dedup_null_and_rejects_removed_forms(self):
+        baseline = c.load_baseline()
+        base_set = next(
+            b for b in baseline['dispatchCommand.input']['schema']['anyOf']
+            if b.get('properties', {}).get('type', {}).get('enum') == ['thread.model-selection.set']
+        )
+        options_branches = base_set['properties']['modelSelection']['properties']['options']['anyOf']
+        self.assertEqual(len(options_branches), 4)
+
+        candidate = copy.deepcopy(baseline)
+        cand_set = next(
+            b for b in candidate['dispatchCommand.input']['schema']['anyOf']
+            if b.get('properties', {}).get('type', {}).get('enum') == ['thread.model-selection.set']
+        )
+        # Deduplicating the repeated null branch and adding optional metadata on items is safe.
+        cand_opts = cand_set['properties']['modelSelection']['properties']['options']['anyOf']
+        cand_opts.pop()  # remove duplicate {"type": "null"}
+        cand_opts[0]['items']['properties']['hint'] = {'type': 'string'}
+        res = c.compare(candidate, baseline)
+        self.assertEqual(res['status'], 'PASS', res)
+
+        # Removing the object-map branch, array branch, null, or narrowing value must FAIL.
+        for mutate in (
+            lambda opts: opts.pop(1),  # remove {"type": "object"}
+            lambda opts: opts.pop(0),  # remove array branch
+            lambda opts: [opts.pop() for _ in range(2)],  # remove both null branches
+            lambda opts: opts[0]['items']['properties']['value'].__setitem__(
+                'anyOf', [{'type': 'string'}]),
+        ):
+            bad = copy.deepcopy(baseline)
+            bad_set = next(
+                b for b in bad['dispatchCommand.input']['schema']['anyOf']
+                if b.get('properties', {}).get('type', {}).get('enum') == ['thread.model-selection.set']
+            )
+            mutate(bad_set['properties']['modelSelection']['properties']['options']['anyOf'])
+            with self.subTest(mutate=mutate):
+                res = c.compare(bad, baseline)
+                self.assertEqual(res['status'], 'FAIL', res)
+
 
 if __name__ == '__main__':
     unittest.main()
