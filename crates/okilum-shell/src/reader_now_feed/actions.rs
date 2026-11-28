@@ -72,7 +72,7 @@ impl Reader {
                 )
             })
             .collect();
-        let mut form = v_flex().px_3().items_start();
+        let mut form = v_flex().id("now-intention-form").px_3().items_start();
         if !areas.is_empty() {
             let reader = cx.weak_entity();
             let root = self.vault_root.clone();
@@ -156,21 +156,18 @@ impl Reader {
                     .child(Input::new(&input).small().disabled(busy)),
             )
             .child(
-                button(SharedString::from(format!("now-submit-{path}")), label)
-                    .disabled(busy)
-                    .on_click(move |_, window, cx| {
-                        let _ = reader.update(cx, |this, cx| {
-                            if this.vault_root == root && this.now_feed_ready() {
-                                this.submit_now_note(
-                                    target.clone(),
-                                    action,
-                                    field.clone(),
-                                    window,
-                                    cx,
-                                );
-                            }
-                        });
-                    }),
+                button(
+                    SharedString::from(format!("now-submit-{path}:{input_id}")),
+                    label,
+                )
+                .disabled(busy)
+                .on_click(move |_, window, cx| {
+                    let _ = reader.update(cx, |this, cx| {
+                        if this.vault_root == root && this.now_feed_ready() {
+                            this.submit_now_note(target.clone(), action, field.clone(), window, cx);
+                        }
+                    });
+                }),
             )
             .into_any_element()
     }
@@ -328,7 +325,11 @@ impl Reader {
             .pending_requests
             .contains(&(row.source.clone(), row.request_id.clone()));
         let reader = cx.weak_entity();
-        let mut form = v_flex().w_full().gap_1();
+        let form_id = SharedString::from(format!(
+            "now-live-form-{}",
+            reader_now_waiting::feed_id(&row)
+        ));
+        let mut form = v_flex().id(form_id).w_full().gap_1();
         let mut reply = h_flex()
             .w_full()
             .gap_1()

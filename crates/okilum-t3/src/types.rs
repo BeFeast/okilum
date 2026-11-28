@@ -41,7 +41,7 @@ pub struct PendingQuestion {
     pub options: Vec<PendingOption>,
     #[serde(default)]
     pub allow_custom_answer: Option<bool>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "bool_or_false")]
     pub multi_select: bool,
 }
 
@@ -60,6 +60,10 @@ fn optional_string<'de, D: serde::Deserializer<'de>>(
     Ok(Value::deserialize(deserializer)?
         .as_str()
         .map(str::to_owned))
+}
+
+fn bool_or_false<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    Ok(Value::deserialize(deserializer)?.as_bool().unwrap_or(false))
 }
 
 fn pending_options<'de, D: serde::Deserializer<'de>>(

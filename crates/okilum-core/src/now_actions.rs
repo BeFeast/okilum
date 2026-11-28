@@ -438,6 +438,10 @@ impl Receipt {
 
     pub fn undo(&self, root: &Path, drafts: &Path) -> Result<()> {
         ensure!(
+            !root.symlink_metadata()?.file_type().is_symlink(),
+            "Choose a real vault directory"
+        );
+        ensure!(
             root.canonicalize()? == self.root,
             "Undo belongs to another vault"
         );

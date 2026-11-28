@@ -323,6 +323,9 @@ fn refuses_symlink_leaf_and_parent_for_apply_and_undo() {
         )
     };
     let receipt = attempt(CASE_PATH).unwrap();
+    let root_link = temp.path().join("vault-link");
+    symlink(&root, &root_link).unwrap();
+    assert!(receipt.undo(&root_link, &drafts).is_err());
     let file = root.join(CASE_PATH);
     let outside = temp.path().join("outside.md");
     fs::rename(&file, &outside).unwrap();

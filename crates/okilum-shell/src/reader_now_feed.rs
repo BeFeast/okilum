@@ -444,9 +444,10 @@ impl Reader {
                         .child(secondary),
                 )
             });
+        let control_id = SharedString::from(format!("now-feed-control-{}", item.id));
         v_flex()
             .child(row)
-            .children(control.map(|form| div().px_3().pb_1().child(form)))
+            .children(control.map(|form| div().id(control_id).px_3().pb_1().child(form)))
             .into_any_element()
     }
 

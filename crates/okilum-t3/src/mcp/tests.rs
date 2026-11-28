@@ -1261,7 +1261,7 @@ fn pending_question_read_preserves_options_and_accepts_legacy_payloads() {
                     {"value": "missing-label"}
                 ]},
                 {"header": "Legacy question"},
-                {"options": null}
+                {"options": null, "multiSelect": null, "allowCustomAnswer": null}
             ]
         }))
     });
