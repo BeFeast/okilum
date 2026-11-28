@@ -576,6 +576,42 @@ impl ManagerGateway for McpGateway {
         })
     }
 
+    fn respond_pending_request(
+        &self,
+        thread_id: &str,
+        request_id: &str,
+        answers: &Value,
+    ) -> GatewayResult<()> {
+        if !crate::NetworkAccess::current().allowed() {
+            return Err(GatewayError::NotConnected);
+        }
+        if thread_id.trim().is_empty()
+            || request_id.trim().is_empty()
+            || !answers.as_object().is_some_and(|answers| {
+                !answers.is_empty() && answers.keys().all(|key| !key.trim().is_empty())
+            })
+        {
+            return Err(GatewayError::Protocol(
+                "A pending question response requires a thread, request and keyed answers".into(),
+            ));
+        }
+        let receipt = self.call_value(
+            "t3_pending_request",
+            json!({
+                "action": "respond",
+                "threadId": thread_id,
+                "requestId": request_id,
+                "answers": answers,
+            }),
+        )?;
+        if receipt.get("sequence").and_then(Value::as_u64).is_none() {
+            return Err(GatewayError::Protocol(
+                "T3 did not confirm the pending question response".into(),
+            ));
+        }
+        Ok(())
+    }
+
     fn capabilities(&self) -> GatewayResult<Capabilities> {
         self.call("orchestrator_capabilities", json!({}))
     }

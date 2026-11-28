@@ -773,10 +773,14 @@ impl Reader {
             .into_any_element()
     }
 
-    pub(super) fn render_workbench(&self, _: &Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_workbench(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let tokens = brand::palette(cx);
         if self.now_feed_ready() {
-            return self.render_now_feed(cx);
+            return self.render_now_feed(window, cx);
         }
         let Some(index) = &self.workbench_ready else {
             return div()
@@ -1653,6 +1657,7 @@ mod tests {
             source.folder.clone(),
             okilum_t3::projects::waiting::Read {
                 source: Some(source.clone()),
+                questions: Default::default(),
                 texts: ids
                     .as_ref()
                     .map(|ids| {

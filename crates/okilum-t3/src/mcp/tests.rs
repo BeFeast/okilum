@@ -1241,3 +1241,119 @@ fn issue1420_launch_progress_reads_recorded_t3_status_over_the_real_client() {
         "manager status, listing, then each new thread's first item only"
     );
 }
+
+#[test]
+fn pending_question_read_preserves_options_and_accepts_legacy_payloads() {
+    let server = fake_t3(|name, args| {
+        assert_eq!(name, "t3_pending_request");
+        assert_eq!(
+            args,
+            &json!({
+                "action": "read", "threadId": "manager-one", "requestId": "request-one"
+            })
+        );
+        structured(json!({
+            "requestId": "request-one",
+            "questions": [
+                {"id": "schedule", "question": "When?", "options": [
+                    {"label": "Morning", "value": "am", "description": "Before noon"},
+                    {"label": "Later"},
+                    {"value": "missing-label"}
+                ]},
+                {"header": "Legacy question"},
+                {"options": null}
+            ]
+        }))
+    });
+    let questions = gateway(&server, Some(token("good")))
+        .pending_request_questions("manager-one", "request-one")
+        .unwrap();
+    assert_eq!(questions[0].id.as_deref(), Some("schedule"));
+    assert_eq!(questions[0].options.len(), 2);
+    assert_eq!(questions[0].options[0].label, "Morning");
+    assert_eq!(questions[0].options[0].value.as_deref(), Some("am"));
+    assert_eq!(
+        questions[0].options[0].description.as_deref(),
+        Some("Before noon")
+    );
+    assert_eq!(questions[0].options[1].label, "Later");
+    assert_eq!(questions[0].options[1].value, None);
+    assert_eq!(questions[1].header, "Legacy question");
+    assert_eq!(questions[1].id, None);
+    assert!(questions[1].options.is_empty());
+    assert_eq!(questions[2], crate::PendingQuestion::default());
+}
+
+#[test]
+fn respond_pending_request_sends_only_keyed_user_input_answers() {
+    let server = fake_t3(|name, args| {
+        assert_eq!(name, "t3_pending_request");
+        assert_eq!(
+            args,
+            &json!({
+                "action": "respond", "threadId": "manager-one", "requestId": "request-one",
+                "answers": {"schedule": "am", "extras": ["notes"]}
+            })
+        );
+        structured(json!({"sequence": 8}))
+    });
+    let gateway = gateway(&server, Some(token("good")));
+    for (thread, request, answers) in [
+        ("", "request-one", json!({"schedule": "am"})),
+        ("manager-one", " ", json!({"schedule": "am"})),
+        ("manager-one", "request-one", json!([1, 2])),
+        ("manager-one", "request-one", json!({})),
+        ("manager-one", "request-one", json!({" ": "am"})),
+    ] {
+        assert!(gateway
+            .respond_pending_request(thread, request, &answers)
+            .is_err());
+    }
+    {
+        let _permit = crate::NetworkAccess::new(false).enter();
+        assert_eq!(
+            gateway.respond_pending_request(
+                "manager-one",
+                "request-one",
+                &json!({"schedule": "am"})
+            ),
+            Err(GatewayError::NotConnected)
+        );
+    }
+    assert!(server.requests().is_empty());
+    gateway
+        .respond_pending_request(
+            "manager-one",
+            "request-one",
+            &json!({
+                "schedule": "am", "extras": ["notes"]
+            }),
+        )
+        .unwrap();
+    assert_eq!(tool_calls(&server.requests()).len(), 1);
+}
+
+#[test]
+fn respond_pending_request_requires_confirmation_and_surfaces_server_refusal() {
+    let server = fake_t3(|name, args| {
+        assert_eq!(name, "t3_pending_request");
+        match args["requestId"].as_str().unwrap() {
+            "approval" => json!({
+                "isError": true,
+                "structuredContent": {"code": "invalid_request", "message": "Not a user question"}
+            }),
+            _ => structured(json!({"requestIds": []})),
+        }
+    });
+    let gateway = gateway(&server, Some(token("good")));
+    let answers = json!({"schedule": "am"});
+    assert!(
+        matches!(gateway.respond_pending_request("manager-one", "approval", &answers),
+        Err(GatewayError::Tool { code, .. }) if code == "invalid_request")
+    );
+    assert!(matches!(
+        gateway.respond_pending_request("manager-one", "request-one", &answers),
+        Err(GatewayError::Protocol(_))
+    ));
+    assert_eq!(tool_calls(&server.requests()).len(), 2);
+}

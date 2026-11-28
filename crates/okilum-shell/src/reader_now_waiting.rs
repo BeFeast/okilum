@@ -6,7 +6,7 @@
 //! and never write to the vault.
 use super::*;
 use okilum_t3::projects::waiting::{self, Ledger, Read, Source};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The accepted Waiting state of one vault root.
 #[derive(Default)]
@@ -14,6 +14,8 @@ pub(super) struct Waiting {
     root: PathBuf,
     generation: u64,
     ledger: Ledger,
+    pub(super) gateways: reader_project_navigation::Gateways,
+    confirmed: BTreeSet<(Source, String)>,
     /// The in-flight read's network permission; revoked on supersession.
     permit: Option<okilum_t3::NetworkAccess>,
     titles: BTreeMap<PathBuf, String>,
@@ -49,6 +51,8 @@ impl Waiting {
         }
         self.generation = self.generation.wrapping_add(1);
         self.ledger = Ledger::default();
+        self.gateways.clear();
+        self.confirmed.clear();
         self.titles.clear();
         self.times.clear();
     }
@@ -58,12 +62,22 @@ impl Waiting {
     }
 
     pub(super) fn view(&self) -> waiting::View {
-        self.ledger.view()
+        let mut view = self.ledger.view();
+        view.rows.retain(|row| {
+            !self
+                .confirmed
+                .contains(&(row.source.clone(), row.request_id.clone()))
+        });
+        view
     }
 
     fn time(&self, at: u64) -> String {
         self.times.get(&at).cloned().unwrap_or_else(|| "—".into())
     }
+}
+
+pub(super) fn feed_id(row: &waiting::Row) -> String {
+    format!("{:?}", (&row.source, &row.request_id))
 }
 
 /// One presented Waiting row; `open` names the exact target of a click.
@@ -110,6 +124,7 @@ impl Reader {
         let (generation, permit) = self.waiting.begin(&root, titles);
         cx.notify();
         if sources.is_empty() {
+            self.waiting.gateways.clear();
             let at = reader_sidebar::now();
             let label = reader_workbench::shown_time(at);
             self.accept_waiting(&root, generation, BTreeMap::new(), at, label, cx);
@@ -120,16 +135,18 @@ impl Reader {
             let gateways = reader_project_navigation::t3_gateways(&this, state, cx)
                 .await
                 .unwrap_or_default();
-            let (reads, at, label) = cx
+            let (reads, at, label, gateways) = cx
                 .background_executor()
                 .spawn(async move {
                     let reads = waiting::read(&sources, &gateways, &permit);
                     let at = reader_sidebar::now();
-                    (reads, at, reader_workbench::shown_time(at))
+                    (reads, at, reader_workbench::shown_time(at), gateways)
                 })
                 .await;
             let _ = this.update_in_own_window(cx, |this, _, cx| {
-                this.accept_waiting(&root, generation, reads, at, label, cx);
+                if this.accept_waiting(&root, generation, reads, at, label, cx) {
+                    this.waiting.gateways = gateways;
+                }
             });
         })
         .detach();
@@ -156,6 +173,9 @@ impl Reader {
         let waiting = &mut self.waiting;
         waiting.permit = None;
         waiting.ledger.apply(reads, at);
+        waiting
+            .confirmed
+            .retain(|(source, id)| waiting.ledger.contains(source, id));
         waiting.times.insert(at, label);
         let view = waiting.ledger.view();
         let kept: std::collections::BTreeSet<u64> = view
@@ -168,6 +188,10 @@ impl Reader {
         waiting.times.retain(|at, _| kept.contains(at));
         cx.notify();
         true
+    }
+
+    pub(super) fn confirm_waiting_answer(&mut self, key: (Source, String)) {
+        self.waiting.confirmed.insert(key);
     }
 
     /// Open the project whose bound manager thread holds the question. A row
@@ -476,7 +500,7 @@ impl Reader {
             .map(|row| {
                 let project = self.waiting_title(&row.source.folder);
                 LiveQuestion {
-                    id: format!("{}|{}", row.source.folder.display(), row.request_id),
+                    id: feed_id(row),
                     project: if project.is_empty() {
                         None
                     } else {
@@ -485,6 +509,8 @@ impl Reader {
                     title: row.text.clone().unwrap_or_else(|| "Question".to_owned()),
                     detail: if row.stale {
                         format!("stale {}", self.waiting.time(row.observed_at))
+                    } else if row.inline_questions().is_some() {
+                        String::new()
                     } else {
                         "open the manager thread".into()
                     },

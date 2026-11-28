@@ -1,6 +1,7 @@
 //! Unified cross-area feed in Now (#3296).
 //! Snapshot reads run on the background executor. Render only draws the
 //! accepted [`okilum_core::now_feed::NowFeed`].
+mod actions;
 use super::*;
 use okilum_core::now_feed::{
     self, FeedOpen, LoadOutcome, PresentedGroup, PresentedItem, PresentedRow,
@@ -16,6 +17,8 @@ pub(super) struct Cache {
     areas: BTreeMap<String, String>,
     role_names: BTreeMap<String, String>,
     stamp: String,
+    targets: okilum_core::now_actions::Targets,
+    actions: actions::Actions,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -38,6 +41,8 @@ impl Cache {
             self.areas.clear();
             self.role_names.clear();
             self.stamp.clear();
+            self.targets = Default::default();
+            self.actions = Default::default();
             self.root = root.to_owned();
         }
         self.inflight = true;
@@ -45,7 +50,13 @@ impl Cache {
         self.generation
     }
 
-    fn accept(&mut self, root: &Path, generation: u64, loaded: now_feed::LoadedSnapshot) -> bool {
+    fn accept(
+        &mut self,
+        root: &Path,
+        generation: u64,
+        loaded: now_feed::LoadedSnapshot,
+        targets: okilum_core::now_actions::Targets,
+    ) -> bool {
         if self.root != root || self.generation != generation {
             return false;
         }
@@ -53,6 +64,12 @@ impl Cache {
         self.areas = loaded.areas;
         self.role_names = loaded.role_names;
         self.stamp = loaded.stamp;
+        self.targets = targets;
+        if !matches!((&self.phase, &loaded.outcome),
+            (Phase::Ready(old), LoadOutcome::Ready(new)) if old == new)
+        {
+            self.actions.accept_snapshot();
+        }
         self.phase = match loaded.outcome {
             LoadOutcome::Absent => Phase::Absent,
             LoadOutcome::Invalid(error) => Phase::Invalid(error),
@@ -88,12 +105,17 @@ impl Reader {
         let root = self.vault_root.clone();
         cx.spawn(async move |this, cx| {
             let load_root = root.clone();
-            let loaded = cx
+            let (loaded, targets) = cx
                 .background_executor()
-                .spawn(async move { now_feed::load_presentation(&load_root) })
+                .spawn(async move {
+                    let loaded = now_feed::load_presentation(&load_root);
+                    let targets =
+                        okilum_core::now_actions::load_targets(&load_root, &loaded.outcome);
+                    (loaded, targets)
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if this.now_feed.accept(&root, generation, loaded) {
+                if this.now_feed.accept(&root, generation, loaded, targets) {
                     cx.notify();
                 }
             });
@@ -112,13 +134,18 @@ impl Reader {
         }
     }
 
-    pub(super) fn render_now_feed(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_now_feed(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Phase::Ready(feed) = &self.now_feed.phase else {
             return div().into_any_element();
         };
+        let feed = feed.without_answered_cases(&self.now_feed.actions.answered);
         let (questions, problems) = self.feed_live();
         let presented = now_feed::build_feed(
-            feed,
+            &feed,
             &questions,
             &problems,
             &self.now_feed.areas,
@@ -150,7 +177,7 @@ impl Reader {
             ));
         }
         for group in &presented.groups {
-            body = body.child(self.feed_group(group, cx));
+            body = body.child(self.feed_group(group, window, cx));
         }
         let reader = cx.entity().downgrade();
         let shortcut = if cfg!(target_os = "macos") {
@@ -212,7 +239,12 @@ impl Reader {
         ))
     }
 
-    fn feed_group(&self, group: &PresentedGroup, cx: &mut Context<Self>) -> AnyElement {
+    fn feed_group(
+        &self,
+        group: &PresentedGroup,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let key = format!("feed-{}", group.id);
         let open = !self.sidebar.now_collapsed.contains(&key);
         let mut section = v_flex().w_full().min_w_0().child(self.now_heading(
@@ -224,6 +256,9 @@ impl Reader {
         ));
         if !open {
             return section.into_any_element();
+        }
+        if group.id == "available" {
+            section = section.child(self.now_intention_form(window, cx));
         }
         for block in &group.sections {
             if let Some(title) = block.title {
@@ -237,14 +272,19 @@ impl Reader {
                 );
             }
             for row in &block.rows {
-                section = section.child(self.feed_presented_row(row, cx));
+                section = section.child(self.feed_presented_row(row, window, cx));
             }
         }
-        section = section.child(self.feed_hidden(group, cx));
+        section = section.child(self.feed_hidden(group, window, cx));
         section.into_any_element()
     }
 
-    fn feed_hidden(&self, group: &PresentedGroup, cx: &mut Context<Self>) -> AnyElement {
+    fn feed_hidden(
+        &self,
+        group: &PresentedGroup,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         if group.id != "waiting" || group.hidden_count == 0 {
             return div().into_any_element();
         }
@@ -254,7 +294,7 @@ impl Reader {
             let reader = cx.entity().downgrade();
             let mut list = v_flex().w_full().min_w_0();
             for item in &group.hidden {
-                list = list.child(self.feed_item(item, "now-feed-hidden", cx));
+                list = list.child(self.feed_item(item, "now-feed-hidden", window, cx));
             }
             list = list.child(
                 div()
@@ -296,9 +336,14 @@ impl Reader {
             .into_any_element()
     }
 
-    fn feed_presented_row(&self, row: &PresentedRow, cx: &mut Context<Self>) -> AnyElement {
+    fn feed_presented_row(
+        &self,
+        row: &PresentedRow,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         match row {
-            PresentedRow::Item(item) => self.feed_item(item, "now-feed-row", cx),
+            PresentedRow::Item(item) => self.feed_item(item, "now-feed-row", window, cx),
             PresentedRow::Fold {
                 project,
                 count,
@@ -328,7 +373,7 @@ impl Reader {
                 );
                 if open {
                     for item in items {
-                        block = block.child(self.feed_item(item, "now-feed-row", cx));
+                        block = block.child(self.feed_item(item, "now-feed-row", window, cx));
                     }
                 }
                 block.into_any_element()
@@ -340,6 +385,7 @@ impl Reader {
         &self,
         item: &PresentedItem,
         selector: &'static str,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let tokens = brand::palette(cx);
@@ -347,7 +393,20 @@ impl Reader {
         let open = item.open.clone();
         let reader = cx.entity().downgrade();
         let tooltip = item.tooltip.clone();
-        v_flex()
+        let control = match &item.open {
+            FeedOpen::Live(id) => self
+                .waiting
+                .view()
+                .rows
+                .into_iter()
+                .find(|row| reader_now_waiting::feed_id(row) == *id)
+                .and_then(|row| self.now_live_form(row, window, cx)),
+            FeedOpen::Note(_) => item
+                .case_reply_path
+                .as_deref()
+                .and_then(|path| self.now_case_form(path, &item.id, window, cx)),
+        };
+        let row = v_flex()
             .id(SharedString::from(format!("now-feed-item-{}", item.id)))
             .debug_selector(move || selector.into())
             .w_full()
@@ -384,7 +443,10 @@ impl Reader {
                         .text_color(tokens.text_muted)
                         .child(secondary),
                 )
-            })
+            });
+        v_flex()
+            .child(row)
+            .children(control.map(|form| div().px_3().pb_1().child(form)))
             .into_any_element()
     }
 
@@ -428,9 +490,11 @@ impl Reader {
             FeedOpen::Note(path) => self.open_note(path, None, window, cx),
             FeedOpen::Live(id) => {
                 let view = self.waiting.view();
-                let Some(row) = view.rows.iter().find(|row| {
-                    format!("{}|{}", row.source.folder.display(), row.request_id) == *id
-                }) else {
+                let Some(row) = view
+                    .rows
+                    .iter()
+                    .find(|row| reader_now_waiting::feed_id(row) == *id)
+                else {
                     return;
                 };
                 let source = row.source.clone();

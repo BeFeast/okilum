@@ -348,7 +348,7 @@ impl std::fmt::Display for NotWritable {
 impl std::error::Error for NotWritable {}
 
 #[cfg(unix)]
-fn check_writable_in_place(path: &Path) -> Result<()> {
+pub(crate) fn check_writable_in_place(path: &Path) -> Result<()> {
     use rustix::fs::{access, Access};
     for target in [path, path.parent().context("Missing source folder")?] {
         access(target, Access::WRITE_OK).map_err(|errno| {
@@ -358,7 +358,7 @@ fn check_writable_in_place(path: &Path) -> Result<()> {
     Ok(())
 }
 #[cfg(windows)]
-fn check_writable_in_place(path: &Path) -> Result<()> {
+pub(crate) fn check_writable_in_place(path: &Path) -> Result<()> {
     // The same filesystem access check Save's replacement relies on, not the
     // read-only attribute alone: an ACL may deny replacing a readable note.
     if !crate::windows_files::can_replace(path)? {

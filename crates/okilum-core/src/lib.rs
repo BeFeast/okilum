@@ -58,6 +58,7 @@ pub mod note_move;
 #[cfg(any(unix, windows))]
 pub mod note_templates;
 pub mod note_title;
+pub mod now_actions;
 pub mod now_feed;
 pub mod obsidian;
 pub mod open_diagnostics;

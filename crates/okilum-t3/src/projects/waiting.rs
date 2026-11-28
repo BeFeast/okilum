@@ -60,9 +60,11 @@ pub fn read(
                 source: None,
                 ids: Err(problem.clone()),
                 texts: BTreeMap::new(),
+                questions: BTreeMap::new(),
             },
             Ok(source) => {
                 let mut texts = BTreeMap::new();
+                let mut questions = BTreeMap::new();
                 let ids = if !permit.allowed() {
                     Err(CANCELLED.into())
                 } else {
@@ -82,13 +84,13 @@ pub fn read(
                                         break;
                                     }
                                     let _scope = permit.enter();
-                                    if let Some(text) = gateway
-                                        .pending_request_questions(&source.thread_id, id)
-                                        .ok()
-                                        .as_deref()
-                                        .and_then(summary)
+                                    if let Ok(read) =
+                                        gateway.pending_request_questions(&source.thread_id, id)
                                     {
-                                        texts.insert(id.clone(), text);
+                                        if let Some(text) = summary(&read) {
+                                            texts.insert(id.clone(), text);
+                                        }
+                                        questions.insert(id.clone(), read);
                                     }
                                 }
                                 ids
@@ -101,6 +103,7 @@ pub fn read(
                     source: Some(source.clone()),
                     ids,
                     texts,
+                    questions,
                 }
             }
         };
@@ -133,6 +136,7 @@ pub struct Read {
     pub ids: Result<Vec<String>, String>,
     /// Question text per pending id, for the ids whose text could be read.
     pub texts: BTreeMap<String, String>,
+    pub questions: BTreeMap<String, Vec<PendingQuestion>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -142,6 +146,7 @@ struct Entry {
     ids: Vec<String>,
     /// Question text of `ids`, where known.
     texts: BTreeMap<String, String>,
+    questions: BTreeMap<String, Vec<PendingQuestion>>,
     /// When `ids` were confirmed. `None`: never read successfully.
     observed_at: Option<u64>,
     problem: Option<String>,
@@ -159,9 +164,30 @@ pub struct Row {
     pub request_id: String,
     /// The question as T3 states it; `None` when its text could not be read.
     pub text: Option<String>,
+    pub questions: Vec<PendingQuestion>,
     /// The source's latest read failed; this row is the last confirmed state.
     pub stale: bool,
     pub observed_at: u64,
+}
+
+impl Row {
+    /// Inline replies require keys for every question. Legacy or stale rows
+    /// can still be opened in the manager.
+    pub fn inline_questions(&self) -> Option<Vec<(&str, &PendingQuestion)>> {
+        if self.stale || self.questions.is_empty() {
+            return None;
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        self.questions
+            .iter()
+            .map(|question| {
+                let id = question.id.as_deref().filter(|id| !id.trim().is_empty())?;
+                let has_inline_answer = question.allow_custom_answer != Some(false)
+                    || (self.questions.len() == 1 && !question.options.is_empty());
+                (has_inline_answer && ids.insert(id)).then_some((id, question))
+            })
+            .collect()
+    }
 }
 
 /// A source that currently cannot be read.
@@ -207,13 +233,15 @@ impl Ledger {
                     ids.dedup();
                     // A question asked once keeps its text when only the text
                     // read failed this time; withdrawn questions drop theirs.
-                    let mut texts = previous.map(|entry| entry.texts).unwrap_or_default();
+                    let previous = previous.unwrap_or_default();
+                    let mut texts = previous.texts;
                     texts.retain(|id, _| ids.contains(id));
                     texts.extend(read.texts);
                     Entry {
                         source: read.source,
                         ids,
                         texts,
+                        questions: read.questions,
                         observed_at: Some(at),
                         problem: None,
                     }
@@ -224,6 +252,7 @@ impl Ledger {
                         source: read.source,
                         ids: previous.ids,
                         texts: previous.texts,
+                        questions: BTreeMap::new(),
                         observed_at: previous.observed_at,
                         problem: Some(problem),
                     }
@@ -267,6 +296,7 @@ impl Ledger {
                     source: source.clone(),
                     request_id: id.clone(),
                     text: entry.texts.get(id).cloned(),
+                    questions: entry.questions.get(id).cloned().unwrap_or_default(),
                     stale: entry.problem.is_some(),
                     observed_at,
                 });
