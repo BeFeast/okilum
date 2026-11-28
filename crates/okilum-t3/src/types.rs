@@ -129,7 +129,11 @@ fn lenient_repository<'de, D: serde::Deserializer<'de>>(
 pub struct ModelSelection {
     pub instance_id: String,
     pub model: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_model_options",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub options: Vec<ModelOption>,
 }
 
@@ -137,6 +141,44 @@ pub struct ModelSelection {
 pub struct ModelOption {
     pub id: String,
     pub value: Value,
+}
+
+fn deserialize_model_options<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<ModelOption>, D::Error> {
+    let raw = Value::deserialize(deserializer)?;
+    match raw {
+        Value::Null => Ok(Vec::new()),
+        Value::Array(_) => serde_json::from_value(raw).map_err(serde::de::Error::custom),
+        Value::Object(map) => {
+            let mut entries = std::collections::BTreeMap::new();
+            for (raw_key, raw_value) in map {
+                let id = raw_key.trim();
+                if id.is_empty() {
+                    continue;
+                }
+                let value = match raw_value {
+                    Value::String(text) => {
+                        let trimmed = text.trim();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        Value::String(trimmed.to_owned())
+                    }
+                    Value::Bool(flag) => Value::Bool(flag),
+                    _ => continue,
+                };
+                entries.insert(id.to_owned(), value);
+            }
+            Ok(entries
+                .into_iter()
+                .map(|(id, value)| ModelOption { id, value })
+                .collect())
+        }
+        _ => Err(serde::de::Error::custom(
+            "expected model options array, object map, or null",
+        )),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -536,6 +578,78 @@ mod tests {
             serde_json::to_value(&bare).unwrap(),
             json!({ "instanceId": "codex", "model": "gpt-6-astra" })
         );
+    }
+
+    #[test]
+    fn model_selection_options_accept_object_map_null_and_reject_scalars() {
+        let from_map: ModelSelection = serde_json::from_value(json!({
+            "instanceId": "claudeAgent",
+            "model": "claude-opus-5-5",
+            "options": {
+                "effort": " high ",
+                "fastMode": false,
+                "": "ignored",
+                "blank": "   ",
+                "unsupported": 42
+            }
+        }))
+        .unwrap();
+        let from_array: ModelSelection = serde_json::from_value(json!({
+            "instanceId": "claudeAgent",
+            "model": "claude-opus-5-5",
+            "options": [
+                { "id": "fastMode", "value": false },
+                { "id": "effort", "value": "high" }
+            ]
+        }))
+        .unwrap();
+        assert!(crate::models::selections_match(&from_map, &from_array));
+        assert_eq!(
+            serde_json::to_value(&from_map).unwrap(),
+            json!({
+                "instanceId": "claudeAgent",
+                "model": "claude-opus-5-5",
+                "options": [
+                    { "id": "effort", "value": "high" },
+                    { "id": "fastMode", "value": false }
+                ]
+            })
+        );
+
+        let from_null: ModelSelection = serde_json::from_value(json!({
+            "instanceId": "codex",
+            "model": "gpt-6-astra",
+            "options": null
+        }))
+        .unwrap();
+        let omitted: ModelSelection = serde_json::from_value(json!({
+            "instanceId": "codex",
+            "model": "gpt-6-astra"
+        }))
+        .unwrap();
+        assert_eq!(from_null, omitted);
+        assert!(from_null.options.is_empty());
+        assert_eq!(
+            serde_json::to_value(&from_null).unwrap(),
+            json!({ "instanceId": "codex", "model": "gpt-6-astra" })
+        );
+
+        for invalid in [
+            json!("high"),
+            json!(1),
+            json!(true),
+            json!([{ "id": "effort" }]),
+        ] {
+            assert!(
+                serde_json::from_value::<ModelSelection>(json!({
+                    "instanceId": "codex",
+                    "model": "gpt-6-astra",
+                    "options": invalid
+                }))
+                .is_err(),
+                "non-contract options shape must fail closed"
+            );
+        }
     }
 }
 

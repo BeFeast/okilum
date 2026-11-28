@@ -135,7 +135,10 @@ fn decode(value: &Value, initialized: bool) -> StreamResult<Vec<Update>> {
                 }
                 Some("settingsUpdated") => Err(invalid()),
                 Some(
-                    "keybindingsUpdated" | "environmentThemesUpdated" | "usageLimitSourcesUpdated",
+                    "keybindingsUpdated"
+                    | "environmentThemesUpdated"
+                    | "usageLimitSourcesUpdated"
+                    | "hostPressureUpdated",
                 ) => Ok(Update::Unchanged),
                 _ => Err(StreamError::IncompatibleProtocol),
             }

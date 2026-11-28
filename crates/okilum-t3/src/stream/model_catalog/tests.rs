@@ -36,6 +36,7 @@ fn actual_server_config_events_keep_provider_instances_and_supported_modes() {
             json!({"version":1,"type":"keybindingsUpdated","payload":{}}),
             json!({"version":1,"type":"environmentThemesUpdated","payload":{}}),
             json!({"version":1,"type":"usageLimitSourcesUpdated","payload":{}}),
+            json!({"version":1,"type":"hostPressureUpdated","payload":{}}),
         ]),
         false,
     )
@@ -55,6 +56,16 @@ fn actual_server_config_events_keep_provider_instances_and_supported_modes() {
     assert_eq!(providers[0].models[0].id, "new-model");
     assert_eq!(changes[2], Update::Refresh);
     assert!(changes[3..].iter().all(|event| *event == Update::Unchanged));
+    assert!(matches!(
+        decode(
+            &chunk(vec![
+                initial(),
+                json!({"version":1,"type":"unknownFutureEvent","payload":{}}),
+            ]),
+            false,
+        ),
+        Err(StreamError::IncompatibleProtocol)
+    ));
 }
 
 #[test]
