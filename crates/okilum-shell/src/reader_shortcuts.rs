@@ -1139,6 +1139,14 @@ mod tests {
             row("Copy as Rich Text").keys,
             [Os::CURRENT.shortcut(crate::COPY_WITH_FORMATTING_KEY)]
         );
+        assert_eq!(
+            row("Copy as Jira").keys,
+            [Os::CURRENT.shortcut(crate::COPY_AS_JIRA_KEY)]
+        );
+        assert_eq!(
+            row("Paste as Markdown from Jira").keys,
+            [Os::CURRENT.shortcut(crate::PASTE_FROM_JIRA_KEY)]
+        );
         let paste = keys_for(
             &keymap,
             gpui_component::input::Paste::name_for_type(),
@@ -1345,5 +1353,94 @@ mod tests {
             "# One\n\nBody\n"
         );
         let _ = std::fs::remove_dir_all(&fixture);
+    }
+
+    #[gpui::test]
+    fn jira_shortcuts_bind_and_resolve_without_collision(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let keymap = reader_keymap(cx);
+
+        let copy_expected =
+            KeyBinding::new(crate::COPY_AS_JIRA_KEY, reader_read_menu::CopyAsJira, None);
+        let copy_bindings: Vec<_> = keymap
+            .bindings()
+            .filter(|binding| binding.keystrokes() == copy_expected.keystrokes())
+            .map(|binding| binding.action().name())
+            .collect();
+        assert_eq!(
+            copy_bindings,
+            vec![reader_read_menu::CopyAsJira::name_for_type(); 2],
+            "Copy as Jira shortcut must not collide with any reader or toolkit binding"
+        );
+        for contexts in [
+            vec!["Reader ReaderRead"],
+            vec!["Reader ReaderSource", "Input"],
+        ] {
+            let contexts: Vec<_> = contexts
+                .into_iter()
+                .map(|value| KeyContext::parse(value).unwrap())
+                .collect();
+            let resolved = keymap
+                .bindings_for_input(copy_expected.keystrokes(), &contexts)
+                .0;
+            assert_eq!(
+                resolved.first().map(|binding| binding.action().name()),
+                Some(reader_read_menu::CopyAsJira::name_for_type()),
+                "Copy as Jira in {contexts:?}"
+            );
+        }
+
+        let paste_expected =
+            KeyBinding::new(crate::PASTE_FROM_JIRA_KEY, note_paste::PasteFromJira, None);
+        let paste_bindings: Vec<_> = keymap
+            .bindings()
+            .filter(|binding| binding.keystrokes() == paste_expected.keystrokes())
+            .map(|binding| binding.action().name())
+            .collect();
+        assert_eq!(
+            paste_bindings,
+            vec![note_paste::PasteFromJira::name_for_type()],
+            "Paste as Markdown from Jira shortcut must not collide with any reader or toolkit binding"
+        );
+        let editor_contexts: Vec<_> = ["Reader ReaderSource", "Input"]
+            .into_iter()
+            .map(|value| KeyContext::parse(value).unwrap())
+            .collect();
+        let paste_resolved = keymap
+            .bindings_for_input(paste_expected.keystrokes(), &editor_contexts)
+            .0;
+        assert_eq!(
+            paste_resolved
+                .first()
+                .map(|binding| binding.action().name()),
+            Some(note_paste::PasteFromJira::name_for_type()),
+            "Paste as Markdown from Jira in note editor"
+        );
+
+        for chord in [
+            "secondary-shift-j",
+            "secondary-shift-k",
+            "ctrl-shift-j",
+            "cmd-shift-j",
+            "ctrl-shift-k",
+            "cmd-shift-k",
+        ] {
+            let stroke = gpui::Keystroke::parse(chord).unwrap();
+            assert!(
+                altgr_conflict(false, &stroke.modifiers, &stroke.key).is_none(),
+                "macOS/Linux must allow {chord}"
+            );
+        }
+        for chord in ["alt-j", "alt-k"] {
+            let stroke = gpui::Keystroke::parse(chord).unwrap();
+            assert!(
+                altgr_conflict(true, &stroke.modifiers, &stroke.key).is_none(),
+                "Windows must allow {chord}"
+            );
+            assert!(
+                !windows_reserved(&stroke.modifiers, &stroke.key),
+                "Windows must not reserve {chord}"
+            );
+        }
     }
 }

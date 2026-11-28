@@ -116,6 +116,14 @@ const fn windows_key(elsewhere: &'static str, windows: &'static str) -> &'static
     }
 }
 pub(crate) const COPY_WITH_FORMATTING_KEY: &str = windows_key("secondary-alt-c", "ctrl-shift-h");
+/// Copy as Jira (#3292): Ctrl+Shift+J / ⇧⌘J (Alt+J on Windows, where
+/// Ctrl+Shift+J validates code files in ReaderFileEdit and Ctrl+Alt /
+/// Alt+Shift are reserved).
+pub(crate) const COPY_AS_JIRA_KEY: &str = windows_key("secondary-shift-j", "alt-j");
+/// Paste as Markdown from Jira (#3292): Ctrl+Shift+K / ⇧⌘K (Alt+K on
+/// Windows, where Ctrl+Shift+K pastes titled links and Ctrl+Shift+I is
+/// gpui-component's inspector).
+pub(crate) const PASTE_FROM_JIRA_KEY: &str = windows_key("secondary-shift-k", "alt-k");
 const TOGGLE_PROJECT_KEY: &str = windows_key("secondary-alt-p", "ctrl-shift-p");
 const OPEN_BLOCK_EXTERNALLY_KEY: &str = windows_key("secondary-alt-e", "ctrl-shift-d");
 const PASTE_AS_TITLED_LINK_KEY: &str = windows_key("secondary-alt-v", "ctrl-shift-k");
@@ -228,6 +236,16 @@ pub(super) fn bind_keys(cx: &mut App) {
             COPY_WITH_FORMATTING_KEY,
             reader_read_menu::CopyWithFormatting,
             Some("ReaderRead && !Input && !ReaderTree"),
+        ),
+        KeyBinding::new(
+            COPY_AS_JIRA_KEY,
+            reader_read_menu::CopyAsJira,
+            Some("ReaderRead && !Input && !ReaderTree"),
+        ),
+        KeyBinding::new(
+            COPY_AS_JIRA_KEY,
+            reader_read_menu::CopyAsJira,
+            Some("ReaderSource > Input"),
         ),
         // Prefer the standard chord in note menus; Shift+Insert remains bound.
         KeyBinding::new(
@@ -445,6 +463,11 @@ pub(super) fn bind_keys(cx: &mut App) {
         KeyBinding::new(
             PASTE_AS_TITLED_LINK_KEY,
             note_paste::PasteAsTitledLink,
+            Some("ReaderSource > Input"),
+        ),
+        KeyBinding::new(
+            PASTE_FROM_JIRA_KEY,
+            note_paste::PasteFromJira,
             Some("ReaderSource > Input"),
         ),
         KeyBinding::new("secondary-s", SaveSource, Some("Reader > Input")),

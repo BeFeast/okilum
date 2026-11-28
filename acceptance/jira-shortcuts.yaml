@@ -1,0 +1,114 @@
+# #3292: Keyboard shortcuts for Copy as Jira (Ctrl+Shift+J) and Paste as Markdown from Jira (Ctrl+Shift+K).
+# 1. In Read mode, press Ctrl+Shift+J to copy the whole note as Jira wiki markup.
+# 2. Switch to Edit mode (Ctrl+E), clear, and Paste as Plain Text (Ctrl+Shift+V)
+#    to verify the clipboard holds Jira wiki markup (`Sprint Plan`, `{code:rust}`).
+# 3. Clear and press Ctrl+Shift+K to verify Paste as Markdown from Jira converts
+#    clipboard Jira wiki markup back to Markdown.
+# 4. Select all in Edit mode, press Ctrl+Shift+J, clear, and Paste as Plain Text
+#    to verify Copy as Jira also works via shortcut in Edit mode.
+# 5. Open Keyboard shortcuts (Ctrl+/) and filter by "Jira", "Ctrl+Shift+J", and
+#    "Ctrl+Shift+K" to verify both shortcuts appear in the live sheet.
+note: |
+  # Sprint Plan
+
+  Summary with **urgent** item and [tracker](https://example.invalid/item).
+
+  ```rust
+  fn demo() {}
+  ```
+region: [300, 100, 720, 560]
+ready_text: Summary with urgent item and tracker
+steps:
+  - id: read-copy-jira-shortcut
+    keys: [j]
+    mods: [ctrl, shift]
+    wait: 0.6
+  - id: enter-editor
+    keys: [e]
+    mods: [ctrl]
+    wait: 1.0
+  - id: select-all-1
+    keys: [a]
+    mods: [ctrl]
+    wait: 0.3
+  - id: clear-1
+    keys: [BackSpace]
+    wait: 0.3
+  - id: paste-plain-read-jira
+    keys: [v]
+    mods: [ctrl, shift]
+    wait: 0.8
+    text: Sprint Plan
+  - id: paste-plain-read-code
+    text: '{code:rust}'
+  - id: select-all-2
+    keys: [a]
+    mods: [ctrl]
+    wait: 0.3
+  - id: clear-2
+    keys: [BackSpace]
+    wait: 0.3
+  - id: paste-jira-shortcut
+    keys: [k]
+    mods: [ctrl, shift]
+    wait: 0.8
+    text: Summary with
+    text_absent: 'tracker|'
+  - id: paste-jira-no-code-macro
+    text: fn demo
+    text_absent: '{code:rust}'
+  - id: select-all-3
+    keys: [a]
+    mods: [ctrl]
+    wait: 0.3
+  - id: edit-copy-jira-shortcut
+    keys: [j]
+    mods: [ctrl, shift]
+    wait: 0.6
+  - id: clear-3
+    keys: [BackSpace]
+    wait: 0.3
+  - id: paste-plain-edit-jira
+    keys: [v]
+    mods: [ctrl, shift]
+    wait: 0.8
+    text: Sprint Plan
+  - id: paste-plain-edit-urgent
+    text: '*urgent*'
+  - id: open-shortcut-sheet
+    keys: [slash]
+    mods: [ctrl]
+    wait: 0.6
+  - id: filter-jira-shortcuts
+    type: Jira
+    wait: 0.6
+    region: [415, 50, 540, 470]
+    text: Copy as Jira
+    text_absent: No matching shortcuts
+  - id: filter-jira-paste-row
+    region: [415, 50, 540, 470]
+    text: Paste as Markdown from Jira
+  - id: sheet-clear-1
+    keys: [a]
+    mods: [ctrl]
+    wait: 0.2
+  - id: sheet-bs-1
+    keys: [BackSpace]
+    wait: 0.2
+  - id: sheet-filter-copy-key
+    type: Ctrl+Shift+J
+    wait: 0.5
+    region: [415, 50, 540, 470]
+    text: Copy as Jira
+  - id: sheet-clear-2
+    keys: [a]
+    mods: [ctrl]
+    wait: 0.2
+  - id: sheet-bs-2
+    keys: [BackSpace]
+    wait: 0.2
+  - id: sheet-filter-paste-key
+    type: Ctrl+Shift+K
+    wait: 0.5
+    region: [415, 50, 540, 470]
+    text: Paste as Markdown from Jira

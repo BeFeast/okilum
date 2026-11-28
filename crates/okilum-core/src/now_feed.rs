@@ -1356,7 +1356,7 @@ mod tests {
                     "version {}",
                     feed.version
                 );
-                eprintln!(
+                diagnostic_error!(
                     "ready version={} groups={} warnings={}",
                     feed.version,
                     feed.groups.len(),
